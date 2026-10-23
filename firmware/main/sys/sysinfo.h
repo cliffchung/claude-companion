@@ -3,11 +3,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <time.h>
+#include "sys/vitals.h"      /* power_src_t */
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef enum { PWR_UNKNOWN = 0, PWR_USB, PWR_USB_CHARGING, PWR_USB_STANDBY, PWR_BATTERY } power_src_t;
 
 typedef struct {
     float bus_v;        /* battery/system bus voltage */
@@ -23,11 +22,12 @@ void sysinfo_poll(void);                     /* refresh cached power info (~1 Hz
 power_info_t sysinfo_power(void);
 int sysinfo_charge_pin(void);                /* raw charge pin: -1 unreadable, 0 low (charging, per the fork's guess), 1 high */
 int sysinfo_charge_pin_last(void);           /* the pin as read by the last sysinfo_poll */
+int sysinfo_rssi_cached(void);               /* wifi_mgr_rssi at most every 10 s (an SDIO RPC) */
 int sysinfo_battery_percent(void);           /* -1 if unknown */
 const char *sysinfo_power_src_text(void);
 bool sysinfo_rtc_read(struct tm *out);
 bool sysinfo_rtc_write(const struct tm *in);
-void sysinfo_apply_timezone(void);           /* from g_settings.utc_offset_min */
+void sysinfo_apply_timezone(void);           /* TZ from g_settings.tz_rule */
 void sysinfo_time_from_rtc(void);
 void sysinfo_start_sntp(void);
 bool sysinfo_ina226_present(void);

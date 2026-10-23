@@ -10,6 +10,7 @@
 #include "ui.h"
 #include "ui_dashboard.h"
 #include "ui_motion.h"
+#include "ui_vitals.h"
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "companion/cc_cmd.h"
@@ -108,7 +109,7 @@ static unsigned s_req_token, s_visit, s_req_visit;
 static int64_t s_req_at_ms;
 
 /* Widgets (valid while the screen exists). */
-static lv_obj_t *s_scr, *s_list, *s_summary, *s_bat, *s_wifi, *s_dot, *s_host, *s_clock;
+static lv_obj_t *s_scr, *s_list, *s_summary, *s_vitals, *s_dot, *s_host;
 static lv_obj_t *s_ages[MAX_CARDS], *s_cards[MAX_CARDS];
 static lv_obj_t *s_logs_lbl, *s_ta;
 static unsigned s_ticks;
@@ -864,17 +865,7 @@ static void update_status(void)
 
 static void update_vitals(void)
 {
-    char b[48] = "";
-    int bat = sysinfo_battery_percent();
-    if (bat >= 0)
-        snprintf(b, sizeof(b), "%d%%%s", bat, sysinfo_power().src == PWR_USB_CHARGING ? " charging" : "");
-    if (s_bat && strcmp(lv_label_get_text(s_bat), b)) lv_label_set_text(s_bat, b);
-    if (s_wifi) lv_obj_set_style_text_color(s_wifi, HEX(wifi_mgr_is_connected() ? C_FG : C_MUTED), 0);
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
-    strftime(b, sizeof(b), "%H:%M", &tm);
-    if (s_clock && strcmp(lv_label_get_text(s_clock), b)) lv_label_set_text(s_clock, b);
+    ui_vitals_update(s_vitals);
 }
 
 static void tick_cb(lv_timer_t *t)
@@ -934,7 +925,7 @@ static void scr_delete_cb(lv_event_t *e)
     lv_obj_t *scr = lv_event_get_target_obj(e);
     keyboard_clear_sink(scr);   /* only if it is still this screen's sink */
     if (scr != s_scr) return;
-    s_scr = s_list = s_summary = s_bat = s_wifi = s_dot = s_host = s_clock = NULL;
+    s_scr = s_list = s_summary = s_vitals = s_dot = s_host = NULL;
     s_logs_lbl = s_ta = NULL;
     memset(s_cards, 0, sizeof(s_cards));
     memset(s_ages, 0, sizeof(s_ages));
@@ -968,17 +959,9 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_style_pad_column(v, 18, 0);
     lv_obj_t *brand = text(v, "Claude Companion", FONT_BODY, C_FG);
     lv_obj_set_flex_grow(brand, 1);
-    s_bat = text(v, "", FONT_SMALL, C_MUTED);
-    s_wifi = text(v, LV_SYMBOL_WIFI, FONT_BODY, C_MUTED);
-    lv_obj_t *link = row(v, 8);
-    lv_obj_set_width(link, LV_SIZE_CONTENT);
-    s_dot = box(link);
-    lv_obj_set_size(s_dot, 12, 12);
-    lv_obj_set_style_radius(s_dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(s_dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s_dot, HEX(C_MUTED), 0);
-    s_host = text(link, "", FONT_SMALL, C_MUTED);
-    s_clock = text(v, "--:--", FONT_BODY, C_FG);
+    s_vitals = ui_vitals_create(v);
+    s_dot = ui_vitals_link_dot(s_vitals);
+    s_host = ui_vitals_link_host(s_vitals);
 
     /* summary or status line */
     s_summary = text(scr, "", FONT_BODY, C_FG);

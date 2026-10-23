@@ -2,6 +2,7 @@
 #include "sysinfo.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include <sys/time.h>
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -13,6 +14,7 @@
 #include "bsp/m5stack_tab5.h"
 #include "settings/settings.h"
 #include "i18n/i18n.h"
+#include "net/wifi_mgr.h"
 
 static const char *TAG = "sysinfo";
 #define INA226_ADDR 0x41
@@ -22,6 +24,10 @@ static i2c_master_dev_handle_t s_ina = NULL, s_rtc = NULL;
 static power_info_t s_pwr;
 static bool s_charge_stat_valid = false;
 static int s_last_pin = -1;
+static vitals_batt_t s_batt;
+static int64_t s_batt_us;
+static vitals_src_t s_src;
+
 
 static bool i2c_wr_rd(i2c_master_dev_handle_t dev, const uint8_t *w, size_t wl, uint8_t *r, size_t rl)
 {
@@ -68,15 +74,6 @@ void sysinfo_init(void)
 bool sysinfo_ina226_present(void) { return s_ina != NULL; }
 bool sysinfo_rtc_present(void) { return s_rtc != NULL; }
 
-static int voltage_to_percent(float v)
-{
-    /* 2S Li-ion (NP-F550 style): 6.0V empty .. 8.4V full */
-    float pct = (v - 6.4f) / (8.35f - 6.4f) * 100.0f;
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    return (int)(pct + 0.5f);
-}
-
 int sysinfo_charge_pin(void)
 {
     esp_io_expander_handle_t ex2 = bsp_io_expander1_init();
@@ -89,25 +86,34 @@ int sysinfo_charge_pin_last(void) { return s_last_pin; }
 
 void sysinfo_poll(void)
 {
-    if (!s_ina) { s_pwr.valid = false; s_pwr.percent = -1; s_pwr.src = PWR_UNKNOWN; return; }
+    if (!s_ina) { s_pwr.valid = false; s_pwr.percent = -1; s_pwr.src = PWR_UNKNOWN; memset(&s_src, 0, sizeof(s_src)); return; }
     uint16_t bus, cur, pwr;
     if (!ina_read16(0x02, &bus) || !ina_read16(0x04, &cur) || !ina_read16(0x03, &pwr)) { s_pwr.valid = false; return; }
     s_pwr.bus_v = bus * 1.25f / 1000.0f;
     s_pwr.current_a = (int16_t)cur * 0.001f;
     s_pwr.power_w = pwr * 0.025f;
-    s_pwr.percent = voltage_to_percent(s_pwr.bus_v);
+    int64_t now = esp_timer_get_time();
+    float dt = s_batt_us ? (now - s_batt_us) / 1e6f : 0.0f;
+    s_batt_us = now;
+    s_pwr.percent = vitals_batt_update(&s_batt, s_pwr.bus_v, s_pwr.current_a, dt);
     s_pwr.valid = true;
     /* Charge status from IO expander 2 pin 4 (input, active low) when available. */
     int pin = sysinfo_charge_pin();
     s_last_pin = pin;
-    bool charging = (pin == 0);
     if (pin >= 0) s_charge_stat_valid = true;
-    if (s_pwr.current_a < -0.05f || charging) s_pwr.src = PWR_USB_CHARGING;
-    else if (s_pwr.current_a > 0.08f) s_pwr.src = PWR_BATTERY;
-    else s_pwr.src = s_pwr.bus_v > 8.3f ? PWR_USB_STANDBY : PWR_USB;
+    s_pwr.src = vitals_src_step(&s_src, (int)(s_pwr.bus_v * 1000.0f + 0.5f), (int)lroundf(s_pwr.current_a * 1000.0f), pin);
 }
 
 power_info_t sysinfo_power(void) { return s_pwr; }
+int sysinfo_rssi_cached(void)
+{
+    static int s_rssi;
+    static int64_t s_at;
+    int64_t now = esp_timer_get_time();
+    if (!s_at || now - s_at >= 10 * 1000000LL) { s_rssi = wifi_mgr_rssi(); s_at = now; }
+    return s_rssi;
+}
+
 int sysinfo_battery_percent(void) { return s_pwr.valid ? s_pwr.percent : -1; }
 
 const char *sysinfo_power_src_text(void)
@@ -156,11 +162,7 @@ bool sysinfo_rtc_write(const struct tm *in)
 
 void sysinfo_apply_timezone(void)
 {
-    /* POSIX TZ has the sign inverted: UTC+9 -> "UTC-9" */
-    int off = g_settings.utc_offset_min;
-    char tz[32];
-    snprintf(tz, sizeof(tz), "UTC%c%d:%02d", off >= 0 ? '-' : '+', abs(off) / 60, abs(off) % 60);
-    setenv("TZ", tz, 1);
+    setenv("TZ", vitals_tz_valid(g_settings.tz_rule) ? g_settings.tz_rule : TZ_DEFAULT, 1);
     tzset();
 }
 

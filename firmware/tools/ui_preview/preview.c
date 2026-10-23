@@ -33,7 +33,9 @@ bool sd_is_mounted(void) { return true; }
 const char *fs_ext(const char *p) { (void)p; return ""; }
 lv_image_dsc_t *image_loader_jpeg(const char *p,int w,int h,char *s,int cap) { return NULL; }
 void image_loader_free(lv_image_dsc_t *p) {}
-int sysinfo_battery_percent(void) { return 98; }
+static int env_int(const char *n, int d) { const char *e = getenv(n); return e && *e ? atoi(e) : d; }
+int sysinfo_battery_percent(void) { return env_int("PREVIEW_BAT", 52); }
+int sysinfo_rssi_cached(void) { return env_int("PREVIEW_RSSI", -60); }
 const char *sysinfo_app_version(void) { return "preview"; }
 void sysinfo_apply_timezone(void) {}
 void sysinfo_start_sntp(void) {}
@@ -48,7 +50,11 @@ void keyboard_lvgl_focus(void *p) { focused_textarea = p; }
 void *keyboard_lvgl_focused(void) { return focused_textarea; }
 void keyboard_set_layout(uint8_t layout) { (void)layout; }
 void keyboard_set_led(uint8_t a,uint8_t b,uint8_t c,uint8_t d,uint8_t e) {}
-ts_state_t tailscale_state(void) { return TS_CONNECTED; }
+ts_state_t tailscale_state(void)
+{
+    int m = env_int("PREVIEW_TS", 2);
+    return m == 0 ? TS_OFF : m == 1 ? TS_CONNECTING : TS_CONNECTED;
+}
 bool tailscale_start(void) { return true; }
 void tailscale_stop(void) {}
 void audio_player_toggle(void) {}
@@ -61,7 +67,12 @@ void server_store_reload(void) {}
 int server_store_count(void) { return 3; }
 static server_t s_preview_server = { .name = "Mac", .host = "mac", .port = 22, .user = "me", .use_key = true };
 const server_t *server_store_get(int i) { return i >= 0 && i < 3 ? &s_preview_server : NULL; }
-power_info_t sysinfo_power(void) { power_info_t p = { .percent = 98, .src = PWR_USB_CHARGING, .valid = true }; return p; }
+power_info_t sysinfo_power(void)
+{
+    power_info_t p = { .percent = env_int("PREVIEW_BAT", 52), .valid = true };
+    p.src = env_int("PREVIEW_CHG", 0) ? PWR_USB_CHARGING : PWR_BATTERY;
+    return p;
+}
 void keyboard_set_sink(const key_sink_t *sink) { (void)sink; }
 void keyboard_clear_sink(void *user) { (void)user; }
 void ui_terminal_open_command(int i, const char *c, void (*cb)(void *), void *ctx) { (void)i; (void)c; if (cb) cb(ctx); }
@@ -520,6 +531,7 @@ int main(int argc,char **argv) {
         /* The live dashboard against the synthetic fixture; the first card is selected. */
         i18n_set_lang(LANG_EN);
         preview_sessions_load();
+        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
         ui_nav_home(); step(d,400);
         assert(ui_nav_is_top(ui_dashboard_create));
         step(d,400);

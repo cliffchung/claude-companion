@@ -39,27 +39,6 @@ static void rot_cb(lv_event_t *e)
     ui_menu(tr(STR_SET_ROTATION), items, 4, rot_menu_cb, NULL);
 }
 
-static const int s_offsets[] = { -720,-660,-600,-540,-480,-420,-360,-300,-240,-180,-120,-60,0,60,120,180,240,300,330,345,360,390,420,480,540,570,600,660,720,780 };
-static void utc_menu_cb(int i, void *ud)
-{
-    (void)ud;
-    if (i < 0) return;
-    g_settings.utc_offset_min = s_offsets[i]; settings_save();
-    sysinfo_apply_timezone();
-    ui_nav_refresh();
-}
-static void utc_cb(lv_event_t *e)
-{
-    (void)e;
-    static char labels[sizeof(s_offsets) / sizeof(int)][16];
-    static const char *ptrs[sizeof(s_offsets) / sizeof(int)];
-    for (size_t i = 0; i < sizeof(s_offsets) / sizeof(int); i++) {
-        int o = s_offsets[i];
-        snprintf(labels[i], 16, "UTC%c%d:%02d", o >= 0 ? '+' : '-', abs(o) / 60, abs(o) % 60);
-        ptrs[i] = labels[i];
-    }
-    ui_menu(tr(STR_SET_UTC_OFFSET), ptrs, sizeof(s_offsets) / sizeof(int), utc_menu_cb, NULL);
-}
 static void ntp_cb(lv_event_t *e)
 {
     (void)e;
@@ -268,13 +247,9 @@ lv_obj_t *ui_settings_create(void *arg)
     char buf[128];
 
     c = settings_panel(deck, 0);
-    int o = g_settings.utc_offset_min;
-    snprintf(buf, sizeof(buf), "UTC%c%d:%02d", o >= 0 ? '+' : '-', abs(o) / 60, abs(o) % 60);
-    ui_setting_row(c, tr(STR_SET_UTC_OFFSET), buf, utc_cb, NULL);
     time_t now = time(NULL); struct tm tm; localtime_r(&now, &tm);
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
     ui_setting_row(c, tr(STR_SET_NTP), buf, ntp_cb, NULL);
-    ui_label(c, tr(STR_SET_UTC_NOTE), FONT_SMALL, UI_MUTED);
     ui_setting_row(c, tr(STR_OTA_URL), g_settings.ota_url, ota_url_row_cb, NULL);
     ui_section_title(c, "Companion");
     char mac[48], cpath[64];

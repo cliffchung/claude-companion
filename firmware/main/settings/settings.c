@@ -7,11 +7,12 @@
 #include "nvs.h"
 #include "esp_log.h"
 #include "companion/cc_cmd.h"
+#include "sys/vitals.h"
 
 static const char *TAG = "settings";
 #define NS "app"
 #define KEY "cfg"
-#define CFG_VERSION 17
+#define CFG_VERSION 18
 
 app_settings_t g_settings;
 
@@ -20,6 +21,33 @@ typedef struct {
     uint32_t version;
     app_settings_t s;
 } cfg_blob_t;
+
+static void plan2_defaults(void)
+{
+    strcpy(g_settings.tz_rule, TZ_DEFAULT);
+    g_settings.pw_dim_s = 30;
+    g_settings.pw_off_s = 120;
+    g_settings.pw_sleep_on_usb = 1;
+    g_settings.pw_wake_lift = 1;
+    g_settings.pw_wake_needs_you = 1;
+    g_settings.kbd_needs_light = 1;
+    g_settings.kbd_off_cap = 100;
+    g_settings.pw_radio_off = 0;
+    g_settings.pw_radio_off_min = 20;
+    g_settings.pw_checkin_min = 5;
+    g_settings.pw_light_sleep = 0;
+    g_settings.pw_deep_idle_min = 60;
+    g_settings.pw_hibernate_h = 2;
+    g_settings.pw_hibernate_checkin_h = 0;
+}
+
+/* 0 stays 0 (never); a value in the gap goes to the nearest end of the range. */
+static int clamp_or_zero(int v, int lo, int hi)
+{
+    if (v <= 0) return 0;
+    if (v < lo) return v * 2 < lo ? 0 : lo;
+    return v > hi ? hi : v;
+}
 
 void settings_reset_defaults(void)
 {
@@ -56,6 +84,7 @@ void settings_reset_defaults(void)
     strcpy(g_settings.ts_device_name, "claude-companion");
     g_settings.companion_server[0] = 0;
     strcpy(g_settings.claude_path, "~/.local/bin/claude");
+    plan2_defaults();
 }
 
 void settings_init(void)
@@ -89,6 +118,9 @@ void settings_init(void)
             if (old_version <= 14) g_settings.ss_classic = 0;
             if (old_version <= 15) g_settings.kbd_layout = KBD_LAYOUT_STOCK;
             /* v17 added companion_server and claude_path at the end: defaults stand. */
+            /* v18 added the Plan 2 fields at the end. The old blob's tail padding may have
+               landed on them, so set them all, whatever the old UTC offset was. */
+            if (old_version <= 17) plan2_defaults();
             settings_save();
         }
         free(blob);
@@ -99,6 +131,15 @@ void settings_init(void)
     if (g_settings.ss_idle_min == 0) g_settings.ss_idle_min = 5;
     g_settings.companion_server[sizeof(g_settings.companion_server) - 1] = 0;
     g_settings.claude_path[sizeof(g_settings.claude_path) - 1] = 0;
+    g_settings.tz_rule[sizeof(g_settings.tz_rule) - 1] = 0;
+    if (!vitals_tz_valid(g_settings.tz_rule)) strcpy(g_settings.tz_rule, TZ_DEFAULT);
+    if (g_settings.pw_dim_s < 10) g_settings.pw_dim_s = 10;
+    if (g_settings.pw_dim_s > 600) g_settings.pw_dim_s = 600;
+    if (g_settings.pw_off_s < g_settings.pw_dim_s + 10) g_settings.pw_off_s = g_settings.pw_dim_s + 10;
+    if (g_settings.pw_off_s > 3600) g_settings.pw_off_s = 3600;
+    g_settings.pw_deep_idle_min = clamp_or_zero(g_settings.pw_deep_idle_min, 15, 720);
+    g_settings.pw_hibernate_h = clamp_or_zero(g_settings.pw_hibernate_h, 1, 48);
+    g_settings.pw_hibernate_checkin_h = clamp_or_zero(g_settings.pw_hibernate_checkin_h, 1, 24);
     if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 

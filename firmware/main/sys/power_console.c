@@ -2,11 +2,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
+#include <time.h>
 #include "esp_console.h"
 #include "sys/debug_console.h"
 #include "sys/sysinfo.h"
 #include "sys/power_log.h"
 #include "sys/power_bench.h"
+#include "sys/vitals.h"
+#include "settings/settings.h"
 
 static const char *src_name(power_src_t s)
 {
@@ -71,8 +75,45 @@ static int cmd_power(int argc, char **argv)
     return usage();
 }
 
+static void clock_print(time_t t)
+{
+    struct tm tm;
+    char b[40];
+    localtime_r(&t, &tm);
+    strftime(b, sizeof(b), "%Y-%m-%d %H:%M:%S %Z", &tm);
+    printf("clock: %s tz=%s\n", b, g_settings.tz_rule);
+}
+
+static int cmd_clock(int argc, char **argv)
+{
+    if (argc == 1) { clock_print(time(NULL)); return 0; }
+    if (argc == 3 && strcmp(argv[1], "tz") == 0) {
+        if (!vitals_tz_valid(argv[2])) { printf("clock: invalid time zone rule\n"); return 1; }
+        strcpy(g_settings.tz_rule, argv[2]);   /* valid rules are at most 47 characters */
+        settings_save();
+        sysinfo_apply_timezone();
+        clock_print(time(NULL));
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "at") == 0) {
+        char *end;
+        long long e = strtoll(argv[2], &end, 10);
+        if (*argv[2] == 0 || *end) { printf("clock: not an epoch\n"); return 1; }
+        clock_print((time_t)e);
+        return 0;
+    }
+    printf("usage: clock | clock tz <rule> | clock at <epoch>\n");
+    return 1;
+}
+
 void power_console_init(void)
 {
+    const esp_console_cmd_t clk = {
+        .command = "clock",
+        .help = "clock | tz <rule> | at <epoch>",
+        .func = cmd_clock,
+    };
+    debug_console_register(&clk);
     const esp_console_cmd_t cmd = {
         .command = "power",
         .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort",

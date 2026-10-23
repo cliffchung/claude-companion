@@ -24,7 +24,7 @@ target_compile_options(companion PRIVATE -Wall -Wextra)
 
 # Pure modules under main/sys (no ESP-IDF headers). Later tasks add theirs here.
 set(MAIN ${CMAKE_CURRENT_SOURCE_DIR}/../../main)
-add_library(pure STATIC ${MAIN}/sys/plog.c)
+add_library(pure STATIC ${MAIN}/sys/plog.c ${MAIN}/sys/vitals.c)
 target_include_directories(pure PUBLIC ${MAIN} ${MAIN}/sys)
 target_compile_options(pure PRIVATE -Wall -Wextra)
 
@@ -39,3 +39,7 @@ endforeach()
 add_executable(test_plog test_plog.c)
 target_link_libraries(test_plog pure unity)
 add_test(NAME test_plog COMMAND test_plog)
+
+add_executable(test_vitals test_vitals.c)
+target_link_libraries(test_vitals pure unity)
+add_test(NAME test_vitals COMMAND test_vitals)
