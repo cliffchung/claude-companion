@@ -54,18 +54,24 @@ esp_err_t device_key_get(ssh_key *out)
     *out = NULL;
     nvs_handle_t h;
     esp_err_t err = nvs_open(NS, NVS_READONLY, &h);
-    if (err != ESP_OK) return ESP_ERR_NOT_FOUND;
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_ERR_NOT_FOUND;
+    if (err != ESP_OK) return err;
     size_t len = 0;
     err = nvs_get_str(h, NVS_KEY, NULL, &len);
-    if (err != ESP_OK || len < 2) { nvs_close(h); return ESP_ERR_NOT_FOUND; }
+    if (err == ESP_ERR_NVS_NOT_FOUND) { nvs_close(h); return ESP_ERR_NOT_FOUND; }
+    if (err != ESP_OK) { nvs_close(h); return err; }
     char *buf = malloc(len);
     if (!buf) { nvs_close(h); return ESP_ERR_NO_MEM; }
     err = nvs_get_str(h, NVS_KEY, buf, &len);
     nvs_close(h);
-    if (err != ESP_OK) { scrub_free(buf); return err; }
+    if (err != ESP_OK) { explicit_bzero(buf, len); free(buf); return err; }
     int rc = ssh_pki_import_privkey_base64(buf, NULL, NULL, NULL, out);
     scrub_free(buf);
-    return rc == SSH_OK ? ESP_OK : ESP_FAIL;
+    if (rc != SSH_OK) {
+        ESP_LOGE(TAG, "stored device key is unreadable; run 'sshkey regenerate' to replace it (this changes the public key)");
+        return ESP_ERR_INVALID_STATE;
+    }
+    return ESP_OK;
 }
 
 esp_err_t device_key_ensure(void)
@@ -73,6 +79,7 @@ esp_err_t device_key_ensure(void)
     ssh_key k = NULL;
     esp_err_t err = device_key_get(&k);
     if (err == ESP_OK) { ssh_key_free(k); return ESP_OK; }
+    if (err != ESP_ERR_NOT_FOUND) return err; /* never overwrite a key that exists but failed to load */
     return generate_and_store();
 }
 
@@ -103,7 +110,8 @@ esp_err_t device_key_pubkey_line(char *out, size_t cap)
 
 static int cmd_sshkey(int argc, char **argv)
 {
-    if (argc >= 2) {
+    if (argc > 2) { printf("usage: sshkey [regenerate]\n"); return 1; }
+    if (argc == 2) {
         if (strcmp(argv[1], "regenerate") != 0) { printf("usage: sshkey [regenerate]\n"); return 1; }
         if (device_key_regenerate() != ESP_OK) { printf("sshkey: regenerate failed\n"); return 1; }
     }

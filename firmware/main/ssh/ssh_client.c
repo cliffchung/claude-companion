@@ -2,6 +2,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -89,8 +91,10 @@ static int authenticate(ssh_client_t *c)
     if (rc == SSH_AUTH_SUCCESS) return 0;
     int methods = ssh_userauth_list(c->session, NULL);
     if (c->p.use_key) {
-        /* Empty path or "device" selects the Tab5's own key (NVS); anything else is a key file. */
-        bool dev = !c->p.keypath[0] || strcmp(c->p.keypath, "device") == 0;
+        /* Empty path, "device" or a path that does not exist selects the Tab5's own key (NVS); an existing file is loaded as before. */
+        struct stat st;
+        bool dev = !c->p.keypath[0] || strcmp(c->p.keypath, "device") == 0 ||
+                   (stat(c->p.keypath, &st) != 0 && errno == ENOENT);
         ssh_key key = NULL;
         if (dev) {
             rc = (device_key_ensure() == ESP_OK && device_key_get(&key) == ESP_OK) ? SSH_OK : SSH_ERROR;
