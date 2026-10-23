@@ -92,6 +92,12 @@ pr_hc_t pr_hib_checkin_next(bool poll_ok, bool needs_you, bool kbd_rail_survives
 bool pr_battery_low(bool on_battery, int pct, bool charging);
 /* The check-in boot's whole decision: low_battery -> POWEROFF, else pr_hib_checkin_next (C1) */
 pr_hc_t pr_hib_checkin_decide(bool low_battery, bool poll_ok, bool needs_you, bool kbd_rail_survives);
+/* The check-in boot's early gate (N1), on the power source once it has left UNKNOWN (or timed out):
+   UNKNOWN -> GIVE_UP (no blind re-arm: the ladder takes over, which treats unknown as not battery);
+   BATTERY with pr_battery_low -> POWEROFF; else GO. USB and charging read as USB at once. */
+typedef enum { PR_SRC_UNKNOWN, PR_SRC_USB, PR_SRC_BATTERY } pr_src_t;
+typedef enum { PR_HG_GO, PR_HG_POWEROFF, PR_HG_GIVE_UP } pr_hg_t;
+pr_hg_t pr_hib_checkin_gate(pr_src_t src, int pct, bool charging);
 /* 0 (or less) -> 0 (Off); 1..14 -> 15; 721.. -> 720 */
 int  pr_hib_checkin_clamp_min(int min);
 

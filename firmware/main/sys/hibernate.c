@@ -119,7 +119,9 @@ static bool s_led_ok;
 static pr_led_t s_led_boot;
 bool hibernate_boot_light(pr_led_t *out)
 {
-    if (!s_led_ok) return false;
+    /* N2: only a timer wake (asleep within the timer's -2..+20 s) kept the keyboard powered with that light;
+       a power-on lost it, and the stored light could be of any age */
+    if (!s_led_ok || s_src != HIB_SRC_TIMER) return false;
     *out = s_led_boot;
     return true;
 }

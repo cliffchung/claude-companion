@@ -440,6 +440,16 @@ bool power_needs_you(void)
     return n;
 }
 
+pr_src_t power_source(int *pct, bool *charging)
+{
+    int p;
+    bool c;
+    if (!pct) pct = &p;
+    if (!charging) charging = &c;
+    if (on_battery_now(pct, charging)) return PR_SRC_BATTERY;
+    return sysinfo_power().src == PWR_UNKNOWN ? PR_SRC_UNKNOWN : PR_SRC_USB;
+}
+
 bool power_battery_low(void)
 {
     int pct;

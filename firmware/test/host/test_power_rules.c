@@ -460,6 +460,19 @@ void test_hib_checkin_low_battery(void)
     TEST_ASSERT_NOT_EQUAL(PS_HIBERNATE, pr_next_state(&in));   /* the pinned hold acts only on HIBERNATE */
 }
 
+void test_hib_checkin_gate(void)
+{
+    /* N1: the check-in boot's early decision, on a settled source reading only */
+    TEST_ASSERT_EQUAL_INT(PR_HG_GIVE_UP, pr_hib_checkin_gate(PR_SRC_UNKNOWN, 5, false));   /* never re-arm blind */
+    TEST_ASSERT_EQUAL_INT(PR_HG_GIVE_UP, pr_hib_checkin_gate(PR_SRC_UNKNOWN, -1, false));
+    TEST_ASSERT_EQUAL_INT(PR_HG_POWEROFF, pr_hib_checkin_gate(PR_SRC_BATTERY, 10, false));
+    TEST_ASSERT_EQUAL_INT(PR_HG_POWEROFF, pr_hib_checkin_gate(PR_SRC_BATTERY, 0, false));
+    TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_BATTERY, 11, false));
+    TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_BATTERY, -1, false));   /* % unknown, source known */
+    TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_USB, 5, false));
+    TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_USB, 5, true));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -495,5 +508,6 @@ int main(void)
     RUN_TEST(test_hib_checkin_hold);
     RUN_TEST(test_battery_low);
     RUN_TEST(test_hib_checkin_low_battery);
+    RUN_TEST(test_hib_checkin_gate);
     return UNITY_END();
 }

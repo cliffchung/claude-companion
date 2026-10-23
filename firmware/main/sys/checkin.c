@@ -35,6 +35,7 @@ static const char *TAG = "checkin";
    (up to 60 s) = 279 s: the light keeps a result this much longer than the period */
 #define CHECKIN_WORST_MIN 5
 #define HOLD_STALE_MS (60 * 60 * 1000LL)   /* a hold with no result for an hour: down, light off (I1) */
+#define SRC_SETTLE_S 15             /* N1: vitals needs about 10 battery-like 1 Hz samples to call it battery */
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -78,7 +79,8 @@ static uint32_t s_hold_gen;
 static int64_t s_hold_gen_ms;       /* when the hold last saw a new result */
 static bool s_watchdog_fired;
 static int s_watchdog_tries, s_hib_tries;
-static volatile bool s_hib_settled;
+static volatile bool s_hib_settled; /* the check-in boot has gone down, or reached a state that isn't going down */
+static volatile uint32_t s_job_hwm; /* the last job's stack free (B), for `power checkins` */
 static bool s_hold_down;            /* the hold is over: JOB_DOWN until it starts */
 static int s_down_tries; /* the check-in boot reached a state that isn't "going down" (hold, debug, gave up) */
 
@@ -177,6 +179,7 @@ void checkin_print(void)
     taskENTER_CRITICAL(&s_mux);
     l = s_log;
     taskEXIT_CRITICAL(&s_mux);
+    if (s_job_hwm) printf("checkin job: last stack free %u B of %d\n", (unsigned)s_job_hwm, JOB_STACK);
     if (!l.n) { printf("checkins: none\n"); return; }
     for (int i = 0; i < l.n; i++) {
         const ck_rec_t *r = &l.r[(l.head - l.n + i + CHK_N) % CHK_N];
@@ -323,6 +326,7 @@ static void down_with_light(bool amber)
     pr_led_t l = PR_LED_OFF;
     if (amber && !low) power_kbd_light_get(&l);
     uint32_t s = low ? 0 : hibernate_checkin_s();
+    s_hib_settled = true;   /* N5: going down now, so the watchdog never starts behind it */
     keyboard_led_lock();
     keyboard_write_led(l.mode, l.bright, l.r, l.g, l.b);
     ESP_LOGI(TAG, "hibernate again: light %u %u %02x%02x%02x, %s", l.mode, l.bright, l.r, l.g, l.b,
@@ -347,11 +351,27 @@ static void job_hib(void)
     int64_t end = t0 + HIB_BUDGET_MS;
     sums_reset(0x85);
     uint8_t dbg = hibernate_boot_debug();
-    /* C1: a nearly flat pack gets no Wi-Fi, no tunnel, no poll: off at once (the first INA226 reading first) */
-    for (int i = 0; i < 25 && !sysinfo_power().valid; i++) vTaskDelay(pdMS_TO_TICKS(200));
-    if (power_battery_low()) {
+    /* C1/N1: decide on a settled source. After a cold boot vitals reports UNKNOWN until about 10 battery-like
+       samples (USB and charging are known at once), so wait for it at 1 Hz, up to SRC_SETTLE_S. A nearly flat
+       pack then gets no Wi-Fi, no tunnel, no poll; a source that never settles gets no blind re-arm. */
+    power_poll_kick();
+    int pct = -1;
+    bool chg = false;
+    pr_src_t src = PR_SRC_UNKNOWN;
+    for (int i = 0; i <= SRC_SETTLE_S * 5 && (src = power_source(&pct, &chg)) == PR_SRC_UNKNOWN; i++)
+        vTaskDelay(pdMS_TO_TICKS(200));
+    pr_hg_t gate = pr_hib_checkin_gate(src, pct, chg);
+    ESP_LOGI(TAG, "hibernate check-in: source %s, %d%% at %lld ms: %s",
+             src == PR_SRC_BATTERY ? "battery" : src == PR_SRC_USB ? "usb" : "unknown", pct, (long long)now_ms(),
+             gate == PR_HG_GO ? "go" : gate == PR_HG_POWEROFF ? "power off" : "give up");
+    if (gate == PR_HG_POWEROFF) {
         record(P_HIB_LOW, (uint32_t)now_ms(), false);
-        down_with_light(false);
+        down_with_light(false);   /* settled now, so it sees the low battery: power-off, no check-in */
+        return;
+    }
+    if (gate == PR_HG_GIVE_UP) {
+        record(P_HIB_FAILED, (uint32_t)now_ms(), false);
+        give_up("the power source never settled");
         return;
     }
     bool poll_ok = false, needs = false;
@@ -420,7 +440,8 @@ static void job_task(void *arg)
     case JOB_DOWN: job_down(); break;
     default: break;
     }
-    ESP_LOGI(TAG, "job %s: done (stack free %u B of %d)", k_job[j], (unsigned)uxTaskGetStackHighWaterMark(NULL), JOB_STACK);
+    s_job_hwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI(TAG, "job %s: done (stack free %u B of %d)", k_job[j], (unsigned)s_job_hwm, JOB_STACK);
     s_tag = 0;
     s_job = JOB_NONE;
     s_running = false;
@@ -504,6 +525,12 @@ void checkin_step(power_state_t st, int64_t now)
         if (!s_hold_down && ((fresh && !power_needs_you()) || stale)) {
             ESP_LOGI(TAG, "hibernate check-in hold: %s", stale ? "no result for an hour" : "nobody needs you now");
             s_hold_down = true;
+        }
+        if (s_hold_down && stale && power_source(NULL, NULL) != PR_SRC_BATTERY) {
+            /* N3: a stale hold on USB (or unknown) never deep-sleeps a powered device: the ladder takes over */
+            s_hold_down = false;
+            give_up("hold stale on USB");
+            return;
         }
         if (s_hold_down) {
             if (start(JOB_DOWN, st, now)) s_hold_down = false;

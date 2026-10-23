@@ -171,3 +171,9 @@ pr_hc_t pr_hib_checkin_decide(bool low_battery, bool poll_ok, bool needs_you, bo
     if (low_battery) return PR_HC_POWEROFF;
     return pr_hib_checkin_next(poll_ok, needs_you, kbd_rail_survives);
 }
+
+pr_hg_t pr_hib_checkin_gate(pr_src_t src, int pct, bool charging)
+{
+    if (src == PR_SRC_UNKNOWN) return PR_HG_GIVE_UP;
+    return pr_battery_low(src == PR_SRC_BATTERY, pct, charging) ? PR_HG_POWEROFF : PR_HG_GO;
+}
