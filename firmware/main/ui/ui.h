@@ -76,7 +76,7 @@ void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_
 lv_obj_t *ui_busy(const char *text);      /* returns overlay; delete to dismiss */
 void ui_busy_close(lv_obj_t *busy);
 
-/* Status strip content used by home & screensaver. */
+/* Status strip content used by home. */
 void ui_status_text(char *buf, size_t len);
 /* Adds the WiFi/Tailscale icons, IP/battery/keyboard text and the clock to a
  * top bar, honouring g_settings.status_items. Owns its own refresh timer. */
@@ -124,10 +124,10 @@ lv_obj_t *ui_devinfo_create(void *arg);
 lv_obj_t *ui_usb_create(void *arg);
 lv_obj_t *ui_backup_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);
-lv_obj_t *ui_screensaver_settings_create(void *arg);
-void ui_screensaver_start(void);
-bool ui_screensaver_active(void);
 void ui_music_bar_update(void);   /* background playback bar */
+/* The pre-Hibernate notice: a full-screen bg object on lv_layer_top with the centred fg text
+   "Sleeping to save battery. Press the side button to wake." (power lights the panel first). */
+void ui_sleep_notice(bool show);
 
 #ifdef __cplusplus
 }

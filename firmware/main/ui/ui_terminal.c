@@ -10,6 +10,7 @@
 #include "settings/settings.h"
 #include "companion/cc_cmd.h"
 #include "companion/cc_link.h"
+#include "sys/power.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -60,6 +61,14 @@ typedef struct {
 
 static term_ctx_t *s_ctx = NULL;
 bool g_ssh_session_active = false;
+
+/* An SSH session is up: also the power hold (it counts while "Stay awake in SSH Terminal" is on).
+   A take-over (command mode) has its own hold, POWER_HOLD_TAKEOVER, set by the dashboard. */
+static void ssh_active(const term_ctx_t *c, bool on)
+{
+    g_ssh_session_active = on;
+    if (!on || !c->cmd_mode) power_hold(POWER_HOLD_SSH, on);
+}
 
 /* -------------------------------------------------------- ssh callbacks (ssh task) */
 static void on_data(const uint8_t *d, size_t n, void *user)
@@ -385,11 +394,11 @@ static void pump_cb(lv_timer_t *t)
     }
     if (sd && c->cmd_mode) {
         if (st == SSH_ST_CONNECTED) {
-            g_ssh_session_active = true;
+            ssh_active(c, true);
             ESP_LOGI(TAG, "command session: connected %lld ms after open",
                      (long long)((esp_timer_get_time() - c->t_open_us) / 1000));
         } else if (st == SSH_ST_CLOSED || st == SSH_ST_ERROR) {
-            g_ssh_session_active = false;
+            ssh_active(c, false);
             char line[200];
             int code = ssh_client_exit_status(c->ssh);
             if (st == SSH_ST_ERROR) {
@@ -411,9 +420,9 @@ static void pump_cb(lv_timer_t *t)
         switch (st) {
         case SSH_ST_CONNECTING: txt = tr(STR_CONNECTING); break;
         case SSH_ST_AUTH: txt = tr(STR_CONNECTING); break;
-        case SSH_ST_CONNECTED: txt = tr(STR_CONNECTED); g_ssh_session_active = true; break;
-        case SSH_ST_CLOSED: txt = tr(STR_DISCONNECTED); g_ssh_session_active = false; break;
-        case SSH_ST_ERROR: snprintf(tmp, sizeof(tmp), "%s %s", tr(STR_SSH_CONN_FAILED), msg); txt = tmp; g_ssh_session_active = false; break;
+        case SSH_ST_CONNECTED: txt = tr(STR_CONNECTED); ssh_active(c, true); break;
+        case SSH_ST_CLOSED: txt = tr(STR_DISCONNECTED); ssh_active(c, false); break;
+        case SSH_ST_ERROR: snprintf(tmp, sizeof(tmp), "%s %s", tr(STR_SSH_CONN_FAILED), msg); txt = tmp; ssh_active(c, false); break;
         default: break;
         }
         if (txt) {
@@ -440,7 +449,7 @@ static void scr_delete_cb(lv_event_t *e)
     if (c->cmd_mode && !c->cmd_done && c->on_close) { c->cmd_done = true; c->on_close(c->close_ctx); }
     if (c->timer) lv_timer_delete(c->timer);
     if (c->ssh) { ssh_client_stop(c->ssh); c->ssh = NULL; }
-    g_ssh_session_active = false;
+    ssh_active(c, false);
     /* term view frees itself with the object; vt after */
     vt_destroy(c->vt);
     free(c->rx);

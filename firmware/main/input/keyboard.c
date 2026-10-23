@@ -12,6 +12,7 @@
 #include "esp_lvgl_port.h"
 #include "settings/settings.h"
 #include "ui/ui.h"
+#include "sys/power.h"
 
 static const char *TAG = "kbd";
 
@@ -41,6 +42,8 @@ static void *s_focused_ta = NULL;
 static uint8_t s_i2c_mods = 0;
 static TickType_t s_i2c_last_key = 0;
 static key_event_t s_i2c_repeat; static bool s_i2c_held = false;
+static volatile bool s_quiet;          /* Off: no 20 ms poll, wait on the INT */
+static SemaphoreHandle_t s_int_sem;    /* given by the GPIO50 NEGEDGE ISR */
 
 /* ------------------------------------------------------------- HID map */
 typedef struct { uint8_t code; char plain; char shifted; special_key_t sk; } hidmap_t;
@@ -275,9 +278,17 @@ void keyboard_dispatch(const key_event_t *ev)
     if (!ui_keyboard_route(ev, s_have_sink)) dispatch_input(ev);
 }
 
+/* With LVGL paused (Off and deeper) the drain timer is stopped: wake, and the drain swallows it. */
+static void wake_if_dark(void)
+{
+    if (power_state() >= PS_OFF) power_wake(PW_KEY);
+}
+
 bool keyboard_post(const key_event_t *ev)
 {
-    return s_q && xQueueSend(s_q, ev, pdMS_TO_TICKS(200)) == pdTRUE;
+    bool ok = s_q && xQueueSend(s_q, ev, pdMS_TO_TICKS(200)) == pdTRUE;
+    if (ok) wake_if_dark();
+    return ok;
 }
 
 /* On-screen keys already have a text destination; do not navigate the UI. */
@@ -335,7 +346,7 @@ static void kb_task(void *arg)
                 last_probe = now;
                 if (kb_probe()) { s_present = true; fail = 0; ESP_LOGI(TAG, "Tab5 keyboard detected, fw=0x%02X", s_fw); }
             }
-            vTaskDelay(pdMS_TO_TICKS(200));
+            vTaskDelay(pdMS_TO_TICKS(s_quiet ? 1000 : 200));
             continue;
         }
         if (s_mode_dirty) {
@@ -344,6 +355,8 @@ static void kb_task(void *arg)
             kb_write(REG_INT_CFG, s_layout ? 0x01 : 0x02);
             kb_write(REG_EVENT_NUM, 0);          /* the queued events are stale */
         }
+        bool quiet = s_quiet;
+        if (quiet && s_int_sem) xSemaphoreTake(s_int_sem, pdMS_TO_TICKS(1000));   /* 1 s safety poll */
         bool has_int = gpio_get_level(KB_INT) == 0;
         uint8_t cnt = 0;
         if (!kb_read(REG_EVENT_NUM, &cnt, 1)) {
@@ -352,6 +365,7 @@ static void kb_task(void *arg)
             continue;
         }
         fail = 0;
+        if (quiet && cnt > 0) power_wake(PW_KEY);
         while (cnt-- > 0) {
             const keydef_t (*layout)[14] = s_layout;   /* may change under us */
             if (layout) {
@@ -370,14 +384,28 @@ static void kb_task(void *arg)
             s_i2c_repeat = ke; s_i2c_held = true; s_i2c_last_key = xTaskGetTickCount();
             xQueueSend(s_q, &ke, 0);
         }
-        if (has_int) kb_write(REG_INT_STA, 0);
+        if (has_int || quiet) kb_write(REG_INT_STA, 0);   /* or the INT stays low and never edges again */
         /* simple auto-repeat while held */
         if (s_i2c_held && xTaskGetTickCount() - s_i2c_last_key > pdMS_TO_TICKS(500)) {
             xQueueSend(s_q, &s_i2c_repeat, 0);
             s_i2c_last_key = xTaskGetTickCount() - pdMS_TO_TICKS(440);
         }
-        vTaskDelay(pdMS_TO_TICKS(has_int ? 5 : 20));
+        if (!s_quiet) vTaskDelay(pdMS_TO_TICKS(has_int ? 5 : 20));
     }
+}
+
+static void IRAM_ATTR kb_int_isr(void *arg)
+{
+    (void)arg;
+    BaseType_t hp = pdFALSE;
+    if (s_int_sem) xSemaphoreGiveFromISR(s_int_sem, &hp);
+    if (hp) portYIELD_FROM_ISR();
+}
+
+void keyboard_set_quiet(bool quiet)
+{
+    s_quiet = quiet;
+    if (!quiet && s_int_sem) xSemaphoreGive(s_int_sem);   /* leave the wait now */
 }
 
 void keyboard_led_lock(void) { if (s_led_lock) xSemaphoreTakeRecursive(s_led_lock, portMAX_DELAY); }
@@ -432,7 +460,7 @@ void keyboard_usb_hid_report(const uint8_t *rep, int len)
         for (int j = 0; j < 6; j++) if (s_usb_prev[j] == code) was = true;
         if (was) continue;
         key_event_t ke;
-        if (hid_to_event(mod, code, &ke)) xQueueSend(s_q, &ke, 0);
+        if (hid_to_event(mod, code, &ke) && xQueueSend(s_q, &ke, 0) == pdTRUE) wake_if_dark();
     }
     memcpy(s_usb_prev, rep + 2, 6);
 }
@@ -444,6 +472,7 @@ static void drain_timer_cb(lv_timer_t *t)
     key_event_t ke;
     int n = 0;
     while (n++ < 16 && xQueueReceive(s_q, &ke, 0) == pdTRUE) {
+        if (!power_take_key()) continue;   /* the waking key (and its repeats) never reach the UI */
         lv_display_trigger_activity(NULL);
         keyboard_dispatch(&ke);
     }
@@ -454,8 +483,13 @@ void keyboard_init(void)
     s_q = xQueueCreate(64, sizeof(key_event_t));
     s_led_lock = xSemaphoreCreateRecursiveMutex();
     keyboard_set_layout(g_settings.kbd_layout);
-    gpio_config_t io = { .pin_bit_mask = 1ULL << KB_INT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
+    s_int_sem = xSemaphoreCreateBinary();
+    gpio_config_t io = { .pin_bit_mask = 1ULL << KB_INT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
+                         .intr_type = GPIO_INTR_NEGEDGE };
     gpio_config(&io);
+    esp_err_t ie = gpio_install_isr_service(0);
+    if (ie == ESP_OK || ie == ESP_ERR_INVALID_STATE) gpio_isr_handler_add(KB_INT, kb_int_isr, NULL);
+    else ESP_LOGW(TAG, "no GPIO ISR service: quiet mode polls every second");
     i2c_master_bus_config_t bc = {
         .i2c_port = 0, .sda_io_num = KB_SDA, .scl_io_num = KB_SCL,
         .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true,

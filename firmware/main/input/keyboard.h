@@ -66,6 +66,9 @@ void keyboard_set_led_source(void (*get)(uint8_t *mode, uint8_t *bright, uint8_t
 void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b);
 void keyboard_mark_absent(void);   /* debug: the keyboard task probes again, as on a hot-plug */
 void keyboard_usb_hid_report(const uint8_t *report, int len); /* called by USB HID glue */
+/* Off: the keyboard task stops its 20 ms poll and waits on the GPIO50 INT (1 s safety poll),
+   clears REG_INT_STA after each read and wakes the power owner when it reads an event. */
+void keyboard_set_quiet(bool quiet);
 /* The default LVGL sink targets the focused text area. */
 void keyboard_lvgl_focus(void *lv_obj_textarea);   /* NULL to clear */
 void *keyboard_lvgl_focused(void);

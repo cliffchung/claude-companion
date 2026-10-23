@@ -219,7 +219,8 @@ class WatchLoopTest(unittest.TestCase):
     def test_suspended_loop_exits_on_resume(self):
         d = self.fake()
         self.start(self.command(str(d / 'claude'), 1, 60, 3, 600))
-        self.pump(2, 1)
+        self.pump(1.2, 1)
+        self.pump(0.8)
         os.killpg(self.pid, signal.SIGSTOP)
         time.sleep(6)   # a sleeping Mac: no keepalives arrive
         os.killpg(self.pid, signal.SIGCONT)

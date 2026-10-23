@@ -18,6 +18,7 @@
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
 #include "settings/settings.h"
+#include "sys/power.h"
 #include "input/keyboard.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -101,7 +102,6 @@ static unsigned s_seen_poll, s_seen_act, s_seen_logs;
 static int64_t s_logs_at_ms;
 static char s_logs_for[16];
 static int64_t s_down_since_ms;            /* link down while it could be up */
-static bool s_session_open;
 static bool s_shown_live;                  /* cards were built for a connected link */
 /* The request in flight: an answer to it is used only by the dashboard visit that asked,
    and an open check only while it is fresh (it can take up to the poll timeout). */
@@ -113,6 +113,7 @@ static lv_obj_t *s_scr, *s_list, *s_summary, *s_vitals, *s_dot, *s_host;
 static lv_obj_t *s_ages[MAX_CARDS], *s_cards[MAX_CARDS];
 static lv_obj_t *s_logs_lbl, *s_ta;
 static unsigned s_ticks;
+static int s_view_shown = -1;   /* the pr_cards_t the list is styled for (-1: a new screen) */
 
 static int64_t mono_ms(void) { return (int64_t)lv_tick_get(); }
 
@@ -608,7 +609,7 @@ static void open_selected(void)
 static void session_closed_cb(void *ctx)
 {
     (void)ctx;
-    s_session_open = false;
+    power_hold(POWER_HOLD_TAKEOVER, false);
     cc_poll_set_rate(3);
     s_logs_at_ms = 0;
 }
@@ -630,7 +631,7 @@ static void open_now(const cc_session_t *s)
     }
     note_clear(key_of(s));
     ESP_LOGI(TAG, "opening %s", s->id);
-    s_session_open = true;
+    power_hold(POWER_HOLD_TAKEOVER, true);   /* a take-over never dims or sleeps */
     cc_poll_set_rate(15);   /* the watch keeps feeding the keyboard light; nothing redraws */
     ui_terminal_open_command(idx, cmd, session_closed_cb, NULL);
 }
@@ -808,6 +809,19 @@ static void load_snapshot(void)
     rebuild();
 }
 
+/* Stale cards after a wake from Off or deeper (I was 15 s): dimmed with "Updating…" until a
+   result newer than the wake arrives. The power owner records the generation at the wake, so a
+   dashboard built later (it went home, or Settings was open) judges the same wake the same way.
+   A wake from Dim never marks them: the link ran at I = 3 s throughout. */
+static pr_cards_t cards_view(void)
+{
+    bool hib = hibernate_boot_kind() == POWER_BOOT_HIB_WAKE;
+    bool dark_wake = power_wake_seq() > 0 && power_woke_from() >= PS_OFF;
+    if (!hib && !dark_wake) return PR_CARDS_LIVE;
+    return pr_cards_view(hib, cc_poll_generation(), dark_wake ? power_wake_gen() : 0,
+                         power_wake_reason() == PW_NEEDS_YOU);
+}
+
 static void update_status(void)
 {
     char name[48], line[224];
@@ -815,6 +829,7 @@ static void update_status(void)
     bool up = cc_link_connected();
     int64_t now = mono_ms();
     uint32_t dot = C_MUTED, color = C_FG;
+    pr_cards_t view = cards_view();
     if (!name[0]) {
         strlcpy(line, "Set up your Mac in Settings \xe2\x86\x92 Companion.", sizeof(line));
         s_down_since_ms = 0;
@@ -840,6 +855,9 @@ static void update_status(void)
         } else if (s_down_since_ms && now - s_down_since_ms >= UNREACHABLE_MS) {
             snprintf(line, sizeof(line), "Can't reach %s. Is your Mac awake?", name);
             color = dot = C_RED;
+        } else if (view == PR_CARDS_WAKING) {
+            strlcpy(line, "Waking: reconnecting to Mac", sizeof(line));
+            color = C_MUTED;
         } else {
             snprintf(line, sizeof(line), "Connecting to %s\xe2\x80\xa6", name);
             color = C_MUTED;
@@ -856,7 +874,9 @@ static void update_status(void)
         } else if (fails >= CC_POLL_FAILS_SHOWN) {
             snprintf(line, sizeof(line), "Can't load sessions from %s, so these cards aren't updating.", name);
             color = dot = C_RED;
-        } else if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
+        } else if (view == PR_CARDS_WAKING) { strlcpy(line, "Waking: reconnecting to Mac", sizeof(line)); color = C_MUTED; }
+        else if (view == PR_CARDS_STALE && s_n >= 0) { strlcpy(line, "Updating\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
+        else if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
         else if (s_n == 0) snprintf(line, sizeof(line), "No sessions on %s. Start one on your Mac with claude --bg.", name);
         else cc_summary(s_items, s_n, line, sizeof(line));
     }
@@ -867,6 +887,14 @@ static void update_status(void)
     if (s_dot) lv_obj_set_style_bg_color(s_dot, HEX(dot), 0);
     if (s_host && strcmp(lv_label_get_text(s_host), name[0] ? name : "No Mac"))
         lv_label_set_text(s_host, name[0] ? name : "No Mac");
+    if (s_list && (int)view != s_view_shown) {   /* a style write redraws the list: only on a change */
+        static const char *names[] = { "live", "stale", "waking" };
+        ESP_LOGI(TAG, "cards: %s", names[view]);
+        s_view_shown = (int)view;
+        lv_obj_set_style_opa(s_list, view == PR_CARDS_STALE ? LV_OPA_50 : LV_OPA_COVER, 0);
+        if (view == PR_CARDS_WAKING) lv_obj_add_flag(s_list, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(s_list, LV_OBJ_FLAG_HIDDEN);
+    }
     bool live = up && name[0];
     if (live != s_shown_live) { s_shown_live = live; rebuild(); }
 }
@@ -895,6 +923,17 @@ static void tick_cb(lv_timer_t *t)
     if (s_ticks++ % 3 == 0) update_vitals();
     if (s_ticks % 30 == 0)
         for (int i = 0; i < s_n && i < MAX_CARDS; i++) if (s_ages[i]) set_age(s_ages[i], &s_items[i]);
+}
+
+bool ui_dashboard_selected_center(int32_t *x, int32_t *y)
+{
+    if (!s_scr || s_scr != lv_screen_active() || s_n <= 0 || s_sel < 0 || s_sel >= MAX_CARDS || !s_cards[s_sel])
+        return false;
+    lv_area_t a;
+    lv_obj_get_coords(s_cards[s_sel], &a);
+    *x = (a.x1 + a.x2) / 2;
+    *y = (a.y1 + a.y2) / 2;
+    return true;
 }
 
 /* ------------------------------------------------------------------ screen */
@@ -1017,6 +1056,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
 
     s_visit++;   /* answers to requests from an earlier visit are not acted on */
     s_shown_live = false;
+    s_view_shown = -1;
     s_seen_poll = s_poll_gen - 1;   /* load the snapshot now */
     lv_timer_t *t = lv_timer_create(tick_cb, 300, NULL);
     ui_timer_bind(t, scr);

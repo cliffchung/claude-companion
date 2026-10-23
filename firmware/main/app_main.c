@@ -27,12 +27,11 @@
 #include "sys/power_bench.h"
 #include "sys/power_console.h"
 #include "sys/power.h"
+#include "sys/display_ctl.h"
 #include "sys/usb_mgr.h"
 #include "media/audio_player.h"
 #include "net/tailscale.h"
 #include "companion/cc_link.h"
-
-void ui_screensaver_arm(void);
 
 static void wifi_global_cb(wifi_ev_t ev, void *user)
 {
@@ -110,10 +109,12 @@ static void boot_logo_wait_minimum(void)
 static void idle_task(void *arg)
 {
     (void)arg;
+    power_poll_task_set(xTaskGetCurrentTaskHandle());
     for (;;) {
         sysinfo_poll();
-        power_log_sample(power_bench_tag());
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        uint8_t tag = power_bench_tag();
+        power_log_sample(tag ? tag : (uint8_t)power_state());
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(power_poll_period_ms()));
     }
 }
 
@@ -166,7 +167,6 @@ void app_main(void)
     ui_init();
     lv_display_trigger_activity(NULL);
     screenshot_init();
-    ui_screensaver_arm();
     ui_nav_home();
     bsp_display_unlock();
     debug_console_start();
@@ -175,6 +175,7 @@ void app_main(void)
     cc_console_init();
     power_console_init();
     if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
+    display_ctl_touch_int_init(power_touch_isr);   /* v1 only; v2 and v3 poll the touch in Off */
     power_init();
     xTaskCreate(idle_task, "idle_poll", 4096, NULL, 2, NULL);
     ESP_LOGI(TAG, "boot complete in %lld ms, free heap %lu",

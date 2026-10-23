@@ -46,8 +46,6 @@ static void tile_long_cb(lv_event_t *e)
     if (fn) fn();
 }
 
-static void title_click_cb(lv_event_t *e) { (void)e; ui_screensaver_start(); }
-
 lv_obj_t *ui_home_create(void *arg)
 {
     (void)arg;
@@ -57,8 +55,6 @@ lv_obj_t *ui_home_create(void *arg)
     lv_obj_t *title = lv_obj_get_child(bar, 1);   /* after the back button */
     if (lv_display_get_horizontal_resolution(NULL) < 1000)
         lv_obj_set_style_text_font(title, FONT_BODY, 0);
-    lv_obj_add_flag(title, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(title, title_click_cb, LV_EVENT_CLICKED, NULL);
     ui_statusbar_attach(bar);
 
     lv_obj_t *c = ui_content(scr);

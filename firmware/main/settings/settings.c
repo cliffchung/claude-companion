@@ -23,9 +23,8 @@ typedef struct {
     app_settings_t s;
 } cfg_blob_t;
 
-static void plan2_defaults(void)
+void settings_power_defaults(void)
 {
-    strcpy(g_settings.tz_rule, TZ_DEFAULT);
     g_settings.pw_dim_s = 30;
     g_settings.pw_off_s = 120;
     g_settings.pw_sleep_on_usb = 1;
@@ -40,6 +39,12 @@ static void plan2_defaults(void)
     g_settings.pw_deep_idle_min = 60;
     g_settings.pw_hibernate_h = 2;
     g_settings.pw_hibernate_checkin_h = 0;
+}
+
+static void plan2_defaults(void)
+{
+    strcpy(g_settings.tz_rule, TZ_DEFAULT);
+    settings_power_defaults();
 }
 
 void settings_reset_defaults(void)

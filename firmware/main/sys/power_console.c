@@ -29,25 +29,57 @@ static const char *src_name(power_src_t s)
 static int usage(void)
 {
     printf("usage: power | power log on|off|status|dump|clear | power resets [clear] | "
-           "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe]\n");
+           "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe] | "
+           "power go active|dim|off|deep-idle|hibernate | power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate <n> | "
+           "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch | "
+           "power touch | power wakes\n");
     return 1;
+}
+
+static bool parse_int(const char *s, int *out)
+{
+    char *end;
+    errno = 0;
+    long v = strtol(s, &end, 10);
+    if (errno || !*s || *end || v < -1000000 || v > 1000000) return false;
+    *out = (int)v;
+    return true;
+}
+
+static int cmd_go(const char *name)
+{
+    static const struct { const char *n; power_state_t s; } k[] = {
+        { "active", PS_ACTIVE }, { "dim", PS_DIM }, { "off", PS_OFF }, { "deep-idle", PS_DEEP_IDLE },
+        { "hibernate", PS_HIBERNATE },
+    };
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        if (strcmp(name, k[i].n)) continue;
+        if (k[i].s == PS_HIBERNATE && !hibernate_supported())
+            printf("hibernate: not built (the notice shows for 3 s, then the device goes back to off)\n");
+        power_go(k[i].s);
+        printf("power: go %s\n", k[i].n);
+        return 0;
+    }
+    return usage();
 }
 
 static int cmd_power(int argc, char **argv)
 {
     if (argc == 1) {
         power_info_t p = sysinfo_power();
-        /* state, idle and holds belong to the power state machine (Task 5) */
-        char pct[8] = "-";
+        char pct[8] = "-", holds[48];
         if (p.percent >= 0) snprintf(pct, sizeof(pct), "%d%%", p.percent);
+        power_holds_text(holds, sizeof(holds));
+        const char *st = power_state_name(power_state());
+        long idle = (long)(power_idle_ms() / 1000);
         if (!p.valid) {
-            printf("power: - V - mA - W %s charging=- src=%s chg_pin=%d state=- idle=- holds=-\n", pct,
-                   src_name(p.src), sysinfo_charge_pin());
+            printf("power: - V - mA - W %s charging=- src=%s chg_pin=%d state=%s idle=%lds holds=%s\n", pct,
+                   src_name(p.src), sysinfo_charge_pin(), st, idle, holds);
             return 0;
         }
-        printf("power: %.2f V %d mA %.2f W %s charging=%s src=%s chg_pin=%d state=- idle=- holds=-\n",
+        printf("power: %.2f V %d mA %.2f W %s charging=%s src=%s chg_pin=%d state=%s idle=%lds holds=%s\n",
                p.bus_v, (int)lroundf(p.current_a * 1000.0f), p.bus_v * fabsf(p.current_a), pct,
-               p.src == PWR_USB_CHARGING ? "yes" : "no", src_name(p.src), sysinfo_charge_pin());
+               p.src == PWR_USB_CHARGING ? "yes" : "no", src_name(p.src), sysinfo_charge_pin(), st, idle, holds);
         return 0;
     }
     if (strcmp(argv[1], "log") == 0 && argc == 3) {
@@ -84,6 +116,50 @@ static int cmd_power(int argc, char **argv)
             printf("ok\n");
             return 0;
         }
+    } else if (strcmp(argv[1], "go") == 0 && argc == 3) {
+        return cmd_go(argv[2]);
+    } else if (strcmp(argv[1], "set") == 0 && argc == 3 && strcmp(argv[2], "defaults") == 0) {
+        power_settings_defaults();
+        char b[320];
+        power_settings_text(b, sizeof(b));
+        printf("%s\n", b);
+        return 0;
+    } else if (strcmp(argv[1], "set") == 0 && argc == 4) {
+        int n;
+        if (!parse_int(argv[3], &n) || !power_setting_set(argv[2], n)) return usage();
+        char b[320];
+        power_settings_text(b, sizeof(b));
+        printf("%s\n", b);
+        return 0;
+    } else if (strcmp(argv[1], "settings") == 0 && argc == 2) {
+        char b[320];
+        power_settings_text(b, sizeof(b));
+        printf("%s\n", b);
+        return 0;
+    } else if (strcmp(argv[1], "sim") == 0 && argc >= 3) {
+        int n;
+        if (strcmp(argv[2], "touch") == 0 && argc == 3) { power_sim_touch(); return 0; }
+        if (strcmp(argv[2], "battery") == 0 && argc == 4) {
+            if (strcmp(argv[3], "off") == 0) { power_sim_battery(-1); printf("sim battery: off\n"); return 0; }
+            if (!parse_int(argv[3], &n) || n < 0 || n > 100) return usage();
+            power_sim_battery(n);
+            printf("sim battery: %d%% on battery\n", n);
+            return 0;
+        }
+        if (strcmp(argv[2], "idle") == 0 && argc == 4) {
+            if (!parse_int(argv[3], &n) || n < 0) return usage();
+            power_sim_idle(n);
+            printf("sim idle: +%ds\n", n);
+            return 0;
+        }
+    } else if (strcmp(argv[1], "touch") == 0 && argc == 2) {
+        char b[160];
+        power_touch_text(b, sizeof(b));
+        printf("%s\n", b);
+        return 0;
+    } else if (strcmp(argv[1], "wakes") == 0 && argc == 2) {
+        power_wakes_print();
+        return 0;
     } else if (strcmp(argv[1], "bench") == 0 && argc >= 3) {
         if (strcmp(argv[2], "start") == 0 && argc <= 4) {
             if (argc == 4 && strcmp(argv[3], "fast") != 0) return usage();
@@ -140,7 +216,9 @@ void power_console_init(void)
     debug_console_register(&clk);
     const esp_console_cmd_t cmd = {
         .command = "power",
-        .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort | light [test bind|user|reprobe]",
+        .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort | "
+                "light [test bind|user|reprobe] | go <state> | set <name> <n> | set defaults | settings | "
+                "sim battery <pct|off> | sim idle <s> | sim touch | touch | wakes",
         .func = cmd_power,
     };
     debug_console_register(&cmd);

@@ -99,6 +99,258 @@ void test_any_needs_you(void)
     TEST_ASSERT_FALSE(pr_any_needs_you(s, 0));
 }
 
+/* ---- the ladder (Task 5) ---------------------------------------------- */
+
+#define NOW 100000000LL   /* far from 0, so "ago" never goes negative */
+#define MIN_MS 60000LL
+#define H_MS 3600000LL
+
+/* The long-idle defaults: dim 30, off 120, radio off 20 min (disabled), deep idle 60 min,
+   hibernate 2 h, on battery at 50%, not charging, hibernate_ok, nothing held. */
+static pr_in_t base(power_state_t st, int64_t idle_ms)
+{
+    pr_in_t in;
+    memset(&in, 0, sizeof(in));
+    in.state = st;
+    in.now_ms = NOW;
+    in.last_input_ms = NOW - idle_ms;
+    in.off_since_ms = NOW;
+    in.dim_s = 30; in.off_s = 120; in.radio_off_min = 20;
+    in.deep_idle_min = 60; in.hibernate_h = 2;
+    in.still_ms = 0; in.still_hibernate_ms = 0;
+    in.battery_pct = 50;
+    in.held = false; in.on_battery = true; in.sleep_on_usb = true; in.radio_off_enabled = false;
+    in.charging = false; in.hibernate_ok = true;
+    return in;
+}
+
+static void next_is(power_state_t want, const pr_in_t *in)
+{
+    TEST_ASSERT_EQUAL_INT(want, pr_next_state(in));
+}
+
+void test_ladder_thresholds(void)
+{
+    pr_in_t in = base(PS_ACTIVE, 29000);
+    next_is(PS_ACTIVE, &in);
+    in = base(PS_ACTIVE, 30000);
+    next_is(PS_DIM, &in);
+    in = base(PS_DIM, 119999);
+    next_is(PS_DIM, &in);
+    in = base(PS_DIM, 120000);
+    next_is(PS_OFF, &in);
+}
+
+void test_held_stays_active(void)
+{
+    pr_in_t in = base(PS_ACTIVE, 500000);
+    in.held = true;
+    next_is(PS_ACTIVE, &in);
+    in.state = PS_DIM;
+    next_is(PS_ACTIVE, &in);
+}
+
+void test_usb_without_sleep(void)
+{
+    pr_in_t in = base(PS_ACTIVE, 500000);
+    in.on_battery = false; in.sleep_on_usb = false;
+    next_is(PS_ACTIVE, &in);
+    in.sleep_on_usb = true;
+    next_is(PS_OFF, &in);
+}
+
+void test_radio_off_needs_battery(void)
+{
+    pr_in_t in = base(PS_OFF, 23 * MIN_MS);
+    in.off_since_ms = NOW - 21 * MIN_MS;
+    in.radio_off_enabled = true;
+    in.on_battery = false;
+    next_is(PS_OFF, &in);
+    in.on_battery = true;
+    next_is(PS_RADIO_OFF, &in);
+    in.radio_off_enabled = false;
+    next_is(PS_OFF, &in);
+    in.radio_off_enabled = true;
+    in.state = PS_RADIO_OFF; in.on_battery = false;
+    next_is(PS_OFF, &in);
+    /* not yet 20 min in Off */
+    in.state = PS_OFF; in.on_battery = true; in.off_since_ms = NOW - 19 * MIN_MS;
+    next_is(PS_OFF, &in);
+}
+
+void test_swallow_rules(void)
+{
+    int64_t never = -1000000;
+    TEST_ASSERT_TRUE(pr_swallow(PS_DIM, NOW, never, never));
+    TEST_ASSERT_TRUE(pr_swallow(PS_OFF, NOW, never, never));
+    TEST_ASSERT_TRUE(pr_swallow(PS_ACTIVE, NOW + 100, NOW, never));
+    TEST_ASSERT_FALSE(pr_swallow(PS_ACTIVE, NOW + 601, NOW, never));
+}
+
+void test_swallow_held_key_repeats(void)
+{
+    int64_t woke = 0, last = -1000000;
+    for (int64_t t = 500; t <= 1500; t += 60) {
+        bool drop = pr_swallow(PS_ACTIVE, t, woke, last);
+        TEST_ASSERT_TRUE_MESSAGE(drop, "auto-repeat after the wake");
+        if (drop) last = t;
+    }
+    TEST_ASSERT_FALSE(pr_swallow(PS_ACTIVE, 2200, woke, last));
+}
+
+static pr_idset_t ids(const char *a, const char *b)
+{
+    pr_idset_t s;
+    memset(&s, 0, sizeof(s));
+    if (a) strcpy(s.ids[s.n++], a);
+    if (b) strcpy(s.ids[s.n++], b);
+    return s;
+}
+
+void test_needs_you_new(void)
+{
+    pr_idset_t armed = ids("a", NULL), now = ids("a", NULL);
+    TEST_ASSERT_FALSE(pr_needs_you_new(&armed, &now));
+    now = ids("a", "b");
+    TEST_ASSERT_TRUE(pr_needs_you_new(&armed, &now));
+    armed = ids("a", "b"); now = ids("b", NULL);
+    TEST_ASSERT_FALSE(pr_needs_you_new(&armed, &now));
+    armed = ids(NULL, NULL); now = ids(NULL, NULL);
+    TEST_ASSERT_FALSE(pr_needs_you_new(&armed, &now));
+
+    /* pr_needs_you_ids keeps only live background sessions that need you */
+    cc_session_t s[4];
+    memset(s, 0, sizeof(s));
+    strcpy(s[0].id, "aa"); s[0].state = CC_NEEDS_YOU; s[0].background = true; s[0].live = true;
+    strcpy(s[1].id, ""); s[1].state = CC_NEEDS_YOU; s[1].background = false; s[1].live = true;
+    strcpy(s[2].id, "cc"); s[2].state = CC_NEEDS_YOU; s[2].background = true; s[2].live = false;
+    strcpy(s[3].id, "dd"); s[3].state = CC_WORKING; s[3].background = true; s[3].live = true;
+    pr_idset_t got;
+    pr_needs_you_ids(s, 4, &got);
+    TEST_ASSERT_EQUAL_INT(1, got.n);
+    TEST_ASSERT_EQUAL_STRING("aa", got.ids[0]);
+}
+
+void test_dim_brightness(void)
+{
+    TEST_ASSERT_EQUAL_INT(16, pr_dim_brightness(80));
+    TEST_ASSERT_EQUAL_INT(5, pr_dim_brightness(10));
+    TEST_ASSERT_EQUAL_INT(20, pr_dim_brightness(100));
+}
+
+void test_deep_idle_after_minutes(void)
+{
+    pr_in_t in = base(PS_OFF, 59 * MIN_MS);
+    next_is(PS_OFF, &in);
+    in = base(PS_OFF, 60 * MIN_MS);
+    next_is(PS_DEEP_IDLE, &in);
+    in = base(PS_OFF, 90 * MIN_MS);
+    in.deep_idle_min = 0;
+    next_is(PS_OFF, &in);
+    in = base(PS_OFF, 60 * MIN_MS);
+    in.radio_off_enabled = true; in.off_since_ms = NOW - 40 * MIN_MS;
+    next_is(PS_DEEP_IDLE, &in);   /* Deep idle wins over Radio off */
+}
+
+void test_hibernate_after_hours(void)
+{
+    pr_in_t in = base(PS_DEEP_IDLE, 2 * H_MS);
+    next_is(PS_HIBERNATE, &in);
+    in = base(PS_DEEP_IDLE, 119 * MIN_MS);
+    next_is(PS_DEEP_IDLE, &in);
+    in = base(PS_DEEP_IDLE, 5 * H_MS);
+    in.hibernate_ok = false;
+    next_is(PS_DEEP_IDLE, &in);
+    in = base(PS_DEEP_IDLE, 5 * H_MS);
+    in.hibernate_h = 0;
+    next_is(PS_DEEP_IDLE, &in);
+}
+
+void test_hibernate_low_battery(void)
+{
+    pr_in_t in = base(PS_OFF, 200000);
+    in.battery_pct = 10;
+    next_is(PS_HIBERNATE, &in);
+    in.battery_pct = 11;
+    next_is(PS_OFF, &in);
+    in.battery_pct = 10; in.charging = true;
+    next_is(PS_OFF, &in);
+    in = base(PS_DIM, 60000);
+    in.battery_pct = 10;
+    next_is(PS_DIM, &in);   /* the low-battery trigger acts only from Off or deeper */
+    in = base(PS_OFF, 200000);
+    in.battery_pct = 10; in.hibernate_h = 0;
+    next_is(PS_HIBERNATE, &in);
+    in.hibernate_h = 2; in.hibernate_ok = false;
+    next_is(PS_OFF, &in);
+}
+
+void test_long_idle_needs_battery(void)
+{
+    pr_in_t in = base(PS_OFF, 10 * H_MS);
+    in.on_battery = false; in.sleep_on_usb = true; in.battery_pct = -1;
+    next_is(PS_OFF, &in);
+    in.battery_pct = 5;
+    next_is(PS_OFF, &in);
+    in.state = PS_DEEP_IDLE;
+    next_is(PS_OFF, &in);
+    in = base(PS_OFF, 200000);
+    in.battery_pct = -1;
+    next_is(PS_OFF, &in);   /* an unknown % never counts as low */
+}
+
+void test_long_idle_held(void)
+{
+    pr_in_t in = base(PS_OFF, 10 * H_MS);
+    in.held = true; in.battery_pct = 5;
+    next_is(PS_ACTIVE, &in);
+    in.state = PS_DEEP_IDLE;
+    next_is(PS_ACTIVE, &in);
+}
+
+void test_still_brings_hibernate_sooner(void)
+{
+    pr_in_t in = base(PS_OFF, 30 * MIN_MS);
+    in.still_hibernate_ms = 30 * MIN_MS;
+    in.still_ms = 30 * MIN_MS;
+    next_is(PS_HIBERNATE, &in);
+    in.still_ms = 29 * MIN_MS;
+    next_is(PS_OFF, &in);
+    in = base(PS_OFF, 29 * MIN_MS);
+    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 45 * MIN_MS;
+    next_is(PS_OFF, &in);   /* an input 29 min ago */
+    in = base(PS_OFF, 30 * MIN_MS);
+    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 0;
+    next_is(PS_OFF, &in);   /* unknown */
+    in = base(PS_OFF, 45 * MIN_MS);
+    in.still_hibernate_ms = 0; in.still_ms = 45 * MIN_MS;
+    next_is(PS_OFF, &in);   /* the trigger is off */
+    in = base(PS_OFF, 30 * MIN_MS);
+    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 30 * MIN_MS; in.hibernate_h = 0;
+    next_is(PS_HIBERNATE, &in);
+    in = base(PS_DEEP_IDLE, 70 * MIN_MS);
+    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 40 * MIN_MS;
+    next_is(PS_HIBERNATE, &in);
+    in = base(PS_OFF, 45 * MIN_MS);
+    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 45 * MIN_MS;
+    in.on_battery = false; in.sleep_on_usb = true;
+    next_is(PS_OFF, &in);
+    in.on_battery = true; in.hibernate_ok = false;
+    next_is(PS_OFF, &in);
+    in.hibernate_ok = true; in.held = true;
+    next_is(PS_ACTIVE, &in);
+}
+
+void test_cards_view_after_hibernate(void)
+{
+    TEST_ASSERT_EQUAL_INT(PR_CARDS_WAKING, pr_cards_view(true, 0, 0, false));
+    TEST_ASSERT_EQUAL_INT(PR_CARDS_LIVE, pr_cards_view(true, 1, 0, false));
+    TEST_ASSERT_EQUAL_INT(PR_CARDS_STALE, pr_cards_view(false, 5, 5, false));
+    TEST_ASSERT_EQUAL_INT(PR_CARDS_LIVE, pr_cards_view(false, 6, 5, false));
+    TEST_ASSERT_EQUAL_INT(PR_CARDS_LIVE, pr_cards_view(false, 5, 5, true));
+    TEST_ASSERT_EQUAL_INT(PR_CARDS_STALE, pr_cards_view(false, 0, 0, false));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -110,5 +362,20 @@ int main(void)
     RUN_TEST(test_light_deep_idle);
     RUN_TEST(test_light_age_limit_follows_checkin);
     RUN_TEST(test_any_needs_you);
+    RUN_TEST(test_ladder_thresholds);
+    RUN_TEST(test_held_stays_active);
+    RUN_TEST(test_usb_without_sleep);
+    RUN_TEST(test_radio_off_needs_battery);
+    RUN_TEST(test_swallow_rules);
+    RUN_TEST(test_swallow_held_key_repeats);
+    RUN_TEST(test_needs_you_new);
+    RUN_TEST(test_dim_brightness);
+    RUN_TEST(test_deep_idle_after_minutes);
+    RUN_TEST(test_hibernate_after_hours);
+    RUN_TEST(test_hibernate_low_battery);
+    RUN_TEST(test_long_idle_needs_battery);
+    RUN_TEST(test_long_idle_held);
+    RUN_TEST(test_still_brings_hibernate_sooner);
+    RUN_TEST(test_cards_view_after_hibernate);
     return UNITY_END();
 }

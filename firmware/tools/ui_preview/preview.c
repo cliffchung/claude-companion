@@ -13,6 +13,7 @@
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "servers/server_store.h"
+#include "sys/power.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,16 @@ void *keyboard_lvgl_focused(void) { return focused_textarea; }
 void keyboard_set_layout(uint8_t layout) { (void)layout; }
 void keyboard_set_led(uint8_t a,uint8_t b,uint8_t c,uint8_t d,uint8_t e) {}
 void power_kbd_light_refresh(void) {}
+/* power owner: the preview is always Active */
+bool power_setting_set(const char *name, int n) { (void)name; (void)n; return true; }
+bool hibernate_supported(void) { return false; }
+power_boot_t hibernate_boot_kind(void) { return POWER_BOOT_NORMAL; }
+void power_hold(power_hold_t h, bool on) { (void)h; (void)on; }
+uint32_t power_wake_seq(void) { return 0; }
+uint32_t power_wake_gen(void) { return 0; }
+power_state_t power_woke_from(void) { return PS_ACTIVE; }
+power_wake_t power_wake_reason(void) { return PW_CONSOLE; }
+bool power_shield_up(void) { return false; }
 ts_state_t tailscale_state(void)
 {
     int m = env_int("PREVIEW_TS", 2);
@@ -482,36 +493,16 @@ int main(int argc,char **argv) {
         return snapshot(lv_screen_active(),"screen.ppm");
     }
     if (argc>1 && !strcmp(argv[1],"font-policy")) { font_policy_check(d); return 0; }
-    if (argc>1 && !strcmp(argv[1],"standby")) {
-        lv_indev_t *pointer=lv_indev_create(); lv_indev_set_type(pointer,LV_INDEV_TYPE_POINTER);
-        lv_indev_set_read_cb(pointer,pointer_read); ui_init();
-        ui_nav_home(); ui_screensaver_start(); step(d,400);
-        assert(ui_screensaver_active());
-        assert(snapshot(lv_screen_active(),"/tmp/clientre-standby.ppm")==0);
-        key_event_t key={.type=KEY_EV_SPECIAL,.key=SK_ENTER};
-        assert(ui_keyboard_route(&key,false)); assert(!ui_screensaver_active());
-        step(d,400);
-        ui_screensaver_start(); step(d,400);
-        lv_obj_t *saver=lv_screen_active();
-        lv_obj_t *clock_card=lv_obj_get_child(saver,2);
-        lv_obj_t *clock=lv_obj_get_child(clock_card,1);
-        lv_area_t clock_area; lv_obj_get_coords(clock,&clock_area);
-        int clock_x=(clock_area.x1+clock_area.x2)/2;
-        int clock_y=(clock_area.y1+clock_area.y2)/2;
-        pointer_move(pointer,clock_x,clock_y,true);
-        pointer_move(pointer,clock_x,clock_y,false);
-        assert(!ui_screensaver_active());
-        step(d,400);
-        assert(lv_screen_active()!=saver);
-        assert(lv_screen_active()==ui_nav_current());
-        assert(ui_nav_is_top(ui_home_create));
-        assert(snapshot(lv_screen_active(),"/tmp/clientre-standby-clock-exit.ppm")==0);
-        g_settings.ss_classic=1; ui_screensaver_start(); step(d,400);
-        assert(ui_screensaver_active());
-        lv_obj_send_event(lv_screen_active(),LV_EVENT_CLICKED,NULL);
-        assert(!ui_screensaver_active());
-        lv_indev_delete(pointer);
-        puts("Standby render, keyboard/touch wake, repeated entry and classic mode passed."); return 0;
+    if (argc>1 && !strcmp(argv[1],"sleep-notice")) {
+        /* the pre-Hibernate notice over the dashboard */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        ui_nav_home(); step(d,400);
+        ui_sleep_notice(true); step(d,400);
+        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
+        lv_obj_t *notice=lv_obj_get_child(lv_layer_top(),-1);
+        assert(notice);
+        return snapshot(notice,"/tmp/claude-sleep-notice.ppm");
     }
     if (argc>1 && !strcmp(argv[1],"cli-colors")) { terminal_palette_preview(); return 0; }
     if (argc>1 && !strcmp(argv[1],"gesture")) { gesture_check(); return 0; }
@@ -560,7 +551,7 @@ int main(int argc,char **argv) {
     lv_obj_t *s = lv_screen_active();
     if (create == ui_settings_create) {
         /* Real click events, including selection preservation across rebuilds. */
-        for (unsigned i = 0; i < 7; i++) {
+        for (unsigned i = 0; i < 8; i++) {
             lv_obj_t *before = s;
             lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
             lv_obj_send_event(lv_obj_get_child(nav, i), LV_EVENT_CLICKED, NULL);
@@ -568,11 +559,11 @@ int main(int argc,char **argv) {
             s = lv_screen_active();
             assert(s == before); /* tab switch must not rebuild the screen */
             lv_obj_t *deck = lv_obj_get_child(lv_obj_get_child(s, 1), 1);
-            for (unsigned j = 0; j < 7; j++)
+            for (unsigned j = 0; j < 8; j++)
                 assert(lv_obj_has_flag(lv_obj_get_child(deck, j), LV_OBJ_FLAG_HIDDEN) == (j != i));
         }
         unsigned category = argc>5 ? (unsigned)atoi(argv[5]) : 0;
-        assert(category < 7);
+        assert(category < 8);
         lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
         lv_obj_send_event(lv_obj_get_child(nav, category), LV_EVENT_CLICKED, NULL);
         lv_tick_inc(200); lv_timer_handler();

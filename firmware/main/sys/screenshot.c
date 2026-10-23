@@ -13,20 +13,10 @@
 #include "bsp/m5stack_tab5.h"
 #include "storage/sd.h"
 #include "ui/ui.h"
+#include "sys/display_ctl.h"
 
 static const char *TAG = "shot";
-static esp_lcd_touch_handle_t s_tp = NULL;
 static bool s_armed = true;
-
-/* The BSP keeps the touch handle private; we get it from the LVGL indev driver data. */
-static void find_touch_handle(void)
-{
-    lv_indev_t *indev = bsp_display_get_input_dev();
-    if (!indev) return;
-    /* esp_lvgl_port stores lvgl_port_touch_ctx_t* in driver data; its first member is the handle. */
-    void *drv = lv_indev_get_driver_data(indev);
-    if (drv) s_tp = *(esp_lcd_touch_handle_t *)drv;
-}
 
 static bool write_bmp(const char *path, lv_draw_buf_t *buf)
 {
@@ -81,10 +71,12 @@ bool screenshot_take(char *out_path, int cap)
 static void poll_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!s_tp) { find_touch_handle(); if (!s_tp) return; }
+    /* asked each time: a re-created touch driver (Task 6) gets a new handle */
+    esp_lcd_touch_handle_t tp = display_ctl_touch();
+    if (!tp) return;
     uint16_t x[5], y[5], s[5]; uint8_t cnt = 0;
     /* data is refreshed by the LVGL port's own read callback */
-    bool got = esp_lcd_touch_get_coordinates(s_tp, x, y, s, &cnt, 5);
+    bool got = esp_lcd_touch_get_coordinates(tp, x, y, s, &cnt, 5);
     if (got && cnt >= 3) {
         if (s_armed) {
             s_armed = false;
@@ -98,7 +90,6 @@ static void poll_cb(lv_timer_t *t)
 
 void screenshot_init(void)
 {
-    find_touch_handle();
     lv_timer_create(poll_cb, 60, NULL);
 }
 
@@ -121,6 +112,22 @@ bool screenshot_dump_usb(void)
         if (in) {
             for (uint32_t y = 0; y < h; y++)
                 memcpy(in + (size_t)y * w * 3, (const uint8_t *)snap->data + (size_t)y * snap->header.stride, (size_t)w * 3);
+            /* lv_layer_top (toasts, the mini player, the sleep notice) is drawn over the screen */
+            if (lv_obj_get_child_count(lv_layer_top()) > 0) {
+                lv_draw_buf_t *top = lv_snapshot_take(lv_layer_top(), LV_COLOR_FORMAT_ARGB8888);
+                if (top && top->header.w == w && top->header.h == h) {
+                    for (uint32_t y = 0; y < h; y++) {
+                        const uint8_t *t = (const uint8_t *)top->data + (size_t)y * top->header.stride;
+                        uint8_t *d = in + (size_t)y * w * 3;
+                        for (uint32_t x = 0; x < w; x++, t += 4, d += 3) {
+                            uint32_t a = t[3];
+                            if (!a) continue;
+                            for (int c = 0; c < 3; c++) d[c] = (uint8_t)((t[c] * a + d[c] * (255 - a)) / 255);
+                        }
+                    }
+                }
+                if (top) lv_draw_buf_destroy(top);
+            }
         }
     }
     lvgl_port_unlock();

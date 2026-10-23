@@ -26,14 +26,15 @@ typedef struct {
     uint8_t  reserved_kana_mode;    /* reserved: formerly the kana mode */
     uint8_t  rotation;          /* 0..3 -> lv_display_rotation_t */
     uint8_t  brightness;        /* 5..100 */
-    uint8_t  ss_enable;
-    uint16_t ss_idle_min;
-    uint16_t ss_switch_min;
-    uint8_t  ss_disable_in_ssh;
-    char     ss_wallpaper_dir[96];
-    int16_t  ss_elem_x[4];
-    int16_t  ss_elem_y[4];
-    uint32_t ss_elem_color[4];
+    /* ss_*: reserved, so old blobs keep their layout; the fork's screensaver was removed (Plan 2) */
+    uint8_t  ss_enable;         /* reserved */
+    uint16_t ss_idle_min;       /* reserved */
+    uint16_t ss_switch_min;     /* reserved */
+    uint8_t  ss_disable_in_ssh; /* in use: "Stay awake in SSH Terminal" (POWER_HOLD_SSH) */
+    char     ss_wallpaper_dir[96];   /* reserved */
+    int16_t  ss_elem_x[4];      /* reserved */
+    int16_t  ss_elem_y[4];      /* reserved */
+    uint32_t ss_elem_color[4];  /* reserved */
     int16_t  utc_offset_min;    /* reserved: the time zone is tz_rule */
     uint8_t  kbd_led_mode;      /* 0=bind, 1=user */
     uint8_t  kbd_led_bright;    /* 0..100 */
@@ -63,7 +64,7 @@ typedef struct {
     uint8_t  term_cursor_style;  /* 0 block, 1 underline, 2 bar */
     uint8_t  term_cursor_blink;
     uint8_t  term_line_height;   /* 28..40 px, MaruMinya 24px glyphs + leading */
-    uint8_t ss_classic;          /* 0: standby cards, 1: movable legacy widgets */
+    uint8_t ss_classic;          /* reserved (the removed screensaver's layout) */
     uint8_t  kbd_layout;         /* kbd_layout_t: STOCK follows the keycaps */
     char     companion_server[48];   /* name of the Mac in the server list; "" = none */
     char     claude_path[64];        /* Claude CLI on the Mac; must pass cc_path_valid */
@@ -91,6 +92,8 @@ extern app_settings_t g_settings;
 
 void settings_init(void);         /* load from NVS or defaults */
 void settings_save(void);
+/* The Plan 2 power settings (pw_*, kbd_needs_light, kbd_off_cap) back to their defaults; the time zone stays. */
+void settings_power_defaults(void);
 void settings_reset_defaults(void);
 
 /* Generic small NVS helpers used by other modules. */

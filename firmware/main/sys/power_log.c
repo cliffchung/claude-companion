@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "sys/power.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -19,11 +20,12 @@ static const char *TAG = "plog";
 #define SAVE_EVERY_S 60
 #define RST_MAX 16
 
-/* One summary slot per tag in use: 0..3 power states, 0x10+n bench steps, 0x80|state check-ins. */
+/* One summary slot per tag in use: 0..5 power states, 0x10+n bench steps, 0x80|state check-ins
+   (0x80..0x85). The NVS blob's size follows SLOT_COUNT: an old one fails the exact-size check. */
 #define SLOT_STATE 0
-#define SLOT_BENCH 4
-#define SLOT_CHECKIN 20
-#define SLOT_COUNT 24
+#define SLOT_BENCH 6
+#define SLOT_CHECKIN 22
+#define SLOT_COUNT 28
 
 static plog_sample_t *s_buf;
 static plog_ring_t s_ring;
@@ -41,9 +43,9 @@ static const char *const k_rst_names[RST_MAX] = {
 
 static int slot_of(uint8_t tag)
 {
-    if (tag <= 3) return SLOT_STATE + tag;
+    if (tag <= 5) return SLOT_STATE + tag;
     if (tag >= 0x10 && tag <= 0x1F) return SLOT_BENCH + (tag - 0x10);
-    if (tag >= 0x80 && tag <= 0x83) return SLOT_CHECKIN + (tag - 0x80);
+    if (tag >= 0x80 && tag <= 0x85) return SLOT_CHECKIN + (tag - 0x80);
     return -1;
 }
 
@@ -101,6 +103,7 @@ void power_log_enable(bool on)
         s_last_save_t = sysinfo_uptime_s();
         s_on = true;
         unlock();
+        power_poll_kick();   /* idle_poll may be in a 10 s Off sleep: sample at 1 Hz from now */
     } else {
         lock();
         s_on = false;

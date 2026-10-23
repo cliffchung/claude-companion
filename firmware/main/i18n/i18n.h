@@ -59,7 +59,6 @@ X(HOME_DEVINFO, "Device Info") \
 X(HOME_USB, "USB") \
 X(HOME_TOOLS, "Tools") \
 X(HOME_OTA, "Firmware") \
-X(HOME_SCREENSAVER, "Screensaver") \
 X(CAMERA_STARTING, "Starting camera...") \
 X(CAMERA_READY, "Ready") \
 X(CAMERA_CAPTURE, "Take photo") \
@@ -166,6 +165,7 @@ X(POWER_NOTE, "WiFi upload draws up to 11W. Use a 5V 2A adapter.") \
 X(SETTINGS, "Settings") \
 X(SET_SYSTEM, "System") \
 X(SET_DISPLAY, "Display") \
+X(SET_POWER, "Power") \
 X(SET_INPUT, "Input") \
 X(SET_BACKUP, "Backup") \
 X(SET_BRIGHTNESS, "Brightness") \
@@ -178,7 +178,6 @@ X(SET_TIME_SYNCED, "Time synchronized") \
 X(SET_SCREENSHOT_NOTE, "Three-finger tap saves a screenshot to SD/ScreenShots.") \
 X(SCREENSHOT_SAVED, "Saved to SD/ScreenShots") \
 X(SCREENSHOT_FAILED, "Screenshot failed") \
-X(SET_SCREENSAVER, "Screensaver") \
 X(SET_STATUSBAR, "Status bar") \
 X(SB_WIFI, "WiFi icon") \
 X(SB_TAILSCALE, "Tailscale icon") \
@@ -221,18 +220,6 @@ X(TH_CURSOR_BLINK, "Blink the cursor") \
 X(TH_LINE_HEIGHT, "Line height") \
 X(TH_ANSI, "ANSI palette") \
 X(TH_RESET, "Reset to the preset") \
-X(SS_CLASSIC, "Classic movable layout") \
-X(SS_EXIT_HINT, "Touch or press a key to return") \
-X(SS_ENABLE, "Enable screensaver") \
-X(SS_IDLE_MIN, "Idle time (min)") \
-X(SS_WALLPAPER_DIR, "Wallpaper folder") \
-X(SS_SWITCH_MIN, "Switch every (min)") \
-X(SS_DISABLE_IN_SSH, "Disable during SSH sessions") \
-X(SS_START_NOW, "Start now") \
-X(SS_MOVE_HINT, "Long-press a widget to move it. Tap to exit.") \
-X(SS_LAYOUT_RESET, "Reset layout") \
-X(SS_SAVED, "Screensaver settings saved.") \
-X(SS_SELECT_FOLDER, "Please select a wallpaper folder.") \
 X(SET_KBD_LED, "Keyboard LED") \
 X(SET_KBD_LED_BRIGHT, "LED brightness") \
 X(SET_KBD_NEEDS_LIGHT, "Keyboard light shows needs-you") \

@@ -8,6 +8,9 @@
 #include "bsp/m5stack_tab5.h"
 #include "sys/sysinfo.h"
 #include "sys/power_log.h"
+#include "sys/power.h"
+#include "sys/display_ctl.h"
+#include "esp_lcd_touch.h"
 #include "settings/settings.h"
 #include "ui/ui.h"
 
@@ -21,18 +24,55 @@ static const char *TAG = "bench";
 #define FAST_STEP_S 3
 #define BATTERY_TIMEOUT_S 600
 
-static bool step_always(void) { return true; }
+/* Each step sets the state it measures; power_go pins it until a wake (or the next step). */
+static bool step_active(void) { power_go(PS_ACTIVE); power_hold(POWER_HOLD_BENCH, true); return true; }
+static void leave_active(void) { power_hold(POWER_HOLD_BENCH, false); }
+static bool step_dim(void) { power_go(PS_DIM); return true; }
+/* Off as it ships: on v2 the 10 Hz touch poll runs */
+static bool step_off_touch_poll(void)
+{
+    if (display_ctl_board_version() == 1) return false;   /* v1 wakes from the GT911 INT: no poll to measure */
+    power_go(PS_OFF);
+    return true;
+}
+/* Off with the poll paused: the difference from off-touch-poll is the poll's cost */
+static bool step_off_touch_awake(void) { power_touch_poll_pause(true); power_go(PS_OFF); return true; }
+static void leave_touch_paused(void) { power_touch_poll_pause(false); }
+/* Off with the touch controller asleep (never shipped: a sleeping controller may not wake) */
+static bool step_off_touch_asleep(void)
+{
+    power_touch_poll_pause(true);
+    power_go(PS_OFF);
+    vTaskDelay(pdMS_TO_TICKS(300));   /* the power task has paused LVGL's touch read */
+    esp_lcd_touch_handle_t tp = display_ctl_touch();
+    esp_err_t e = tp ? esp_lcd_touch_enter_sleep(tp) : ESP_ERR_INVALID_STATE;
+    ESP_LOGI(TAG, "touch enter_sleep: %s", esp_err_to_name(e));
+    return true;
+}
+static void leave_touch_asleep(void)
+{
+    esp_lcd_touch_handle_t tp = display_ctl_touch();
+    esp_err_t e = tp ? esp_lcd_touch_exit_sleep(tp) : ESP_ERR_INVALID_STATE;
+    vTaskDelay(pdMS_TO_TICKS(50));
+    bool ok = tp && esp_lcd_touch_read_data(tp) == ESP_OK;
+    ESP_LOGI(TAG, "touch exit_sleep: %s", esp_err_to_name(e));
+    ESP_LOGI(TAG, "touch after exit_sleep: %s", ok ? "ok" : "dead");
+    power_touch_poll_pause(false);
+}
+static bool step_off_light_amber(void) { power_bench_light(POWER_BENCH_LIGHT_AMBER); power_go(PS_OFF); return true; }
+static bool step_off_light_off(void) { power_bench_light(POWER_BENCH_LIGHT_OFF); power_go(PS_OFF); return true; }
+static void leave_light(void) { power_bench_light(POWER_BENCH_LIGHT_NONE); }
 
-/* Off needs Task 5's power state: until then these steps are skipped. */
-static bool step_off_light_amber(void) { return false; }
-static bool step_off_light_off(void) { return false; }
-
-/* Tasks 5, 6 and 8 add their steps here. */
+/* Tasks 6 and 8 add their steps here. */
 static const bench_step_t k_steps[] = {
-    { "settle", 60, step_always, NULL },
-    { "active", 120, step_always, NULL },
-    { "off-light-amber", 90, step_off_light_amber, NULL },
-    { "off-light-off", 90, step_off_light_off, NULL },
+    { "settle", 60, step_active, leave_active },
+    { "active", 120, step_active, leave_active },
+    { "dim", 90, step_dim, NULL },
+    { "off-touch-poll", 120, step_off_touch_poll, NULL },
+    { "off-touch-awake", 120, step_off_touch_awake, leave_touch_paused },
+    { "off-touch-asleep", 120, step_off_touch_asleep, leave_touch_asleep },
+    { "off-light-amber", 90, step_off_light_amber, leave_light },
+    { "off-light-off", 90, step_off_light_off, leave_light },
 };
 #define STEP_COUNT (sizeof(k_steps) / sizeof(k_steps[0]))
 _Static_assert(STEP_COUNT <= BENCH_MAX, "too many bench steps: rows and log tag slots hold 16");
@@ -141,8 +181,8 @@ static void bench_task(void *arg)
     power_log_enable(log_was_on);
     s_running = false;
     ESP_LOGI(TAG, "bench %s%s%s", done ? "done" : "aborted", s_reason ? ": " : "", s_reason ? s_reason : "");
+    power_go(PS_ACTIVE);
     if (done) {
-        /* Back to Active is Task 5's job; until then the device is simply idle again. */
         bsp_display_lock(0);
         ui_toast("Bench done. Plug USB back in.");
         bsp_display_unlock();
