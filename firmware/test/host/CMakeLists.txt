@@ -22,6 +22,12 @@ target_include_directories(companion PUBLIC ${COMP})
 target_link_libraries(companion PUBLIC cjson)
 target_compile_options(companion PRIVATE -Wall -Wextra)
 
+# Pure modules under main/sys (no ESP-IDF headers). Later tasks add theirs here.
+set(MAIN ${CMAKE_CURRENT_SOURCE_DIR}/../../main)
+add_library(pure STATIC ${MAIN}/sys/plog.c)
+target_include_directories(pure PUBLIC ${MAIN} ${MAIN}/sys)
+target_compile_options(pure PRIVATE -Wall -Wextra)
+
 enable_testing()
 foreach(t test_cc_sessions test_cc_cmd)
     add_executable(${t} ${t}.c)
@@ -29,3 +35,7 @@ foreach(t test_cc_sessions test_cc_cmd)
     target_compile_definitions(${t} PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+add_executable(test_plog test_plog.c)
+target_link_libraries(test_plog pure unity)
+add_test(NAME test_plog COMMAND test_plog)

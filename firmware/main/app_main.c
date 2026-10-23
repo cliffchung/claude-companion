@@ -23,6 +23,9 @@
 #include "crypto/secure_store.h"
 #include "sys/screenshot.h"
 #include "sys/debug_console.h"
+#include "sys/power_log.h"
+#include "sys/power_bench.h"
+#include "sys/power_console.h"
 #include "sys/usb_mgr.h"
 #include "media/audio_player.h"
 #include "net/tailscale.h"
@@ -108,6 +111,7 @@ static void idle_task(void *arg)
     (void)arg;
     for (;;) {
         sysinfo_poll();
+        power_log_sample(power_bench_tag());
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -124,15 +128,19 @@ void app_main(void)
     bsp_io_expander_init();
     bsp_io_expander1_init();
     bsp_feature_enable(BSP_FEATURE_LCD, true);
+    vTaskDelay(pdMS_TO_TICKS(50));   /* stagger the rails: four at once is a current spike on battery */
     bsp_feature_enable(BSP_FEATURE_TOUCH, true);
+    vTaskDelay(pdMS_TO_TICKS(50));
     /* Keep the board's proven rail-enable sequence.  These are only expander
      * writes; the Wi-Fi and USB software stacks still start after the logo. */
     bsp_feature_enable(BSP_FEATURE_WIFI, true);
+    vTaskDelay(pdMS_TO_TICKS(50));
     bsp_feature_enable(BSP_FEATURE_USB, true);
     if (!display_init_early()) return;
 
     /* Everything below runs while the already-rendered logo remains visible. */
     settings_init();
+    power_log_boot();
     display_apply_settings();
     secure_store_init();
     sysinfo_init();
@@ -164,6 +172,7 @@ void app_main(void)
     key_console_init();
     device_key_console_init();
     cc_console_init();
+    power_console_init();
     if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
     xTaskCreate(idle_task, "idle_poll", 4096, NULL, 2, NULL);
     ESP_LOGI(TAG, "boot complete in %lld ms, free heap %lu",

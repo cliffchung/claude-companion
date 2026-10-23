@@ -21,6 +21,7 @@ typedef struct {
 void sysinfo_init(void);                     /* INA226 + RX8130 on the BSP I2C bus */
 void sysinfo_poll(void);                     /* refresh cached power info (~1 Hz) */
 power_info_t sysinfo_power(void);
+int sysinfo_charge_pin(void);                /* raw charge pin: -1 unreadable, 0 low (charging, per the fork's guess), 1 high */
 int sysinfo_battery_percent(void);           /* -1 if unknown */
 const char *sysinfo_power_src_text(void);
 bool sysinfo_rtc_read(struct tm *out);

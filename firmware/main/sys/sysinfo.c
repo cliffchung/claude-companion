@@ -76,6 +76,14 @@ static int voltage_to_percent(float v)
     return (int)(pct + 0.5f);
 }
 
+int sysinfo_charge_pin(void)
+{
+    esp_io_expander_handle_t ex2 = bsp_io_expander1_init();
+    uint32_t lv = 0;
+    if (!ex2 || esp_io_expander_get_level(ex2, IO_EXPANDER_PIN_NUM_4, &lv) != ESP_OK) return -1;
+    return lv ? 1 : 0;
+}
+
 void sysinfo_poll(void)
 {
     if (!s_ina) { s_pwr.valid = false; s_pwr.percent = -1; s_pwr.src = PWR_UNKNOWN; return; }
@@ -87,15 +95,9 @@ void sysinfo_poll(void)
     s_pwr.percent = voltage_to_percent(s_pwr.bus_v);
     s_pwr.valid = true;
     /* Charge status from IO expander 2 pin 4 (input, active low) when available. */
-    esp_io_expander_handle_t ex2 = bsp_io_expander1_init();
-    bool charging = false;
-    if (ex2) {
-        uint32_t lv = 0;
-        if (esp_io_expander_get_level(ex2, IO_EXPANDER_PIN_NUM_4, &lv) == ESP_OK) {
-            charging = (lv == 0);
-            s_charge_stat_valid = true;
-        }
-    }
+    int pin = sysinfo_charge_pin();
+    bool charging = (pin == 0);
+    if (pin >= 0) s_charge_stat_valid = true;
     if (s_pwr.current_a < -0.05f || charging) s_pwr.src = PWR_USB_CHARGING;
     else if (s_pwr.current_a > 0.08f) s_pwr.src = PWR_BATTERY;
     else s_pwr.src = s_pwr.bus_v > 8.3f ? PWR_USB_STANDBY : PWR_USB;
