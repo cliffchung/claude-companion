@@ -1,6 +1,7 @@
 #pragma once
 /* Pure battery, Wi-Fi and time-zone maths for the vitals bar. No ESP-IDF headers. */
 #include <stdbool.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -34,11 +35,16 @@ extern const vitals_tz_t vitals_tz_presets[];       /* NULL-terminated, US Pacif
 power_src_t vitals_power_src(int mv, int ma, int chg_pin, power_src_t prev);
 
 /* No VBUS signal is known for this board, so USB -> battery is decided from a pattern: the charge
-   pin not low and a battery-like current for VITALS_BATT_SAMPLES samples in a row. Anything that
-   looks like USB or charging (pin low, current < 0) ends it at once and moves battery -> USB. */
+   pin not low, the bus below 8.25 V and a battery-like current for VITALS_BATT_SAMPLES samples in a
+   row (the previous source is reported meanwhile; unknown after a boot). Battery -> USB happens at
+   once only when the pin goes low or the current goes negative; a low current alone stays battery. */
 #define VITALS_BATT_SAMPLES 10
 typedef struct { power_src_t src; int batt_n; } vitals_src_t;
 power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma, int chg_pin);
+
+/* Settings clamps: 0 stays 0 (never); a value in the gap goes to the nearest end of the range. */
+int  vitals_clamp_or_zero(int v, int lo, int hi);
+void vitals_clamp_dim_off(uint16_t *dim_s, uint16_t *off_s);   /* dim 10..600, off dim+10..3600 */
 
 #ifdef __cplusplus
 }

@@ -41,14 +41,6 @@ static void plan2_defaults(void)
     g_settings.pw_hibernate_checkin_h = 0;
 }
 
-/* 0 stays 0 (never); a value in the gap goes to the nearest end of the range. */
-static int clamp_or_zero(int v, int lo, int hi)
-{
-    if (v <= 0) return 0;
-    if (v < lo) return v * 2 < lo ? 0 : lo;
-    return v > hi ? hi : v;
-}
-
 void settings_reset_defaults(void)
 {
     memset(&g_settings, 0, sizeof(g_settings));
@@ -133,13 +125,10 @@ void settings_init(void)
     g_settings.claude_path[sizeof(g_settings.claude_path) - 1] = 0;
     g_settings.tz_rule[sizeof(g_settings.tz_rule) - 1] = 0;
     if (!vitals_tz_valid(g_settings.tz_rule)) strcpy(g_settings.tz_rule, TZ_DEFAULT);
-    if (g_settings.pw_dim_s < 10) g_settings.pw_dim_s = 10;
-    if (g_settings.pw_dim_s > 600) g_settings.pw_dim_s = 600;
-    if (g_settings.pw_off_s < g_settings.pw_dim_s + 10) g_settings.pw_off_s = g_settings.pw_dim_s + 10;
-    if (g_settings.pw_off_s > 3600) g_settings.pw_off_s = 3600;
-    g_settings.pw_deep_idle_min = clamp_or_zero(g_settings.pw_deep_idle_min, 15, 720);
-    g_settings.pw_hibernate_h = clamp_or_zero(g_settings.pw_hibernate_h, 1, 48);
-    g_settings.pw_hibernate_checkin_h = clamp_or_zero(g_settings.pw_hibernate_checkin_h, 1, 24);
+    vitals_clamp_dim_off(&g_settings.pw_dim_s, &g_settings.pw_off_s);
+    g_settings.pw_deep_idle_min = vitals_clamp_or_zero(g_settings.pw_deep_idle_min, 15, 720);
+    g_settings.pw_hibernate_h = vitals_clamp_or_zero(g_settings.pw_hibernate_h, 1, 48);
+    g_settings.pw_hibernate_checkin_h = vitals_clamp_or_zero(g_settings.pw_hibernate_checkin_h, 1, 24);
     if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 

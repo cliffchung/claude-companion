@@ -110,7 +110,12 @@ int sysinfo_rssi_cached(void)
     static int s_rssi;
     static int64_t s_at;
     int64_t now = esp_timer_get_time();
-    if (!s_at || now - s_at >= 10 * 1000000LL) { s_rssi = wifi_mgr_rssi(); s_at = now; }
+    if (!s_at || now - s_at >= 10 * 1000000LL) {
+        s_rssi = wifi_mgr_rssi();
+        s_at = now;
+        int64_t took = esp_timer_get_time() - now;
+        if (took > 20000) ESP_LOGW(TAG, "rssi read took %d us", (int)took);
+    }
     return s_rssi;
 }
 

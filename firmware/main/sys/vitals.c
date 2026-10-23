@@ -85,16 +85,18 @@ const vitals_tz_t vitals_tz_presets[] = {
     { NULL, NULL },
 };
 
-/* Thresholds (mA, + = discharging). Enter charging at -50, leave at -20; enter battery at 20,
-   leave at 5; the old code needed 80 mA, which read an idle device on battery (30 mA) as USB.
-   Full on USB: the bus sits above 8.3 V (enter) / 8.25 V (leave) with the current near zero. */
+/* Thresholds (mA, + = discharging). Charging: enter at -50, leave at -20. Battery: enter at 20 (the old
+   80 mA read an idle device on battery as USB); once on battery a low current is not evidence of USB,
+   only the charge pin going low or the current going below -5 mA is. A bus at or above 8.25 V with the
+   pin not low is a full pack on USB: standby, never battery (a full pack just unplugged reads
+   standby until it sags below 8.25 V). */
 power_src_t vitals_power_src(int mv, int ma, int chg_pin, power_src_t prev)
 {
     if (mv < 5500) return PWR_UNKNOWN;
     if (chg_pin == 0) return PWR_USB_CHARGING;
     if (ma < -50 || (prev == PWR_USB_CHARGING && ma < -20)) return PWR_USB_CHARGING;
-    if (ma >= 20 || (prev == PWR_BATTERY && ma >= 5)) return PWR_BATTERY;
-    if (mv > 8300 || (prev == PWR_USB_STANDBY && mv >= 8250)) return PWR_USB_STANDBY;
+    if (mv >= 8250) return PWR_USB_STANDBY;
+    if (ma >= 20 || (prev == PWR_BATTERY && ma >= -5)) return PWR_BATTERY;
     return PWR_USB;
 }
 
@@ -103,7 +105,23 @@ power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma, int chg_pin)
     power_src_t n = vitals_power_src(mv, ma, chg_pin, st->src);
     if (n != PWR_BATTERY) { st->batt_n = 0; st->src = n; return n; }
     if (st->src == PWR_BATTERY) return n;
-    /* USB (or unknown) so far: a battery-like sample must repeat before it counts */
+    /* not on battery so far: a battery-like sample must repeat; meanwhile keep the previous source
+       (unknown after a boot) */
     if (++st->batt_n >= VITALS_BATT_SAMPLES) { st->src = PWR_BATTERY; return PWR_BATTERY; }
-    return st->src == PWR_UNKNOWN ? PWR_USB : st->src == PWR_USB_STANDBY ? PWR_USB : st->src;
+    return st->src;
+}
+
+int vitals_clamp_or_zero(int v, int lo, int hi)
+{
+    if (v <= 0) return 0;
+    if (v < lo) return v * 2 < lo ? 0 : lo;
+    return v > hi ? hi : v;
+}
+
+void vitals_clamp_dim_off(uint16_t *dim_s, uint16_t *off_s)
+{
+    if (*dim_s < 10) *dim_s = 10;
+    if (*dim_s > 600) *dim_s = 600;
+    if (*off_s < *dim_s + 10) *off_s = (uint16_t)(*dim_s + 10);
+    if (*off_s > 3600) *off_s = 3600;
 }

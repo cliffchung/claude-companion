@@ -143,8 +143,9 @@ void ui_vitals_update(lv_obj_t *bar)
     char b[16];
 
     /* battery */
-    int pct = sysinfo_battery_percent();
-    bool charging = sysinfo_power().src == PWR_USB_CHARGING;
+    power_info_t pw = sysinfo_power();   /* one copy: percent and source agree */
+    int pct = pw.valid ? pw.percent : -1;
+    bool charging = pw.src == PWR_USB_CHARGING;
     vitals_bat_level_t lv = vitals_bat_level(pct, charging);
     if (lv == VB_NONE) {
         lv_obj_add_flag(v->bat, LV_OBJ_FLAG_HIDDEN);

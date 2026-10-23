@@ -118,7 +118,8 @@ static void test_src_idle_battery_reads_battery(void)
     TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(7600, 30, 1, PWR_UNKNOWN));
     TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(7600, 30, 1, PWR_USB));
     TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(7600, 300, 1, PWR_BATTERY));
-    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(8350, 30, 1, PWR_USB));   /* freshly full pack, still battery */
+    /* a full pack on USB is standby even under load (known limit: also a full pack just unplugged) */
+    TEST_ASSERT_EQUAL_INT(PWR_USB_STANDBY, vitals_power_src(8350, 300, 1, PWR_USB));
 }
 
 static void test_src_usb(void)
@@ -141,7 +142,10 @@ static void test_src_hysteresis(void)
     /* on battery, a dip to 12 mA stays battery; from USB the same 12 mA stays USB */
     TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(7600, 12, 1, PWR_BATTERY));
     TEST_ASSERT_EQUAL_INT(PWR_USB, vitals_power_src(7600, 12, 1, PWR_USB));
-    TEST_ASSERT_EQUAL_INT(PWR_USB, vitals_power_src(7600, 2, 1, PWR_BATTERY));   /* below the 5 mA leave threshold */
+    /* low current is not evidence of USB: 5-20 mA on battery stays battery; negative current ends it */
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(7600, 2, 1, PWR_BATTERY));
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(7600, 0, 1, PWR_BATTERY));
+    TEST_ASSERT_EQUAL_INT(PWR_USB, vitals_power_src(7600, -10, 1, PWR_BATTERY));
     /* charging: tapering to -30 mA stays charging; from USB it does not start */
     TEST_ASSERT_EQUAL_INT(PWR_USB_CHARGING, vitals_power_src(8300, -30, 1, PWR_USB_CHARGING));
     TEST_ASSERT_EQUAL_INT(PWR_USB, vitals_power_src(7600, -30, 1, PWR_USB));
@@ -171,6 +175,55 @@ static void test_usb_with_pack_supplementing(void)
     TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, feed(&st, VITALS_BATT_SAMPLES - 1, 7800, 300, 1));
 }
 
+static void test_full_pack_on_usb_under_load_is_not_battery(void)
+{
+    vitals_src_t st = { 0 };
+    feed(&st, 3, 8300, 0, 1);
+    for (int i = 0; i < 40; i++) TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, vitals_src_step(&st, 8300, 300, 1));
+    TEST_ASSERT_EQUAL_INT(PWR_USB_STANDBY, st.src);
+    /* companion: the pack at 7.6 V, 300 mA, pin high, 10 samples: battery */
+    vitals_src_t b = { 0 };
+    feed(&b, 3, 7600, 0, 1);
+    TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, feed(&b, VITALS_BATT_SAMPLES - 1, 7600, 300, 1));
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&b, 7600, 300, 1));
+    /* sagging below 8.25 V while on battery is fine; reaching 8.25 V ends the run */
+    TEST_ASSERT_EQUAL_INT(PWR_USB_STANDBY, vitals_src_step(&b, 8260, 300, 1));
+}
+
+static void test_boot_on_battery_is_unknown_until_decided(void)
+{
+    vitals_src_t st = { 0 };
+    for (int i = 0; i < VITALS_BATT_SAMPLES - 1; i++) TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, vitals_src_step(&st, 7600, 30, 1));
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&st, 7600, 30, 1));
+    /* a counted run keeps the previous source, not USB */
+    vitals_src_t f = { .src = PWR_USB_STANDBY };
+    TEST_ASSERT_EQUAL_INT(PWR_USB_STANDBY, vitals_src_step(&f, 7600, 300, 1));
+}
+
+static void test_settings_clamps(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, vitals_clamp_or_zero(0, 15, 720));
+    TEST_ASSERT_EQUAL_INT(0, vitals_clamp_or_zero(7, 15, 720));
+    TEST_ASSERT_EQUAL_INT(15, vitals_clamp_or_zero(8, 15, 720));
+    TEST_ASSERT_EQUAL_INT(15, vitals_clamp_or_zero(14, 15, 720));
+    TEST_ASSERT_EQUAL_INT(60, vitals_clamp_or_zero(60, 15, 720));
+    TEST_ASSERT_EQUAL_INT(720, vitals_clamp_or_zero(9999, 15, 720));
+    TEST_ASSERT_EQUAL_INT(1, vitals_clamp_or_zero(1, 1, 48));
+    TEST_ASSERT_EQUAL_INT(48, vitals_clamp_or_zero(49, 1, 48));
+    uint16_t d = 5, o = 5;
+    vitals_clamp_dim_off(&d, &o);
+    TEST_ASSERT_EQUAL_INT(10, d); TEST_ASSERT_EQUAL_INT(20, o);
+    d = 30; o = 120;
+    vitals_clamp_dim_off(&d, &o);
+    TEST_ASSERT_EQUAL_INT(30, d); TEST_ASSERT_EQUAL_INT(120, o);
+    d = 5000; o = 9000;
+    vitals_clamp_dim_off(&d, &o);
+    TEST_ASSERT_EQUAL_INT(600, d); TEST_ASSERT_EQUAL_INT(3600, o);
+    d = 100; o = 50;
+    vitals_clamp_dim_off(&d, &o);
+    TEST_ASSERT_EQUAL_INT(110, o);
+}
+
 static void test_src_battery_sustained(void)
 {
     vitals_src_t st = { 0 };
@@ -179,6 +232,10 @@ static void test_src_battery_sustained(void)
     TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, feed(&st, VITALS_BATT_SAMPLES - 1, 7800, 30, 1));
     TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&st, 7800, 30, 1));   /* idle 30 mA, N-th sample */
     TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&st, 7800, 8, 1));    /* dip: hysteresis */
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&st, 7800, 0, 1));    /* quiet is not USB */
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, feed(&st, 30, 7800, 12, 1));
+    TEST_ASSERT_EQUAL_INT(PWR_USB, vitals_src_step(&st, 7800, -10, 1));     /* current negative: at once */
+    feed(&st, VITALS_BATT_SAMPLES, 7800, 30, 1);
     TEST_ASSERT_EQUAL_INT(PWR_USB_CHARGING, vitals_src_step(&st, 7800, 0, 0));   /* pin low: at once */
     feed(&st, VITALS_BATT_SAMPLES, 7800, 30, 1);
     TEST_ASSERT_EQUAL_INT(PWR_BATTERY, st.src);
@@ -207,5 +264,8 @@ int main(void)
     RUN_TEST(test_src_hysteresis);
     RUN_TEST(test_usb_with_pack_supplementing);
     RUN_TEST(test_src_battery_sustained);
+    RUN_TEST(test_full_pack_on_usb_under_load_is_not_battery);
+    RUN_TEST(test_boot_on_battery_is_unknown_until_decided);
+    RUN_TEST(test_settings_clamps);
     return UNITY_END();
 }

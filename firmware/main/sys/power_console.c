@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <time.h>
 #include "esp_console.h"
 #include "sys/debug_console.h"
@@ -79,7 +80,7 @@ static void clock_print(time_t t)
 {
     struct tm tm;
     char b[40];
-    localtime_r(&t, &tm);
+    if (!localtime_r(&t, &tm)) { printf("clock: epoch out of range\n"); return; }
     strftime(b, sizeof(b), "%Y-%m-%d %H:%M:%S %Z", &tm);
     printf("clock: %s tz=%s\n", b, g_settings.tz_rule);
 }
@@ -97,7 +98,9 @@ static int cmd_clock(int argc, char **argv)
     }
     if (argc == 3 && strcmp(argv[1], "at") == 0) {
         char *end;
+        errno = 0;
         long long e = strtoll(argv[2], &end, 10);
+        if (errno == ERANGE) { printf("clock: epoch out of range\n"); return 1; }
         if (*argv[2] == 0 || *end) { printf("clock: not an epoch\n"); return 1; }
         clock_print((time_t)e);
         return 0;
