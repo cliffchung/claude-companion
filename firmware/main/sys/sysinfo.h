@@ -20,8 +20,9 @@ typedef struct {
 void sysinfo_init(void);                     /* INA226 + RX8130 on the BSP I2C bus */
 void sysinfo_poll(void);                     /* refresh cached power info (~1 Hz) */
 power_info_t sysinfo_power(void);
-int sysinfo_charge_pin(void);                /* raw charge pin: -1 unreadable, 0 low (charging, per the fork's guess), 1 high */
+int sysinfo_charge_pin(void);                /* raw CHG_STAT, diagnostics only (PT23: reads 0 charging or not): -1 unreadable, 0, 1 */
 int sysinfo_charge_pin_last(void);           /* the pin as read by the last sysinfo_poll */
+bool sysinfo_charging(void);                 /* the last sample's charge current is under -5 mA (vitals_charging) */
 int sysinfo_rssi_cached(void);               /* wifi_mgr_rssi at most every 10 s (an SDIO RPC) */
 int sysinfo_battery_percent(void);           /* -1 if unknown */
 const char *sysinfo_power_src_text(void);

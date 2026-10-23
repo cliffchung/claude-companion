@@ -12,6 +12,7 @@
 #include "sys/power_bench.h"
 #include "sys/vitals.h"
 #include "sys/power.h"
+#include "sys/hibernate.h"
 #include "sys/checkin.h"
 #include "net/wifi_mgr.h"
 #include "input/keyboard.h"
@@ -117,14 +118,15 @@ static int cmd_power(int argc, char **argv)
         const char *st = power_state_name(power_state());
         long idle = (long)(power_idle_ms() / 1000);
         if (!p.valid) {
-            printf("power: - V - mA - W %s charging=- src=%s chg_pin=%d state=%s idle=%lds holds=%s\n", pct,
-                   src_name(p.src), sysinfo_charge_pin(), st, idle, holds);
+            printf("power: - V - mA - W %s charging=- src=%s chg_en=%d chg_pin=%d state=%s idle=%lds holds=%s\n", pct,
+                   src_name(p.src), hibernate_chg_en(), sysinfo_charge_pin(), st, idle, holds);
             radio_line();
             return 0;
         }
-        printf("power: %.2f V %d mA %.2f W %s charging=%s src=%s chg_pin=%d state=%s idle=%lds holds=%s\n",
+        printf("power: %.2f V %d mA %.2f W %s charging=%s src=%s chg_en=%d chg_pin=%d state=%s idle=%lds holds=%s\n",
                p.bus_v, (int)lroundf(p.current_a * 1000.0f), p.bus_v * fabsf(p.current_a), pct,
-               p.src == PWR_USB_CHARGING ? "yes" : "no", src_name(p.src), sysinfo_charge_pin(), st, idle, holds);
+               sysinfo_charging() ? "yes" : "no", src_name(p.src), hibernate_chg_en(), sysinfo_charge_pin(), st, idle,
+               holds);
         radio_line();
         return 0;
     }

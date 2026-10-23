@@ -27,20 +27,24 @@ bool  vitals_tz_valid(const char *rule);            /* 1..47 chars of [A-Za-z0-9
 typedef struct { const char *label; const char *rule; } vitals_tz_t;
 extern const vitals_tz_t vitals_tz_presets[];       /* NULL-terminated, US Pacific first */
 
-/* Where the power comes from, one sample (1 Hz). mv is the INA226 bus voltage, ma + = discharging,
-   chg_pin as sysinfo_charge_pin (-1 unreadable, 0 low = charging, 1 high). No pack (mv < 5500)
-   -> PWR_UNKNOWN, never PWR_BATTERY. This is the instantaneous guess, with hysteresis from prev;
-   a positive current alone does not prove battery, because a pack under load can supply current
-   while USB is still plugged in. vitals_src_step applies the sustained rule below. */
-power_src_t vitals_power_src(int mv, int ma, int chg_pin, power_src_t prev);
+/* Charging = a charge current under VITALS_CHG_MA (-5 mA, ma + = discharging). PT23. */
+#define VITALS_CHG_MA (-5)
+bool  vitals_charging(int ma);
 
-/* No VBUS signal is known for this board, so USB -> battery is decided from a pattern: the charge
-   pin not low, the bus below 8.25 V and a battery-like current for VITALS_BATT_SAMPLES samples in a
-   row (the previous source is reported meanwhile; unknown after a boot). Battery -> USB happens at
-   once only when the pin goes low or the current goes negative; a low current alone stays battery. */
+/* Where the power comes from, one sample (1 Hz), from the INA226 alone (PT23: the charge pin is not
+   evidence). mv is the bus voltage, ma + = discharging. No pack (mv < 5500) -> PWR_UNKNOWN, never
+   PWR_BATTERY. ma < -5 -> PWR_USB_CHARGING; else mv >= 8250 -> PWR_USB_STANDBY; else ma >= 20 -> PWR_BATTERY
+   (a candidate: vitals_src_step wants it sustained, because a pack under load can supply current while USB is
+   still plugged in); else no evidence: keep prev (PWR_USB_CHARGING becomes PWR_USB). */
+power_src_t vitals_power_src(int mv, int ma, power_src_t prev);
+
+/* No VBUS signal is known for this board, so USB -> battery is decided from a pattern: the bus below
+   8.25 V and >= 20 mA out of the pack for VITALS_BATT_SAMPLES samples in a row (the previous source is
+   reported meanwhile; unknown after a boot). Battery -> USB happens at once only on a charge current
+   (< -5 mA) or a bus at 8.25 V; a low current alone stays battery. */
 #define VITALS_BATT_SAMPLES 10
 typedef struct { power_src_t src; int batt_n; } vitals_src_t;
-power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma, int chg_pin);
+power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma);
 
 /* Settings clamps: 0 stays 0 (never); a value in the gap goes to the nearest end of the range. */
 int  vitals_clamp_or_zero(int v, int lo, int hi);

@@ -162,6 +162,13 @@ static void load_rows(void)
 
 uint8_t power_bench_tag(void) { return s_running && s_step >= 0 ? (uint8_t)(0x10 + s_step) : 0; }
 
+/* USB by the INA226 alone (PT23): a charge current, or vitals already reads a USB source */
+static bool usb_now(void)
+{
+    power_info_t p = sysinfo_power();
+    return sysinfo_charging() || p.src == PWR_USB || p.src == PWR_USB_CHARGING || p.src == PWR_USB_STANDBY;
+}
+
 /* Sleeps up to secs seconds in 1 s slices, or until done() (may be NULL); false if aborted. */
 static bool wait_s(int secs, bool (*done)(void))
 {
@@ -170,7 +177,7 @@ static bool wait_s(int secs, bool (*done)(void))
         if (done && done()) break;
         vTaskDelay(pdMS_TO_TICKS(1000));
         /* USB mid-step: keep going (the rest of the run is still useful) but the step won't be "ok" */
-        if (!s_fast && (sysinfo_power().current_a < 0 || sysinfo_charge_pin_last() == 0)) s_usb_seen = true;
+        if (!s_fast && usb_now()) s_usb_seen = true;
     }
     return !s_abort;
 }

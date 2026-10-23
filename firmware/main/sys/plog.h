@@ -9,7 +9,7 @@ extern "C" {
 typedef struct { uint32_t t_s; uint16_t mv; int16_t ma; uint16_t mw; uint8_t tag; uint8_t flags; } plog_sample_t;
 #define PLOG_F_PIN_LOW 1     /* charge pin read low */
 #define PLOG_F_PIN_OK 2      /* charge pin read OK */
-#define PLOG_F_CHARGING 4    /* current flowing in (ma < 0) or pin low: not a battery sample */
+#define PLOG_F_CHARGING 4    /* charge current under -5 mA (vitals_charging, PT23): not a battery sample */
 /* tag: power state 0..5 (power_state_t), 0x10+n for bench step n, 0x80|state for a check-in
  * (0x83 Radio off, 0x84 Deep idle, 0x85 Hibernate);
  * flags bit0 = charge pin low, bit1 = pin read OK */

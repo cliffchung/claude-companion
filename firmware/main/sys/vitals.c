@@ -85,24 +85,25 @@ const vitals_tz_t vitals_tz_presets[] = {
     { NULL, NULL },
 };
 
-/* Thresholds (mA, + = discharging). Charging: enter at -50, leave at -20. Battery: enter at 20 (the old
-   80 mA read an idle device on battery as USB); once on battery a low current is not evidence of USB,
-   only the charge pin going low or the current going below -5 mA is. A bus at or above 8.25 V with the
-   pin not low is a full pack on USB: standby, never battery (a full pack just unplugged reads
-   standby until it sags below 8.25 V). */
-power_src_t vitals_power_src(int mv, int ma, int chg_pin, power_src_t prev)
+bool vitals_charging(int ma) { return ma < VITALS_CHG_MA; }
+
+/* PT23: the INA226 alone (CHG_STAT reads 0 whether or not the pack charges). mA, + = discharging.
+   Charge current under -5 mA is USB at once; a bus at or above 8.25 V is a full pack on USB: standby,
+   never battery (a full pack just unplugged reads standby until it sags below 8.25 V); 20 mA or more out of
+   the pack is a battery sample (vitals_src_step wants VITALS_BATT_SAMPLES in a row). Anything else is no
+   evidence: keep the previous source (battery stays battery, a finished charge is still USB). */
+power_src_t vitals_power_src(int mv, int ma, power_src_t prev)
 {
     if (mv < 5500) return PWR_UNKNOWN;
-    if (chg_pin == 0) return PWR_USB_CHARGING;
-    if (ma < -50 || (prev == PWR_USB_CHARGING && ma < -20)) return PWR_USB_CHARGING;
+    if (vitals_charging(ma)) return PWR_USB_CHARGING;
     if (mv >= 8250) return PWR_USB_STANDBY;
-    if (ma >= 20 || (prev == PWR_BATTERY && ma >= -5)) return PWR_BATTERY;
-    return PWR_USB;
+    if (ma >= 20) return PWR_BATTERY;
+    return prev == PWR_USB_CHARGING ? PWR_USB : prev;
 }
 
-power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma, int chg_pin)
+power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma)
 {
-    power_src_t n = vitals_power_src(mv, ma, chg_pin, st->src);
+    power_src_t n = vitals_power_src(mv, ma, st->src);
     if (n != PWR_BATTERY) { st->batt_n = 0; st->src = n; return n; }
     if (st->src == PWR_BATTERY) return n;
     /* not on battery so far: a battery-like sample must repeat; meanwhile keep the previous source

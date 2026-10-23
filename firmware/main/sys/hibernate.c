@@ -37,7 +37,7 @@ static const char *TAG = "hib";
 #define HIB_MODE_BUILT HIB_MODE_POWEROFF
 /* Step 7 on USB: deep sleep wakes on the timer (proved); the PWROFF_PULSE power-off took (the board went
    dark with USB in); the RX8130 timer never switched it back on, so RTC is not a source; the side button
-   did (S1 on the PMS150's SW_PWR; the user's press, 2026-10-23, 2 h 9 min after the power-off). P60, P70. */
+   did (S1 on the PMS150's SW_PWR; the user's press, 2026-10-23, 2 h 9 min after the power-off). P60, P114. */
 #define HIB_SOURCES (HIB_SRC_TIMER | HIB_SRC_BUTTON)
 /* Step 4c: the keyboard (J9: SOC_3.3V or SYS_VIN, no expander switch) kept its A164 registers, amber at
    30%, through 60 s of deep sleep. Deep sleep only: a power-off drops SOC_3.3V. Ruling P61. */
@@ -62,7 +62,7 @@ static const hib_rail_t k_rails[] = {
     { "pwroff", EXP1, 4, false },         /* PWROFF_PULSE: driven only to power off */
     { "chg-qc", EXP1, 5, false },         /* nCHG_QC_EN (IP2326): left alone */
     { "chg-stat", EXP1, 6, false },       /* CHG_STAT (IP2326 LED): input, never driven */
-    { "chg-en", EXP1, 7, false },         /* CHG_EN (IP2326 EN): left alone */
+    { "chg-en", EXP1, 7, false },         /* CHG_EN (IP2326 EN): driven high at boot (charging on), never cut (PT22) */
 };
 
 const hib_rail_t *hibernate_rails(int *n)
@@ -446,6 +446,14 @@ static void sources_text(uint32_t s, char *b, size_t cap)
     size_t n = strlen(b);
     if (n) b[n - 1] = 0;
     else strlcpy(b, "none", cap);
+}
+
+int hibernate_chg_en(void)
+{
+    uint8_t dir = 0, out = 0, hiz = 0;
+    /* the output latch, as `power rails` shows it: the input register reads P7 as 0 even while it is driven high */
+    if (!reg_read(EXP1, 0x03, &dir) || !reg_read(EXP1, 0x05, &out) || !reg_read(EXP1, 0x07, &hiz)) return -1;
+    return (dir & 0x80) && !(hiz & 0x80) && (out & 0x80) ? 1 : 0;
 }
 
 static void rails_print(void)

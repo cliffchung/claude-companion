@@ -140,7 +140,17 @@ void app_main(void)
     hibernate_boot_early();   /* before any rail: a bench probe boot samples the INA226 and sleeps again here */
     s_dark_boot = hibernate_boot_kind() == POWER_BOOT_HIB_CHECKIN;
     bsp_io_expander_init();
-    bsp_io_expander1_init();
+    {   /* PT22: CHG_EN (0x44 P7, IP2326 EN via R59) high: the charger is off at the expander's pull-down. Polarity
+           from M5Tab5-UserDemo bsp_set_charge_en(true) and M5Unified Power_Class::setBatteryCharge (P7 high =
+           charge); measured -462 mA into the pack on USB (brownout-report.md). Level before direction, so the
+           pin never glitches; hibernate and power-off leave it alone (hibernate.c k_rails). */
+        esp_io_expander_handle_t ex1 = bsp_io_expander1_init();
+        if (ex1) {
+            esp_io_expander_set_level(ex1, 1u << 7, 1);
+            esp_io_expander_set_output_mode(ex1, 1u << 7, IO_EXPANDER_OUTPUT_MODE_PUSH_PULL);
+            esp_io_expander_set_dir(ex1, 1u << 7, IO_EXPANDER_OUTPUT);
+        }
+    }
     bsp_feature_enable(BSP_FEATURE_LCD, true);
     vTaskDelay(pdMS_TO_TICKS(50));   /* stagger the rails: four at once is a current spike on battery */
     bsp_feature_enable(BSP_FEATURE_TOUCH, true);

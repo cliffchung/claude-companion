@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
@@ -250,7 +251,7 @@ static bool on_battery_now(int *pct, bool *charging)
     int sim = s_sim_batt;
     if (sim >= 0) { *pct = sim; *charging = false; return true; }
     *pct = p.percent;
-    *charging = p.src == PWR_USB_CHARGING;
+    *charging = p.valid && vitals_charging((int)lroundf(p.current_a * 1000.0f));   /* PT23: charge current < -5 mA */
     return p.src == PWR_BATTERY;   /* vitals' source: unknown or no pack is never battery (PT6-PT8) */
 }
 

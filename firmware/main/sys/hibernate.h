@@ -31,7 +31,8 @@ const char *hibernate_cause_text(void); /* "timer", "rtc", "button-or-usb", "res
 bool hibernate_kbd_rail_survives(void);
 
 typedef struct { const char *name; uint8_t addr; uint8_t pin; bool cut; } hib_rail_t;
-const hib_rail_t *hibernate_rails(int *n);   /* every expander output the schematic names */
+const hib_rail_t *hibernate_rails(int *n);
+int hibernate_chg_en(void);   /* CHG_EN (0x44 P7) driven high (PT22): 1, else 0; -1 unreadable */   /* every expander output the schematic names */
 
 /* Before the rails come up (right after bsp_i2c_init): reads and clears "hib", the RX8130 flags and the
    wakeup cause; a bench probe boot samples the INA226 and goes back to sleep from here. Calls

@@ -145,7 +145,7 @@ the build before P60, which printed `sources=timer supported=no`).
 | `power hib test light 60` | back after ~63 s; the A164 held amber 30 % |
 | `power hib test off 60` (power-off + RX8130 60 s timer) | **the board powered off with USB in** (`E BOD: Brownout detector was triggered`, USB gone); the RX8130 timer (`ext=0x12 ctrl0=0x10 count=60: armed`) **did not switch it back on** within 120 s; still off at the time of writing; it needs the side button |
 | `power hib test rtc` | the same path as `off`: not repeated |
-| side button | **wakes it from power-off** (user-reported, 2026-10-23): the user's press brought it back at ~15:41, 2 h 9 min after the 13:32 power-off; the RX8130 timer never did. The power-on arrives as an HP watchdog reset (reason 7), like a deep-sleep wake (P70) |
+| side button | **wakes it from power-off** (user-reported, 2026-10-23): the user's press brought it back at ~15:41, 2 h 9 min after the 13:32 power-off; the RX8130 timer never did. The power-on arrives as an HP watchdog reset (reason 7), like a deep-sleep wake (P114) |
 
 - **Deep sleep wakes on the timer through a watchdog reset.** Every deep-sleep wake arrives as `ESP_RST_WDT`
   (hw reason 7, HP system reset from the HP watchdog) with no wakeup cause, about 0.5 s after the timer. The cause is
@@ -186,7 +186,7 @@ Each first screenshot showed `Waking: reconnecting to Mac` and no cards. `to_liv
 
 A normal boot after a flash reaches live in 45.6–45.9 s. The spec's 50–130 s holds at the low end.
 
-### Steps 10–11 (run after the press, on the branch HEAD 414703e plus the P70 fix)
+### Steps 10–11 (run after the press, on the branch HEAD 414703e plus the P114 fix)
 
 - **Step 10, `power bench start fast`** (15 steps with Tasks 8 and 9). The rows: `hibernate-light`, `floor` and
   `hibernate`, 3 probe cycles each, all `usb`, with `-` for mWh. `hibernate` shows 69 s in `seconds`

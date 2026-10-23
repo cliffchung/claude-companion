@@ -130,7 +130,7 @@ void power_log_sample(uint8_t tag)
     int pin = sysinfo_charge_pin_last();   /* sysinfo_poll just read it */
     uint16_t mv = (uint16_t)lroundf(p.bus_v * 1000.0f);
     int16_t ma = (int16_t)lroundf(p.current_a * 1000.0f);
-    bool charging = ma < 0 || pin == 0;
+    bool charging = vitals_charging(ma);   /* PT23: the pin is logged, never read as charging */
     plog_sample_t x = {
         .t_s = sysinfo_uptime_s(),
         .mv = mv,

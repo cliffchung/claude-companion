@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 #define C_PANEL 0x161b22
 #define C_LINE  0x2a323d
@@ -145,7 +146,7 @@ void ui_vitals_update(lv_obj_t *bar)
     /* battery */
     power_info_t pw = sysinfo_power();   /* one copy: percent and source agree */
     int pct = pw.valid ? pw.percent : -1;
-    bool charging = pw.src == PWR_USB_CHARGING;
+    bool charging = pw.valid && vitals_charging((int)lroundf(pw.current_a * 1000.0f));   /* PT23 */
     vitals_bat_level_t lv = vitals_bat_level(pct, charging);
     if (lv == VB_NONE) {
         lv_obj_add_flag(v->bat, LV_OBJ_FLAG_HIDDEN);

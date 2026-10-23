@@ -113,6 +113,11 @@ int sysinfo_charge_pin(void)
 
 int sysinfo_charge_pin_last(void) { return s_last_pin; }
 
+bool sysinfo_charging(void)
+{
+    return s_pwr.valid && vitals_charging((int)lroundf(s_pwr.current_a * 1000.0f));
+}
+
 void sysinfo_poll(void)
 {
     if (!s_ina) { s_pwr.valid = false; s_pwr.percent = -1; s_pwr.src = PWR_UNKNOWN; memset(&s_src, 0, sizeof(s_src)); return; }
@@ -126,11 +131,12 @@ void sysinfo_poll(void)
     s_batt_us = now;
     s_pwr.percent = vitals_batt_update(&s_batt, s_pwr.bus_v, s_pwr.current_a, dt);
     s_pwr.valid = true;
-    /* Charge status from IO expander 2 pin 6 (CHG_STAT) when available. */
+    /* CHG_STAT (IO expander 2 pin 6) for diagnostics only: it reads 0 whether or not the pack charges, so the
+       source comes from the INA226 alone (PT23) */
     int pin = sysinfo_charge_pin();
     s_last_pin = pin;
     if (pin >= 0) s_charge_stat_valid = true;
-    s_pwr.src = vitals_src_step(&s_src, (int)(s_pwr.bus_v * 1000.0f + 0.5f), (int)lroundf(s_pwr.current_a * 1000.0f), pin);
+    s_pwr.src = vitals_src_step(&s_src, (int)(s_pwr.bus_v * 1000.0f + 0.5f), (int)lroundf(s_pwr.current_a * 1000.0f));
 }
 
 power_info_t sysinfo_power(void) { return s_pwr; }
