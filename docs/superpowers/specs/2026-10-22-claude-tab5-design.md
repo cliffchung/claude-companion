@@ -41,7 +41,7 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   |---|---|
   | List sessions and their state | `claude agents --json` (`state: "blocked"` = needs you) |
   | Preview a session | `claude logs <id>` |
-  | Quick answer | `claude -p --resume <sessionId> -- '<text>'` (queues into the running background session) |
+  | Quick answer | attach-paste: `claude attach <id>` in a pty, bracketed paste of the text, Enter, then close (about 1.5 to 3 s; `-p --resume` is refused while the session runs) |
   | Take over | `claude attach <id>` in a terminal (pty) channel. ← returns to agent view and Ctrl+Z to the shell; the session keeps running. |
   | Stop | `claude stop <id>` |
 
@@ -71,10 +71,12 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   2.1.309: `-p --resume <sid> -- '--help me'` delivered the literal text). Before use,
   session ids are checked: short ids against `^[0-9a-f]{8}$`, session UUIDs against the standard
   UUID form.
-- **D5 — Input versus permission prompts.** Per the docs, a blocked session reports what it's
-  waiting for (`waitingFor`: "permission prompt" or "input needed"). The Tab5 offers a quick answer
-  for "input needed". For a permission prompt it offers **Open**, so you approve inside the session,
-  unless Plan 1 Task 5 shows that `-p --resume` can answer permission prompts.
+- **D5 — Input versus permission prompts.** Claude Code 2.1.309 has no `waitingFor` field, so the
+  Tab5 can't tell a permission prompt from an input request. Every blocked background session
+  (`state: "blocked"`) gets the answer field, plus **Open** (Ctrl+O) to answer inside the session. The
+  logs preview shows what it's waiting for. Quick answers go in as one bracketed paste, so no
+  stray keystroke can reach a permission dialog. `claude -p --resume` is used only for stopped
+  sessions. The recipe and timings are in `docs/superpowers/notes/2026-10-22-couch-path-check.md`.
 - **D6 — Fork Clientre5** (MIT, © 2026 Mozgi512), vendored in `firmware/` at upstream `252e07a`.
   - **Keep:** `ssh/` + `components/libssh` (LGPL-2.1; compliant because we publish the full
     source), `term/`, `servers/`, `net/` + `components/microlink` + `components/wireguard_lwip`,
@@ -85,7 +87,8 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   - **Leave the terminal font alone.** It carries the box-drawing and symbol glyphs that Claude
     Code's interface uses.
 - **D7 — Auth.** The Tab5 generates its own SSH key; Clientre5 supports key auth and pins host
-  keys in NVS. The Mac's `~/.ssh/authorized_keys` entry is limited to the tailnet:
+  keys in NVS. The device key lives in NVS and never leaves it; the public line is shown with the
+  `sshkey` console command. The Mac's `~/.ssh/authorized_keys` entry is limited to the tailnet:
   `from="100.64.0.0/10" ssh-ed25519 AAAA… claude-companion`. The Tailscale auth key is entered once
   on the device.
 - **D8 — Debuggability.** A USB serial console with `screenshot`: the P4 hardware encoder turns an
@@ -123,15 +126,21 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
 | USB serial | `/dev/cu.usbmodem211201` (check with `ls /dev/cu.usbmodem*`) |
 
 Known issues:
-- The C6's esp-hosted firmware reports `0.0.0` against host `3.0.7` ("major version mismatch").
-  If Wi-Fi won't connect, update the C6 firmware first.
+- Wi-Fi failed at boot because esp_hosted 3.0.10's Kconfig board choice defaults to the P4
+  Function-EV board and overrides the Tab5 SDIO pins. Fixed by `CONFIG_ESP32P4_TAB5_C6_BOARD=y` plus
+  pinning `espressif/esp_hosted` to `==3.0.10`. The C6 reporting firmware `0.0.0` ("major version
+  mismatch") is harmless: scan and connect work, so don't update the C6.
+- **Never open a login shell on the Mac.** The user's `.zshrc` autostarts tmux for interactive
+  logins, so a login shell would type into their live panes. The device always uses a pty exec
+  channel with an explicit `claude attach <id>`; a non-interactive zsh doesn't read `.zshrc`.
 - Board revision unknown. Upstream tested only board v3; it boots fine on this unit.
 - No microSD card inserted.
 
 ## Environment
 
 - Mac: Claude Code 2.1.309 at `~/.local/bin/claude`; login shell zsh; Tailscale installed and
-  running (find the IP with `tailscale ip -4`). **Remote Login is currently OFF.**
+  running (find the IP with `tailscale ip -4`). **Remote Login is ON** (own user only). The Mac's tailnet name is
+  `my-host` (100.64.0.18); the Tab5 is `tab5` (100.64.0.20).
 - ESP-IDF **v5.5.6** at `~/esp/esp-idf` (branch `release/v5.5`). Activate with `. ~/esp/esp-idf/export.sh`.
 - esptool 5.6.0 (global). cmake, ninja and dfu-util from Homebrew.
 - The Tab5 currently runs the Clientre5 v1.0 release image (verified by digest).
