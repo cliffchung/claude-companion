@@ -26,6 +26,7 @@
 #include "sys/power_log.h"
 #include "sys/power_bench.h"
 #include "sys/power_console.h"
+#include "sys/power.h"
 #include "sys/usb_mgr.h"
 #include "media/audio_player.h"
 #include "net/tailscale.h"
@@ -174,6 +175,7 @@ void app_main(void)
     cc_console_init();
     power_console_init();
     if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
+    power_init();
     xTaskCreate(idle_task, "idle_poll", 4096, NULL, 2, NULL);
     ESP_LOGI(TAG, "boot complete in %lld ms, free heap %lu",
              (esp_timer_get_time() - boot_started) / 1000, (unsigned long)esp_get_free_heap_size());

@@ -54,6 +54,12 @@ bool keyboard_post(const key_event_t *ev);        /* queue an event as if the A1
 void key_console_init(void);                      /* registers the `key` debug console command */
 void keyboard_set_layout(uint8_t layout);          /* kbd_layout_t */
 void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
+/* Who decides the light: kb_probe asks the source (not g_settings), so a keyboard plugged in
+   later picks up the current state. The source runs on the keyboard task. */
+void keyboard_set_led_source(void (*get)(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b));
+/* The values keyboard_set_led wrote last (zeros before the first write). */
+void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b);
+void keyboard_mark_absent(void);   /* debug: the keyboard task probes again, as on a hot-plug */
 void keyboard_usb_hid_report(const uint8_t *report, int len); /* called by USB HID glue */
 /* The default LVGL sink targets the focused text area. */
 void keyboard_lvgl_focus(void *lv_obj_textarea);   /* NULL to clear */

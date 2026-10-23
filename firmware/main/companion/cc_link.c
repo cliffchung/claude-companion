@@ -82,6 +82,7 @@ static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 static void lock(void) { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 static int64_t now_us(void) { return esp_timer_get_time(); }
+static int64_t s_last_ok_ms;   /* esp_timer ms of the last successful result, 0 = none */
 
 static void kick(void)
 {
@@ -684,6 +685,7 @@ static int refresh_once(int64_t deadline_us, bool *too_big)
     lock();
     memcpy(s_list, s_parse, sizeof(cc_session_t) * n);
     s_list_n = n;
+    s_last_ok_ms = now_us() / 1000;
     memcpy(subs, s_subs, sizeof(subs));
     unlock();
     for (int i = 0; i < MAX_SUBS; i++) {
@@ -866,6 +868,15 @@ void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx)
         if (!s_subs[i].cb) { s_subs[i].cb = cb; s_subs[i].ctx = ctx; break; }
     }
     unlock();
+}
+
+int64_t cc_poll_last_ok_ms(void)
+{
+    if (!s_lock) return 0;
+    lock();
+    int64_t t = s_last_ok_ms;
+    unlock();
+    return t;
 }
 
 int cc_poll_snapshot(cc_session_t *out, int cap)

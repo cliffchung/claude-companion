@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "companion/cc_sessions.h"
 #ifdef __cplusplus
@@ -65,6 +66,9 @@ typedef void (*cc_sessions_cb_t)(const cc_session_t *s, int n, void *ctx);
 void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx);
 /* Copies the last successful poll; returns the count, or -1 if there hasn't been one. */
 int cc_poll_snapshot(cc_session_t *out, int cap);
+/* The esp_timer time (ms) of the last successful result from the Mac, or 0 if there has been none.
+   Safe from any task; it does not block. */
+int64_t cc_poll_last_ok_ms(void);
 /* Wi-Fi hook (from the app's global Wi-Fi callback). */
 void cc_link_on_wifi(bool connected);
 

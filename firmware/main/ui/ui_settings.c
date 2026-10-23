@@ -4,6 +4,7 @@
 #include "settings/settings.h"
 #include "sys/sysinfo.h"
 #include "input/keyboard.h"
+#include "sys/power.h"
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
 #include "storage/sd.h"
@@ -67,30 +68,37 @@ static void led_bright_cb(lv_event_t *e)
 {
     int v = lv_slider_get_value(lv_event_get_target_obj(e));
     g_settings.kbd_led_bright = v;
-    keyboard_set_led(g_settings.kbd_led_mode, v, g_settings.kbd_led_rgb[0], g_settings.kbd_led_rgb[1], g_settings.kbd_led_rgb[2]);
+    power_kbd_light_refresh();
     if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save();
 }
 static void led_mode_cb(lv_event_t *e)
 {
     g_settings.kbd_led_mode = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
     settings_save();
-    keyboard_set_led(g_settings.kbd_led_mode, g_settings.kbd_led_bright, g_settings.kbd_led_rgb[0], g_settings.kbd_led_rgb[1], g_settings.kbd_led_rgb[2]);
+    power_kbd_light_refresh();
 }
-static const uint32_t s_led_presets[] = { 0x0080FF, 0xFFFFFF, 0xFF4040, 0x40FF40, 0xFFD700, 0xFF40FF, 0x00FFFF, 0xFF8000 };
+static void led_needs_cb(lv_event_t *e)
+{
+    g_settings.kbd_needs_light = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    settings_save();
+    power_kbd_light_refresh();
+}
+/* No gold or orange: amber on the keyboard means needs-you (pr_rgb_amber_like) */
+static const uint32_t s_led_presets[] = { 0x0080FF, 0xFFFFFF, 0xFF4040, 0x40FF40, 0xFF40FF, 0x00FFFF };
 static void led_color_menu_cb(int i, void *ud)
 {
     (void)ud; if (i < 0) return;
     uint32_t c = s_led_presets[i];
     g_settings.kbd_led_rgb[0] = c >> 16; g_settings.kbd_led_rgb[1] = (c >> 8) & 255; g_settings.kbd_led_rgb[2] = c & 255;
     g_settings.kbd_led_mode = 1;
-    keyboard_set_led(1, g_settings.kbd_led_bright, g_settings.kbd_led_rgb[0], g_settings.kbd_led_rgb[1], g_settings.kbd_led_rgb[2]);
+    power_kbd_light_refresh();
     settings_save(); ui_nav_refresh();
 }
 static void led_color_cb(lv_event_t *e)
 {
     (void)e;
-    const char *items[] = { "Blue", "White", "Red", "Green", "Yellow", "Magenta", "Cyan", "Orange" };
-    ui_menu(tr(STR_SET_KBD_LED), items, 8, led_color_menu_cb, NULL);
+    const char *items[] = { "Blue", "White", "Red", "Green", "Magenta", "Cyan" };
+    ui_menu(tr(STR_SET_KBD_LED), items, 6, led_color_menu_cb, NULL);
 }
 static void ss_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_screensaver_settings_create, NULL); }
 static void appearance_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_appearance_create, NULL); }
@@ -287,6 +295,7 @@ lv_obj_t *ui_settings_create(void *arg)
                    kbd_layout_cb, NULL);
     if (g_settings.kbd_layout != KBD_LAYOUT_STOCK) ui_label(c, tr(STR_SET_KBD_LAYOUT_NOTE), FONT_SMALL, UI_MUTED);
     ui_switch_row(c, tr(STR_SET_KBD_LED), g_settings.kbd_led_mode, led_mode_cb, NULL);
+    ui_switch_row(c, tr(STR_SET_KBD_NEEDS_LIGHT), g_settings.kbd_needs_light, led_needs_cb, NULL);
     slider_row(c, tr(STR_SET_KBD_LED_BRIGHT), 0, 100, g_settings.kbd_led_bright, led_bright_cb);
     snprintf(buf, sizeof(buf), "#%02X%02X%02X", g_settings.kbd_led_rgb[0], g_settings.kbd_led_rgb[1], g_settings.kbd_led_rgb[2]);
     lv_obj_t *lc = ui_setting_row(c, tr(STR_SET_KBD_LED), buf, led_color_cb, NULL);

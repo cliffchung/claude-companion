@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "companion/cc_cmd.h"
 #include "sys/vitals.h"
+#include "sys/power_rules.h"
 
 static const char *TAG = "settings";
 #define NS "app"
@@ -116,6 +117,12 @@ void settings_init(void)
             settings_save();
         }
         free(blob);
+    }
+    /* Amber on the keyboard means needs-you only: a saved gold or orange goes back to the default blue. */
+    if (pr_rgb_amber_like(((uint32_t)g_settings.kbd_led_rgb[0] << 16) | ((uint32_t)g_settings.kbd_led_rgb[1] << 8) |
+                          g_settings.kbd_led_rgb[2])) {
+        g_settings.kbd_led_rgb[0] = 0x00; g_settings.kbd_led_rgb[1] = 0x80; g_settings.kbd_led_rgb[2] = 0xFF;
+        settings_save();
     }
     /* Builds from the upstream fork stored its manifest URL as the default; drop it. */
     if (strstr(g_settings.ota_url, "github") && strstr(g_settings.ota_url, "Mozgi512/")) g_settings.ota_url[0] = 0;

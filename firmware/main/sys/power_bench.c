@@ -23,10 +23,16 @@ static const char *TAG = "bench";
 
 static bool step_always(void) { return true; }
 
-/* Tasks 3, 5, 6 and 8 add their steps here. */
+/* Off needs Task 5's power state: until then these steps are skipped. */
+static bool step_off_light_amber(void) { return false; }
+static bool step_off_light_off(void) { return false; }
+
+/* Tasks 5, 6 and 8 add their steps here. */
 static const bench_step_t k_steps[] = {
     { "settle", 60, step_always, NULL },
     { "active", 120, step_always, NULL },
+    { "off-light-amber", 90, step_off_light_amber, NULL },
+    { "off-light-off", 90, step_off_light_off, NULL },
 };
 #define STEP_COUNT (sizeof(k_steps) / sizeof(k_steps[0]))
 _Static_assert(STEP_COUNT <= BENCH_MAX, "too many bench steps: rows and log tag slots hold 16");

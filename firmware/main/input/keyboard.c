@@ -293,6 +293,9 @@ static bool kb_read(uint8_t reg, uint8_t *buf, size_t n)
     return s_dev && i2c_master_transmit_receive(s_dev, &reg, 1, buf, n, 50) == ESP_OK;
 }
 
+static void (*s_led_src)(uint8_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *);
+static volatile uint8_t s_last_led[5];   /* mode, bright, r, g, b of the last keyboard_set_led */
+
 static bool kb_probe(void)
 {
     if (!s_bus) return false;
@@ -308,8 +311,11 @@ static bool kb_probe(void)
     kb_write(REG_INT_CFG, s_layout ? 0x01 : 0x02);
     s_mode_dirty = false;
     kb_write(REG_EVENT_NUM, 0);     /* clear FIFO */
-    keyboard_set_led(g_settings.kbd_led_mode, g_settings.kbd_led_bright,
-                     g_settings.kbd_led_rgb[0], g_settings.kbd_led_rgb[1], g_settings.kbd_led_rgb[2]);
+    uint8_t m, br, r, g, b;
+    if (s_led_src) s_led_src(&m, &br, &r, &g, &b);
+    else { m = g_settings.kbd_led_mode; br = g_settings.kbd_led_bright; r = g_settings.kbd_led_rgb[0];
+           g = g_settings.kbd_led_rgb[1]; b = g_settings.kbd_led_rgb[2]; }
+    keyboard_set_led(m, br, r, g, b);
     return true;
 }
 
@@ -373,6 +379,8 @@ static void kb_task(void *arg)
 void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
 {
     if (!s_present && !s_dev) return;
+    s_last_led[0] = mode ? 1 : 0; s_last_led[1] = bright > 100 ? 100 : bright;
+    s_last_led[2] = r; s_last_led[3] = g; s_last_led[4] = b;
     kb_write(REG_BRIGHTNESS, bright > 100 ? 100 : bright);
     kb_write(REG_RGB_MODE, mode ? 1 : 0);
     if (mode) {
@@ -380,6 +388,15 @@ void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_
         if (s_dev) i2c_master_transmit(s_dev, w, 9, 50);
     }
 }
+
+void keyboard_set_led_source(void (*get)(uint8_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *)) { s_led_src = get; }
+
+void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    *mode = s_last_led[0]; *bright = s_last_led[1]; *r = s_last_led[2]; *g = s_last_led[3]; *b = s_last_led[4];
+}
+
+void keyboard_mark_absent(void) { s_present = false; s_i2c_held = false; }
 
 /* ---------------------------------------------------------- USB HID */
 static uint8_t s_usb_prev[6];

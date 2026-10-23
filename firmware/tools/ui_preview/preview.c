@@ -50,6 +50,7 @@ void keyboard_lvgl_focus(void *p) { focused_textarea = p; }
 void *keyboard_lvgl_focused(void) { return focused_textarea; }
 void keyboard_set_layout(uint8_t layout) { (void)layout; }
 void keyboard_set_led(uint8_t a,uint8_t b,uint8_t c,uint8_t d,uint8_t e) {}
+void power_kbd_light_refresh(void) {}
 ts_state_t tailscale_state(void)
 {
     int m = env_int("PREVIEW_TS", 2);

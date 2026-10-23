@@ -235,6 +235,7 @@ X(SS_SAVED, "Screensaver settings saved.") \
 X(SS_SELECT_FOLDER, "Please select a wallpaper folder.") \
 X(SET_KBD_LED, "Keyboard LED") \
 X(SET_KBD_LED_BRIGHT, "LED brightness") \
+X(SET_KBD_NEEDS_LIGHT, "Keyboard light shows needs-you") \
 X(SET_KBD_STATUS, "Keyboard: %s") \
 X(SET_KBD_LAYOUT, "Keyboard layout") \
 X(KBD_LAYOUT_STOCK, "As printed") \

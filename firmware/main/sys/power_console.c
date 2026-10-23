@@ -11,6 +11,8 @@
 #include "sys/power_log.h"
 #include "sys/power_bench.h"
 #include "sys/vitals.h"
+#include "sys/power.h"
+#include "input/keyboard.h"
 #include "settings/settings.h"
 
 static const char *src_name(power_src_t s)
@@ -27,7 +29,7 @@ static const char *src_name(power_src_t s)
 static int usage(void)
 {
     printf("usage: power | power log on|off|status|dump|clear | power resets [clear] | "
-           "power bench start [fast]|status|report|abort\n");
+           "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe]\n");
     return 1;
 }
 
@@ -63,6 +65,25 @@ static int cmd_power(int argc, char **argv)
             power_log_resets();
         }
         return 0;
+    } else if (strcmp(argv[1], "light") == 0) {
+        if (argc == 1 + 1) {
+            pr_led_t l;
+            char why[128];
+            power_kbd_light_explain(&l, why, sizeof(why));
+            printf("light: %u %u %02x %02x %02x (%s)\n", l.mode, l.bright, l.r, l.g, l.b, why);
+            uint8_t m, br, r, g, b;
+            keyboard_get_last_led(&m, &br, &r, &g, &b);
+            printf("kbd: %u %u %02x %02x %02x\n", m, br, r, g, b);
+            return 0;
+        }
+        if (argc == 4 && strcmp(argv[2], "test") == 0) {
+            if (strcmp(argv[3], "bind") == 0) power_kbd_light_test(POWER_LIGHT_TEST_BIND);
+            else if (strcmp(argv[3], "user") == 0) power_kbd_light_test(POWER_LIGHT_TEST_USER);
+            else if (strcmp(argv[3], "reprobe") == 0) power_kbd_light_test(POWER_LIGHT_TEST_REPROBE);
+            else return usage();
+            printf("ok\n");
+            return 0;
+        }
     } else if (strcmp(argv[1], "bench") == 0 && argc >= 3) {
         if (strcmp(argv[2], "start") == 0 && argc <= 4) {
             if (argc == 4 && strcmp(argv[3], "fast") != 0) return usage();
@@ -119,7 +140,7 @@ void power_console_init(void)
     debug_console_register(&clk);
     const esp_console_cmd_t cmd = {
         .command = "power",
-        .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort",
+        .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort | light [test bind|user|reprobe]",
         .func = cmd_power,
     };
     debug_console_register(&cmd);
