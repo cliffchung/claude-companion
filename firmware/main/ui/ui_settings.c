@@ -10,6 +10,7 @@
 #include "net/wifi_mgr.h"
 #include "storage/sd.h"
 #include "companion/cc_link.h"
+#include "ui_dashboard.h"
 #include "bsp/m5stack_tab5.h"
 #include "esp_system.h"
 #include <stdio.h>
@@ -237,6 +238,20 @@ static void companion_path_cb(lv_event_t *e)
     ui_prompt("Claude path", "~/.local/bin/claude", cc_settings_claude_path(cur, sizeof(cur)), false, companion_path_prompt_cb, NULL);
 }
 
+static void companion_forget_yes(bool yes, void *ud)
+{
+    (void)ud;
+    if (!yes) return;
+    if (!ui_dashboard_forget_host_key()) ui_toast("Busy, try again");
+}
+static void companion_forget_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_confirm("Forget Mac host key?",
+               "Only do this if your Mac's SSH host key changed. The Tab5 will trust the next key it sees.",
+               companion_forget_yes, NULL);
+}
+
 static lv_obj_t *slider_row(lv_obj_t *parent, const char *label, int min, int max, int val, lv_event_cb_t cb)
 {
     lv_obj_t *card = ui_card(parent);
@@ -282,6 +297,7 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         cc_settings_server_name(mac, sizeof(mac));
         ui_setting_row(c, "Mac", mac[0] ? mac : "Not set", companion_mac_cb, NULL);
         ui_setting_row(c, "Claude path", cc_settings_claude_path(cpath, sizeof(cpath)), companion_path_cb, NULL);
+        ui_setting_row(c, "Forget Mac host key", "", companion_forget_cb, NULL);
         ui_label(c, "The Mac is one of your SSH servers. The Tab5 lists its Claude Code sessions and runs claude from this path.", FONT_SMALL, UI_MUTED);
         break;
     }

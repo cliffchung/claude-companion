@@ -33,6 +33,17 @@ typedef enum {
     CC_LINK_FAIL_AUTH,        /* the Mac refused the device key */
 } cc_link_fail_t;
 cc_link_fail_t cc_link_failure(void);
+/* Forgets the Mac's host key: erases the link's pin (the address it connects to) and the
+   terminal's (the server entry's host string, and its MagicDNS address), then has the link task
+   drop the session (the Tab5's own close: never counted toward the watch fallback) and connect
+   again at once, pinning the key it meets as new. ESP_OK with fp_out "SHA256:..." when that
+   connect happened within timeout_ms, ESP_ERR_TIMEOUT if not (the pins are cleared either way),
+   ESP_ERR_INVALID_STATE when no Mac is set up. Blocks: never call it from the LVGL task. */
+esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms);
+#define CC_FORGET_TIMEOUT_MS 30000   /* the UI and console wait: a tunnel wait (20 s) plus a connect */
+/* Debug (`companion hostkey corrupt`): overwrites the link's own pin with a wrong value and
+   reconnects, so the changed-key path shows without touching the Mac. host_out gets host:port. */
+esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap);
 /* Failed polls in a row while connected (0 when not connected); *too_big (may be NULL) is
    set when the last one failed because `agents` output didn't fit the poll buffer. */
 int cc_poll_failures(bool *too_big);

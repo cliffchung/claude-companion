@@ -95,6 +95,30 @@ bool ssh_known_host_trust(ssh_session session, const char *host, int port)
     return ok;
 }
 
+bool ssh_known_host_forget(const char *host, int port)
+{
+    if (!host || !host[0]) return false;
+    char key[16]; kh_key(host, port, key);
+    nvs_handle_t h;
+    if (nvs_open("kh", NVS_READWRITE, &h) != ESP_OK) return false;
+    bool had = nvs_erase_key(h, key) == ESP_OK;
+    if (had) nvs_commit(h);
+    nvs_close(h);
+    if (had) ESP_LOGW(TAG, "forgot the host key pin for %s:%d", host, port);
+    return had;
+}
+
+bool ssh_known_host_set_debug(const char *host, int port)
+{
+    if (!host || !host[0]) return false;
+    unsigned char wrong[32];
+    memset(wrong, 0xa5, sizeof(wrong));
+    char key[16]; kh_key(host, port, key);
+    bool ok = nvs_set_blob_ns("kh", key, wrong, sizeof(wrong));
+    ESP_LOGW(TAG, "debug: host key pin for %s:%d set to a wrong value", host, port);
+    return ok;
+}
+
 static int verify_host(ssh_client_t *c)
 {
     char fp[80];

@@ -138,6 +138,13 @@ esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, cha
 }
 esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; if (cap) err[0] = 0; return ESP_OK; }
 esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; if (cap) err[0] = 0; return ESP_OK; }
+static int s_forget_calls;
+esp_err_t cc_link_forget_host_key(char *fp, size_t cap, int ms) {
+    (void)ms; s_forget_calls++;
+    snprintf(fp, cap, "SHA256:Xq3v9yPreviewFingerprintOnly0123456789abcd");
+    return ESP_OK;
+}
+esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
 SCREEN(ui_servers_create) SCREEN(ui_files_create) SCREEN(ui_music_create)
 SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create)
@@ -170,6 +177,35 @@ static int snapshot(lv_obj_t *s, const char *path) {
         fputc(p[2],f); fputc(p[1],f); fputc(p[0],f);
     }
     fclose(f); lv_draw_buf_destroy(snap); return 0;
+}
+/* The screen with lv_layer_top (modals, toasts) blended over it. */
+static int snapshot_top(lv_obj_t *s, const char *path) {
+    int w=lv_obj_get_width(s), h=lv_obj_get_height(s);
+    lv_draw_buf_t *base=lv_snapshot_take(s,LV_COLOR_FORMAT_RGB888);
+    lv_draw_buf_t *top=lv_snapshot_take(lv_layer_top(),LV_COLOR_FORMAT_ARGB8888);
+    if(!base||!top) return 1;
+    FILE *f=fopen(path,"wb");
+    if (!f) return 1;
+    fprintf(f,"P6\n%d %d\n255\n",w,h);
+    for(int y=0;y<h;y++) for(int x=0;x<w;x++) {
+        uint8_t *p=base->data+y*base->header.stride+x*3;
+        uint8_t *q=top->data+y*top->header.stride+x*4;
+        unsigned a=q[3];
+        for (int c=2;c>=0;c--) fputc((q[c]*a+p[c]*(255-a))/255,f);
+    }
+    fclose(f); lv_draw_buf_destroy(base); lv_draw_buf_destroy(top); return 0;
+}
+/* The first clickable object at or above a label whose text is t, under o. */
+static lv_obj_t *find_clickable(lv_obj_t *o, const char *t) {
+    if (lv_obj_check_type(o,&lv_label_class) && !strcmp(lv_label_get_text(o),t)) {
+        while (o && !lv_obj_has_flag(o,LV_OBJ_FLAG_CLICKABLE)) o=lv_obj_get_parent(o);
+        return o;
+    }
+    for (uint32_t i=0;i<lv_obj_get_child_count(o);i++) {
+        lv_obj_t *r=find_clickable(lv_obj_get_child(o,i),t);
+        if (r) return r;
+    }
+    return NULL;
 }
 static uint64_t flushed_pixels;
 static unsigned flushes;
@@ -538,6 +574,29 @@ int main(int argc,char **argv) {
         lv_obj_t *s=lv_screen_active();
         lv_obj_update_layout(s); lv_refr_now(d);
         return snapshot(s,"/tmp/claude-dashboard.ppm");
+    }
+    if (argc>1 && !strcmp(argv[1],"settings-forget")) {
+        /* Settings -> Companion -> Forget Mac host key: the confirm, then the toast after OK. */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        ui_nav_home(); step(d,400);
+        ui_nav_push(ui_settings_create,NULL); step(d,400);
+        lv_obj_t *s=lv_screen_active();
+        lv_obj_t *row=find_clickable(s,"Forget Mac host key");
+        assert(row);
+        lv_obj_send_event(row,LV_EVENT_CLICKED,NULL); step(d,400);
+        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
+        assert(find_clickable(lv_layer_top(),"Forget Mac host key?") || lv_obj_get_child_count(lv_layer_top())>0);
+        int r = snapshot_top(s,"settings-forget.ppm");
+        assert(s_forget_calls==0);   /* nothing happens before Yes */
+        lv_obj_t *ok=find_clickable(lv_layer_top(),tr(STR_OK));
+        assert(ok);
+        lv_obj_send_event(ok,LV_EVENT_CLICKED,NULL); step(d,100); step(d,100);
+        assert(s_forget_calls==1);
+        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
+        r |= snapshot_top(lv_screen_active(),"settings-forget-toast.ppm");
+        puts("Settings forget host key: confirm, one request after OK, toast passed.");
+        return r;
     }
     if (argc>1 && !strcmp(argv[1],"dashboard-keys")) {
         /* The Ctrl+K shortcuts overlay over the dashboard, opened through the dashboard's own sink. */

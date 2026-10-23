@@ -84,8 +84,23 @@ static int cmd_companion(int argc, char **argv)
         printf("%s\n", cc_watch_status_text(st, sizeof(st)));
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "forget") == 0) {
+        char fp[80];
+        esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
+        if (e == ESP_OK) printf("New Mac key pinned: %s\n", fp);
+        else if (e == ESP_ERR_TIMEOUT) printf("Old key forgotten; reconnecting...\n");
+        else printf("No Mac set up\n");
+        return e == ESP_OK || e == ESP_ERR_TIMEOUT ? 0 : 1;
+    }
+    if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "corrupt") == 0) {
+        /* debug: shows the changed-key path without touching the Mac */
+        char hp[160];
+        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No Mac set up\n"); return 1; }
+        printf("debug: host key pin for %s overwritten; reconnecting\n", hp);
+        return 0;
+    }
     printf("usage: companion host <server name> | companion claude-path <path> | companion status |\n"
-           "       companion watch on|off|status|test-fallback\n");
+           "       companion watch on|off|status|test-fallback | companion hostkey forget|corrupt\n");
     return 1;
 }
 
@@ -213,7 +228,7 @@ static int cmd_wifi(int argc, char **argv)
 void cc_console_init(void)
 {
     const esp_console_cmd_t cmds[] = {
-        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | watch on|off|status|test-fallback", .func = cmd_companion },
+        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug)", .func = cmd_companion },
         { .command = "sessions", .help = "List Claude sessions from the last poll: <STATE> <id> <repo> <name>", .func = cmd_sessions },
         { .command = "reply", .help = "reply <id> <text...>: type a quick answer into a running background session", .func = cmd_reply },
         { .command = "logs", .help = "logs <id>: recent output of a session, ANSI stripped", .func = cmd_logs },

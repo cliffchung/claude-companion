@@ -43,6 +43,11 @@ typedef enum { KH_OK, KH_UNKNOWN, KH_CHANGED, KH_ERROR } kh_result_t;
 kh_result_t ssh_known_host_check(ssh_session session, const char *host, int port, char *fp_out, size_t fp_cap);
 /* Pins the connected session's server key for host:port. */
 bool ssh_known_host_trust(ssh_session session, const char *host, int port);
+/* Erases the pin for host:port; true if there was one. */
+bool ssh_known_host_forget(const char *host, int port);
+/* Debug: overwrites the pin for host:port with a wrong hash, so the next connect sees a
+   changed key (`companion hostkey corrupt`). */
+bool ssh_known_host_set_debug(const char *host, int port);
 
 #ifdef __cplusplus
 }

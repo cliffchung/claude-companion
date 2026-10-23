@@ -300,6 +300,21 @@ static void test_screen_real_input_after_question(void)
     TEST_ASSERT_TRUE(cc_screen_input_ready(buf));
 }
 
+/* Real attach output (2.1.309, ANSI intact, $HOME anonymized) of a session blocked on a Bash
+   permission dialog: "Do you want to proceed? 1. Yes 2. ... 3. ... auto mode 4. No" (R19). */
+static void test_screen_real_permission_dialog(void)
+{
+    FILE *f = fopen(FIXTURE_DIR "/screen_permission_dialog.bin", "rb");
+    TEST_ASSERT_NOT_NULL(f);
+    static char buf[65536];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    cc_strip_ansi(buf);
+    TEST_ASSERT_FALSE(cc_screen_input_ready(buf));
+    TEST_ASSERT_TRUE(cc_screen_is_permission_prompt(buf));
+}
+
 /* The real renderer: lines end in \r and unstyled spaces are cursor moves, so they vanish. */
 static const char REAL_DIALOG[] =
     "\xe2\x8f\xba" "Bashcommand\r curl-sIhttps://example.com\rDoyouwanttoproceed?\r"
@@ -401,6 +416,7 @@ int main(void)
     RUN_TEST(test_screen_permission_prompt);
     RUN_TEST(test_screen_input_prompt_is_not_permission);
     RUN_TEST(test_screen_real_input_after_question);
+    RUN_TEST(test_screen_real_permission_dialog);
     RUN_TEST(test_screen_input_ready);
     RUN_TEST(test_same_host);
     RUN_TEST(test_is_companion_server);

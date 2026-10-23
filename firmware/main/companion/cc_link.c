@@ -78,6 +78,13 @@ static bool s_poll_too_big;            /* the last refresh failed: output over J
 static volatile int s_floor;           /* cc_poll_set_floor: overrides s_rate when > 0 */
 static uint32_t s_gen;                 /* successful results published (blocks, heartbeats, polls) */
 static volatile int s_busy;            /* pastes and live checks in flight */
+/* Forget host key (cc_link_forget_host_key), all under s_lock: */
+static char s_pin_host[128];           /* the address the link pins: the one its last attempt used */
+static int s_pin_port;
+static char s_conn_fp[80];             /* the server key of the last successful connect */
+static uint32_t s_connects;            /* successful connects */
+static uint32_t s_forget_req, s_forget_ack, s_forget_ack_connects;
+static volatile bool s_forget;         /* the task tears down and reconnects now */
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 
@@ -258,7 +265,10 @@ const char *cc_link_status_text(char *b, size_t cap)
 
 cc_link_fail_t cc_link_failure(void)
 {
-    return s_state == LS_CONNECTED ? CC_LINK_FAIL_NONE : s_fail;
+    lock();
+    cc_link_fail_t f = s_state == LS_CONNECTED ? CC_LINK_FAIL_NONE : s_fail;
+    unlock();
+    return f;
 }
 
 int cc_poll_failures(bool *too_big)
@@ -340,8 +350,15 @@ static bool connect_once(const char *name)
         ESP_LOGW(TAG, "tunnel to %s not confirmed, trying anyway", host);
 
     /* a standing failure stays shown while the next attempt runs, so the line doesn't flicker */
+    lock();
+    strlcpy(s_pin_host, host, sizeof(s_pin_host));
+    s_pin_port = port;
+    unlock();
     ssh_session s = ssh_new();
-    if (!s) return false;
+    if (!s) {
+        set_fail(CC_LINK_FAIL_NONE, NULL);   /* out of memory: no old reason may stick */
+        return false;
+    }
     long timeout = 10;
     int nodelay = 1, verb = SSH_LOG_NOLOG;
     ssh_options_set(s, SSH_OPTIONS_HOST, host);
@@ -398,6 +415,8 @@ static bool connect_once(const char *name)
     s_drop = false;
     set_fail(CC_LINK_FAIL_NONE, NULL);
     lock();
+    strlcpy(s_conn_fp, fp, sizeof(s_conn_fp));
+    s_connects++;
     s_poll_fails = 0;
     s_poll_too_big = false;
     unlock();
@@ -1024,6 +1043,18 @@ static void link_task(void *arg)
             set_fail(CC_LINK_FAIL_NONE, NULL);
         }
         if (s_reset_backoff) { s_reset_backoff = false; attempt = 0; }
+        if (s_forget) {
+            /* cc_link_forget_host_key cleared the pins: drop the session (the Tab5's own
+               close, so the watch fallback doesn't count it) and connect again now */
+            s_forget = false;
+            teardown();
+            attempt = 0;
+            set_fail(CC_LINK_FAIL_NONE, NULL);
+            lock();
+            s_forget_ack = s_forget_req;
+            s_forget_ack_connects = s_connects;
+            unlock();
+        }
         if (s_sess && s_drop) {
             teardown();
             attempt = 0;     /* first retry right away, then back off */
@@ -1054,7 +1085,7 @@ static void link_task(void *arg)
             s_retry_at_us = now_us() + (int64_t)wait * 1000000;
             s_state = LS_WAITING;
             unlock();
-            while (now_us() < s_retry_at_us && !s_reconfig && !s_reset_backoff) {
+            while (now_us() < s_retry_at_us && !s_reconfig && !s_reset_backoff && !s_forget) {
                 int64_t left_ms = (s_retry_at_us - now_us()) / 1000;
                 drain_queue_down(pdMS_TO_TICKS(left_ms > 0 ? left_ms : 1));
             }
@@ -1296,6 +1327,69 @@ int cc_poll_snapshot(cc_session_t *out, int cap)
     if (n > 0) memcpy(out, s_list, sizeof(cc_session_t) * n);
     unlock();
     return n;
+}
+
+/* The host:port pins the link and the terminal use for the companion's Mac: the address the
+   link last tried, the server entry's host after a MagicDNS lookup, and the entry's
+   host string itself. Returns how many it filled (0: no Mac set up). */
+static int pin_targets(char hosts[3][128], int ports[3])
+{
+    char name[sizeof(g_settings.companion_server)];
+    lock();
+    strlcpy(name, g_settings.companion_server, sizeof(name));
+    unlock();
+    int n = 0;
+    int idx = name[0] ? server_index(name) : -1;
+    const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
+    if (sv) {
+        int port = sv->port > 0 ? sv->port : 22;
+        strlcpy(hosts[n], sv->host, sizeof(hosts[n])); ports[n++] = port;
+        char ip[16];
+        if (tailscale_resolve(sv->host, ip, sizeof(ip))) { strlcpy(hosts[n], ip, sizeof(hosts[n])); ports[n++] = port; }
+    }
+    lock();
+    if (s_pin_host[0]) { strlcpy(hosts[n], s_pin_host, sizeof(hosts[n])); ports[n++] = s_pin_port; }
+    unlock();
+    return n;
+}
+
+esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms)
+{
+    if (fp_out && fp_cap) fp_out[0] = 0;
+    if (!s_task || xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
+    char hosts[3][128]; int ports[3];
+    int n = pin_targets(hosts, ports);
+    if (n == 0) return ESP_ERR_INVALID_STATE;
+    for (int i = 0; i < n; i++) ssh_known_host_forget(hosts[i], ports[i]);
+    lock();
+    uint32_t want = ++s_forget_req;
+    unlock();
+    s_forget = true;
+    kick();
+    int64_t end = now_us() + (int64_t)timeout_ms * 1000;
+    for (;;) {
+        lock();
+        bool done = s_forget_ack >= want && s_connects != s_forget_ack_connects;
+        if (done && fp_out && fp_cap) strlcpy(fp_out, s_conn_fp, fp_cap);
+        unlock();
+        if (done) return ESP_OK;
+        if (now_us() >= end) return ESP_ERR_TIMEOUT;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)
+{
+    if (host_out && host_cap) host_out[0] = 0;
+    char hosts[3][128]; int ports[3];
+    int n = pin_targets(hosts, ports);
+    if (n == 0) return ESP_ERR_INVALID_STATE;
+    /* the last target is the link's own pin when it has connected, else the resolved entry */
+    if (!ssh_known_host_set_debug(hosts[n - 1], ports[n - 1])) return ESP_FAIL;
+    if (host_out && host_cap) snprintf(host_out, host_cap, "%s:%d", hosts[n - 1], ports[n - 1]);
+    s_drop = true;   /* reconnect, so the next connect meets the wrong pin */
+    kick();
+    return ESP_OK;
 }
 
 void cc_link_on_wifi(bool connected)

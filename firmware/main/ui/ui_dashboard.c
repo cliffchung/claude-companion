@@ -77,7 +77,7 @@ typedef struct {
     int64_t at_ms;
 } note_t;
 
-typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK } job_type_t;
+typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY } job_type_t;
 typedef struct {
     job_type_t type;
     unsigned token;        /* which request this is (actions only) */
@@ -132,9 +132,30 @@ static char *s_logs_buf;   /* worker only */
 static void res_lock(void);
 static void res_unlock(void);
 
+/* Forget host key: the worker's result, shown by forget_toast_cb on the LVGL task. */
+static char s_forget_toast[128];
+
+static void forget_toast_cb(void *arg)
+{
+    (void)arg;
+    ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
+}
+
+static void run_forget(void)
+{
+    char fp[80];
+    esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
+    ESP_LOGI(TAG, "forget host key: %s %s", esp_err_to_name(e), fp);
+    if (e == ESP_OK) snprintf(s_forget_toast, sizeof(s_forget_toast), "New Mac key pinned: %s", fp);
+    else if (e == ESP_ERR_TIMEOUT) strlcpy(s_forget_toast, "Old key forgotten; reconnecting\xe2\x80\xa6", sizeof(s_forget_toast));
+    else strlcpy(s_forget_toast, "No Mac set up", sizeof(s_forget_toast));
+    ui_async(forget_toast_cb, NULL);
+}
+
 static void run_job(const job_t *j)
 {
     char claude[64], cmd[192], msg[160] = "";
+    if (j->type == JOB_FORGET_KEY) { run_forget(); return; }
     cc_settings_claude_path(claude, sizeof(claude));
     if (j->type == JOB_LOGS) {
         bool ok = false;
@@ -238,6 +259,17 @@ static void subscribe_when_ready(void)
     cc_poll_subscribe(poll_cb, NULL);
     subscribed = true;
     s_poll_gen++;
+}
+
+bool ui_dashboard_forget_host_key(void)
+{
+    init_once();
+    job_t *j = heap_caps_calloc(1, sizeof(job_t), MALLOC_CAP_SPIRAM);   /* job_t holds an answer */
+    if (!j) return false;
+    j->type = JOB_FORGET_KEY;
+    bool ok = job_post(j);
+    heap_caps_free(j);
+    return ok;
 }
 
 /* ------------------------------------------------------------------ helpers */

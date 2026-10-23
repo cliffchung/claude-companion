@@ -82,8 +82,9 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   (`state: "blocked"`) gets the answer field, plus **Open** (Ctrl+O) to answer inside the session. The
   logs preview shows what it's waiting for. Answers are pasted; Ctrl+U and the final CR go
   outside the paste, so the device types only when the screen's last `❯` line is the empty input
-  prompt (fail-closed, R19), and otherwise offers Open. A real permission dialog has not been
-  captured on this Mac. Only running background sessions can be answered: a stopped card shows
+  prompt (fail-closed, R19), and otherwise offers Open. A real Bash permission dialog from
+  2.1.309 is captured (`firmware/test/host/fixtures/screen_permission_dialog.bin`, taken with
+  `firmware/tools/capture_attach_screen.py`); the gate refuses it and the dialog matcher knows it. Only running background sessions can be answered: a stopped card shows
   "Stopped" with no answer field, and the console `reply` refuses it. The device never runs
   `claude -p --resume` (it is refused while a session runs, and a stopped-session reply is not
   built yet). The recipe and timings are in `docs/superpowers/notes/2026-10-22-couch-path-check.md`.
@@ -99,9 +100,14 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
 - **D7 — Auth.** The Tab5 generates its own SSH key; Clientre5 supports key auth and pins host
   keys in NVS. The companion link pins the first key it sees without asking (it has no screen to
   ask on), and refuses a changed key; the dashboard then says so. The SSH terminal asks before it
-  pins. The two pins can differ: the link pins the address it connects to (the tailnet IP after a
-  MagicDNS lookup), the terminal pins the server entry's host string. They agree today because the
-  Mac entry is an IP; with a MagicDNS name there, the first take-over would ask again. The device key lives in NVS and never leaves it; the public line is shown with the
+  pins. Both pin the address they connect to: the server entry's host, or the tailnet IP after a
+  MagicDNS lookup, so they share one pin for the Mac and the terminal asks only if it reaches the Mac
+  by another address (a MagicDNS lookup that failed on one side). A changed key is cleared from
+  Settings → Companion → **Forget Mac host key** (or the console's `companion hostkey forget`), after
+  a confirm. It erases both pins and reconnects the link, which pins the key it meets and shows its
+  fingerprint in a toast (`New Mac key pinned: SHA256:…`) to compare with
+  `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the Mac. The terminal then finds that pin and
+  does not ask again (P76). The device key lives in NVS and never leaves it; the public line is shown with the
   `sshkey` console command. The Mac's `~/.ssh/authorized_keys` entry is limited to the tailnet:
   `from="100.64.0.0/10" ssh-ed25519 AAAA… claude-companion`. The Tailscale auth key is entered once
   on the device.
