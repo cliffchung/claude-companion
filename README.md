@@ -7,7 +7,12 @@ you answer — by keyboard, voice, or camera — without switching windows.
 Built for the **M5Stack Tab5** (ESP32-P4 + ESP32-C6, 5" 1280×720 touch, physical keyboard),
 but the bridge and web dashboard run anywhere, so you can use it from a browser today.
 
-> Status: **M0 — core works.** Firmware (M2) is next. See [Roadmap](#roadmap).
+> **Direction (2026-10-22):** the device now talks to the **Claude API directly**: chat, vision and
+> Managed Agents sessions, with a UI we fully control. The firmware is a fork of
+> [Clientre5](https://github.com/Mozgi512/Clientre5) (MIT) in `firmware/`. Read the
+> [design spec](docs/superpowers/specs/2026-10-22-claude-tab5-design.md) and
+> [Plan 1](docs/superpowers/plans/2026-10-22-foundation-chat.md). The SSH and bridge material below
+> is the earlier direction, kept as an optional module.
 
 ---
 
