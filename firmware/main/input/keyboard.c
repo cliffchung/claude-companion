@@ -1,7 +1,9 @@
 #include "keyboard.h"
+#include "key_log.h"
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -473,38 +475,20 @@ void keyboard_usb_hid_report(const uint8_t *rep, int len)
 }
 
 /* ------------------------------------------------------- key log */
-static bool s_key_log;
+static volatile bool s_key_log;             /* set on the console task, read by the drain */
+static int64_t s_key_log_since_ms;
 
-void keyboard_set_log(bool on) { s_key_log = on; }
-
-static const char *sk_name(special_key_t k)
+void keyboard_set_log(bool on)
 {
-    static const char *const names[] = {
-        "none", "enter", "esc", "backspace", "tab", "up", "down", "left", "right",
-        "home", "end", "pgup", "pgdn", "insert", "delete",
-        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-        "ime-toggle", "kana-mode", "ime-ascii", "ime-kana",
-    };
-    return (unsigned)k < sizeof(names) / sizeof(names[0]) ? names[k] : "?";
+    s_key_log_since_ms = esp_timer_get_time() / 1000;
+    s_key_log = on;
 }
 
-/* key: type=<char|special> cp=<'c' or hex> key=<name> mods=<ctrl,shift,...> */
 static void key_log(const key_event_t *ev, bool swallowed)
 {
-    char cp[16], mods[32] = "";
-    if (ev->type == KEY_EV_CHAR && ev->cp >= 0x20 && ev->cp <= 0x7e) snprintf(cp, sizeof(cp), "'%c'", (char)ev->cp);
-    else snprintf(cp, sizeof(cp), "0x%lx", (unsigned long)ev->cp);
-    static const struct { uint8_t bit; const char *name; } m[] = {
-        { MOD_CTRL, "ctrl" }, { MOD_SHIFT, "shift" }, { MOD_ALT, "alt" }, { MOD_META, "meta" },
-    };
-    for (size_t i = 0; i < sizeof(m) / sizeof(m[0]); i++) {
-        if (!(ev->mods & m[i].bit)) continue;
-        if (mods[0]) strlcat(mods, ",", sizeof(mods));
-        strlcat(mods, m[i].name, sizeof(mods));
-    }
-    printf("key: type=%s cp=%s key=%s mods=%s%s\n", ev->type == KEY_EV_CHAR ? "char" : "special", cp,
-           ev->type == KEY_EV_SPECIAL ? sk_name(ev->key) : "none", mods[0] ? mods : "none",
-           swallowed ? " (wake key, swallowed)" : "");
+    char line[KEY_LOG_LINE_MAX];
+    key_log_format(ev, swallowed, line, sizeof(line));
+    printf("%s\n", line);
 }
 
 /* ------------------------------------------------------- LVGL bridge */
@@ -513,6 +497,10 @@ static void drain_timer_cb(lv_timer_t *t)
     (void)t;
     key_event_t ke;
     int n = 0;
+    if (s_key_log && key_log_expired(s_key_log_since_ms, esp_timer_get_time() / 1000)) {
+        s_key_log = false;
+        printf("key: log off (%d min auto-off)\n", KEY_LOG_AUTO_OFF_MS / 60000);
+    }
     while (n++ < 16 && xQueueReceive(s_q, &ke, 0) == pdTRUE) {
         bool take = power_take_key();
         if (s_key_log) key_log(&ke, !take);

@@ -67,7 +67,7 @@ static int cmd_key(int argc, char **argv)
     }
     if (argc == 3 && strcmp(argv[1], "log") == 0 && (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0)) {
         keyboard_set_log(strcmp(argv[2], "on") == 0);
-        printf("key: log %s\n", argv[2]);
+        printf("key: log %s%s\n", argv[2], strcmp(argv[2], "on") == 0 ? " (typed text masked; off by itself after 5 min)" : "");
         return 0;
     }
     /* ctrl + any one printable ASCII character, as given (key ctrl ], key ctrl p) */

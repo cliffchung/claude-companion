@@ -87,6 +87,14 @@ static void test_overlay_lists_every_shortcut(void)
         TEST_ASSERT_TRUE_MESSAGE(any_line_has(need[i]), need[i]);
 }
 
+/* The spec's strings, pinned (review M3) */
+static void test_hint_and_toast_strings(void)
+{
+    TEST_ASSERT_EQUAL_STRING("Ctrl+O open \xc2\xb7 Ctrl+P settings \xc2\xb7 Ctrl+K keys", HK_DASH_HINT);
+    TEST_ASSERT_EQUAL_STRING("Ctrl+] to leave", HK_TAKEOVER_TOAST);
+    TEST_ASSERT_EQUAL(3000, HK_TAKEOVER_TOAST_MS);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -96,5 +104,6 @@ int main(void)
     RUN_TEST(test_dashboard_ctrl_never_typed);
     RUN_TEST(test_ctrl_m_is_not_enter);
     RUN_TEST(test_overlay_lists_every_shortcut);
+    RUN_TEST(test_hint_and_toast_strings);
     return UNITY_END();
 }
