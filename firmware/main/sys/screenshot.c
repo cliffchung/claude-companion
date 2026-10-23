@@ -14,6 +14,8 @@
 #include "storage/sd.h"
 #include "ui/ui.h"
 #include "sys/display_ctl.h"
+#include "sys/power.h"
+#include "esp_timer.h"
 
 static const char *TAG = "shot";
 static bool s_armed = true;
@@ -104,6 +106,7 @@ bool screenshot_dump_usb(void)
     size_t in_cap = 0, out_cap = 0;
 
     if (!lvgl_port_lock(0)) return false;
+    int64_t locked_us = esp_timer_get_time();
     snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB888);
     if (snap) {
         w = snap->header.w; h = snap->header.h;
@@ -113,7 +116,11 @@ bool screenshot_dump_usb(void)
             for (uint32_t y = 0; y < h; y++)
                 memcpy(in + (size_t)y * w * 3, (const uint8_t *)snap->data + (size_t)y * snap->header.stride, (size_t)w * 3);
             /* lv_layer_top (toasts, the mini player, the sleep notice) is drawn over the screen */
-            if (lv_obj_get_child_count(lv_layer_top()) > 0) {
+            /* the transparent wake shield alone adds nothing: skip the second full-screen render */
+            uint32_t top_n = lv_obj_get_child_count(lv_layer_top());
+            lv_obj_t *shield = power_shield_obj();
+            bool only_shield = top_n == 1 && shield && lv_obj_get_child(lv_layer_top(), 0) == shield;
+            if (top_n > 0 && !only_shield) {
                 lv_draw_buf_t *top = lv_snapshot_take(lv_layer_top(), LV_COLOR_FORMAT_ARGB8888);
                 if (top && top->header.w == w && top->header.h == h) {
                     for (uint32_t y = 0; y < h; y++) {
@@ -131,6 +138,7 @@ bool screenshot_dump_usb(void)
         }
     }
     lvgl_port_unlock();
+    ESP_LOGI(TAG, "screenshot held the LVGL lock %lld ms", (long long)(esp_timer_get_time() - locked_us) / 1000);
     if (snap) { lv_draw_buf_destroy(snap); }
     if (!snap || !in) { ESP_LOGE(TAG, "snapshot/alloc failed"); goto done; }
 

@@ -23,6 +23,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #ifndef UI_PREVIEW
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -115,7 +116,13 @@ static lv_obj_t *s_logs_lbl, *s_ta;
 static unsigned s_ticks;
 static int s_view_shown = -1;   /* the pr_cards_t the list is styled for (-1: a new screen) */
 
+/* LVGL's tick stops in Off (lvgl_port_stop), so TTLs and the open-check age use esp_timer on the
+   device. The preview has no esp_timer and drives lv_tick itself. */
+#ifdef UI_PREVIEW
 static int64_t mono_ms(void) { return (int64_t)lv_tick_get(); }
+#else
+static int64_t mono_ms(void) { return esp_timer_get_time() / 1000; }
+#endif
 
 /* ------------------------------------------------------------------ worker */
 

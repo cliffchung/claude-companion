@@ -134,8 +134,6 @@ static const pw_menu_t k_pw_dim = { "Dim after (s)", "dim", "s", k_dim_opts, N_O
 static const pw_menu_t k_pw_off = { "Screen off after (s)", "off", "s", k_off_opts, N_OPTS(k_off_opts) };
 static const pw_menu_t k_pw_deep = { "Deep idle after (min)", "deep-idle", "min", k_deep_opts, N_OPTS(k_deep_opts) };
 static const pw_menu_t k_pw_hib = { "Hibernate after (h)", "hibernate", "h", k_hib_opts, N_OPTS(k_hib_opts) };
-static char s_pw_items[16][32];
-static const char *s_pw_ptrs[16];
 
 static void pw_value(const pw_menu_t *m, int v, char *buf, size_t cap)
 {
@@ -152,11 +150,13 @@ static void pw_menu_cb(int i, void *ud)
 static void pw_row_cb(lv_event_t *e)
 {
     const pw_menu_t *m = lv_event_get_user_data(e);
-    for (int i = 0; i < m->n; i++) {
-        pw_value(m, m->opts[i], s_pw_items[i], sizeof(s_pw_items[i]));
-        s_pw_ptrs[i] = s_pw_items[i];
+    char items[16][32];   /* ui_menu's buttons copy the labels */
+    const char *ptrs[16];
+    for (int i = 0; i < m->n && i < 16; i++) {
+        pw_value(m, m->opts[i], items[i], sizeof(items[i]));
+        ptrs[i] = items[i];
     }
-    ui_menu(m->title, s_pw_ptrs, m->n, pw_menu_cb, (void *)m);
+    ui_menu(m->title, ptrs, m->n < 16 ? m->n : 16, pw_menu_cb, (void *)m);
 }
 static void pw_row(lv_obj_t *parent, const pw_menu_t *m, int v, const char *override)
 {
@@ -186,9 +186,10 @@ static void tz_menu_cb(int i, void *ud)
 static void tz_cb(lv_event_t *e)
 {
     (void)e;
+    const char *ptrs[16];
     int n = 0;
-    while (vitals_tz_presets[n].label && n < 16) { s_pw_ptrs[n] = vitals_tz_presets[n].label; n++; }
-    ui_menu("Time zone", s_pw_ptrs, n, tz_menu_cb, NULL);
+    while (vitals_tz_presets[n].label && n < 16) { ptrs[n] = vitals_tz_presets[n].label; n++; }
+    ui_menu("Time zone", ptrs, n, tz_menu_cb, NULL);
 }
 static const char *tz_label(void)
 {

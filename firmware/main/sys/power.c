@@ -447,6 +447,18 @@ static void shield_up_locked(void)
 }
 
 bool power_shield_up(void) { return s_shield != NULL; }
+void *power_shield_obj(void) { return s_shield; }
+
+/* While not Active the shield stays the top layer's last child: a toast or the music bar made
+   while Dim must not sit above it. Dark needs nothing: LVGL is paused, and the wake re-raises it. */
+static void shield_on_top(void)
+{
+    if (!s_shield || s_state == PS_ACTIVE || s_dark) return;
+    dlock(__LINE__);
+    if (s_shield && lv_obj_get_index(s_shield) != (int32_t)lv_obj_get_child_count(lv_layer_top()) - 1)
+        lv_obj_move_foreground(s_shield);
+    bsp_display_unlock();
+}
 
 /* After a wake: gone PR_SWALLOW_MS later when no press is down. */
 static void shield_expire(int64_t now)
@@ -492,8 +504,13 @@ static void lvgl_quiet_locked(void)
     lvgl_port_stop();
     lv_timer_enable(true);
     s_paused_n = 0;
-    for (lv_timer_t *t = lv_timer_get_next(NULL); t && s_paused_n < PAUSED_MAX; t = lv_timer_get_next(t)) {
+    static bool s_cap_logged;
+    for (lv_timer_t *t = lv_timer_get_next(NULL); t; t = lv_timer_get_next(t)) {
         if (lv_timer_get_paused(t)) continue;
+        if (s_paused_n == PAUSED_MAX) {
+            if (!s_cap_logged) { s_cap_logged = true; ESP_LOGW(TAG, "LVGL quiet: over %d timers, the rest keep running", PAUSED_MAX); }
+            break;
+        }
         lv_timer_pause(t);
         s_paused[s_paused_n++] = t;
     }
@@ -558,6 +575,15 @@ static void leave_dark(void)
     s_dark = false;
 }
 
+/* LVGL task: a needs-you wake goes to the dashboard. Built here, not on the power task's 4 KB
+   stack: a screen build and the old screen's delete were sized for the LVGL task's 16 KB. */
+static void nav_home_async(void *arg)
+{
+    (void)arg;
+    /* off the dashboard polling is slow; an SSH Terminal is left alone (it would close) */
+    if (!ui_nav_is_top(ui_dashboard_create) && !ui_terminal_is_top()) ui_nav_home();
+}
+
 /* The wake. The state stays non-Active until the last step, so the drain keeps swallowing. */
 static void do_wake(void)
 {
@@ -576,22 +602,26 @@ static void do_wake(void)
     s_wake_seq++;
     dlock(__LINE__);
     lv_display_trigger_activity(NULL);
-    /* off the dashboard polling is slow; an SSH Terminal is left alone (it would close) */
-    if (why == PW_NEEDS_YOU && !ui_nav_is_top(ui_dashboard_create) && !ui_terminal_is_top()) ui_nav_home();
+    if (why == PW_NEEDS_YOU) lv_async_call(nav_home_async, NULL);
+    if (s_shield) lv_obj_move_foreground(s_shield);   /* over anything added to the top layer meanwhile */
     bsp_display_unlock();
     cc_poll_set_floor(0);
     keyboard_set_quiet(false);
     power_poll_kick();   /* back to 1 Hz at once */
     int64_t now = now_ms();
+    /* the state and the pending flag change together: an input in between would otherwise see a
+       non-Active state with no wake pending and record a second wake */
     taskENTER_CRITICAL(&s_mux);
     if (target == PS_DIM) s_last_input_ms = now - (int64_t)g_settings.pw_dim_s * 1000;   /* lands in Dim */
     else if (why == PW_RULE) s_last_input_ms = now;
+    s_state = target;
     s_wake_pending = false;
     s_pinned = false;
     taskEXIT_CRITICAL(&s_mux);
     s_hib_blocked = false;
-    set_state(target);
-    ESP_LOGI(TAG, "wake: %s from %s in %lld ms", power_wake_name(why), power_state_name(from), (long long)(now - t0));
+    ESP_LOGI(TAG, "state: %s -> %s", power_state_name(from), power_state_name(target));
+    ESP_LOGI(TAG, "wake: %s from %s in %lld ms (stack free %u B)", power_wake_name(why), power_state_name(from),
+             (long long)(now - t0), (unsigned)uxTaskGetStackHighWaterMark(NULL));
     apply_light(false);
 }
 
@@ -720,11 +750,13 @@ static void power_task(void *arg)
     int64_t next_light = 0;
     for (;;) {
         bool notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_poll_on ? TOUCH_POLL_MS : LOOP_MS)) > 0;
+        s_poll_on = s_dark && !s_poll_paused && display_ctl_board_version() != 1;   /* only this task writes it */
         touch_poll_step();
         handle_go();
         if (s_wake_pending) do_wake();
         needs_you_step();
         /* the time is read after the steps above: a wake just moved last input */
+        shield_on_top();
         shield_expire(now_ms());
         ladder_step(now_ms());
         int64_t now = now_ms();
@@ -846,8 +878,7 @@ void power_touch_text(char *buf, size_t cap)
 
 void power_touch_poll_pause(bool pause)
 {
-    s_poll_paused = pause;
-    if (s_dark) s_poll_on = !pause && display_ctl_board_version() != 1;
+    s_poll_paused = pause;   /* the power task derives s_poll_on from it */
     notify();
 }
 

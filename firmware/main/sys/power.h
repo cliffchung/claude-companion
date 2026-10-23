@@ -51,6 +51,7 @@ int64_t power_idle_ms(void);
 
 /* ---- the wake shield (a full-screen catcher on lv_layer_top while not Active) ---- */
 bool power_shield_up(void);                 /* LVGL task: gestures are ignored while it is up */
+void *power_shield_obj(void);               /* the shield (lv_obj_t *), or NULL; under the display lock */
 
 /* ---- console and bench helpers ---- */
 /* `power set <name> <n>` and Settings -> Power: the Settings clamps, then saves.
