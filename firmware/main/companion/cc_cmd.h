@@ -1,0 +1,15 @@
+#pragma once
+#include <stdbool.h>
+#include <stddef.h>
+
+bool cc_path_valid(const char *p);          /* only [A-Za-z0-9_./~-], 1-63 chars */
+bool cc_id_valid(const char *id);           /* ^[0-9a-f]{8}$ */
+bool cc_session_id_valid(const char *sid);  /* lowercase 8-4-4-4-12 hex UUID */
+bool cc_shell_quote(const char *in, char *out, size_t cap);   /* '...' with ' written as '\'' */
+bool cc_cmd_agents(const char *claude, char *out, size_t cap);
+bool cc_cmd_logs(const char *claude, const char *id, char *out, size_t cap);
+bool cc_cmd_reply(const char *claude, const char *sid, const char *text, char *out, size_t cap);
+bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap);
+/* Removes CSI and OSC escape sequences in place; returns the new length. */
+size_t cc_strip_ansi(char *s);
+/* Every builder returns false for an invalid path, id or sid, empty text, or output that doesn't fit cap. */

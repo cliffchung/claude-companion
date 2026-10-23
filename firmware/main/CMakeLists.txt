@@ -1,3 +1,4 @@
+# companion/ (cc_sessions.c, cc_cmd.c) is picked up by the glob below; both are pure C with no ESP-IDF headers.
 file(GLOB_RECURSE APP_SRCS
     "*.c")
 list(FILTER APP_SRCS EXCLUDE REGEX ".*/fonts/font_.*_unused\\.c$")
