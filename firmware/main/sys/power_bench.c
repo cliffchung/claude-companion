@@ -180,7 +180,8 @@ static void bench_task(void *arg)
         s_usb_seen = false;
         power_log_sum_reset((uint8_t)(0x10 + i));
         if (st->enter && !st->enter()) {
-            s_rows[i].status = ST_SKIPPED;
+            /* a probe step that got as far as "running" and came back failed to sleep: not "not built" */
+            s_rows[i].status = s_rows[i].status == ST_RUNNING ? ST_ABORTED : ST_SKIPPED;
             save_rows();
             continue;
         }
@@ -202,7 +203,8 @@ static void bench_task(void *arg)
     power_log_accept_charging(false);
     power_log_enable(log_was_on);
     s_running = false;
-    ESP_LOGI(TAG, "bench %s%s%s", done ? "done" : "aborted", s_reason ? ": " : "", s_reason ? s_reason : "");
+    ESP_LOGI(TAG, "bench %s%s%s (stack free %u B of 6144)", done ? "done" : "aborted", s_reason ? ": " : "",
+             s_reason ? s_reason : "", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     power_go(PS_ACTIVE);
     if (done) {
         bsp_display_lock(0);
@@ -299,8 +301,15 @@ power_bench_probe_t power_bench_probe_boot(bool have, uint16_t bus_mv, int16_t s
             r.done = 1;   /* power_bench_boot() finishes once the link is live */
         }
     }
+    if (!nvs_set_blob_ns("power", "probe", &r, sizeof(r))) {
+        /* M3: without the record every boot would re-read the same cycles left and sleep again */
+        row->status = ST_ABORTED;
+        save_rows();
+        nvs_erase_key_ns("power", "probe");
+        ESP_LOGE(TAG, "hib probe: the probe record didn't save: row aborted, booting on");
+        return POWER_BENCH_PROBE_DONE;
+    }
     save_rows();
-    nvs_set_blob_ns("power", "probe", &r, sizeof(r));
     if (r.done) return POWER_BENCH_PROBE_DONE;
     *sleep_s = r.fast ? PROBE_SLEEP_FAST_S : PROBE_SLEEP_S;
     *deep = true;   /* every probe cycle is timed, so a deep sleep (hibernate.c) */
@@ -321,6 +330,7 @@ static void bench_boot_task(void *arg)
     bsp_display_lock(0);
     ui_toast("Bench done. Plug USB back in.");
     bsp_display_unlock();
+    ESP_LOGI(TAG, "bench_boot: stack free %u B of 4096", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     vTaskDelete(NULL);
 }
 
@@ -340,7 +350,7 @@ void power_bench_boot(void)
         if (xTaskCreate(bench_task, "bench", 6144, NULL, 2, NULL) != pdPASS) s_running = false;
         return;
     }
-    if (xTaskCreate(bench_boot_task, "bench_boot", 3072, NULL, 2, NULL) != pdPASS) nvs_erase_key_ns("power", "probe");
+    if (xTaskCreate(bench_boot_task, "bench_boot", 4096, NULL, 2, NULL) != pdPASS) nvs_erase_key_ns("power", "probe");
 }
 
 void power_bench_start(bool fast)

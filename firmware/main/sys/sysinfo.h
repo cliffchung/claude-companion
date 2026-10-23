@@ -38,6 +38,9 @@ void sysinfo_ina226_power_down(void);        /* config 0x4520 (mode 000); the ne
 /* Early boot (before sysinfo_init): config, bus (1.25 mV LSB) and shunt (2.5 uV LSB) registers through a
    device of its own on bsp_i2c_get_handle(). False when the INA226 doesn't answer. */
 bool sysinfo_ina226_raw(uint16_t *config, uint16_t *bus, int16_t *shunt);
+/* Early boot: the RX8130's UTC time as an epoch, through a device of its own (the system clock starts at 0
+   after a power-off). False when it doesn't answer or holds no valid date. */
+bool sysinfo_rtc_epoch_raw(time_t *out);
 bool sysinfo_rtc_present(void);
 uint32_t sysinfo_uptime_s(void);
 const char *sysinfo_app_version(void);

@@ -45,6 +45,7 @@ static const char *TAG = "hib";
 #define EXP1 0x44
 #define PWROFF_PIN 4                      /* 0x44 P4 */
 #define RX8130_ADDR 0x32
+#define FALLBACK_BACKSTOP_S 3600          /* a power-off that didn't take: deep sleep, back after 60 min (I1) */
 
 static const hib_rail_t k_rails[] = {
     { "rf-antenna", EXP0, 0, false },     /* RF_PTH_L_INT_H_EXT: the antenna switch, not a supply */
@@ -200,7 +201,9 @@ void hibernate_boot_early(void)
     /* On this P4 (rev < 3) the timer wake from deep sleep goes through an HP watchdog reset (hw reason 7)
        on the way up, which clears the wakeup cause: so the time asleep against the timer decides it (the
        RTC keeps the time across deep sleep; after a power-off the clock starts again from 0). */
-    long asleep = (long)(time(NULL) - (time_t)r.epoch);
+    time_t now = time(NULL);
+    if (now < 1600000000) sysinfo_rtc_epoch_raw(&now);   /* after a power-off the system clock starts at 0 */
+    long asleep = (long)(now - (time_t)r.epoch);
     hib_wake_in_t in = { .wakeup_timer = c == ESP_SLEEP_WAKEUP_TIMER, .rtc_flags = rtc_flags,
                          .reset_poweron = rr == ESP_RST_POWERON,
                          .reset_deepsleep_or_wdt = rr == ESP_RST_DEEPSLEEP || rr == ESP_RST_WDT,
@@ -212,6 +215,11 @@ void hibernate_boot_early(void)
     hib_cause_t hc = hib_cause(&in);
     s_src = k_cause[hc].src;
     s_cause = k_cause[hc].name;
+    if ((rtc_flags & 0x18) && hc != HIB_CAUSE_RTC)
+        ESP_LOGW(TAG, "the RX8130 fired earlier without switching the board on (flags 0x%02x)", rtc_flags);
+    /* M4: a reset on the way down or mid-probe is not a hibernate wake: no Waking banner, no probe sample
+       (the probe row then reads "interrupted") */
+    if (hc == HIB_CAUSE_RESET) s_kind = POWER_BOOT_NORMAL;
     ESP_LOGI(TAG, "boot after hibernate: kind=%d cause=%s (wakeup %d, reset %d, hw reset 0x%x, rtc flags 0x%02x%s, asleep %lds)",
              (int)s_kind, s_cause, (int)c, (int)rr, (unsigned)esp_rom_get_reset_reason(0), rtc_flags,
              r.fell_back ? ", power-off fell back to deep sleep" : "", asleep);
@@ -235,6 +243,14 @@ void hibernate_boot_early(void)
 
 static bool s_live_done;
 
+static void store_live_task(void *arg)
+{
+    (void)arg;
+    uint32_t ms = s_to_live;
+    nvs_set_blob_ns("power", "hibl", &ms, sizeof(ms));
+    vTaskDelete(NULL);
+}
+
 static void on_sessions(const cc_session_t *s, int n, void *ctx)
 {
     (void)s; (void)n; (void)ctx;
@@ -244,7 +260,8 @@ static void on_sessions(const cc_session_t *s, int n, void *ctx)
     ESP_LOGI(TAG, "boot to live: %u ms (kind %d)", (unsigned)ms, (int)s_kind);
     if (s_kind == POWER_BOOT_NORMAL) return;
     s_to_live = ms;
-    nvs_set_blob_ns("power", "hibl", &ms, sizeof(ms));
+    /* the flash write goes on a one-shot task of its own, not the poll task */
+    if (xTaskCreate(store_live_task, "hibl", 3072, NULL, 2, NULL) != pdPASS) ESP_LOGW(TAG, "boot to live: not stored");
 }
 
 void hibernate_init(void)
@@ -313,12 +330,22 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
         if (wake_after_s && !rtc_timer_arm(wake_after_s)) ESP_LOGE(TAG, "rtc timer: not armed");
         power_off_pulses();
         vTaskDelay(pdMS_TO_TICKS(1000));
-        /* still running: USB (or anything holding the trigger) keeps the board on */
-        ESP_LOGW(TAG, "power-off didn't take: deep sleep instead");
+        /* still running: something keeps the board on (or holds the trigger). Deep sleep, never without a
+           timer: in deep sleep the side button reaches the power controller of a board that is still on, so
+           nothing proved would wake it (I1). The ladder decides again after the backstop. */
+        if (!wake_after_s) {
+            wake_after_s = FALLBACK_BACKSTOP_S;
+            r.wake_after_s = wake_after_s;
+            esp_sleep_enable_timer_wakeup((uint64_t)wake_after_s * 1000000ULL);
+            ESP_LOGW(TAG, "power-off did not take, deep sleep with 60 min backstop");
+        } else {
+            ESP_LOGW(TAG, "power-off did not take, deep sleep with the %u s timer", (unsigned)wake_after_s);
+        }
         r.fell_back = 1;
         nvs_set_blob_ns("power", "hib", &r, sizeof(r));
     }
     if (!s_early) cut_rails();   /* a probe boot: the rails are still as the last cycle left them */
+    ESP_LOGI(TAG, "down from task %s, stack free %u B", pcTaskGetName(NULL), (unsigned)uxTaskGetStackHighWaterMark(NULL));
     esp_deep_sleep_start();
 }
 

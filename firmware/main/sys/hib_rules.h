@@ -15,8 +15,9 @@ typedef struct {
     uint32_t wake_after_s;         /* the timer that was armed, 0 = none */
     long asleep_s;                 /* now - the epoch saved going down (negative when the clock was lost) */
 } hib_wake_in_t;
-/* RTC flag -> RTC; the wakeup cause, or a watchdog/deep-sleep reset within -2..+20 s of the armed timer
-   -> TIMER; power-on -> BUTTON (or a USB plug-in); otherwise RESET. */
+/* "Timed" = the time asleep is within -2..+20 s of the armed timer (never under 3 s). An RTC flag and timed ->
+   RTC (a flag alone may be stale); the wakeup cause, or a watchdog/deep-sleep reset and timed -> TIMER;
+   power-on -> BUTTON (or a USB plug-in); otherwise RESET. */
 hib_cause_t hib_cause(const hib_wake_in_t *in);
 
 typedef enum { HIB_PROBE_OK, HIB_PROBE_USB, HIB_PROBE_NO_SAMPLES } hib_probe_verdict_t;

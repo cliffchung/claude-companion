@@ -42,7 +42,21 @@ esp_err_t imu_chip_id(uint8_t *id) { return imu_reg_read(0x00, id, 1); }
 
 esp_err_t imu_suspend(void)
 {
-    esp_err_t e = reg_write(REG_PWR_CTRL, 0x00);
+    /* INT1 drives the power controller's trigger (Q8 -> E_TRG): outputs off and nothing mapped first, then
+       the latch read clear, so no stray level can switch the board on or hold the trigger (ruling P67) */
+    static const uint8_t k_quiet[][2] = {
+        { 0x53, 0x00 },   /* INT1_IO_CTRL: output_en off */
+        { 0x54, 0x00 },   /* INT2_IO_CTRL */
+        { 0x55, 0x00 },   /* INT_LATCH: non-latched */
+        { 0x56, 0x00 },   /* INT1_MAP_FEAT */
+        { 0x57, 0x00 },   /* INT2_MAP_FEAT */
+        { 0x58, 0x00 },   /* INT_MAP_DATA */
+    };
+    esp_err_t e = ESP_OK;
+    for (size_t i = 0; i < sizeof(k_quiet) / sizeof(k_quiet[0]) && e == ESP_OK; i++) e = reg_write(k_quiet[i][0], k_quiet[i][1]);
+    uint8_t st[2];
+    if (e == ESP_OK) e = imu_reg_read(0x1C, st, 2);   /* INT_STATUS_0/1: read clears */
+    if (e == ESP_OK) e = reg_write(REG_PWR_CTRL, 0x00);
     if (e == ESP_OK) e = reg_write(REG_PWR_CONF, 0x03);
     if (e != ESP_OK) ESP_LOGW(TAG, "suspend: %s", esp_err_to_name(e));
     return e;

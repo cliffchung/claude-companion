@@ -210,6 +210,23 @@ void sysinfo_time_from_rtc(void)
     settimeofday(&tv, NULL);
 }
 
+bool sysinfo_rtc_epoch_raw(time_t *out)
+{
+    i2c_master_bus_handle_t b = bsp_i2c_get_handle();
+    if (!b) return false;
+    i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = RX8130_ADDR, .scl_speed_hz = 400000 };
+    i2c_master_dev_handle_t d = NULL;
+    if (i2c_master_bus_add_device(b, &cfg, &d) != ESP_OK) return false;
+    i2c_master_dev_handle_t keep = s_rtc;
+    s_rtc = d;   /* sysinfo_rtc_read through the temporary device */
+    struct tm tm;
+    bool ok = sysinfo_rtc_read(&tm);
+    s_rtc = keep;
+    i2c_master_bus_rm_device(d);
+    if (ok) *out = utc_mktime(&tm);
+    return ok;
+}
+
 static void sntp_sync_cb(struct timeval *tv)
 {
     (void)tv;

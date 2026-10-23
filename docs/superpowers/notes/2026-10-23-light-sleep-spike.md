@@ -156,6 +156,10 @@ the build before P60, which printed `sources=timer supported=no`).
   or treat a held-low E_TRG (the RX8130 holds nIRQ low until TF is cleared) differently from the factory's alarm;
   TSEL=010 (1 Hz) may be wrong for this part. The boot after the button press will log the RX8130 flags
   (`rtc flags 0x..`): TF (0x10) set means the timer fired and the PMS150G didn't act on it.
+- **Wake cause (P62, amended by P68):** an RX8130 flag counts only when the time asleep matches the armed timer
+  (after a power-off the time comes from the RX8130's own clock). A stale flag on a power-on is the button, and the
+  boot log says the RTC fired earlier. A power-off that doesn't take deep-sleeps with its timer, or a 60 min
+  backstop when it had none.
 - **Mode chosen (P60):** power-off for an untimed Hibernate (the ladder, battery ≤ 10 %), with the side button as its
   wake; a timed one (test-wake, bench probes, Task 8's check-in) deep-sleeps, since only the timer is proved and only
   deep sleep has it. Power-off beats deep sleep because something other than USB (the button) switches it on, and its

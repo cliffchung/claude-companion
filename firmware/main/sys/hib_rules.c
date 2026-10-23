@@ -3,12 +3,23 @@
 #define RTC_AF 0x08
 #define RTC_TF 0x10
 
+/* the time asleep matches the armed timer: -2..+20 s, and never under 3 s (M1: a crash right after a 1-2 s
+   timer was armed is not a timer wake) */
+static bool timed(const hib_wake_in_t *in)
+{
+    if (!in->wake_after_s) return false;
+    long lo = (long)in->wake_after_s - 2;
+    if (lo < 3) lo = 3;
+    return in->asleep_s >= lo && in->asleep_s <= (long)in->wake_after_s + 20;
+}
+
 hib_cause_t hib_cause(const hib_wake_in_t *in)
 {
-    if (in->rtc_flags & (RTC_AF | RTC_TF)) return HIB_CAUSE_RTC;
+    bool t = timed(in);
+    /* a flag alone may be stale (a timer that fired without switching the board on) */
+    if ((in->rtc_flags & (RTC_AF | RTC_TF)) && t) return HIB_CAUSE_RTC;
     if (in->wakeup_timer) return HIB_CAUSE_TIMER;
-    bool timed = in->wake_after_s && in->asleep_s >= (long)in->wake_after_s - 2 && in->asleep_s <= (long)in->wake_after_s + 20;
-    if (timed && in->reset_deepsleep_or_wdt) return HIB_CAUSE_TIMER;
+    if (t && in->reset_deepsleep_or_wdt) return HIB_CAUSE_TIMER;
     if (in->reset_poweron) return HIB_CAUSE_BUTTON;
     return HIB_CAUSE_RESET;
 }
