@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The Tab5 dims and turns its screen off on its own, wakes instantly on a key, touch, lift or a session that needs you (without the waking input acting), keeps the Mac link live through a long poll, shows battery, charging, Wi-Fi, Tailscale, link and the right local time, and lights the keyboard amber while a session needs you. All of it is measured on battery in one visit with the user.
+**Goal:** The Tab5 dims and turns its screen off on its own, wakes instantly on a key, touch, lift or a session that needs you (without the waking input acting), keeps the Mac link live through a long poll, shows battery, charging, Wi-Fi, Tailscale, link and the right local time, and lights the keyboard amber while a session needs you. After an hour without input it saves battery first (Deep idle, then Hibernate), and its shortcuts work with two thumbs. All of it is measured on battery in one visit with the user.
 
-**Architecture:** A new `sys/power.c` owns one state machine (Active → Dim → Off → Radio off) and the keyboard light. Its decisions are pure functions in `sys/power_rules.c`, and the battery and clock maths are pure functions in `sys/vitals.c`, all host-tested. `cc_link` replaces the fixed poll with one long-lived pty exec channel. That channel runs a fixed `/bin/sh` loop built by `cc_cmd_watch`, and a pure marker parser (`companion/cc_watch.c`) reads its output. `wifi_mgr` gains a reconnect task and a parked state for the Radio-off tier. The light-sleep spike, Radio off and the light's Off cap are built behind settings that default off. One battery session with the user sets them from INA226 numbers logged on the device.
+**Architecture:** A new `sys/power.c` owns one state machine (Active → Dim → Off → Radio off → Deep idle → Hibernate) and the keyboard light. Hibernate itself (power-off or ESP deep sleep, its wake sources and the cold-boot path) lives in `sys/hibernate.c`, built in the Task 6 spike. Its decisions are pure functions in `sys/power_rules.c`, and the battery and clock maths are pure functions in `sys/vitals.c`, all host-tested. `cc_link` replaces the fixed poll with one long-lived pty exec channel. That channel runs a fixed `/bin/sh` loop built by `cc_cmd_watch`, and a pure marker parser (`companion/cc_watch.c`) reads its output. `wifi_mgr` gains a reconnect task and a parked state for the Radio-off tier. The light-sleep spike, Radio off and the light's Off cap are built behind settings that default off. One battery session with the user sets them from INA226 numbers logged on the device.
 
 **Tech Stack:** C, ESP-IDF v5.5.6 (`esp32p4`), LVGL 9.4 + esp_lvgl_port 2.8.0~1, BSP m5stack_tab5 1.3.2, esp_hosted 3.0.10 / esp_wifi_remote, libssh 0.11, MicroLink, `espressif/bmi270` 1.1.0 (Apache-2.0), cJSON, `esp_console`, Unity host tests, Python 3 (`pty`, `unittest`, pyserial).
 
@@ -32,18 +32,19 @@
 - **No cc_link calls from subscriber callbacks** (`cc_poll_subscribe`). A callback copies what it needs and notifies its own task.
 - **A wake input never reaches the Mac or acts on a card.**
 - **The long-poll loop leaves nothing running on the Mac.**
-- New pure modules (`sys/power_rules.c`, `sys/vitals.c`, `sys/plog.c`, `sys/lift_detect.c`, `companion/cc_watch.c`) include no ESP-IDF headers and also build in `firmware/test/host`.
+- New pure modules (`sys/power_rules.c`, `sys/vitals.c`, `sys/plog.c`, `sys/lift_detect.c`, `companion/cc_watch.c`, `ui/hotkeys.c`) include no ESP-IDF headers and also build in `firmware/test/host`.
+- **This Tab5 is board v2: LCD ST7123, touch ST7123, no GT911** (Ruling P1). Controller ruling PT1: v2 has no touch INT wake, so touch wake in Off and deeper comes from polling the touch controller at about 10 Hz from the power task while LVGL is paused. The GT911 INT path is v1-only code.
 - Match Clientre5's C style: 4-space indent, function brace on its own line, `static const char *TAG`, `s_` statics, `/* */` comments.
-- Every gated feature (light sleep, Radio off, the light's Off cap) is built behind its setting with the default off before Task 10. Nothing waits on the measurement.
+- Every gated feature (light sleep, Radio off, the light's Off cap, the Hibernate check-in) is built behind its setting with the default off before Task 10. Nothing waits on the measurement. The exception is the spec's Priority: Deep idle (60 min) and Hibernate (2 h) are on by default, and Hibernate's default stays on only if Task 6 finds a wake path that needs nothing more than the side button (Amendment A4).
 - Record each judgment call as a ruling in `docs/superpowers/notes/2026-10-23-plan2-rulings.md`, in Plan 1's format (`Ruling Pn: … — why — cost if wrong`).
 
 ## Review Focus
 
 1. **A held key or key repeat while the device wakes** → nothing reaches the dashboard; the first key after the device is awake works normally. Covered by Task 5 `test_swallow_held_key_repeats` and the Step 6 `key` check.
 2. **The Mac sleeps with the watch loop running** (the loop is suspended, then resumes with a big `$SECONDS` jump and no keepalives) → the loop exits on resume and leaves nothing behind. Covered by Task 4 `test_suspended_loop_exits_on_resume` (SIGSTOP/SIGCONT) and the Task 10 `ps` check after a real Mac sleep.
-3. **No battery fitted, or the INA226 not found** → the bar shows no percentage (never a red 0%), and Radio off never engages, because "on battery" is false. With the INA226 present and no pack, the bus voltage is below 5.5 V and counts as no battery. Covered by Task 2 `test_battery_unknown_not_low` and `test_no_pack_is_unknown`, and Task 5 `test_radio_off_needs_battery`.
-4. **Radio off with check-ins up to `checkin_min` apart** → the amber keyboard light is not dropped between check-ins by the 5-minute staleness rule. Covered by Task 3 `test_light_age_limit_follows_checkin`.
-5. **A keyboard colour saved before this plan as gold or orange** → never shows on the keyboard; it is reset to the default blue on load, and the presets hold no amber-like colour. Covered by Task 3 `test_amber_like_colours` and the Step 7 preset check.
+3. **No battery fitted, or the INA226 not found** → the bar shows no percentage (never a red 0%), and Radio off, Deep idle and Hibernate never engage, because "on battery" is false; an unknown percentage never counts as ≤ 10%. With the INA226 present and no pack, the bus voltage is below 5.5 V and counts as no battery. Covered by Task 2 `test_battery_unknown_not_low` and `test_no_pack_is_unknown`, and Task 5 `test_radio_off_needs_battery` and `test_long_idle_needs_battery`.
+4. **Radio off and Deep idle with check-ins up to 30 min apart** → the amber keyboard light is not dropped between check-ins by the 5-minute staleness rule; the age limit follows the period actually scheduled (`checkin_min`, or Deep idle's 15 and 30 min). Covered by Task 3 `test_light_age_limit_follows_checkin` and Task 8 `test_deep_idle_backoff`.
+5. **A wake from Hibernate (a cold boot) shows cards as live** before the first fresh result → the dashboard shows `Waking: reconnecting to Mac` and no cards until `cc_poll_generation()` first moves. Covered by Task 5 `test_cards_view_after_hibernate` and the Task 6 Step 9 screenshot taken straight after a wake boot. (The amber-like saved colour that used to be item 5 stays covered by Task 3 `test_amber_like_colours`.)
 
 ---
 
@@ -180,11 +181,16 @@ git commit -m "feat(power): power console, on-device power log and bench, reset-
     uint16_t pw_radio_off_min;   /* 20 */
     uint16_t pw_checkin_min;     /* 5 */
     uint8_t  pw_light_sleep;     /* 0; gated (Task 6, Task 10) */
+    uint16_t pw_deep_idle_min;   /* spec deep_idle_min: 60; 0 = never */
+    uint8_t  pw_hibernate_h;     /* spec hibernate_h: 2; 0 = never (the battery <= 10% trigger stays) */
+    uint8_t  pw_hibernate_checkin_h; /* spec hibernate_checkin_h: 0 = off; gated (Task 8, Task 10) */
 ```
   - `utc_offset_min` becomes reserved.
   - When migrating from version 17 or older, `tz_rule` takes the Pacific default, whatever the old offset was.
   - `settings_init` resets an invalid `tz_rule` (`!vitals_tz_valid`) to the default.
   - It also clamps `pw_dim_s` to 10–600 and `pw_off_s` to `pw_dim_s + 10`–3600.
+  - It clamps `pw_deep_idle_min` to 0 or 15–720, `pw_hibernate_h` to 0 or 1–48, and `pw_hibernate_checkin_h` to 0 or 1–24 (a value in the gap goes to the nearest end of the range).
+  - Still a single bump to `CFG_VERSION 18` for every field above.
 - Produces, in `vitals.h`:
 
 ```c
@@ -279,7 +285,7 @@ Run: `python3 $T5 "clock tz bad;rule" "clock"`
 Expected: rejected; the rule is unchanged.
 
 Run: `python3 $T5 "ui home"`, then take a screenshot.
-Expected: the header shows the battery glyph and %, the Wi-Fi bars, the Tailscale mark, a green link dot and the right clock. A settings blob saved by Plan 1 loaded without losing the Mac or the Claude path (`companion status` shows `connected <host>`).
+Expected: the header shows the battery glyph and %, the Wi-Fi bars, the Tailscale mark, a green link dot and the right clock. A settings blob saved by Plan 1 loaded without losing the Mac or the Claude path (`companion status` shows `connected <host>`). The long-idle fields have no reader yet; Task 5 Step 5 checks their defaults through `power settings`.
 
 - [ ] **Step 7: Commit**
 
@@ -310,9 +316,12 @@ typedef struct { uint8_t mode, bright, r, g, b; } pr_led_t;   /* mode 0 = bind, 
 bool pr_rgb_amber_like(uint32_t rgb);   /* HSV hue 25..55 deg, saturation >= 0.5, value >= 0.5 */
 bool pr_any_needs_you(const cc_session_t *s, int n);   /* background && live && CC_NEEDS_YOU */
 pr_led_t pr_kbd_light(const pr_led_t *user, bool setting_on, bool needs_you,
-                      int64_t result_age_ms, int64_t max_age_ms, bool screen_off, int off_cap_pct);
+                      int64_t result_age_ms, int64_t max_age_ms, bool screen_off, int off_cap_pct,
+                      bool deep_idle);
 /* needs_you && setting_on && result_age_ms < max_age_ms → {1, b, 0xf4, 0xb5, 0x45} with
-   b = max(user->bright, 30), then min(b, max(off_cap_pct, 30)) when screen_off; else *user */
+   b = max(user->bright, 30), then min(b, max(off_cap_pct, 30)) when screen_off, then min(b, 30)
+   when deep_idle; else, in deep_idle, PR_LED_OFF; else *user */
+#define PR_LED_OFF ((pr_led_t){1, 0, 0, 0, 0})   /* mode 1, brightness 0, black */
 int64_t pr_light_max_age_ms(bool radio_off, int checkin_min);
 /* 300 000, or max(300 000, (checkin_min + 1) * 60 000) in Radio off */
 ```
@@ -333,6 +342,7 @@ int64_t pr_light_max_age_ms(bool radio_off, int checkin_min);
   - `test_light_user_when_clear`: needs_you false → exactly the user's struct; setting off → user's.
   - `test_light_stale_result_reverts`: age 300 001 ms, max 300 000 → user's.
   - `test_light_off_cap`: user brightness 80, screen_off, cap 40 → 40; cap 10 → 30.
+  - `test_light_deep_idle`: deep_idle, needs_you, user brightness 80, cap 100 → {1, 30, f4, b5, 45}; user brightness 0 → brightness 30; needs_you false → `PR_LED_OFF` (not the user's colour); a stale result (age ≥ max) → `PR_LED_OFF`; setting off → `PR_LED_OFF`.
   - `test_light_age_limit_follows_checkin` (Review Focus 4): `pr_light_max_age_ms(false, 5)` = 300 000; `(true, 5)` = 360 000; `(true, 30)` = 1 860 000.
   - `test_any_needs_you`: a blocked interactive session doesn't count; a blocked stopped (`live` false) one doesn't; a blocked live background one does.
 
@@ -346,7 +356,7 @@ Expected: FAIL
 - [ ] **Step 4: Implement the owner, the keyboard source, the settings changes and the migration**
   - The presets become `{ 0x0080FF, 0xFFFFFF, 0xFF4040, 0x40FF40, 0xFF40FF, 0x00FFFF }`.
   - `settings_init` replaces an amber-like saved `kbd_led_rgb` with 0x0080FF.
-  - In Task 3, `screen_off` is always false.
+  - In Task 3, `screen_off` and `deep_idle` are always false.
   - Add the preview stubs for the new external calls, then build the preview (`firmware/tools/ui_preview/README.md`).
   - `app_main` calls `power_init()` after `cc_link_start()`.
   - Build and flash.
@@ -354,7 +364,7 @@ Expected: FAIL
 - [ ] **Step 5: Probe what mode 0 ("bind") shows**
 
 Run: `python3 $T5 "power light test bind"`, then `python3 $T5 "power light test user"`.
-Expected: both print `ok`. Nobody can see the keyboard yet, so record "mode 0: not observed yet" in the rulings file; Task 10 Step 3 has the user look at it.
+Expected: both print `ok`. Nobody can see the keyboard yet, so record "mode 0: not observed yet" in the rulings file; Task 10 Step 4 has the user look at it.
 
 - [ ] **Step 6: Check needs-you on hardware**
 
@@ -545,31 +555,48 @@ git commit -m "feat(companion): long-poll watch channel with keepalive, liveness
 **Files:**
 - Create: `firmware/main/sys/display_ctl.c`, `firmware/main/sys/display_ctl.h`
 - Modify: `firmware/main/sys/power_rules.c`, `power_rules.h`, `firmware/test/host/test_power_rules.c`
-- Modify: `firmware/main/sys/power.c`, `power.h` (states, holds, wake, shield, needs-you wake)
+- Modify: `firmware/main/sys/power.c`, `power.h` (states including Deep idle and Hibernate, holds, wake, shield, needs-you wake, the v2 touch poll, the pre-Hibernate notice)
+- Modify: `firmware/main/sys/power_log.c`, `firmware/main/sys/plog.h` (summary slots for states 0..5 and check-ins 0x80..0x85)
 - Modify: `firmware/main/input/keyboard.c`, `keyboard.h` (quiet mode on GPIO50 INT; the swallow check in the drain; `keyboard_post` and `keyboard_usb_hid_report` wake)
 - Modify: `firmware/main/sys/screenshot.c` (use `display_ctl_touch()` each time, no cached handle)
-- Modify: `firmware/main/app_main.c` (touch INT after the display starts; `idle_poll` period from power; remove the `ui_screensaver_arm()` declaration and call)
-- Modify: `firmware/main/ui/ui_dashboard.c` (stale cards after a wake, the take-over hold), `firmware/main/ui/ui_terminal.c` (the SSH hold), `firmware/main/ui/ui_settings.c` (the Power section), `firmware/main/ui/ui_core.c`, `ui_home.c`, `ui_music.c`, `ui.h`
+- Modify: `firmware/main/app_main.c` (touch INT after the display starts, v1 only; `idle_poll` period from power; remove the `ui_screensaver_arm()` declaration and call)
+- Modify: `firmware/main/ui/ui_dashboard.c` (stale cards after a wake, `Waking: reconnecting to Mac`, the take-over hold), `firmware/main/ui/ui_terminal.c` (the SSH hold), `firmware/main/ui/ui_settings.c` (the Power section), `firmware/main/ui/ui_core.c` (`ui_sleep_notice`), `ui_home.c`, `ui_music.c`, `ui.h`
+- Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls, a `sleep-notice` case)
 - Delete: `firmware/main/ui/ui_screensaver.c`, its entry in `firmware/tools/ui_preview/CMakeLists.txt` and the preview's `standby` case. Settings and Home drop their screensaver rows and tile.
 - Modify: `firmware/main/idf_component.yml` (`espressif/esp_lvgl_port: "==2.8.0~1"`; display_ctl depends on its private layout)
-- Modify: `firmware/main/sys/power_bench.c` (steps `dim` 90 s, `off-touch-awake` 120 s and `off-touch-asleep` 120 s; Task 3's light steps now enter Off)
+- Modify: `firmware/main/sys/power_bench.c` (steps `dim` 90 s, `off-touch-poll` 120 s, `off-touch-awake` 120 s and `off-touch-asleep` 120 s; Task 3's light steps now enter Off; a finished bench calls `power_go(PS_ACTIVE)` before its toast)
 - Modify: `firmware/main/sys/power_console.c`
 
 **Interfaces:**
 - Produces, in `power_rules.h`:
 
 ```c
-typedef enum { PS_ACTIVE, PS_DIM, PS_OFF, PS_RADIO_OFF } power_state_t;
+typedef enum { PS_ACTIVE, PS_DIM, PS_OFF, PS_RADIO_OFF, PS_DEEP_IDLE, PS_HIBERNATE } power_state_t;
+/* also the power-log tags 0..5; check-ins log 0x80|state (0x83 Radio off, 0x84 Deep idle, 0x85 Hibernate) */
 typedef struct {
     power_state_t state;
     int64_t now_ms, last_input_ms, off_since_ms;   /* monotonic (esp_timer), never wall clock */
     int dim_s, off_s, radio_off_min;
+    int deep_idle_min, hibernate_h;                /* 0 = never */
+    int battery_pct;                               /* -1 = unknown */
     bool held, on_battery, sleep_on_usb, radio_off_enabled;
+    bool charging, hibernate_ok;                   /* hibernate_ok = hibernate_supported() (false until Task 6) */
 } pr_in_t;
+#define PR_LOW_BATTERY_PCT 10
 power_state_t pr_next_state(const pr_in_t *in);
-/* held → ACTIVE; on USB with !sleep_on_usb → ACTIVE; idle >= off_s → OFF, or RADIO_OFF when
-   already OFF/RADIO_OFF, on_battery, radio_off_enabled and now - off_since >= radio_off_min min;
-   idle >= dim_s → DIM; else ACTIVE. RADIO_OFF without on_battery → OFF. */
+/* In order:
+   held → ACTIVE; on USB with !sleep_on_usb → ACTIVE; idle < dim_s → ACTIVE; idle < off_s → DIM.
+   From here idle >= off_s:
+   on_battery && hibernate_ok && ((hibernate_h > 0 && idle >= hibernate_h h) ||
+       (battery_pct >= 0 && battery_pct <= PR_LOW_BATTERY_PCT && !charging)) → HIBERNATE;
+   on_battery && deep_idle_min > 0 && idle >= deep_idle_min min → DEEP_IDLE;
+   RADIO_OFF when already OFF/RADIO_OFF, on_battery, radio_off_enabled and now - off_since >= radio_off_min min;
+   else OFF. Without on_battery, RADIO_OFF and DEEP_IDLE fall back to OFF and HIBERNATE is never chosen.
+   HIBERNATE is terminal: the caller never feeds it back in (the device powers down). */
+typedef enum { PR_CARDS_LIVE, PR_CARDS_STALE, PR_CARDS_WAKING } pr_cards_t;
+pr_cards_t pr_cards_view(bool hibernate_boot, uint32_t gen_now, uint32_t gen_at_wake, bool needs_you_wake);
+/* hibernate_boot && gen_now == 0 → WAKING (no cards, "Waking: reconnecting to Mac");
+   gen_now > gen_at_wake → LIVE; needs_you_wake → LIVE (its block is fresh); else STALE */
 #define PR_SWALLOW_MS 600       /* longer than the A164's 500 ms auto-repeat delay (keyboard.c:365) */
 bool pr_swallow(power_state_t state_at_input, int64_t now_ms, int64_t woke_at_ms, int64_t last_swallowed_ms);
 /* true when state_at_input != ACTIVE, or now - woke_at < PR_SWALLOW_MS, or now - last_swallowed < PR_SWALLOW_MS */
@@ -583,7 +610,9 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - `esp_lcd_panel_handle_t display_ctl_panel(void);`
   - `esp_lcd_touch_handle_t display_ctl_touch(void);`
   - `esp_err_t display_ctl_panel_on(bool on);`, which is `esp_lcd_panel_disp_on_off`.
-  - `void display_ctl_touch_int_init(void (*isr)(void *));`. On board version 1 (GT911, from Task 1), it reconfigures GPIO23 as an input with pull-up, as generative-tab5 `prov_device.c:313` does, and adds a NEGEDGE ISR. On other versions the driver owns GPIO23 and its own ISR, so it adds none and logs `touch wake: not supported on board vN`.
+  - `int display_ctl_board_version(void);` repeats the BSP's own probe once and caches it (the BSP's `bsp_get_board_version` is static): ST7123 touch answers with FW 3 → 2, FW 1 → 3; GT911 at its backup address → 1; else 0. This Tab5 returns 2.
+  - `void display_ctl_touch_int_init(void (*isr)(void *));`. **v1 only** (GT911): it reconfigures GPIO23 as an input with pull-up, as generative-tab5 `prov_device.c:313` does, and adds a NEGEDGE ISR. On other versions the ST7123 driver owns GPIO23, so it adds none and logs `touch wake: polling on board vN` (PT1).
+  - `esp_err_t display_ctl_touch_poll(bool *pressed);` (v2 and v3): `esp_lcd_touch_read_data(display_ctl_touch())`, then `esp_lcd_touch_get_data(..., &cnt, 1)`; `*pressed = cnt > 0`. It is called only while LVGL is paused, so it never races the LVGL read callback.
   - `screenshot.c` calls `display_ctl_touch()` each time it needs the handle, and caches nothing.
 - Produces, in `power.h`:
   - `power_state_t power_state(void);` and `uint32_t power_wake_seq(void);` (bumped on every wake).
@@ -591,9 +620,16 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - `bool power_take_key(void);` is called by the keyboard drain on the LVGL task. It returns false when the key must be dropped, using `pr_swallow`. A drop in Dim wakes.
   - `void power_wake(power_wake_t why);` and `void power_wake_from_isr(power_wake_t why);`. Any of these wakes resets idle.
   - `typedef enum { POWER_HOLD_TAKEOVER, POWER_HOLD_SSH } power_hold_t;` and `void power_hold(power_hold_t h, bool on);`. `POWER_HOLD_SSH` counts only while `g_settings.ss_disable_in_ssh`. `cc_link_busy()` is polled as the third hold.
-  - `int power_poll_period_ms(void);` is 1000, or 10 000 in Off and Radio off while logging is off.
+  - `int power_poll_period_ms(void);` is 1000, or 10 000 in Off, Radio off and Deep idle while logging is off.
   - `void power_go(power_state_t s);` is used by the console and the bench.
-  - The keyboard light calls `pr_kbd_light` with `screen_off = (state >= PS_OFF) && on_battery`.
+  - The keyboard light calls `pr_kbd_light` with `screen_off = (state >= PS_OFF) && on_battery` and `deep_idle = state >= PS_DEEP_IDLE`.
+  - The power task fills `pr_in_t` from `sysinfo_power()` (`battery_pct` = `percent`, `charging`, `on_battery = src == PWR_BATTERY`), the settings and `hibernate_ok = false` (Task 6 replaces it with `hibernate_supported()`).
+  - **Touch wake on v2** (PT1): while the state is Off or deeper and `display_ctl_board_version() != 1`, the power task calls `display_ctl_touch_poll` every 100 ms and calls `power_wake(PW_TOUCH)` on the first `pressed`. A read error is counted, logged once, and never wakes. On v1 the GPIO23 ISR does the same.
+  - **Deep idle** in this task is Off plus the Deep-idle light rule. Task 6 adds the display teardown and low CPU clock, and Task 8 the check-in backoff.
+  - **Hibernate** in this task: entering it (from the rule, or `power go hibernate`) shows `ui_sleep_notice(true)` for 3 s, then calls `hibernate_now()`. Until Task 6 that is a stub that logs `hibernate: not built` and returns, and the state goes back to Off. Input during the 3 s cancels it: the notice goes away and the device wakes to Active as for any input. A hold that appears during the 3 s cancels it too.
+- Produces, in `ui.h`: `void ui_sleep_notice(bool show);`. It draws a full-screen object on `lv_layer_top()`, bg `#0e1116`, with the centred fg text `Sleeping to save battery. Press the side button to wake.`. Before showing it, power resumes LVGL and lights the panel at `pr_dim_brightness(g_settings.brightness)`.
+- Produces, in `power_log.c` and `plog.h`: the summary table holds tags 0..5, 0x10..0x1F and 0x80..0x85 (`SLOT_COUNT` 28). The NVS `sum` blob changes size, and the existing exact-size check drops an old one. The `plog.h` tag comment lists 0..5 and 0x80|state (0x83..0x85).
+- Dashboard: it reads `pr_cards_view(hibernate_boot_kind() == POWER_BOOT_HIB_WAKE, cc_poll_generation(), gen_at_wake, reason == PW_NEEDS_YOU)`. Until Task 6, `hibernate_boot_kind()` is a stub that returns `POWER_BOOT_NORMAL`. WAKING draws no cards and the muted summary `Waking: reconnecting to Mac`; STALE is the `LV_OPA_50` + `Updating…` view below; LIVE is normal.
 - Produces, in `keyboard.h`: `void keyboard_set_quiet(bool quiet);`. The drain timer calls `power_take_key()` before `keyboard_dispatch` and drops the event when it returns false. After queuing, `keyboard_post` (the `key` console command) and `keyboard_usb_hid_report` call `power_wake(PW_KEY)` when `power_state()` is Off or Radio off, because the stopped LVGL timer no longer drains them; the drain then swallows the event as usual.
 - Off entry, under `bsp_display_lock`:
   1. `display_ctl_panel_on(false)`;
@@ -601,20 +637,24 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   3. `lvgl_port_stop()`;
   4. `keyboard_set_quiet(true)`: the task waits on a GPIO50 NEGEDGE semaphore with a 1 s safety poll, clears `REG_INT_STA` after reading, and calls `power_wake(PW_KEY)` when it reads an event;
   5. `cc_poll_set_floor(15)`;
-  6. arm the needs-you set with `pr_needs_you_ids` of the current snapshot.
+  6. arm the needs-you set with `pr_needs_you_ids` of the current snapshot;
+  7. on v2, start the 100 ms touch poll (after step 3, so LVGL is already paused).
   - Touch stays awake: never `bsp_display_enter_sleep` or `bsp_touch_enter_sleep`, except in the bench step `off-touch-asleep`. That step calls `esp_lcd_touch_enter_sleep(display_ctl_touch())`, then `exit_sleep` afterwards, and logs `touch after exit_sleep: ok|dead` from an I²C read of the controller (`esp_lcd_touch_read_data` == ESP_OK).
+  - Bench steps: `off-touch-poll` is Off as it ships on v2 (the poll running). `off-touch-awake` is Off with the poll paused, so the difference is the poll's cost. `off-touch-asleep` is as above. On v1, `off-touch-poll` returns false from `enter` (skipped: not built).
 - Wake, in this order (the state stays non-Active until the last step, so the drain keeps swallowing):
   1. set `woke_at`, so `pr_swallow` drops the waking input;
-  2. `lvgl_port_resume()`;
-  3. panel on;
-  4. `bsp_display_brightness_set(g_settings.brightness)` (or `pr_dim_brightness` for a needs-you wake);
-  5. `lv_display_trigger_activity(NULL)`;
-  6. `power_wake_seq++`;
-  7. `cc_poll_set_floor(0)`;
-  8. `keyboard_set_quiet(false)`.
+  2. stop the touch poll (v2), so it never overlaps LVGL's own touch read;
+  3. `lvgl_port_resume()`;
+  4. panel on;
+  5. `bsp_display_brightness_set(g_settings.brightness)` (or `pr_dim_brightness` for a needs-you wake);
+  6. `lv_display_trigger_activity(NULL)`;
+  7. `power_wake_seq++`;
+  8. `cc_poll_set_floor(0)`;
+  9. `keyboard_set_quiet(false)`.
+  - Wake from Deep idle is the same, plus the light going back to `pr_kbd_light` with `deep_idle` false.
   - A needs-you wake sets `last_input_ms = now - dim_s * 1000`, so the ladder lands in Dim. If the screen isn't the dashboard, it calls `ui_nav_home()`. It fires only when `g_settings.pw_wake_needs_you` is set and `pr_needs_you_new(armed, now)` is true, and it then adds the new ids to `armed`.
 - Wake shield: entering any non-Active state creates a full-screen transparent clickable object on `lv_layer_top()` if none exists. A press on it wakes the device. It is deleted on the release that follows the wake, or `PR_SWALLOW_MS` after the wake when no press is down. A touch on a dimmed screen therefore never reaches a card.
-- Stale cards: when `power_wake_seq()` changes and the reason isn't `PW_NEEDS_YOU`, the dashboard draws the card list at `LV_OPA_50` and shows the muted summary `Updating…` until `cc_poll_generation()` moves past its value at the wake.
+- Stale cards: when `power_wake_seq()` changes, the dashboard records `gen_at_wake = cc_poll_generation()`. While `pr_cards_view` says STALE it draws the card list at `LV_OPA_50` and shows the muted summary `Updating…`, until `cc_poll_generation()` moves past `gen_at_wake`.
 - Holds: `open_now` sets `power_hold(POWER_HOLD_TAKEOVER, true)` and `session_closed_cb` clears it. `ui_terminal.c` sets `POWER_HOLD_SSH` wherever it sets `g_ssh_session_active`.
 - Settings → Power, a new category, has these rows:
   - Dim after (s), 10–600;
@@ -623,13 +663,19 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - Wake when a session needs you;
   - Keyboard light shows needs-you (moved here from Task 3);
   - Stay awake in SSH Terminal (`ss_disable_in_ssh`);
-  - Time zone: a menu of `vitals_tz_presets`, with the current rule shown.
-  - Tasks 7 and 8 add their rows here.
+  - Time zone: a menu of `vitals_tz_presets`, with the current rule shown;
+  - Deep idle after (min): Off, 15–720;
+  - Hibernate after (h): Off, 1–48. Until Task 6 builds Hibernate, the row's value reads `(not available yet)`.
+  - Tasks 6, 7 and 8 add their rows here.
 - Console:
-  - `power go <active|dim|off>`;
+  - `power go <active|dim|off|deep-idle|hibernate>` (`hibernate` prints `hibernate: not built` until Task 6);
   - `power sim touch` sends a synthetic press and release at the centre of the selected card through a virtual LVGL pointer, so the shield has to eat it;
-  - `power set <dim|off|sleep-usb|needs-wake> <n>` applies the same clamps as Settings (dim 10–600, off from dim + 10 to 3600);
+  - `power set <dim|off|sleep-usb|needs-wake|deep-idle|hibernate> <n>` applies the same clamps as Settings (dim 10–600, off from dim + 10 to 3600, deep-idle 0 or 15–720 min, hibernate 0 or 1–48 h);
   - `power set defaults` restores every Plan 2 power setting to its Task 2 default;
+  - `power settings` prints every Plan 2 power setting as `name=value` on one line;
+  - `power sim battery <pct|off>` overrides `battery_pct` and `on_battery` in `pr_in_t` (RAM only; `off` ends the override) so the long-idle rules can be checked on USB;
+  - `power sim idle <seconds>` moves `last_input_ms` that far into the past (and `off_since_ms` with it when already Off), so long idle times can be checked without waiting;
+  - `power touch` prints the touch poll's state: `touch: poll on|off, reads=<n> errors=<n> last=<pressed|released|error>`;
   - `power` now prints `state`, `idle` and `holds`;
   - `power wakes` prints the last 8 wakes as `<seconds ago> <reason> swallowed=<n>`.
 
@@ -642,6 +688,13 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - `test_swallow_held_key_repeats` (Review Focus 1): a wake at t = 0, then keys every 60 ms from t = 500 to 1500 (auto-repeat), each swallowed one feeding `last_swallowed` → all swallowed; then a key at t = 2200 → not swallowed.
   - `test_needs_you_new`: armed {a}, now {a} → false; now {a, b} → true; armed {a, b}, now {b} → false; armed {}, now {} → false.
   - `test_dim_brightness`: 80 → 16; 10 → 5; 100 → 20.
+  - Long idle. Unless a case says otherwise, these use dim 30, off 120, radio_off_min 20, radio off disabled, deep_idle_min 60, hibernate_h 2, on_battery, not charging, battery 50, hibernate_ok and nothing held.
+  - `test_deep_idle_after_minutes`: state OFF, idle 59 min → OFF; idle 60 min → DEEP_IDLE; deep_idle_min 0 and idle 90 min → OFF; with radio off enabled and off_since 40 min ago, idle 60 min → DEEP_IDLE (Deep idle wins over Radio off).
+  - `test_hibernate_after_hours`: idle 2 h → HIBERNATE; idle 119 min → DEEP_IDLE; hibernate_ok false and idle 5 h → DEEP_IDLE; hibernate_h 0 and idle 5 h → DEEP_IDLE.
+  - `test_hibernate_low_battery`: idle 200 s with battery 10 → HIBERNATE; battery 11 → OFF; battery 10 while charging → OFF; battery 10 with idle 60 s → DIM (the low-battery trigger acts only from Off or deeper); battery 10 with hibernate_h 0 → HIBERNATE (that trigger doesn't depend on hibernate_h); battery 10 with hibernate_ok false → OFF.
+  - `test_long_idle_needs_battery` (Review Focus 3): on_battery false, sleep_on_usb true, battery -1, idle 10 h → OFF (no DEEP_IDLE and no HIBERNATE); the same with battery 5 → OFF; state DEEP_IDLE with on_battery false → OFF; on_battery true with battery -1 and idle 200 s → OFF (an unknown % never counts as low).
+  - `test_long_idle_held`: held, idle 10 h, battery 5 → ACTIVE; held from DEEP_IDLE → ACTIVE.
+  - `test_cards_view_after_hibernate` (Review Focus 5): (true, 0, 0, false) → WAKING; (true, 1, 0, false) → LIVE; (false, 5, 5, false) → STALE; (false, 6, 5, false) → LIVE; (false, 5, 5, true) → LIVE; (false, 0, 0, false) → STALE.
 
 - [ ] **Step 2: Run them to make sure they fail**
 
@@ -650,14 +703,29 @@ Expected: FAIL
 
 - [ ] **Step 3: Implement the rules** and run the host tests until they pass
 
-- [ ] **Step 4: Implement `display_ctl`, the power states, the quiet keyboard, the shield, stale cards, holds and the Settings → Power section, and remove the screensaver**
+- [ ] **Step 4: Implement `display_ctl`, the power states (Deep idle and Hibernate included), the v2 touch poll, the quiet keyboard, the shield, stale cards, the sleep notice, holds and the Settings → Power section, and remove the screensaver**
 
-Keep the `ss_*` fields in `app_settings_t`, marked reserved, so old blobs load. `ui_keyboard_route` and the gesture callback lose their screensaver branches, and `app_main.c` loses its `ui_screensaver_arm()` declaration and call. Build, flash, and also build the preview (no `standby` case).
+Keep the `ss_*` fields in `app_settings_t`, marked reserved, so old blobs load. `ui_keyboard_route` and the gesture callback lose their screensaver branches, and `app_main.c` loses its `ui_screensaver_arm()` declaration and call. Add the `hibernate_now()` and `hibernate_boot_kind()` stubs in `power.c` (Task 6 moves them to `sys/hibernate.c`). Build, flash, and also build the preview (no `standby` case). Render `./preview sleep-notice`, convert it with `sips` and look at it: the text is fg on bg, centred, with no amber.
 
 - [ ] **Step 5: Check the ladder with short timings**
 
+Run: `python3 $T5 "power settings"`.
+Expected: the Task 2 defaults, including `deep-idle=60 hibernate=2 hib-checkin=0`.
+
 Run: `python3 $T5 "power set dim 10" "power set off 20"`. Then run `python3 $T5 "power"` at 5 s, 15 s and 25 s.
-Expected: `state=active`, then `state=dim`, then `state=off`. At `state=off`, `screenshot` still works (it is an LVGL snapshot).
+Expected: `state=active`, then `state=dim`, then `state=off`. At `state=off`, `screenshot` still works (it is an LVGL snapshot), and `power touch` shows `poll on` with `reads` climbing by about 10 a second and `errors=0` (the ST7123 still answers with the panel off).
+
+Run: `python3 $T5 "power sim battery 50" "power sim idle 3600" "power" "power light"`.
+Expected: `state=deep-idle`, and `light: 1 0 0 0 0 (nobody needs you)`.
+
+Run: `python3 $T5 "power sim battery 8" "power"`.
+Expected: still `state=deep-idle`: `hibernate_ok` is false until Task 6, so the low-battery trigger can't fire yet.
+
+Run: `python3 $T5 "power sim battery off" "power go hibernate"` and take a screenshot within the 3 s.
+Expected: the dark screen with the fg text `Sleeping to save battery. Press the side button to wake.`; after 3 s the log says `hibernate: not built` and `power` shows `state=off`.
+
+Run: `python3 $T5 "power go hibernate"` and, within 3 s, `python3 $T5 "key text z"`.
+Expected: the notice goes, `state=active`, `power wakes` shows `key swallowed=1`, and no `z` was typed anywhere.
 
 - [ ] **Step 6: Check key wake and swallow**
 
@@ -679,41 +747,88 @@ Answer `companion-test-ladder2` with `python3 $T5 "reply <its id> green"`. `comp
 Expected: `power wakes` shows no new `needs-you` wake from `companion-test-ladder`.
 
 Open `companion-test-ladder` full screen and wait 30 s.
-Expected: `holds=takeover` and `state=active`. Ctrl+Q.
+Expected: `holds=takeover` and `state=active`. Then run `python3 $T5 "power sim battery 8" "power sim idle 7200" "power"`.
+Expected: still `holds=takeover` and `state=active`: a hold blocks Deep idle and Hibernate too. Run `power sim battery off`, then Ctrl+Q.
 
 - [ ] **Step 8: Check touch wake through the shield**
 
 Run: `python3 $T5 "power go dim" "power sim touch" "power wakes"`.
-Expected: `touch swallowed=1`, and no card action: the selected card didn't open and nothing was sent. The real-finger check is Task 10 Step 3.
+Expected: `touch swallowed=1`, and no card action: the selected card didn't open and nothing was sent. The real-finger check is Task 10 Step 4.
 
 - [ ] **Step 9: Restore and commit**
 
-Run `python3 $T5 "power set defaults"` and stop both test sessions.
+Run `python3 $T5 "power sim battery off" "power set defaults"` and stop both test sessions.
 
 ```bash
 git add -A firmware docs/superpowers/notes/2026-10-23-plan2-rulings.md
-git commit -m "feat(power): Active/Dim/Off ladder with swallowed wake input, needs-you wake and stale cards; remove the screensaver"
+git commit -m "feat(power): Active/Dim/Off ladder with Deep idle and Hibernate states, swallowed wake input, v2 touch poll, needs-you wake and stale cards; remove the screensaver"
 ```
 
-### Task 6: Light-sleep spike (expected to fail)
+### Task 6: Light-sleep and hibernate spike (light sleep expected to fail)
+
+Two parts. **Part A** is the display-teardown and light-sleep spike, as before; if its teardown checks pass, Deep idle also tears the display down and lowers the CPU clock. **Part B** finds out how this board can hibernate and wake, and builds `sys/hibernate.c` on what works. Each part records its outcome in the notes, pass or fail.
 
 **Files:**
 - Modify: `firmware/main/sys/display_ctl.c`, `display_ctl.h` (teardown and re-create)
 - Create: `firmware/sdkconfig.spike` (`CONFIG_PM_ENABLE=y`, `CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`, `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y`, `CONFIG_CC_LIGHT_SLEEP_SPIKE=y`)
-- Create: `firmware/main/Kconfig.projbuild` (`CONFIG_CC_LIGHT_SLEEP_SPIKE`, default n)
+- Create: `firmware/main/Kconfig.projbuild` (`CONFIG_CC_LIGHT_SLEEP_SPIKE`, default n; `CONFIG_CC_DEEP_IDLE_TEARDOWN`, default n, depends on `PM_ENABLE`)
 - Modify: `firmware/.gitignore` (add `build-spike/`)
-- Modify: `firmware/main/ui/ui_settings.c` (the "Light sleep (experimental)" row)
-- Modify: `firmware/main/sys/power.c`, `power_bench.c` (step `light-sleep`, 120 s, only when the spike is compiled in and `pw_light_sleep` is set), `power_console.c`
-- Create: `docs/superpowers/notes/2026-10-23-light-sleep-spike.md`
+- Modify: `firmware/sdkconfig.defaults` (only if Step 3 keeps the Deep-idle teardown: `CONFIG_PM_ENABLE=y`, `CONFIG_CC_DEEP_IDLE_TEARDOWN=y`; tickless idle stays spike-only)
+- Modify: `firmware/main/ui/ui_settings.c` (the "Light sleep (experimental)" row; the Hibernate row now shows its value)
+- Create: `firmware/main/sys/hibernate.c`, `firmware/main/sys/hibernate.h` (replaces Task 5's stubs in `power.c`)
+- Modify: `firmware/main/sys/power.c` (`hibernate_ok = hibernate_supported()`; Deep idle teardown and CPU clock), `power_bench.c`, `power_bench.h` (steps `light-sleep` and `hibernate`; `power_bench_boot()`), `power_console.c`
+- Modify: `firmware/main/sys/sysinfo.c`, `sysinfo.h` (INA226 slow averaging and a raw read for the early boot)
+- Modify: `firmware/main/app_main.c` (`hibernate_boot_early()` right after `bsp_i2c_init()`, before the first `bsp_feature_enable`; boot-to-live timing)
+- Modify: `firmware/main/settings/settings.c` (only if Step 12 turns the Hibernate default off)
+- Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls)
+- Create: `docs/superpowers/notes/2026-10-23-light-sleep-spike.md` (both parts)
 
 **Interfaces:**
-- Produces, under `#if CONFIG_CC_LIGHT_SLEEP_SPIKE`: `esp_err_t display_ctl_teardown(void);` and `esp_err_t display_ctl_recreate(void);`.
+- Part A, unchanged from before: `esp_err_t display_ctl_teardown(void);` and `esp_err_t display_ctl_recreate(void);`, under `#if CONFIG_CC_LIGHT_SLEEP_SPIKE || CONFIG_CC_DEEP_IDLE_TEARDOWN`.
   - Teardown, under the LVGL lock: `lvgl_port_remove_touch`, `lvgl_port_remove_disp`, `bsp_display_delete()` (panel, IO, DSI bus, PHY LDO, backlight PWM) and `esp_lcd_touch_del`.
   - Re-create: `bsp_display_new_with_handles` with the board's lane rate, then `lvgl_port_add_disp_dsi` with the app's Plan 1 config, then `bsp_touch_new` + `lvgl_port_add_touch`, then `ui_nav_refresh()`.
-  - On board version 3 (ST7121, from Task 1) use 965 Mbps (`BSP_LCD_ST712X_MIPI_DSI_LANE_BITRATE_MBPS`); otherwise use the BSP default.
-  - With `pw_light_sleep` set, on battery only, Off calls teardown and configures `esp_pm_configure({.max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = true})` plus `gpio_wakeup_enable(GPIO50, GPIO_INTR_LOW_LEVEL)`, `gpio_wakeup_enable(GPIO23, GPIO_INTR_LOW_LEVEL)` and `esp_sleep_enable_gpio_wakeup()`. Before every sleep it clears the A164's `REG_INT_STA`. Wake re-creates the display, then calls `display_ctl_touch_int_init` again (`bsp_touch_new` sets GPIO23 back to output-low on board v1).
-- `screenshot.c` already asks `display_ctl_touch()` each time, so it never holds a dangling handle.
-- Console: `power spike recreate <n>` runs n teardown/re-create cycles and prints the internal and PSRAM free heap after each one and the slowest wake-to-picture time (the first flush after re-create).
+  - The lane rate is the BSP default on this board (v2). Only board version 3 (ST7121) needs 965 Mbps (`BSP_LCD_ST712X_MIPI_DSI_LANE_BITRATE_MBPS`).
+  - The ST7123 is one chip for display and touch. So teardown also checks whether touch still answers an I²C read after the panel is deleted, and keeps the touch handle (no `esp_lcd_touch_del`) when it does, so the v2 poll keeps working. If it doesn't answer, Deep idle has no touch wake (keys and lift still wake). Record which.
+  - With `pw_light_sleep` set, on battery only, Off calls teardown and configures `esp_pm_configure({.max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = true})` plus `gpio_wakeup_enable(GPIO50, GPIO_INTR_LOW_LEVEL)`, `gpio_wakeup_enable(GPIO23, GPIO_INTR_LOW_LEVEL)` (v1 only) and `esp_sleep_enable_gpio_wakeup()`. Before every sleep it clears the A164's `REG_INT_STA`. Wake re-creates the display, then calls `display_ctl_touch_int_init` again on v1 (`bsp_touch_new` sets GPIO23 back to output-low there).
+  - **Deep idle teardown** (`CONFIG_CC_DEEP_IDLE_TEARDOWN`, kept only if Step 3 passes the teardown checks): entering Deep idle calls `display_ctl_teardown()` and releases power's own `ESP_PM_CPU_FREQ_MAX` lock (`s_pm_max`, held in every other state) after `esp_pm_configure({.max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = false})`, so the CPU drops to 40 MHz once nothing else holds a lock. Waking takes the lock first, then calls `display_ctl_recreate()`, then runs the usual wake steps. Wake-to-picture must stay under 500 ms.
+- `screenshot.c` already asks `display_ctl_touch()` each time, so it never holds a dangling handle. In Deep idle with teardown it reports `screenshot: display torn down`.
+- Part B, in `hibernate.h`:
+
+```c
+typedef enum { HIB_SRC_TIMER = 1, HIB_SRC_BUTTON = 2, HIB_SRC_RESET = 4, HIB_SRC_RTC = 8, HIB_SRC_IMU = 16 } hib_src_t;
+typedef enum { HIB_MODE_NONE, HIB_MODE_POWEROFF, HIB_MODE_DEEPSLEEP } hib_mode_t;
+typedef enum { POWER_BOOT_NORMAL, POWER_BOOT_HIB_WAKE, POWER_BOOT_HIB_CHECKIN, POWER_BOOT_HIB_PROBE } power_boot_t;
+bool hibernate_supported(void);         /* mode != NONE and a wake source other than the timer works */
+hib_mode_t hibernate_mode(void);
+uint32_t hibernate_wake_sources(void);  /* hib_src_t bits that Step 9 proved; a compile-time table from the notes */
+void hibernate_now(uint32_t wake_after_s, power_boot_t next);
+/* 0 = no timed wake. Saves the power-log sums, writes NVS ns "power" key "hib"
+   {mode, next, epoch, wake_after_s}, sets the light by the Deep-idle rule, cc_link_park(true),
+   wifi off, then a full power-off or esp_deep_sleep_start(). Never returns. */
+power_boot_t hibernate_boot_kind(void); /* from "hib" + esp_sleep_get_wakeup_cause() (or the RX8130 AF flag after power-off); cleared after it is read */
+void hibernate_boot_early(void);        /* runs before the rails come up; calls nvs_flash_init() itself (idempotent).
+                                           POWER_BOOT_HIB_PROBE: read the INA226 through its own device on
+                                           bsp_i2c_get_handle(), store the sample in the bench row, sleep again or finish */
+uint32_t hibernate_boot_to_live_ms(void); /* boot to the first rc-0 result, kept in "hib" for the last boot */
+```
+
+- In `sysinfo.h`: `void sysinfo_ina226_slow(bool slow);` (slow: config `0x4E3F` = 1024 averages, bus 140 µs, shunt 8.244 ms, continuous; one result every ≈ 8.6 s; otherwise the Plan 1 config `0x4527`). `sysinfo_init` writes the Plan 1 config, so a probe boot that goes on to a normal boot is back to fast sampling.
+- Bench step `hibernate`. It is always the **last** step in `k_steps`, and later tasks insert their steps before it. On battery its `enter`:
+  1. sets `sysinfo_ina226_slow(true)`;
+  2. writes the probe record (`cycles_left = 3`, its row index);
+  3. calls `hibernate_now(60, POWER_BOOT_HIB_PROBE)` (fast mode: 10 s; `wake_after_s` uses the timer, which deep sleep always has).
+  - On each probe boot, `hibernate_boot_early()` reads the INA226's bus and current registers before any rail is enabled. The registers still hold the last 8.6 s average, taken while asleep. It adds that as one sample to the row's sum and logs `hib probe: <mv> mV <ma> mA at boot+<ms> ms`. While cycles remain it sleeps again at once. After the last one it marks the row `ok` (or `usb` when charging), boots on normally, and `power_bench_boot()` shows `Bench done. Plug USB back in.` once the link is live, with the boot-to-live time in the row's `seconds` column.
+  - The row's `mwh_x1000` is not meaningful for this step (three 8.6 s windows), and `power_report.py` prints `-` for it.
+  - If the device powers off instead of deep-sleeping, the INA226 may lose power too. Then the step reports `no samples`, and the notes record power-off draw as not measurable on the device.
+- Settings → Power: the Hibernate row shows its value once `hibernate_supported()`.
+- Console:
+  - `power spike recreate <n>` runs n teardown/re-create cycles and prints the internal and PSRAM free heap after each one and the slowest wake-to-picture time (the first flush after re-create).
+  - `power hib test <timer|rtc|imu|off> [s]`: one hibernate with only that wake source armed (default 30 s for timer and rtc). It prints `hib test: armed <src>, sleeping` and then sleeps.
+  - `power hib test-wake <s>` arms a one-shot timer wake for the next hibernate of any kind (RAM only), so a rule-driven hibernate can be tested without a press.
+  - `power boot` prints `boot: reason=<r> kind=<normal|hib-wake|hib-checkin|hib-probe> cause=<wakeup cause> to_live=<ms>`.
+  - `power hib` prints `hibernate: mode=<off|deepsleep|none> sources=<list> supported=yes|no`.
+
+**Part A: display teardown and light sleep**
 
 - [ ] **Step 1: Build the spike** with `idf.py -B build-spike -D SDKCONFIG=build-spike/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.spike" build`, then flash it with `idf.py -B build-spike -p /dev/cu.usbmodem211201 flash`
 
@@ -726,7 +841,8 @@ Expected for a pass:
 - 10 cycles with no crash;
 - internal free heap within 4 KB of the first cycle and PSRAM within 64 KB;
 - the slowest wake-to-picture time under 500 ms;
-- a screenshot afterwards shows the dashboard.
+- a screenshot afterwards shows the dashboard;
+- the log line `touch after teardown: ok|dead` (v2: one chip for display and touch).
 
 Then leave it 10 minutes and run `companion status` and `companion watch status`.
 Expected: connected, and the watch on.
@@ -734,23 +850,87 @@ Expected: connected, and the watch on.
 Also run `power resets`.
 Expected: no new panic or brownout.
 
-- [ ] **Step 3: Decide**
+- [ ] **Step 3: Decide, in two halves**
+  - **Teardown** (the re-create, heap and 500 ms checks, plus the 10-minute link check): if they pass, keep `display_ctl_teardown/recreate` in the normal build for Deep idle. Add `CONFIG_PM_ENABLE=y` and `CONFIG_CC_DEEP_IDLE_TEARDOWN=y` to `sdkconfig.defaults`, delete `firmware/sdkconfig`, build the normal build, flash it, and check:
+    - `power go deep-idle`, then `power`, shows `cpu=40MHz` (`esp_clk_cpu_freq()`);
+    - `key esc` brings the dashboard back with a wake-to-picture under 500 ms (`power wakes` prints it);
+    - `power go deep-idle` and `power touch` show whether the poll still reads.
+  - **Light sleep** (needs teardown plus the spike build): if every Step 2 check passed, keep that code behind `CONFIG_CC_LIGHT_SLEEP_SPIKE`, with `pw_light_sleep` default off, a Settings → Power row "Light sleep (experimental)" shown only in that build, and the bench step `light-sleep` (120 s, only when the spike is compiled in and `pw_light_sleep` is set). Task 10 runs it on battery.
+  - Whatever failed goes to Step 4.
 
-If every Step 2 check passed, keep the code behind `CONFIG_CC_LIGHT_SLEEP_SPIKE`, with `pw_light_sleep` default off, a Settings → Power row "Light sleep (experimental)" shown only in that build, and the bench step. Task 10 runs it on battery. Otherwise go to Step 4.
+- [ ] **Step 4: Drop what failed**
 
-- [ ] **Step 4: If it failed, drop the code**
+If teardown failed, revert the teardown code, delete `sdkconfig.spike` and `Kconfig.projbuild`, and leave `pw_light_sleep` reserved. Deep idle then keeps the display (panel off) and the full CPU clock. Drop DFS too: the DPI panel's `ESP_PM_CPU_FREQ_MAX` lock pins the CPU while the panel exists. If only light sleep failed, delete `sdkconfig.spike` and the `CONFIG_CC_LIGHT_SLEEP_SPIKE` code but keep `CONFIG_CC_DEEP_IDLE_TEARDOWN`. Reflash the normal build.
 
-Revert the spike code and delete `sdkconfig.spike` and `Kconfig.projbuild`. Leave `pw_light_sleep` reserved. Drop DFS too: the DPI panel's `ESP_PM_CPU_FREQ_MAX` lock pins the CPU while the panel exists. Reflash the normal build.
+**Part B: hibernate** (the normal build from here on)
 
-- [ ] **Step 5: Write the notes**
+- [ ] **Step 5: Find the wake sources on paper**
 
-Write `docs/superpowers/notes/2026-10-23-light-sleep-spike.md`: what was tried, each check's result with numbers, the decision, and why. Also record that `lvgl_port_remove_disp` deletes every screen of the display (the nav stack, the layer-top shield and toasts), and that `ui_nav_refresh()` rebuilds only the top screen. In the failed case, say that Off ships as panel off + quiet tasks + modem power save + the long poll + the Radio-off tier.
+Read the Tab5 schematic (M5Stack's Tab5 docs page) and the BSP pin map (`managed_components/espressif__m5stack_tab5/include/bsp/m5stack_tab5.h`). Record in the notes, for each of these:
+- the side button: whether it drives the power latch or EN, or reaches a GPIO;
+- the reset button;
+- the RX8130 `IRQ` output: whether it reaches the power circuit, an LP GPIO (0–15) or nothing;
+- the BMI270 INT1/INT2: an LP GPIO or not;
+- whether any line powers the whole board off (for example an IO-expander pin or a PMIC register; check M5Stack's Tab5 factory firmware for a power-off call).
 
-- [ ] **Step 6: Commit**
+Note too whether the keyboard connector's rail stays up in deep sleep, because a Hibernate check-in's amber light depends on it (Task 8).
+
+- [ ] **Step 6: Build `hibernate.c` and the console**, add the preview stubs, then build and flash
+
+Expected: `Project build complete`, and `power hib` prints a mode and the sources still to be proved.
+
+- [ ] **Step 7: Try each wake path on USB**
+
+Before each one, run `python3 $T5 "power hib test <src> …"`. Then wait, reconnect the console, and run `python3 $T5 "power boot"`:
+- `power hib test timer 30` → back within 30–40 s, `kind=hib-wake cause=timer`.
+- `power hib test rtc 60` (only if Step 5 found the RTC IRQ routed) → back within 60–70 s.
+- `power hib test imu` (only if the INT reaches an LP GPIO) → it needs a nudge, which only the user can give, so record "wired, not yet proved" for Task 10.
+- `power hib test off` (only if Step 5 found a power-off line) → record whether USB power keeps it on.
+- The side button and the reset button need a real press: the user does them in Task 10. The USB-Serial-JTAG peripheral is off in deep sleep and the Tab5 has no USB-UART bridge, so nothing on the Mac can reset a sleeping P4. Every test here therefore arms the timer as a backstop.
+
+Record each result. Fill `hibernate_wake_sources()` and `hibernate_mode()` from them: power-off when it exists and something can wake it, else deep sleep.
+
+- [ ] **Step 8: Check that state survives a hibernate**
+
+Before: run `python3 $T5 "sshkey" "companion status"`, and note the Tailscale IP from the boot log's MicroLink lines.
+
+Run: `python3 $T5 "power hib test timer 20"`, and after it comes back, run the same commands again.
+Expected:
+- the same `@@PUBKEY` line;
+- the same Tailscale IP;
+- `companion status` shows `connected <host>` with no `KH_UNKNOWN` line in the log (the host-key pins survived);
+- `power settings` unchanged and `power resets` shows one more `deepsleep`.
+
+- [ ] **Step 9: Check the cold boot to a live dashboard**
+
+Run `power hib test timer 10` three times. Each time, take a screenshot as soon as the console is back, then run `power boot`.
+Expected:
+- the first screenshot shows `Waking: reconnecting to Mac` and no cards (Review Focus 5);
+- `to_live` is recorded for each run (the spec says 50–130 s today);
+- record all three.
+
+- [ ] **Step 10: Check the bench's hibernate step on USB**
+
+Run: `python3 $T5 "power bench start fast"`. When the console comes back after the probe cycles, run `python3 firmware/tools/power_report.py --port /dev/cu.usbmodem211201 --bench`.
+Expected: a `hibernate` row with 3 samples, status `usb` (charging on USB), the boot-to-live time in `seconds`, and `-` for mWh. Every row above it is unchanged from Task 5.
+
+- [ ] **Step 11: Check the long-idle rule now that Hibernate exists**
+
+Run: `python3 $T5 "power hib test-wake 30" "power sim battery 8" "power set off 20"`. Wait 25 s.
+Expected: the notice for 3 s, then hibernate (the console drops), then back within about 30 s with `power boot` showing `kind=hib-wake`. The `sim battery` override is RAM only, so it is gone after the boot. Run `power set defaults`.
+
+- [ ] **Step 12: Decide the Hibernate default and write the notes**
+  - `hibernate_h` stays at 2 only if a wake path that needs nothing more than the side button exists on paper (Step 5) and its electrical path checked out in Step 7. Task 10 confirms it with a real press. Otherwise set the default to 0 in `settings.c` and run `power set hibernate 0` (the device already has CFG 18, so the code default alone wouldn't reach it). The battery ≤ 10% trigger stays on whenever `hibernate_supported()`.
+  - Record which path that is: power-off with the side button, deep sleep with the button on an LP GPIO, or "reset only".
+  - Write `docs/superpowers/notes/2026-10-23-light-sleep-spike.md`, covering:
+    - Part A: what was tried, each check's result with numbers, the teardown and light-sleep decisions and why, and touch after teardown. Also record that `lvgl_port_remove_disp` deletes every screen of the display (the nav stack, the layer-top shield and toasts), and that `ui_nav_refresh()` rebuilds only the top screen. If light sleep failed, say that Off ships as panel off + quiet tasks + modem power save + the long poll + the Radio-off tier.
+    - Part B: each wake source (on paper, then tried), the mode chosen, the survival checks, the three boot-to-live times, the probe's USB plumbing result, whether the keyboard rail stays up in deep sleep, and the Hibernate default with the path it relies on.
+
+- [ ] **Step 13: Commit**
 
 ```bash
-git add -A firmware docs/superpowers/notes/2026-10-23-light-sleep-spike.md
-git commit -m "spike(power): display teardown with light sleep: <kept behind a setting | dropped>, see notes"
+git add -A firmware docs/superpowers/notes/2026-10-23-light-sleep-spike.md docs/superpowers/notes/2026-10-23-plan2-rulings.md
+git commit -m "spike(power): display teardown <kept for Deep idle | dropped>, light sleep <kept behind a setting | dropped>, hibernate via <power-off | deep sleep>, see notes"
 ```
 
 ### Task 7: Lift wake
@@ -804,7 +984,7 @@ Run: `python3 $T5 "power sim lift" "power wakes"`.
 Expected: `lift swallowed=0`, `state=active`.
 
 Leave it in Off for 3 minutes on the desk.
-Expected: no `lift` wake in `power wakes`. Lifting it for real is Task 10 Step 3.
+Expected: no `lift` wake in `power wakes`. Lifting it for real is Task 10 Step 4.
 
 Run `power set defaults`.
 
@@ -823,12 +1003,14 @@ git commit -m "feat(power): wake on lift by polling the BMI270 in Dim and Off"
 - Modify: `firmware/main/companion/cc_link.c`, `cc_link.h`
 - Modify: `firmware/main/sys/power.c`, `power_rules.c`, `power_rules.h`, `firmware/test/host/test_power_rules.c`
 - Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls)
-- Modify: `firmware/main/app_main.c` (`wifi_global_cb`), `firmware/main/ui/ui_settings.c` (Radio-off rows), `firmware/main/ui/ui_dashboard.c` (`Reconnecting…`), `firmware/main/sys/power_bench.c` (steps `radio-off` 180 s, `checkin-handshake` and `checkin-rebind`, each up to 120 s), `firmware/main/sys/power_console.c`
+- Modify: `firmware/main/app_main.c` (`wifi_global_cb`; the Hibernate check-in boot), `firmware/main/ui/ui_settings.c` (Radio-off rows, Hibernate check-in row), `firmware/main/ui/ui_dashboard.c` (`Reconnecting…`), `firmware/main/sys/power_bench.c` (steps `radio-off` 180 s, `checkin-handshake` and `checkin-rebind`, each up to 120 s, and `deep-idle` 180 s, all inserted before Task 6's `hibernate`, which stays last; that makes 14 steps, within `BENCH_MAX` 16), `firmware/main/sys/power_console.c`
+- Modify: `firmware/main/sys/hibernate.c`, `hibernate.h` (the check-in wake and boot)
 
 **Interfaces:**
 - Produces, in `power_rules.h`:
   - `int pr_backoff_s(int attempt);` gives 1, 2, 4, 8, 16, then 30 for every later attempt, with no cap on attempts.
   - `bool pr_radio_off_worth_it(float a_mw, float b_mw, float c_mwh, int checkin_min, int checkin_s);`. It is the spec's rule: `(a − b) × period > c`, the average draw drops at least 20%, and `checkin_s < 30`. The average with toggling is `b + c / period`.
+  - `int pr_checkin_period_min(power_state_t st, int checkin_min, int deep_checkins_done);`. Radio off: `checkin_min`. Deep idle backs off 5 → 15 → 30 min: `max(checkin_min, 15)` for the first check-in after entering Deep idle (`deep_checkins_done == 0`), then `max(checkin_min, 30)` for every later one. Any other state: 0 (no check-ins).
 - Produces, in `wifi_mgr.h`:
   - Background reconnect moves to a `wifi_rc` task (stack 3072). The disconnect handler only notifies it, never `vTaskDelay`. The task calls `esp_wifi_connect()` after `pr_backoff_s(attempt)` seconds until it gets an IP, is parked, or the user disconnected. A background attempt that fails is retried, so it never stops for good.
   - `bool wifi_mgr_park(void);` sets parked and calls `esp_wifi_stop()`. If that fails, or if the next `esp_wifi_start()` fails, it falls back to `esp_wifi_disconnect()` + `esp_wifi_set_ps(WIFI_PS_MAX_MODEM)` and records `park mode: disconnect`.
@@ -857,18 +1039,39 @@ git commit -m "feat(power): wake on lift by polling the BMI270 in Dim and Off"
   - Each check-in's path, total ms and mWh go into the power log and `power checkins`. The path `handshake` is recorded only after step 4's SSH connect succeeds, because a stale keypair can report the peer as up.
   - A key, touch or lift during Radio off wakes to Active: unpark at once, then reconnect, while the dashboard shows the muted `Reconnecting to <host>…` with stale cards until the first fresh result.
   - Input wake from Radio off uses the same steps 1–5 (handshake first, so the target is about 10 s), then stays up. When that reconnect finishes it calls `tailscale_set_fast_resume(false)`, so a later real Wi-Fi drop still rebinds.
-  - The keyboard light uses `pr_light_max_age_ms(true, pw_checkin_min)` while in Radio off.
+  - The keyboard light uses `pr_light_max_age_ms(true, period)` in Radio off and Deep idle, where `period` is the one `pr_checkin_period_min` scheduled for the next check-in (Review Focus 4).
   - Off entry also calls `wifi_mgr_set_ps_max(true)`, and every wake calls `wifi_mgr_set_ps_max(false)`.
-- Settings → Power: Radio off (switch, default off), Radio off after (min) 5–240, Check in every (min) 1–60.
+- Power, Deep idle:
+  - With `pw_radio_off` on, Deep idle keeps the radio parked (it parks it first if Radio off hadn't yet) and runs the same check-in steps 1–6, at `pr_checkin_period_min(PS_DEEP_IDLE, pw_checkin_min, k)`, logging tag `0x84`. Leaving Deep idle resets k.
+  - With `pw_radio_off` off (the default until Task 10), Deep idle leaves the link on the long poll at I = 15 s, as in Off. There are no check-ins, so nothing backs off.
+  - A check-in that finds a new needs-you does a needs-you wake, as in Radio off. The light rule is the Deep-idle one (amber at 30%) only until that wake lands in Dim.
+  - Bench step `deep-idle` (180 s): `power_go(PS_DEEP_IDLE)` with the radio parked and no check-in due inside the step, so it measures the floor (with the Task 6 teardown and 40 MHz clock if they were kept).
+- Hibernate check-in (`pw_hibernate_checkin_h`, default 0 = off):
+  - When it is set, `hibernate_now` arms a wake after `pw_hibernate_checkin_h` hours with `next = POWER_BOOT_HIB_CHECKIN`. The wake comes from the timer, or the RX8130 alarm when Task 6 chose power-off with the RTC as a source.
+  - On a check-in boot, `app_main` keeps the screen dark (brightness 0, panel off, power state Off from the start) and runs:
+    1. Wi-Fi up;
+    2. `tailscale_checkin(mac_ip, false, &ms)`;
+    3. `cc_link_park(false)` and wait for connected;
+    4. `cc_link_poll_now(15000)`;
+    5. any background needs-you → keyboard light amber at 30% (the Deep-idle rule), else `PR_LED_OFF`;
+    6. `hibernate_now(pw_hibernate_checkin_h * 3600, POWER_BOOT_HIB_CHECKIN)` again.
+  - The whole check-in has 180 s. When that runs out it hibernates anyway and records `failed`.
+  - A key, touch or lift during a check-in boot is an ordinary wake to Active, and the check-in is abandoned.
+  - If Task 6 found that the keyboard rail drops in deep sleep or power-off, the amber light can't outlast the check-in. Then a needs-you check-in stays up in Deep idle with the light amber, instead of hibernating, until input or the next `pw_hibernate_h` (my call, Amendment A9).
+  - Each check-in goes into `power checkins` with path `hib-handshake`, `hib-rebind` or `hib-failed`, its ms and its mWh (summed from 1 Hz samples during the boot, tag `0x85`). `power checkins` keeps its last 8 entries in NVS (ns `power`, key `chk`) so they survive the hibernate.
+- Settings → Power: Radio off (switch, default off), Radio off after (min) 5–240, Check in every (min) 1–60, Hibernate check-in every (h): Off, 1–24.
 - Console:
   - `power go radio-off`, `power checkin [rebind]` (one check-in now), `power checkins` (last 8: path, ms, mWh);
-  - `power set radio-off 0|1`, `power set radio-after <min>`, `power set checkin <min>`;
+  - `power set radio-off 0|1`, `power set radio-after <min>`, `power set checkin <min>`, `power set hib-checkin <h>`;
+  - `power checkin hibernate` runs one Hibernate check-in cycle with a 60 s wake. After that one check-in it stays awake instead of hibernating again (debug), so the console comes back;
+  - `power` prints `next-checkin=<s>` and `period=<min>` in Radio off and Deep idle;
   - `companion reconnect-log` prints `cc_link_reconnect_log`;
   - the debug-only `wifi test drop` calls `esp_wifi_disconnect()` without setting the user flag, like a real drop.
 
 - [ ] **Step 1: Write the failing host tests** (in `test_power_rules.c`)
   - `test_backoff`: attempts 0..7 → 1, 2, 4, 8, 16, 30, 30, 30; attempt 1000 → 30.
   - `test_radio_off_rule`: a = 300, b = 60, c = 2.0 mWh, 5 min, 12 s → true (the saving is 20 mWh per period; the average falls from 300 to 84 mW); c = 25 mWh → false; check-in 31 s → false; a = 100, b = 90, c = 0.1 mWh → false (the saving, 0.83 mWh, passes the first condition; the average falls only 8.8%, under 20%).
+  - `test_deep_idle_backoff` (Review Focus 4): `pr_checkin_period_min(PS_RADIO_OFF, 5, 0)` = 5; `(PS_DEEP_IDLE, 5, 0)` = 15; `(PS_DEEP_IDLE, 5, 1)` = 30; `(PS_DEEP_IDLE, 5, 7)` = 30; `(PS_DEEP_IDLE, 20, 0)` = 20; `(PS_DEEP_IDLE, 20, 1)` = 30; `(PS_DEEP_IDLE, 45, 3)` = 45 (never shorter than the user's); `(PS_OFF, 5, 0)` = 0. And `pr_light_max_age_ms(true, 30)` = 1 860 000, so a 30-minute Deep-idle period keeps the amber.
 
 - [ ] **Step 2: Run them to make sure they fail**
 
@@ -877,7 +1080,7 @@ Expected: FAIL
 
 - [ ] **Step 3: Implement the rules** and run the tests until they pass
 
-- [ ] **Step 4: Implement wifi_mgr, Tailscale, cc_link and power**, add the preview stubs, build the preview, then build and flash
+- [ ] **Step 4: Implement wifi_mgr, Tailscale, cc_link and power (Radio off, the Deep-idle check-ins and the Hibernate check-in)**, add the preview stubs, build the preview, then build and flash
 
 - [ ] **Step 5: Check background reconnect**
 
@@ -907,11 +1110,28 @@ Expected: the first shows `Reconnecting to <host>…` with stale cards and no `z
 
 Stop the session, then run `power set defaults`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Check the Deep-idle backoff and the Hibernate check-in**
+
+Run: `python3 $T5 "power set radio-off 1" "power go deep-idle" "power"`.
+Expected: `state=deep-idle`, the radio parked, `period=15`.
+
+Run: `python3 $T5 "power checkin"`, wait 60 s, then `python3 $T5 "power"` (a forced check-in counts as the first one).
+Expected: `period=30`, and `power light` shows `light: 1 0 0 0 0 (nobody needs you)`.
+
+Start `companion-test-hib` on the Mac (Task 3 prompt) and wait for it to block. Run: `python3 $T5 "power set hib-checkin 1" "power checkin hibernate"`. The console drops for about 60 s plus the cold connect. When it is back, run `python3 $T5 "power checkins" "power light" "power boot" "power"`.
+Expected:
+- a `hib-handshake` or `hib-rebind` entry with its ms and mWh;
+- `light: 1 30 f4 b5 45 (needs you: companion-test-hib)`;
+- `kind=hib-checkin`;
+- `state=off` with brightness 0: the screen stayed dark (an LVGL screenshot still renders, so it can't show this).
+
+Record the check-in's total time. Stop `companion-test-hib`, then run `power set defaults`.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add firmware/main firmware/test/host firmware/tools/ui_preview docs/superpowers/notes/2026-10-23-plan2-rulings.md
-git commit -m "feat(net): Wi-Fi reconnect task with backoff, parked state, Radio-off tier with handshake-first check-ins"
+git commit -m "feat(net): Wi-Fi reconnect task with backoff, parked state, Radio-off tier with handshake-first check-ins, Deep-idle backoff and the Hibernate check-in"
 ```
 
 ### Task 9: Plan 1 follow-ups
@@ -983,42 +1203,214 @@ git add firmware docs/superpowers
 git commit -m "feat(companion): forget Mac host key; real permission-dialog fixture; cc_link failure-reason fixes"
 ```
 
+### Task 9b: Hotkeys for two thumbs
+
+It is numbered 9b, not renumbered, so that the many "Task 10" and "Task 10 Step N" references in this plan, and the visit's name in the notes, stay right. It implements the spec's table under "Hotkeys for two thumbs" exactly. The real-press checks are in Task 10.
+
+**Files:**
+- Create: `firmware/main/ui/hotkeys.c`, `firmware/main/ui/hotkeys.h` (pure: it includes only `input/keyboard.h`, which has no ESP-IDF or LVGL headers)
+- Create: `firmware/test/host/test_hotkeys.c`
+- Modify: `firmware/test/host/CMakeLists.txt` (add `../../main/ui/hotkeys.c` to the `pure` library; add `test_hotkeys`)
+- Modify: `firmware/main/ui/ui_terminal.c` (`term_key` asks `hk_takeover`; the 3 s open toast)
+- Modify: `firmware/main/ui/ui_dashboard.c` (`dash_key` asks `hk_dashboard`; the footer hint; the Ctrl+K overlay)
+- Modify: `firmware/main/ui/ui_core.c`, `firmware/main/ui/ui.h` (`ui_toast_ms`; `ui_dashboard_keys_overlay` for the preview)
+- Modify: `firmware/main/input/key_console.c` (`key ctrl <char>` for any printable ASCII character, `key shift <key>`, `key log on|off`)
+- Modify: `firmware/main/input/keyboard.c`, `keyboard.h` (only the `key log` hook: the drain prints each decoded event while it is on). The decode itself needs no change, as found from reading it:
+  - In HID mode (stock layout), `hid_to_event` maps HID 0x30 to `cp=']'` and 0x10 to `cp='m'`, with `MOD_CTRL` from the modifier byte.
+  - In matrix mode (JIS), `]` is row 2, column 12, and `m` is row 3. `matrix_event` reports both as `KEY_EV_CHAR` with the held `MOD_CTRL`.
+  - USB keyboards go through the same `hid_to_event`.
+  - So **Ctrl+M arrives as `cp='m'` with `MOD_CTRL`, never as `SK_ENTER`**, in every path. Only the terminal's `term_keys_encode` turns it into 0x0d, and only inside a terminal. Task 10 confirms with real presses what the A164's own firmware sends in HID mode.
+- Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (add `hotkeys.c`; stubs for the new calls; a `dashboard-keys` case)
+
+**Interfaces:**
+- Produces, in `hotkeys.h`:
+
+```c
+typedef enum { HK_T_NONE, HK_T_LEAVE, HK_T_SCROLL_UP, HK_T_SCROLL_DOWN } hk_term_t;
+hk_term_t hk_takeover(const key_event_t *ev, bool takeover);
+/* takeover only: Ctrl+] (KEY_EV_CHAR ']' with MOD_CTRL) and Ctrl+Q / Ctrl+q (the alias) → LEAVE;
+   Shift+Up → SCROLL_UP and Shift+Down → SCROLL_DOWN (takeover only: a plain SSH terminal keeps
+   Shift+arrows for the remote side); Shift+PgUp / Shift+PgDn → SCROLL_UP / SCROLL_DOWN in any
+   terminal, as today; everything else → NONE (sent to the Mac) */
+typedef enum { HK_D_NONE, HK_D_OPEN, HK_D_SETTINGS, HK_D_MORE, HK_D_KEYS, HK_D_LOCAL } hk_dash_t;
+hk_dash_t hk_dashboard(const key_event_t *ev);
+/* KEY_EV_CHAR with MOD_CTRL or MOD_META: o/O → OPEN, p/P → SETTINGS, m/M → MORE, k/K → KEYS,
+   any other character → LOCAL (eaten: never typed into an answer field, never sent);
+   anything else → NONE (dash_key's existing handling) */
+#define HK_DASH_HINT "Ctrl+O open \xc2\xb7 Ctrl+P settings \xc2\xb7 Ctrl+K keys"
+#define HK_TAKEOVER_TOAST "Ctrl+] to leave"
+#define HK_TAKEOVER_TOAST_MS 3000
+extern const char *const hk_overlay_lines[];   /* NULL-terminated; the Ctrl+K overlay, one shortcut per line */
+```
+
+  The overlay lines, in this order: `Up / Down  move between cards`, `Enter  send the answer`, `Ctrl+O  open the session`, `Ctrl+P  settings`, `Ctrl+M  more`, `Ctrl+K  this list`, `Esc  back (Settings, More)`, `In a session: Ctrl+]  leave (it keeps running)`, `In a session: Shift+Up / Down  scroll back`, `Ctrl+Tab  buttons mode`.
+- Produces, in `ui.h`:
+  - `void ui_toast_ms(const char *text, uint32_t ms);`. `ui_toast` becomes `ui_toast_ms(text, 2200)`.
+  - `void ui_dashboard_keys_overlay(bool show);`.
+- Terminal: `term_key` calls `hk_takeover(&e, c->cmd_mode)` first, on the event with the on-screen CTRL latch applied, as the Ctrl+Q check does today:
+  - LEAVE runs today's Ctrl+Q branch: `cmd_close(c, "Session still running on your Mac")`, never sent.
+  - SCROLL_UP and SCROLL_DOWN run today's Shift+PgUp/PgDn branch (half a screen).
+  - When a take-over opens (`cmd_mode` set and the channel up), it shows `ui_toast_ms(HK_TAKEOVER_TOAST, HK_TAKEOVER_TOAST_MS)`.
+- Dashboard:
+  - `dash_key` first checks the overlay: while it is shown, **any** key, special or not, closes it and is eaten. A touch on it closes it too.
+  - Then `hk_dashboard`: OPEN → `open_selected()` (unchanged); SETTINGS → `ui_nav_push(ui_settings_create, NULL)`; MORE → `ui_nav_push(ui_home_create, NULL)` (the same calls as `settings_cb` and `more_cb`); KEYS → show the overlay; LOCAL → eaten.
+  - These checks come before today's `if (!s_shown_live) return true;`, so Settings, More and the overlay work with no cards on screen; OPEN still needs a selected card.
+  - All of them return before the `field_visible` branch, so none of them can reach `s_draft`.
+  - The draft is left as it was, so a half-typed answer is still there after Esc comes back from Settings or More.
+  - The overlay is a full-screen panel (`#161b22` on a `LV_OPA_80` `#0e1116` backdrop) on the dashboard screen, with the lines in fg and the keys in muted. No amber.
+  - The footer text becomes `Up/Down select · Enter send / open · ` + `HK_DASH_HINT`. The Settings and More buttons and Ctrl+Tab stay.
+  - The card hint `Enter sends · Ctrl+O opens the session` stays.
+- Console (`key_console.c`):
+  - `key ctrl <c>` accepts any single printable ASCII character (`key ctrl ]`, `key ctrl p`); letters stay lower case, as today.
+  - `key shift <name>` posts a named special key with `MOD_SHIFT` (`key shift up`).
+  - `key log on|off` prints `key: type=<char|special> cp=<'c' or hex> key=<name> mods=<ctrl,shift,…>` for every event the drain decodes, real presses included. It is for Task 10.
+
+- [ ] **Step 1: Write the failing host tests** in `test_hotkeys.c`
+  - `test_takeover_leave`: Ctrl+`]` in a take-over → LEAVE; Ctrl+`q` → LEAVE; Ctrl+`Q` → LEAVE; `]` without mods → NONE; Ctrl+`]` with takeover false → NONE; Ctrl+`c` → NONE (Claude Code gets it).
+  - `test_takeover_scroll`: Shift+Up → SCROLL_UP; Shift+Down → SCROLL_DOWN; plain Up → NONE; Shift+Up with takeover false → NONE; Shift+PgUp with takeover false → SCROLL_UP; Shift+PgDn in a take-over → SCROLL_DOWN.
+  - `test_dashboard_keys`: Ctrl+`o` → OPEN; Ctrl+`P` → SETTINGS; Ctrl+`m` → MORE; Ctrl+`k` → KEYS; Meta+`p` → SETTINGS; Ctrl+`x` → LOCAL; plain `p` → NONE; plain Enter → NONE.
+  - `test_dashboard_ctrl_never_typed`: for every cp from 0x20 to 0x7e with `MOD_CTRL`, and again with `MOD_CTRL | MOD_SHIFT`, `hk_dashboard` is not NONE.
+  - `test_ctrl_m_is_not_enter`: `{KEY_EV_CHAR, 'm', MOD_CTRL}` → MORE; `{KEY_EV_SPECIAL, SK_ENTER, MOD_CTRL}` → NONE (Ctrl+Enter keeps today's meaning).
+  - `test_overlay_lists_every_shortcut`: `hk_overlay_lines` has 10 entries, and they contain `Ctrl+]`, `Ctrl+P`, `Ctrl+M`, `Ctrl+K`, `Ctrl+O` and `Shift+Up`.
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run the host test command.
+Expected: FAIL (undefined `hk_*`)
+
+- [ ] **Step 3: Implement `hotkeys.c`** and run the host tests until they pass
+
+- [ ] **Step 4: Wire the terminal, the dashboard, `ui_toast_ms`, the overlay, the console and the key log**, add the preview stubs, then build the preview and render `./preview dashboard` and `./preview dashboard-keys`
+
+Convert both with `sips` and look at them.
+Expected: the footer reads `… Ctrl+O open · Ctrl+P settings · Ctrl+K keys`, and the overlay lists all ten lines, readable, in D9 colours with no amber.
+
+Build and flash.
+
+- [ ] **Step 5: Check on hardware with the console**
+
+On the Mac, start `companion-test-keys` (Task 3 prompt) and wait for it to block. On the dashboard, select its card (the answer field is visible).
+
+Run: `python3 $T5 "key text ab" "key ctrl p"`, then take a screenshot.
+Expected: Settings is open. Run `key esc`. Expected: the dashboard, with `ab` still in the field and nothing else in it.
+
+Run: `python3 $T5 "key ctrl m"`, then take a screenshot.
+Expected: More (the fork's home grid). Run `key esc`.
+
+Run: `python3 $T5 "key ctrl k"`, then take a screenshot; then `python3 $T5 "key text z"` and take another.
+Expected: the first shows the overlay; the second shows it closed, with the field still `ab` (no `z`). Run `key esc` to clear the field.
+
+Run: `python3 $T5 "key ctrl x" "key ctrl ]"`.
+Expected: nothing typed, nothing opened.
+
+Run: `python3 $T5 "key ctrl o"` and take a screenshot within 3 s.
+Expected: the take-over is open, with the toast `Ctrl+] to leave`. A second screenshot 4 s later shows no toast.
+
+Run: `python3 $T5 "key shift up"` and take a screenshot.
+Expected: the view scrolled back half a screen. The session on the Mac got no keystroke: its state and screen are unchanged, which `sessions` and the next attach show. Run `key shift down`.
+
+Run: `python3 $T5 "key ctrl ]"`.
+Expected: back on the dashboard, `sessions` still lists `companion-test-keys` as running.
+
+Open it again with `key ctrl o`, then run `python3 $T5 "key ctrl q"`.
+Expected: back on the dashboard (the alias works).
+
+Stop `companion-test-keys`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add firmware/main/ui firmware/main/input firmware/test/host firmware/tools/ui_preview docs/superpowers/notes/2026-10-23-plan2-rulings.md
+git commit -m "feat(ui): two-thumb hotkeys: Ctrl+] leaves a take-over, Shift+arrows scroll, Ctrl+P/M/K on the dashboard"
+```
+
 ### Task 10: Measurement visit with the user
 
-This is the only task that needs the user. Tasks 1–9 are done and flashed, and every gated setting is still at its default.
+This is the only task that needs the user. Tasks 1–9b are done and flashed, and every gated setting is still at its default.
 
 **Files:**
 - Create: `docs/superpowers/notes/2026-10-23-power-measurements.md`
+- Modify: `firmware/tools/power_report.py`, `firmware/tools/test_power_report.py` (`ladder_mwh` and `--ladder`)
 - Modify: `firmware/main/sys/sysinfo.c` (only if Step 4 shows the charge pin doesn't track)
-- Modify: `firmware/main/settings/settings.c`, `settings.h` (gated defaults from the data; `CFG_VERSION 19` with a migration that sets each changed default once)
+- Modify: `firmware/main/settings/settings.c`, `settings.h` (gated and long-idle defaults from the data; `CFG_VERSION 19` with a migration that sets each changed default once)
+- Modify: `firmware/main/ui/hotkeys.c`, `hotkeys.h`, `firmware/test/host/test_hotkeys.c` (only if Step 3 shows Ctrl+] isn't reported)
 - Modify: `docs/superpowers/specs/2026-10-22-claude-tab5-design.md` (Known issues: Mac sleep/wake reconnect, brownout counts; Roadmap row 2 done)
 
 **Interfaces:**
-- Consumes: `power bench`, `power_report.py`, `power wakes`, `power checkins`, `power light test bind`, `cc_link_reconnect_log` and `companion kick` from the earlier tasks, plus `pr_radio_off_worth_it` (Task 8).
+- Consumes: `power bench`, `power_report.py`, `power wakes`, `power checkins`, `power boot`, `power light test bind`, `key log`, `cc_link_reconnect_log` and `companion kick` from the earlier tasks, plus `pr_radio_off_worth_it` (Task 8).
+- Produces, in `power_report.py`: `ladder_mwh(mw: dict[str, float], hours: float, *, dim_s=30, off_s=120, radio_off_min: int | None = 20, checkin_min=5, deep_idle_min: int | None = 60, hibernate_h: int | None = 2, checkin_mwh=0.0, hib_checkin_h=0, hib_checkin_mwh=0.0) -> dict`. It returns `{"mwh", "by_state", "checkins"}` for `hours` of idle after the last input.
+  - `mw` has the keys `active`, `dim`, `off`, `radio_off`, `deep_idle` and `hibernate`. `None` turns a tier off.
+  - The timeline follows `pr_next_state`:
+    - Active until `dim_s`;
+    - Dim until `off_s`;
+    - Off until `off_s + radio_off_min` min;
+    - Radio off until `deep_idle_min` (Deep idle wins if it comes first);
+    - Deep idle until `hibernate_h`;
+    - Hibernate to the end.
+  - Check-ins:
+    - one every `checkin_min` in Radio off;
+    - in Deep idle, only when Radio off is on, at `max(checkin_min, 15)` and then every `max(checkin_min, 30)` min (`pr_checkin_period_min`);
+    - every `hib_checkin_h` in Hibernate.
+  - The CLI's `--ladder 8,10` prints, for each number of hours, the mWh and the share of `--capacity-mwh` it uses, each with `(estimate)`.
 
-- [ ] **Step 1: Prepare without the user**
+- [ ] **Step 1: Write the failing `ladder_mwh` tests** in `test_power_report.py`, then implement it until they pass
+  - `test_ladder_default_8h`: mw {active 3000, dim 2000, off 1000, radio_off 300, deep_idle 200, hibernate 5}, 8 h, defaults → 828.33 mWh (±0.1): 25 + 50 + 333.33 + 190 + 200 + 30.
+  - `test_ladder_checkins`: the same with `checkin_mwh=2` → 9 check-ins (7 in Radio off, 2 in Deep idle at +15 and +45 min), 846.33 mWh.
+  - `test_ladder_no_radio_off`: `radio_off_min=None`, `checkin_mwh=2` → 0 check-ins, 1 271.67 mWh (Off runs to 60 min).
+  - `test_ladder_no_hibernate_10h`: `hibernate_h=None`, 10 h → 2 398.33 mWh (Deep idle to the end).
 
-Flash the final build, then run `python3 $T5 "power set defaults" "power log clear" "power log on" "power resets"` and record the reset counts. On the Mac, start `companion-test-bench` (Task 3 prompt) so needs-you is live for the light steps.
+Run the Python tests.
+Expected: they FAIL first (no `ladder_mwh`), then pass.
 
-- [ ] **Step 2: Ask the user once, in one message, for everything**
+- [ ] **Step 2: Prepare without the user**
+
+Flash the final build, then run `python3 $T5 "power set defaults" "power log clear" "power log on" "power resets" "power hib"` and record the reset counts and the hibernate mode. On the Mac, start `companion-test-bench` (Task 3 prompt) so needs-you is live for the light steps.
+
+- [ ] **Step 3: Ask the user once, in one message, for everything**
   1. Confirm a battery is fitted, and read its capacity from the label if you can.
-  2. When I say so, unplug USB for about 20 minutes while `power bench` runs. The Tab5 shows `Bench done. Plug USB back in.` when it's finished; then plug it back in.
-  3. While it's still plugged in, before the bench: tap the dark screen once, press one key, and pick the Tab5 up off the table. I'll check that each one only wakes it. Then look at the keyboard light for 5 s while I switch it to the keyboard's own mode, and tell me what it shows.
-  4. After the bench: put the Mac to sleep (Apple menu → Sleep) for about 3 minutes, then wake it.
+  2. While it's still plugged in, before the bench:
+     - tap the dark screen once, press one key, and pick the Tab5 up off the table; I'll check that each one only wakes it;
+     - look at the keyboard light for 5 s while I switch it to the keyboard's own mode, and tell me what it shows;
+     - press Ctrl+], Ctrl+P, Ctrl+M and Ctrl+K when I ask, in both keyboard layouts (I switch the layout between rounds).
+  3. When I say so, unplug USB for about 30 minutes while `power bench` runs. Near the end the Tab5 goes dark and restarts by itself three times; that is the bench measuring Hibernate. It shows `Bench done. Plug USB back in.` when it's finished; then plug it back in.
+  4. After the bench: the Tab5 will go to sleep with the same message. Press the side button once to wake it, and tell me when you pressed. If nothing happens within 10 s, press the reset button and tell me that instead.
+  5. Then put the Mac to sleep (Apple menu → Sleep) for about 3 minutes, and wake it.
 
-- [ ] **Step 3: The wake checks with the user** (on USB, before the bench)
+- [ ] **Step 4: The wake and hotkey checks with the user** (on USB, before the bench)
   - Run `python3 $T5 "power go off"`, then ask for the tap. Then `power wakes`.
-    Expected: `touch swallowed≥1`, no card action, and the screen lit.
+    Expected: `touch swallowed≥1`, no card action, and the screen lit. This is the first real-finger proof of the v2 touch poll (PT1).
   - The same for a key (`key swallowed=1`) and for a lift (`lift`).
   - Run `power light test bind`, then `power light test user`, and record the user's description of mode 0.
+  - Run `python3 $T5 "key log on"`, then, for the stock layout and then JIS (Settings → keyboard layout), ask for Ctrl+], Ctrl+P, Ctrl+M and Ctrl+K on the dashboard, and Ctrl+] again inside a take-over of `companion-test-bench`.
+    Expected, in both layouts:
+    - the log shows `cp=']' mods=ctrl`, `cp='p' mods=ctrl`, `cp='m' mods=ctrl` (not `key=enter`) and `cp='k' mods=ctrl`;
+    - Settings, More and the overlay open;
+    - Ctrl+] leaves the take-over.
+  - If Ctrl+] isn't reported as `cp=']'` with ctrl in either layout, follow the spec's fallback:
+    - `hk_takeover` maps Ctrl+P to LEAVE as well;
+    - the toast and the overlay say `Ctrl+P to leave`;
+    - update `test_takeover_leave` and run the host tests;
+    - record it.
+  - Run `key log off`.
 
-- [ ] **Step 4: The bench on battery**
+- [ ] **Step 5: The bench on battery**
 
 Run: `python3 $T5 "power bench start"`, then ask the user to unplug. After the user plugs back in, run `python3 firmware/tools/power_report.py --port /dev/cu.usbmodem211201 --bench --capacity-mwh <N>` and `--log`.
+Expected: every row `ok` (or `skipped: not built` for what Task 6 dropped), including `deep-idle` and `hibernate` (3 samples, boot-to-live in `seconds`).
 
 Check the charge pin: in the log, `flags` bit 0 should change at the unplug and the plug-in. If it doesn't track, set charging detection to the current direction only and record why.
 
-- [ ] **Step 5: The Mac sleep/wake reconnect**
+- [ ] **Step 6: Wake from Hibernate with the side button**
+
+Run: `python3 $T5 "power go hibernate"`. Ask the user to press the side button and to say when. When the console is back, run `python3 $T5 "power boot"` and take a screenshot.
+Expected:
+- `kind=hib-wake`;
+- the screenshot shows `Waking: reconnecting to Mac` with no cards, or live cards once the poll landed (never stale ones drawn as live);
+- `to_live` is recorded.
+
+The wake time is from the user's press to `to_live`, and the notes give both parts. If only the reset button worked, record "reset only". Hibernate's default then becomes 0 in Step 8.
+
+- [ ] **Step 7: The Mac sleep/wake reconnect**
 
 When the agent resumes after the Mac wakes, run:
 - `pmset -g log | grep -E "Wake from|Entering Sleep" | tail -4` for the wall-clock sleep and wake times;
@@ -1027,36 +1419,47 @@ When the agent resumes after the Mac wakes, run:
 
 The reconnect time is link-up minus the Mac wake. If it is over 30 s, run the sleep once more with `companion kick off` and compare. Keep whichever is faster as the default, and record both.
 
-- [ ] **Step 6: Set the gated defaults from the numbers**
-  - **Radio off:** on by default only if `pr_radio_off_worth_it(a, b, c, 5, checkin_s)` is true for the measured handshake path, where a is `off-touch-awake`, b is `radio-off` and c and the check-in time come from `checkin-handshake`.
-  - **Light sleep:** on by default only if Task 6 kept it and its bench step shows a lower draw than `off-touch-awake` with the link still up afterwards.
-  - **`kbd_off_cap`:** if `off-light-amber` minus `off-light-off` is over 5% of `off-touch-awake`, cap it at the lowest brightness the user still saw clearly (default 30).
-  - Bump `CFG_VERSION` to 19 so the device picks up each changed default once.
-  - Build, flash and spot-check with `power`.
+- [ ] **Step 8: Set the defaults from the numbers**
 
-- [ ] **Step 7: Write the notes**
+"Off" below is `off-touch-poll`, the Off that ships on v2.
+  - **Radio off:** on by default only if `pr_radio_off_worth_it(a, b, c, 5, checkin_s)` is true for the measured handshake path, where a is Off, b is `radio-off`, and c and the check-in time come from `checkin-handshake`.
+  - **Light sleep:** on by default only if Task 6 kept it and its bench step shows a lower draw than Off, with the link still up afterwards.
+  - **`kbd_off_cap`:** if `off-light-amber` minus `off-light-off` is over 5% of Off, cap it at the lowest brightness the user still saw clearly (default 30).
+  - **Hibernate after (`pw_hibernate_h`):**
+    - 0 if Step 6 needed the reset button;
+    - otherwise 1 h if `(deep-idle − hibernate) mW × 1 h > 3 × E_boot`, where E_boot is the `hibernate` row's boot-to-live seconds × the `active` step's mW (an estimate), because the spec's Priority leans to battery after an hour;
+    - otherwise keep 2 h.
+  - **Deep idle after (`pw_deep_idle_min`):** stays 60. The Priority keeps the first hour responsive. Record the measured saving against the step it replaces (`radio-off` if Radio off ships on, else Off).
+  - **Hibernate check-in:** stays 0. Record the Task 8 check-in's energy and time for the user to decide.
+  - Bump `CFG_VERSION` to 19 so the device picks up each changed default once.
+  - Build, flash and spot-check with `power settings`.
+
+- [ ] **Step 9: Write the notes**
 
 Write `docs/superpowers/notes/2026-10-23-power-measurements.md`:
-- the per-step table (avg/min/max mW and mA, mWh);
+- the per-step table (avg/min/max mW and mA, mWh), with the Deep idle and Hibernate draws called out (and power-off marked "not measurable on the device" if the INA226 lost power);
 - the estimated battery life for a day of 1 h Active + 23 h Off, and the same with Radio off, labelled **estimate** with the capacity used;
-- the touch-awake cost (`off-touch-awake` vs `off-touch-asleep`, and whether touch came back);
+- `power_report.py --ladder 8,10 --capacity-mwh <N>` with the defaults Step 8 chose: an **overnight** case (8 h idle) and a **day-out** case (10 h idle), each as mWh, the share of the battery, and the charge left, all labelled **estimate**; plus the same two with Hibernate off, for comparison;
+- the touch costs: `off-touch-poll` vs `off-touch-awake` (the 10 Hz poll) vs `off-touch-asleep` (and whether touch came back);
 - the keyboard light's cost;
-- both check-in paths;
+- both check-in paths, the Deep-idle backoff and the Hibernate check-in;
+- the Hibernate wake: the source that worked, press to boot, boot to live;
+- the hotkey results in both layouts;
 - the charge-pin result and what mode 0 shows;
 - the `power` reading with no pack fitted (bus voltage, percent -1), if the user can briefly disconnect it, else "not tested";
 - the Mac sleep/wake reconnect time, with and without the kick;
 - the reset counts before and after;
-- every gated decision with the formula's numbers.
+- every gated and long-idle decision with the formula's numbers.
 
 Keep simulated or forced-state (USB) results apart from battery results. Update the main spec's Known issues and the Roadmap row.
 
-- [ ] **Step 8: Clean up and commit**
+- [ ] **Step 10: Clean up and commit**
 
 Stop `companion-test-bench`, then run `power log off`.
 
 ```bash
-git add firmware/main/settings firmware/main/sys/sysinfo.c docs/superpowers
-git commit -m "docs(power): battery measurements, gated defaults from the data"
+git add firmware/main/settings firmware/main/sys/sysinfo.c firmware/main/ui/hotkeys.c firmware/main/ui/hotkeys.h firmware/test/host/test_hotkeys.c firmware/tools/power_report.py firmware/tools/test_power_report.py docs/superpowers
+git commit -m "docs(power): battery measurements, gated and long-idle defaults from the data"
 ```
 
 ## Pre-flight rulings applied
@@ -1093,3 +1496,39 @@ git commit -m "docs(power): battery measurements, gated defaults from the data"
 - F30: `screen_off = (state >= PS_OFF) && on_battery` passed to `pr_kbd_light` (Task 5).
 - F31: hex-entry part dropped from Review Focus 5 and Task 3 (Steps 4, 7).
 - F32: `pure` library includes `firmware/main`, Task 3 links it to `companion` (Tasks 1, 3).
+
+## Amendments (2026-10-23)
+
+These came from the spec's new Priority, "Long idle: Deep idle and Hibernate" and "Hotkeys for two thumbs" sections, and from controller ruling PT1. Task 1 was already done; nothing here changes it.
+
+- A1: This Tab5 is board v2 (ST7123 display and touch, no GT911). Per PT1 there is no touch INT wake, so the power task polls the touch controller at 10 Hz in Off and deeper while LVGL is paused. The GT911 INT path is v1-only. This adds `display_ctl_board_version`, `display_ctl_touch_poll`, `power touch` and the bench step `off-touch-poll`. Task 10's "Off" baseline is now `off-touch-poll` (Global Constraints, Tasks 5, 6, 10).
+- A2: Settings gain `pw_deep_idle_min` (60), `pw_hibernate_h` (2) and `pw_hibernate_checkin_h` (0 = off). These are the spec's `deep_idle_min`, `hibernate_h` and `hibernate_checkin_h`, with the `pw_` prefix the other power fields use. They get clamps, and there is still a single bump to `CFG_VERSION 18` (Task 2).
+- A3: `pr_next_state` knows `PS_DEEP_IDLE` and `PS_HIBERNATE`. They are entered on battery only, from the idle times, plus Hibernate at battery ≤ 10% when not charging. Holds block both. Host tests cover every transition and the no-battery case. The log tags are 4 and 5, with check-ins at 0x84 and 0x85; `power_log.c` grows from 24 to 28 summary slots, because its table stopped at 0x83 (Task 5).
+- A4: Deep idle (60 min) and Hibernate (2 h) are on by default, per the spec's Priority. This is an exception to "gated defaults off". Hibernate keeps its default only if a wake path that needs nothing more than the side button exists. Task 6 checks it on paper and electrically, and Task 10 with a real press. Otherwise the default is 0 (Global Constraints, Tasks 6, 10).
+- A5 (my call): the battery ≤ 10% trigger acts only from Off or deeper, so it never powers down a device in use. It doesn't depend on `pw_hibernate_h`, it needs a known percentage and no charging, and it needs `hibernate_supported()` (Task 5).
+- A6: Before Hibernate, the screen shows "Sleeping to save battery. Press the side button to wake." for 3 s (`ui_sleep_notice`). Input or a new hold during the 3 s cancels it (Task 5).
+- A7: Task 6 gains Part B, hibernate:
+  - it finds the wake sources (side button or reset, the RX8130 alarm IRQ, the IMU INT on an LP GPIO);
+  - it uses a full power-off if the board has one, else `esp_deep_sleep_start`;
+  - it checks survival (NVS, the Tailscale identity, the host-key pins);
+  - it times a cold boot to a live dashboard.
+  The power log can't sample while the CPU is off. So the bench step `hibernate` (always the last step) sets the INA226 to 1024-sample averaging and reads its last 8.6 s window at each wake, before the rails come up, and keeps it in NVS. Power-off may also unpower the INA226; then it is recorded as not measurable. The display teardown is now judged apart from light sleep: if teardown passes, Deep idle tears the display down and runs the CPU at 40 MHz (`CONFIG_CC_DEEP_IDLE_TEARDOWN`), and the spike checks whether the one-chip ST7123 touch still answers after teardown. Each part records its outcome either way (Tasks 6, 8).
+- A8: Deep idle backs check-ins off from 5 to 15 to 30 min, with the pure, host-tested `pr_checkin_period_min`. The light's age limit follows the scheduled period. With Radio off disabled (its default until Task 10), Deep idle keeps the long poll and has no check-ins (Task 8).
+- A9 (my call): the optional Hibernate check-in sits behind `pw_hibernate_checkin_h`, default 0. It is a timer or RTC boot, then connect, one poll, amber light on a needs-you, and back to Hibernate. `power checkins` moves to NVS so its entries survive. If Task 6 finds that the keyboard rail drops while hibernating, a needs-you check-in stays up in Deep idle instead, so the amber can be seen (Task 8).
+- A10: The keyboard light in Deep idle is off (`PR_LED_OFF`) unless something needs you, and then exactly 30%. `pr_kbd_light` gains `deep_idle`, with `test_light_deep_idle` (Task 3).
+- A11: New Task 9b, "Hotkeys for two thumbs". It is numbered 9b so every "Task 10" reference stays right.
+  - The pure module is `ui/hotkeys.c`.
+  - Ctrl+] leaves a take-over (Ctrl+Q stays as an alias) and Shift+▲/▼ scrolls.
+  - On the dashboard, Ctrl+P opens Settings, Ctrl+M opens More, and Ctrl+K shows an overlay that any key closes.
+  - It adds the new footer hint and the 3 s take-over toast (`ui_toast_ms`).
+  - None of these keys can reach a card's answer field. They are checked before the dashboard's no-cards early return.
+  - From reading `keyboard.c`: Ctrl+M arrives as `cp='m'` with `MOD_CTRL`, never as `SK_ENTER`, in the HID, matrix and USB paths.
+  - The console gains `key ctrl <char>` (it took only a–z, so `key ctrl ]` failed), `key shift <key>` and `key log` (Task 9b).
+- A12: Task 10 additions:
+  - it measures the Deep idle and Hibernate currents;
+  - it times a side-button wake from Hibernate;
+  - it tries the real Ctrl+], Ctrl+P, Ctrl+M and Ctrl+K presses in both layouts, with the spec's Ctrl+P fallback;
+  - it sets the long-idle defaults by stated rules;
+  - it estimates an overnight case (8 h idle) and a day-out case (10 h idle) with `power_report.py`'s host-tested `ladder_mwh`, labelled estimates.
+  The bench grows to about 30 minutes, more than the spec's "about 20", because it now covers Deep idle and Hibernate. The user checks moved from Step 3 to Step 4 (Tasks 3, 5, 7 and 10).
+- A13: Review Focus item 5 is now "a wake from Hibernate shows stale cards as live", covered by `pr_cards_view` and the Task 6 Step 9 screenshot. The old item 5 stays covered by `test_amber_like_colours`. Items 3 and 4 widen to the long-idle states and the backed-off check-ins.
