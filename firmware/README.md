@@ -1,11 +1,12 @@
-# Clientre 5 firmware (source)
+# Claude Companion firmware (source)
 
-Source tree of Clientre 5, a pocket SSH terminal OS for the M5Stack Tab5 (ESP32-P4),
+Source tree of Claude Companion, firmware for the M5Stack Tab5 (ESP32-P4) that controls
+Claude Code sessions on a Mac over SSH + Tailscale. It is forked from Clientre 5 (MIT) and
 built on ESP-IDF v5.5 + LVGL 9. This document covers the build and the implementation
 details; see the [top-level README](../README_en.md) for an overview.
 
 > Status: verified on a physical Tab5 (board v3): display, touch, keyboard, WiFi, SSH over a
-> Tailscale tailnet, Japanese input, and USB disk mode. Audio playback and the OTA path are
+> Tailscale tailnet, and USB disk mode. Audio playback and the OTA path are
 > still unverified.
 
 ## Layout
@@ -13,19 +14,17 @@ details; see the [top-level README](../README_en.md) for an overview.
 ```
 firmware/
 ├── main/
-│   ├── app_main.c            boot: BSP, display, SD, WiFi, USB, IME, UI
-│   ├── i18n/                 EN / 简体中文 / 繁體中文 / 日本語 string table
+│   ├── app_main.c            boot: BSP, display, SD, WiFi, USB, UI
+│   ├── i18n/                 English string table
 │   ├── fonts/                generated LVGL fonts (MaruMinya, Noto/DejaVu fallback)
-│   ├── ime/                  input method: romaji→kana, SKK dictionary, pinyin, candidate bar
 │   ├── input/                Tab5 I2C keyboard (0x6D, HID mode) + USB HID keyboard, key routing
 │   ├── term/                 VT100/xterm-256color emulator (wide chars, scrollback), LVGL renderer
 │   ├── ssh/                  libssh client task (password / key / keyboard-interactive, host keys in NVS)
 │   ├── ui/                   screens: home, servers, terminal, files, image, text, music, camera,
-│   │                         wifi, settings, OTA, device info, USB, web files, backup, screensaver
+│   │                         wifi, settings, OTA, device info, USB, backup, screensaver
 │   ├── media/                JPEG loader (HW decoder + scaled SW), EXIF, audio player (MP3/FLAC/WAV), camera
 │   ├── net/                  WiFi manager over esp_wifi_remote (ESP32-C6 via SDIO)
 │   ├── storage/              SD/FAT helpers, encrypted/plain backup
-│   ├── web/                  HTTP file manager (/webfm) + embedded HTML
 │   ├── ota/                  manifest check, download to SD, install via updater
 │   ├── sys/                  INA226 power, RX8130 RTC, NTP, screenshot, USB host/device manager
 │   ├── crypto/               AES-256-GCM secure store, PBKDF2 backups
@@ -33,7 +32,7 @@ firmware/
 ├── components/libssh/        libssh 0.11 (LGPL-2.1) from ewpa/LibSSH-ESP32, no Arduino dependency
 ├── components/microlink/     MicroLink v2 (MIT) unofficial Tailscale client + components/wireguard_lwip
 ├── updater/                  tab5_factory_updater: flashes main_app from /sdcard/update
-├── tools/                    font / icon / dictionary generators, release script, host UI preview
+├── tools/                    font / icon generators, release script, host UI preview
 ├── partitions.csv            Launcher-compatible layout (main_app @0x20000, factory @0xF80000)
 └── sdkconfig.defaults
 ```
@@ -53,7 +52,7 @@ sh tools/merge_flash.sh            # -> firmware/release/{partitions,full,update
 Flash the merged image at `0x0`:
 
 ```sh
-python -m esptool --chip esp32p4 -p PORT --baud 1500000 write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 release/full/clientre5_full_flash.bin
+python -m esptool --chip esp32p4 -p PORT --baud 1500000 write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 release/full/claude_companion_full_flash.bin
 ```
 
 Or flash the parts individually:
@@ -63,7 +62,7 @@ Or flash the parts individually:
 | `0x2000` | `partitions/bootloader.bin` |
 | `0x8000` | `partitions/partition_table.bin` |
 | `0xF000` | `partitions/ota_data_initial.bin` |
-| `0x20000` | `partitions/clientre5.bin` |
+| `0x20000` | `partitions/claude_companion.bin` |
 | `0xF80000` | `partitions/tab5_factory_updater.bin` |
 
 During development `idf.py -p PORT flash monitor` flashes the bootloader, partition table
@@ -71,14 +70,14 @@ and app; flash `tab5_factory_updater.bin` at `0xF80000` once so that in-app OTA 
 
 ## Product identity
 
-The product name is **Clientre 5** in all UI languages, the boot logo, Web Files,
-USB descriptor, backup metadata and startup logs. The ESP-IDF project (and so the
-app descriptor checked by OTA) is `clientre5`, and the default Tailscale node name
-for new configurations is `clientre5`.
+The product name is **Claude Companion** in the UI, the boot logo, USB descriptor,
+backup metadata and startup logs. The ESP-IDF project (and so the app descriptor
+checked by OTA) is `claude_companion`, and the default Tailscale node name for new
+configurations is `claude-companion`. The UI is English only.
 
 ## Boot logo
 
-A static pixel terminal mark and `Clientre 5 / STARTING SYSTEM` appear as soon
+A static pixel terminal mark and `Claude Companion / STARTING` appear as soon
 as LCD/touch setup and display rotation are ready, before secure storage, RTC,
 SD, server data and input/network/media initialization. The logo uses the saved
 palette and backlight brightness. It cannot cover the bootloader or the LCD
@@ -86,7 +85,7 @@ hardware initialization that happens before a framebuffer is available.
 
 The splash needs no SD asset, image decoder, animation timer or minimum display
 time: a 32-byte monochrome mark and existing flash fonts are drawn once. The
-main screen (or first-run language picker) replaces it as soon as service
+main screen replaces it as soon as service
 initialization returns; it does not wait for WiFi or Tailscale to connect. Input
 navigation and the screensaver are enabled only at that handoff.
 
@@ -96,25 +95,6 @@ boot delay. Serial logs report `boot logo submitted in ... ms` and
 has not been measured on hardware.
 
 ![Boot logo (host render)](../docs/ui/boot-logo.png)
-
-## Japanese input
-
-* **Switching the input source**: `Ctrl+Space` on a physical keyboard, the `A/あ` key on the
-  soft keyboard, or the `A/あ` button in the terminal control bar. The order is
-  English → Japanese → (Chinese pinyin, only when the UI language is Chinese) → English.
-  The current source is shown in the terminal status bar and on the soft keyboard.
-* **Typing**: romaji is converted to hiragana as you type (`kyou` → きょう, `nn`/`n'` → ん,
-  doubled consonants → っ). `Space` converts using the SKK dictionary; `Space`/`↓` cycles
-  candidates, `1`–`9` picks from the current page, `Enter` commits, `Esc` cancels,
-  `F7` commits as katakana, `F8` as half-width katakana, `F6` as hiragana. Anything committed is
-  sent to the remote host
-  as UTF-8 (bracketed paste is honoured when the remote enables it).
-* **Dictionaries**: SKK-JISYO.M is built in. Put `SKK-JISYO.L` (EUC-JP or UTF-8) at
-  `/skk/SKK-JISYO.L` on the TF card and enable *SD dictionary* in Settings to use it (loaded into PSRAM).
-* **Display**: the terminal font covers every JIS X 0208, GB2312 and Big5 character plus
-  JIS X 0213 levels 3/4, half-width kana, compatibility ideographs and the squared unit forms;
-  wide characters occupy two cells like a real terminal. The UI fonts carry all the translated
-  text natively, so no label falls back to the monospace font for its size.
 
 ## Tailscale (tailnet SSH)
 
@@ -151,7 +131,7 @@ the Tab5 cannot do. Tag the device and add an `accept` rule, e.g.:
 then apply `tag:tab5` to the Tab5 and `tag:server` to the target in the Machines page (SSH rules
 cannot use `autogroup:member` or a user as `dst` when the source is a tag).
 
-## Regenerating fonts / dictionaries
+## Regenerating fonts
 
 `gen_pixel_fonts.sh` reads `x12y12pxMaruMinya.ttf` from the repository root by default
 (not committed: the font's terms allow embedding but the TTF itself is obtained from its
@@ -162,9 +142,7 @@ author, hicc), or accepts a TTF path. `gen_fonts.sh` needs `NotoSansMonoCJKjp-Re
 npm i lv_font_conv                                  # once
 pip3 install fonttools                              # once
 sh tools/gen_pixel_fonts.sh              # the UI and terminal faces
-sh tools/gen_fonts.sh       <font dir> [SKK-JISYO.M]  # the CJK/symbol fallback
-python3 tools/skk2bin.py skk    SKK-JISYO.M main/ime/dict/skk_m.bin
-python3 tools/skk2bin.py pinyin managed_components/lvgl__lvgl/src/widgets/ime/lv_ime_pinyin.c main/ime/dict/pinyin.bin
+sh tools/gen_fonts.sh       <font dir>   # the CJK/symbol fallback
 ```
 
 `cjk_ranges.py` intersects the wanted blocks with the font's cmap and routes whatever Noto Sans
@@ -277,16 +255,24 @@ The TinyUSB task runs at priority 10: at its default of 5 it loses the CPU to Mi
 
 ## OTA manifest
 
-The Firmware screen fetches the JSON at *Settings → Update URL* (default:
-`update.json` on the `main` branch of this repository). `tools/merge_flash.sh` writes a
+The Firmware screen fetches the JSON at *Settings → Update URL*. The URL is empty by
+default and the Firmware tile is hidden until one is set. `tools/merge_flash.sh` writes a
 matching `update.json` whose binary URLs point at the latest GitHub release assets
-(override with `REPO_RAW=...`); commit the manifest and attach `clientre5.bin` and
+(set `REPO_RAW=...`); commit the manifest and attach `claude_companion.bin` and
 `tab5_factory_updater.bin` to the release.
 Installation writes `/sdcard/update/request.json`, switches the boot partition to the factory
 updater and reboots; the updater verifies the SHA-256 and flashes `main_app`.
 
 ## Licenses
 
-libssh (LGPL-2.1), MicroLink / wireguard-lwip (MIT), LVGL (MIT), MaruMinya (source TTF copyright © 2023 hicc), Noto Sans CJK (OFL-1.1), DejaVu Sans Mono (Bitstream Vera / Arev, permissive),
-SKK-JISYO (GPL-2.0, data only),
-ESP-IDF components (Apache-2.0). Application code in `main/` and `updater/`: MIT (see [LICENSE](../LICENSE)).
+| Component | License |
+|---|---|
+| libssh | LGPL-2.1 |
+| MicroLink | MIT |
+| wireguard-lwip | BSD-3-Clause |
+| LVGL | MIT |
+| ESP-IDF | Apache-2.0 |
+| Clientre5 (upstream fork base, see [LICENSE.clientre5](LICENSE.clientre5)) | MIT |
+
+Fonts: MaruMinya (source TTF copyright © 2023 hicc), Noto Sans CJK (OFL-1.1), DejaVu Sans Mono
+(Bitstream Vera / Arev, permissive). Application code in `main/` and `updater/`: MIT.

@@ -1,17 +1,21 @@
 #include "fonts.h"
 #include "settings/settings.h"
 
-/* U+23F5 BLACK MEDIUM RIGHT-POINTING TRIANGLE, one terminal cell. */
-static const uint8_t term_symbol_bitmap[] = {0x40,0x6,0x0,0x70,0x7,0x80,0x7c,0x7,0xe0,0x7f,0x7,0xf8,0x7f,0x87,0xf0,0x7e,0x7,0xc0,0x78,0x7,0x0,0x60,0x4,0x0};
+/* U+23F5 BLACK MEDIUM RIGHT-POINTING TRIANGLE and U+23FA BLACK CIRCLE FOR RECORD (Claude
+ * Code's tool-call bullet), one terminal cell each; neither face has them. */
+static const uint8_t term_symbol_bitmap[] = {0x40,0x6,0x0,0x70,0x7,0x80,0x7c,0x7,0xe0,0x7f,0x7,0xf8,0x7f,0x87,0xf0,0x7e,0x7,0xc0,0x78,0x7,0x0,0x60,0x4,0x0,
+    0x1e,0xf,0xc7,0xfb,0xff,0xff,0xff,0xff,0xfd,0xfe,0x3f,0x7,0x80};
 static const lv_font_fmt_txt_glyph_dsc_t term_symbol_glyphs[] = {
-    {0}, {.bitmap_index=0, .adv_w=192, .box_w=12, .box_h=16, .ofs_x=0, .ofs_y=2}
+    {0}, {.bitmap_index=0, .adv_w=192, .box_w=12, .box_h=16, .ofs_x=0, .ofs_y=2},
+    {.bitmap_index=24, .adv_w=192, .box_w=10, .box_h=10, .ofs_x=1, .ofs_y=5}
 };
 static const lv_font_fmt_txt_cmap_t term_symbol_cmap[] = {
-    {.range_start=0x23F5, .range_length=1, .glyph_id_start=1, .type=LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY}
+    {.range_start=0x23F5, .range_length=1, .glyph_id_start=1, .type=LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY},
+    {.range_start=0x23FA, .range_length=1, .glyph_id_start=2, .type=LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY}
 };
 static const lv_font_fmt_txt_dsc_t term_symbol_dsc = {
     .glyph_bitmap=term_symbol_bitmap, .glyph_dsc=term_symbol_glyphs,
-    .cmaps=term_symbol_cmap, .cmap_num=1, .bpp=1
+    .cmaps=term_symbol_cmap, .cmap_num=2, .bpp=1
 };
 static lv_font_t s_term_symbols = {
     .get_glyph_dsc=lv_font_get_glyph_dsc_fmt_txt, .get_glyph_bitmap=lv_font_get_bitmap_fmt_txt,

@@ -68,7 +68,7 @@ bool tailscale_start(void)
         /* A node that already registered can start without a key (keys are kept in NVS by MicroLink). */
         s_key[0] = 0;
     }
-    strlcpy(s_name, g_settings.ts_device_name[0] ? g_settings.ts_device_name : "clientre5", sizeof(s_name));
+    strlcpy(s_name, g_settings.ts_device_name[0] ? g_settings.ts_device_name : "claude-companion", sizeof(s_name));
     strlcpy(s_ctrl, g_settings.ts_ctrl_host, sizeof(s_ctrl));
     microlink_config_t cfg = {
         .auth_key = s_key[0] ? s_key : NULL,
@@ -154,6 +154,12 @@ bool tailscale_prepare_peer(const char *ip, uint32_t timeout_ms)
     /* MicroLink keeps a single DERP connection (its own home region). Tailscale
      * relays through the *peer's* home region, so for a peer without a direct
      * path we move our DERP connection to that region first. */
+    /* A tunnel that is already up (the companion link uses it) needs nothing: moving our
+     * DERP region would re-register, take ~20 s and disturb the connections on it. */
+    if (ml_wg_mgr_peer_is_up(s_ml, dest)) {
+        ESP_LOGI(TAG, "peer %s tunnel already up", ip);
+        return true;
+    }
     int n = microlink_get_peer_count(s_ml);
     for (int i = 0; i < n; i++) {
         microlink_peer_info_t p;

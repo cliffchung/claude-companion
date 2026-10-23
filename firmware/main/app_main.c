@@ -1,3 +1,4 @@
+#include "ssh/device_key.h"
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -18,15 +19,14 @@
 #include "net/wifi_mgr.h"
 #include "storage/sd.h"
 #include "input/keyboard.h"
-#include "ime/ime.h"
-#include "ime/ime_ui.h"
 #include "servers/server_store.h"
 #include "crypto/secure_store.h"
 #include "sys/screenshot.h"
+#include "sys/debug_console.h"
 #include "sys/usb_mgr.h"
 #include "media/audio_player.h"
-#include "web/webfm.h"
 #include "net/tailscale.h"
+#include "companion/cc_link.h"
 
 void ui_screensaver_arm(void);
 
@@ -36,7 +36,9 @@ static void wifi_global_cb(wifi_ev_t ev, void *user)
     if (ev == WIFI_EV_CONNECTED) {
         tailscale_on_wifi(true);
         sysinfo_start_sntp();
-        if (g_settings.webfm_autostart) webfm_start();
+        cc_link_on_wifi(true);
+    } else if (ev == WIFI_EV_DISCONNECTED) {
+        cc_link_on_wifi(false);
     }
 }
 
@@ -113,7 +115,7 @@ static void idle_task(void *arg)
 void app_main(void)
 {
     int64_t boot_started = esp_timer_get_time();
-    ESP_LOGI(TAG, "Clientre 5 starting");
+    ESP_LOGI(TAG, "Claude Companion starting");
     esp_log_level_set("i2c.master", ESP_LOG_NONE);   /* keyboard/INA226 probes are expected to NACK when absent */
     /* Bring up only the hardware required by the panel.  Touch must be powered
      * before bsp_display_start_with_config(): the BSP identifies the Tab5 board
@@ -139,7 +141,6 @@ void app_main(void)
 
     bsp_display_lock(0);
     fonts_init();
-    ime_init();
     keyboard_init();
     bsp_display_unlock();
 
@@ -147,7 +148,6 @@ void app_main(void)
     wifi_mgr_init();
     usb_mgr_init();
     audio_player_init();
-    webfm_init();
     tailscale_init();
     /* Services are initialized; connection establishment continues in their
      * background tasks. Keep the logo for one second from backlight-on, with
@@ -155,16 +155,16 @@ void app_main(void)
     boot_logo_wait_minimum();
     bsp_display_lock(0);
     ui_init();
-    ime_ui_init();
     lv_display_trigger_activity(NULL);
     screenshot_init();
     ui_screensaver_arm();
-    if (g_settings.lang == LANG_UNSET) {
-        ui_nav_replace(ui_lang_create, NULL);
-    } else {
-        ui_nav_home();
-    }
+    ui_nav_home();
     bsp_display_unlock();
+    debug_console_start();
+    key_console_init();
+    device_key_console_init();
+    cc_console_init();
+    if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
     xTaskCreate(idle_task, "idle_poll", 4096, NULL, 2, NULL);
     ESP_LOGI(TAG, "boot complete in %lld ms, free heap %lu",
              (esp_timer_get_time() - boot_started) / 1000, (unsigned long)esp_get_free_heap_size());

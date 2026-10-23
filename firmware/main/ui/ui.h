@@ -99,11 +99,17 @@ void ui_async(lv_async_cb_t fn, void *arg);
 void ui_timer_bind(lv_timer_t *t, lv_obj_t *obj);
 
 /* Screens */
-lv_obj_t *ui_lang_create(void *arg);
 lv_obj_t *ui_home_create(void *arg);
 lv_obj_t *ui_servers_create(void *arg);
 lv_obj_t *ui_server_form_create(void *arg);      /* arg: int index or -1 */
 lv_obj_t *ui_terminal_create(void *arg);         /* arg: server index */
+/* The SSH Terminal refuses the companion's Mac (no login shell there) with this toast. */
+#define TERM_COMPANION_REFUSED "Open sessions from the dashboard"
+/* Full-screen terminal running one command on a pty exec channel (never a login shell).
+   Ctrl+Q leaves without sending anything; on_close runs once when the terminal closes. */
+void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx);
+bool ui_terminal_is_top(void);                   /* either terminal is the current screen */
+lv_obj_t *ui_dashboard_create(void *arg);        /* home: the Mac's Claude sessions */
 lv_obj_t *ui_files_create(void *arg);            /* arg: const char *path or NULL */
 lv_obj_t *ui_image_create(void *arg);            /* arg: const char *path */
 lv_obj_t *ui_text_create(void *arg);
@@ -116,7 +122,6 @@ lv_obj_t *ui_ansi_create(void *arg);
 lv_obj_t *ui_ota_create(void *arg);
 lv_obj_t *ui_devinfo_create(void *arg);
 lv_obj_t *ui_usb_create(void *arg);
-lv_obj_t *ui_webfm_create(void *arg);
 lv_obj_t *ui_backup_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);
 lv_obj_t *ui_screensaver_settings_create(void *arg);

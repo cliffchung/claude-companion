@@ -1,8 +1,12 @@
 #include "ssh_client.h"
+#include "sdkconfig.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
@@ -13,6 +17,7 @@
 #include "settings/settings.h"
 #include "nvs.h"
 #include "net/tailscale.h"
+#include "ssh/device_key.h"
 
 static const char *TAG = "ssh";
 int libssh_esp32_init(void);
@@ -25,8 +30,10 @@ struct ssh_client {
     volatile bool stop;
     volatile int new_cols, new_rows; volatile bool resize_pending;
     ssh_state_t state;
+    volatile int exit_status;
     char err[160];
     TaskHandle_t task;
+    bool ext_stack;     /* created WithCaps (stack in PSRAM) */
 };
 
 static void set_state(ssh_client_t *c, ssh_state_t st, const char *msg)
@@ -51,29 +58,53 @@ void ssh_known_hosts_clear(void)
     if (nvs_open("kh", NVS_READWRITE, &h) == ESP_OK) { nvs_erase_all(h); nvs_commit(h); nvs_close(h); }
 }
 
-static int verify_host(ssh_client_t *c)
+kh_result_t ssh_known_host_check(ssh_session session, const char *host, int port, char *fp_out, size_t fp_cap)
 {
+    if (fp_out && fp_cap) fp_out[0] = 0;
     ssh_key srv_key = NULL;
-    if (ssh_get_server_publickey(c->session, &srv_key) != SSH_OK) return -1;
+    if (ssh_get_server_publickey(session, &srv_key) != SSH_OK) return KH_ERROR;
     unsigned char *hash = NULL; size_t hlen = 0;
     int rc = ssh_get_publickey_hash(srv_key, SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
     ssh_key_free(srv_key);
-    if (rc != 0) return -1;
-    char *fp = ssh_get_fingerprint_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
-    char key[16]; kh_key(c->p.host, c->p.port, key);
+    if (rc != 0) return KH_ERROR;
+    if (fp_out && fp_cap) {
+        char *fp = ssh_get_fingerprint_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
+        strlcpy(fp_out, fp ? fp : "?", fp_cap);
+        ssh_string_free_char(fp);
+    }
+    char key[16]; kh_key(host, port, key);
     void *stored = NULL; size_t slen = 0;
     bool known = nvs_get_blob_alloc("kh", key, &stored, &slen);
     bool changed = known && (slen != hlen || memcmp(stored, hash, hlen) != 0);
-    bool ok = known && !changed;
-    if (!ok) {
-        set_state(c, SSH_ST_HOSTKEY, fp);
-        bool trust = c->hostkey_cb ? c->hostkey_cb(c->p.host, c->p.port, fp ? fp : "?", changed, c->user) : true;
-        if (trust) { nvs_set_blob_ns("kh", key, hash, hlen); ok = true; }
-    }
     free(stored);
-    ssh_string_free_char(fp);
     ssh_clean_pubkey_hash(&hash);
-    return ok ? 0 : -1;
+    return !known ? KH_UNKNOWN : changed ? KH_CHANGED : KH_OK;
+}
+
+bool ssh_known_host_trust(ssh_session session, const char *host, int port)
+{
+    ssh_key srv_key = NULL;
+    if (ssh_get_server_publickey(session, &srv_key) != SSH_OK) return false;
+    unsigned char *hash = NULL; size_t hlen = 0;
+    int rc = ssh_get_publickey_hash(srv_key, SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
+    ssh_key_free(srv_key);
+    if (rc != 0) return false;
+    char key[16]; kh_key(host, port, key);
+    bool ok = nvs_set_blob_ns("kh", key, hash, hlen);
+    ssh_clean_pubkey_hash(&hash);
+    return ok;
+}
+
+static int verify_host(ssh_client_t *c)
+{
+    char fp[80];
+    kh_result_t r = ssh_known_host_check(c->session, c->p.host, c->p.port, fp, sizeof(fp));
+    if (r == KH_OK) return 0;
+    if (r == KH_ERROR) return -1;
+    set_state(c, SSH_ST_HOSTKEY, fp);
+    bool trust = c->hostkey_cb ? c->hostkey_cb(c->p.host, c->p.port, fp, r == KH_CHANGED, c->user) : true;
+    if (trust && ssh_known_host_trust(c->session, c->p.host, c->p.port)) return 0;
+    return -1;
 }
 
 /* libssh returns SSH_AUTH_AGAIN while a call is pending (slow relayed links);
@@ -87,16 +118,25 @@ static int authenticate(ssh_client_t *c)
     rc = AUTH_RETRY(ssh_userauth_none(c->session, NULL));
     if (rc == SSH_AUTH_SUCCESS) return 0;
     int methods = ssh_userauth_list(c->session, NULL);
-    if (c->p.use_key && c->p.keypath[0]) {
+    if (c->p.use_key) {
+        /* Empty path, "device" or a path that does not exist selects the Tab5's own key (NVS); an existing file is loaded as before. */
+        struct stat st;
+        bool dev = !c->p.keypath[0] || strcmp(c->p.keypath, "device") == 0 ||
+                   (stat(c->p.keypath, &st) != 0 && errno == ENOENT);
         ssh_key key = NULL;
-        rc = ssh_pki_import_privkey_file(c->p.keypath, c->p.pass[0] ? c->p.pass : NULL, NULL, NULL, &key);
+        if (dev) {
+            rc = (device_key_ensure() == ESP_OK && device_key_get(&key) == ESP_OK) ? SSH_OK : SSH_ERROR;
+            if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Device key unavailable");
+        } else {
+            rc = ssh_pki_import_privkey_file(c->p.keypath, c->p.pass[0] ? c->p.pass : NULL, NULL, NULL, &key);
+            if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Key import failed: %s", ssh_get_error(c->session));
+        }
         if (rc == SSH_OK) {
             rc = AUTH_RETRY(ssh_userauth_publickey(c->session, NULL, key));
             ssh_key_free(key);
             if (rc == SSH_AUTH_SUCCESS) return 0;
             ESP_LOGW(TAG, "publickey auth failed: %s", ssh_get_error(c->session));
         } else {
-            snprintf(c->err, sizeof(c->err), "Key import failed: %s", ssh_get_error(c->session));
             ESP_LOGW(TAG, "%s", c->err);
             return -1;
         }
@@ -135,6 +175,7 @@ static void ssh_task(void *arg)
             if (!tailscale_prepare_peer(c->p.host, 60000)) ESP_LOGW(TAG, "tunnel to %s not confirmed, trying anyway", c->p.host);
         }
     }
+    ESP_LOGI(TAG, "connecting to %s:%d", c->p.host, c->p.port);
     ssh_options_set(c->session, SSH_OPTIONS_HOST, c->p.host);
     ssh_options_set(c->session, SSH_OPTIONS_PORT, &c->p.port);
     ssh_options_set(c->session, SSH_OPTIONS_USER, c->p.user);
@@ -150,6 +191,7 @@ static void ssh_task(void *arg)
         set_state(c, SSH_ST_ERROR, m); goto done;
     }
     if (c->stop) goto done;
+    ESP_LOGI(TAG, "connected; checking host key");
     if (verify_host(c) != 0) { set_state(c, SSH_ST_ERROR, "Host key rejected"); goto done; }
     set_state(c, SSH_ST_AUTH, NULL);
     if (authenticate(c) != 0) {
@@ -159,7 +201,10 @@ static void ssh_task(void *arg)
     c->channel = ssh_channel_new(c->session);
     if (!c->channel || ssh_channel_open_session(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Failed to create SSH channel"); goto done; }
     ssh_channel_request_pty_size(c->channel, "xterm-256color", c->p.cols, c->p.rows);
-    if (ssh_channel_request_shell(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Shell request failed"); goto done; }
+    if (c->p.cmd[0]) {
+        /* An explicit command on a pty: never a login shell (it would start the user's tmux). */
+        if (ssh_channel_request_exec(c->channel, c->p.cmd) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Command request failed"); goto done; }
+    } else if (ssh_channel_request_shell(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Shell request failed"); goto done; }
     set_state(c, SSH_ST_CONNECTED, NULL);
     ssh_set_blocking(c->session, 0);
 
@@ -195,15 +240,28 @@ static void ssh_task(void *arg)
         }
     }
     free(buf);
-    set_state(c, SSH_ST_CLOSED, c->stop ? NULL : "Server closed this connection");
+    if (c->p.cmd[0] && !c->stop) {
+        /* the exit-status message can trail the EOF a little */
+        /* bounded: if the exit-status never comes (link lost at EOF), don't sit on the
+           40 s session timeout before returning to the dashboard */
+        long short_timeout = 2;
+        ssh_options_set(c->session, SSH_OPTIONS_TIMEOUT, &short_timeout);
+        ssh_set_blocking(c->session, 1);
+        uint32_t code = 0; char *sig = NULL; int core = 0;
+        if (ssh_channel_get_exit_state(c->channel, &code, &sig, &core) == SSH_OK) c->exit_status = (int)code;
+        ssh_string_free_char(sig);
+    }
+    set_state(c, SSH_ST_CLOSED, c->stop || c->p.cmd[0] ? NULL : "Server closed this connection");
 done:
     if (c->channel) { ssh_channel_send_eof(c->channel); ssh_channel_close(c->channel); ssh_channel_free(c->channel); }
     if (c->session) { ssh_disconnect(c->session); ssh_free(c->session); }
     /* wait for owner to release */
     while (!c->stop) vTaskDelay(pdMS_TO_TICKS(50));
     vRingbufferDelete(c->tx);
+    bool ext = c->ext_stack;
     free(c);
-    vTaskDelete(NULL);
+    if (ext) vTaskDeleteWithCaps(NULL);
+    else vTaskDelete(NULL);
 }
 
 ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh_state_cb_t state_cb,
@@ -218,8 +276,24 @@ ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh
     if (c->p.rows <= 0) c->p.rows = 24;
     c->tx = xRingbufferCreate(8192, RINGBUF_TYPE_BYTEBUF);
     c->state = SSH_ST_IDLE;
+    c->exit_status = -1;
+    /* Internal RAM is tight with the companion link's own SSH task running, and it is
+       fragmented: fall back to a PSRAM stack (allowed by SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY).
+       A task on a PSRAM stack must never run with the cache disabled. Flash reads (NVS host
+       pins, the device key) keep the cache on only because code and rodata execute from
+       PSRAM (SPIRAM_XIP_FROM_PSRAM), and pinning a new host key writes flash, which is safe
+       only while no flash mmap is live (the app has none). */
+#if !CONFIG_SPIRAM_XIP_FROM_PSRAM
+#error "the SSH task's PSRAM stack fallback needs CONFIG_SPIRAM_XIP_FROM_PSRAM"
+#endif
     if (xTaskCreatePinnedToCore(ssh_task, "ssh", 24576, c, 5, &c->task, 1) != pdPASS) {
-        vRingbufferDelete(c->tx); free(c); return NULL;
+        c->ext_stack = true;
+        if (xTaskCreatePinnedToCoreWithCaps(ssh_task, "ssh", 24576, c, 5, &c->task, 1,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            ESP_LOGE(TAG, "no memory for the SSH task");
+            vRingbufferDelete(c->tx); free(c); return NULL;
+        }
+        ESP_LOGI(TAG, "SSH task stack in PSRAM");
     }
     return c;
 }
@@ -246,3 +320,4 @@ void ssh_client_stop(ssh_client_t *c)
 
 ssh_state_t ssh_client_state(ssh_client_t *c) { return c ? c->state : SSH_ST_IDLE; }
 const char *ssh_client_error(ssh_client_t *c) { return c ? c->err : ""; }
+int ssh_client_exit_status(ssh_client_t *c) { return c ? c->exit_status : -1; }

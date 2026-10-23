@@ -48,7 +48,7 @@ static void set_error(const char *message)
 
 static bool save_jpeg(const uint8_t *rgb, uint32_t width, uint32_t height)
 {
-    if (!sd_is_mounted() || !fs_mkdir_p(SD_MOUNT "/DCIM/Clientre5")) return false;
+    if (!sd_is_mounted() || !fs_mkdir_p(SD_MOUNT "/DCIM/ClaudeCompanion")) return false;
 
     jpeg_encoder_handle_t encoder = NULL;
     jpeg_encode_engine_cfg_t engine_cfg = { .intr_priority = 0, .timeout_ms = 1000 };
@@ -73,7 +73,7 @@ static bool save_jpeg(const uint8_t *rgb, uint32_t width, uint32_t height)
 
     char path[sizeof(s_photo_path)] = "";
     if (ok) {
-        fs_unique_name(SD_MOUNT "/DCIM/Clientre5", "IMG.jpg", path, sizeof(path));
+        fs_unique_name(SD_MOUNT "/DCIM/ClaudeCompanion", "IMG.jpg", path, sizeof(path));
         ok = fs_write_all(path, jpeg, jpeg_size);
     }
     free(jpeg);

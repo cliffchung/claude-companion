@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "libssh/libssh.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,6 +17,7 @@ typedef struct {
     char keypath[160];
     bool use_key;
     int cols, rows;
+    char cmd[256];      /* "" = login shell; otherwise a pty exec of this command */
 } ssh_params_t;
 
 typedef struct ssh_client ssh_client_t;
@@ -32,8 +34,15 @@ void ssh_client_resize(ssh_client_t *c, int cols, int rows);
 void ssh_client_stop(ssh_client_t *c);        /* async; object freed by the task */
 ssh_state_t ssh_client_state(ssh_client_t *c);
 const char *ssh_client_error(ssh_client_t *c);
-/* known hosts (NVS) */
+/* Command mode: the remote exit status once the state is CLOSED, or -1 if unknown. */
+int ssh_client_exit_status(ssh_client_t *c);
+/* known hosts (NVS "kh"): key = hash of host:port, value = SHA256 of the server key */
 void ssh_known_hosts_clear(void);
+typedef enum { KH_OK, KH_UNKNOWN, KH_CHANGED, KH_ERROR } kh_result_t;
+/* Compares the connected session's server key with the pin for host:port; fp_out gets "SHA256:..." (optional). */
+kh_result_t ssh_known_host_check(ssh_session session, const char *host, int port, char *fp_out, size_t fp_cap);
+/* Pins the connected session's server key for host:port. */
+bool ssh_known_host_trust(ssh_session session, const char *host, int port);
 
 #ifdef __cplusplus
 }

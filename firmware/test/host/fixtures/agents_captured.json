@@ -1,0 +1,24 @@
+[
+ {
+  "pid": 10560,
+  "id": "d0000001",
+  "cwd": "/Users/me/workspace/claude-companion-plan1",
+  "kind": "background",
+  "startedAt": 1792725770248,
+  "sessionId": "d0000001-0001-4001-8001-000000000001",
+  "name": "companion-test-input",
+  "status": "idle",
+  "state": "blocked"
+ },
+ {
+  "pid": 18246,
+  "id": "d0000002",
+  "cwd": "/Users/me/workspace/claude-companion",
+  "kind": "background",
+  "startedAt": 1792726013162,
+  "sessionId": "d0000002-0002-4002-8002-000000000002",
+  "name": "companion-test-perm",
+  "status": "idle",
+  "state": "done"
+ }
+]

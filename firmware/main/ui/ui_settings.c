@@ -4,18 +4,16 @@
 #include "settings/settings.h"
 #include "sys/sysinfo.h"
 #include "input/keyboard.h"
-#include "ime/ime.h"
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
 #include "storage/sd.h"
+#include "companion/cc_link.h"
 #include "bsp/m5stack_tab5.h"
 #include "esp_system.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-static void lang_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_lang_create, NULL); }
 
 static void bright_cb(lv_event_t *e)
 {
@@ -68,33 +66,6 @@ static void ntp_cb(lv_event_t *e)
     if (!wifi_mgr_is_connected()) { ui_toast(tr(STR_WIFI_NOT_CONNECTED)); return; }
     sysinfo_start_sntp();
     ui_toast(tr(STR_PLEASE_WAIT));
-}
-
-static void ime_menu_cb(int i, void *ud) { (void)ud; if (i >= 0) { ime_set_source((ime_src_t)i); ui_nav_refresh(); } }
-static void ime_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *items[] = { tr(STR_IME_EN), tr(STR_IME_JA), tr(STR_IME_ZH) };
-    ui_menu(tr(STR_IME_MODE), items, 3, ime_menu_cb, NULL);
-}
-static void kana_menu_cb(int i, void *ud) { (void)ud; if (i >= 0) { ime_set_ja_mode((ime_ja_mode_t)i); ui_nav_refresh(); } }
-static void kana_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *items[] = { tr(STR_IME_HIRA), tr(STR_IME_KATA) };
-    ui_menu(tr(STR_IME_JA), items, 2, kana_menu_cb, NULL);
-}
-static void skk_sd_cb(lv_event_t *e)
-{
-    bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
-    g_settings.ime_skk_sd = on; settings_save();
-    if (on) {
-        lv_obj_t *b = ui_busy(tr(STR_PLEASE_WAIT));
-        lv_refr_now(NULL);
-        bool ok = ime_load_sd_dict(SD_MOUNT "/skk/SKK-JISYO.L");
-        ui_busy_close(b);
-        ui_toast(ok ? tr(STR_IME_DICT_LOADED) : tr(STR_FAILED));
-    }
 }
 
 static void kbd_layout_menu_cb(int i, void *ud)
@@ -163,6 +134,45 @@ static void reboot_cb(lv_event_t *e) { (void)e; ui_confirm(tr(STR_REBOOT), tr(ST
 static void about_cb(lv_event_t *e) { (void)e; char b[400]; snprintf(b, sizeof(b), "v%s\n%s", sysinfo_app_version(), tr(STR_ABOUT_TEXT)); ui_alert(tr(STR_ABOUT), b); }
 static void ota_url_cb(const char *v, void *ud) { (void)ud; if (v) { strlcpy(g_settings.ota_url, v, sizeof(g_settings.ota_url)); settings_save(); ui_nav_refresh(); } }
 static void ota_url_row_cb(lv_event_t *e) { (void)e; ui_prompt(tr(STR_OTA_URL), "https://", g_settings.ota_url, false, ota_url_cb, NULL); }
+
+/* Companion: which of the SSH servers is the Mac, and where `claude` lives on it. */
+static char s_server_names[SERVER_MAX + 1][48];
+static const char *s_server_ptrs[SERVER_MAX + 1];
+static void companion_mac_menu_cb(int i, void *ud)
+{
+    (void)ud;
+    int n = server_store_count();
+    if (i < 0 || i > n) return;
+    cc_link_set_server(i < n ? s_server_names[i] : "");
+    ui_nav_refresh();
+}
+static void companion_mac_cb(lv_event_t *e)
+{
+    (void)e;
+    int n = server_store_count();
+    if (n > SERVER_MAX) n = SERVER_MAX;
+    for (int i = 0; i < n; i++) {
+        const server_t *s = server_store_get(i);
+        strlcpy(s_server_names[i], s ? s->name : "?", sizeof(s_server_names[i]));
+        s_server_ptrs[i] = s_server_names[i];
+    }
+    strlcpy(s_server_names[n], "None", sizeof(s_server_names[n]));
+    s_server_ptrs[n] = s_server_names[n];
+    ui_menu("Mac", s_server_ptrs, n + 1, companion_mac_menu_cb, NULL);
+}
+static void companion_path_prompt_cb(const char *v, void *ud)
+{
+    (void)ud;
+    if (!v) return;
+    if (!cc_link_set_claude_path(v)) { ui_toast("Use only letters, digits and _ . / ~ - (1 to 63 characters)"); return; }
+    ui_nav_refresh();
+}
+static void companion_path_cb(lv_event_t *e)
+{
+    (void)e;
+    char cur[64];
+    ui_prompt("Claude path", "~/.local/bin/claude", cc_settings_claude_path(cur, sizeof(cur)), false, companion_path_prompt_cb, NULL);
+}
 
 static lv_obj_t *slider_row(lv_obj_t *parent, const char *label, int min, int max, int val, lv_event_cb_t cb)
 {
@@ -258,7 +268,6 @@ lv_obj_t *ui_settings_create(void *arg)
     char buf[128];
 
     c = settings_panel(deck, 0);
-    ui_setting_row(c, tr(STR_SET_LANGUAGE), i18n_lang_name(i18n_get_lang()), lang_cb, NULL);
     int o = g_settings.utc_offset_min;
     snprintf(buf, sizeof(buf), "UTC%c%d:%02d", o >= 0 ? '+' : '-', abs(o) / 60, abs(o) % 60);
     ui_setting_row(c, tr(STR_SET_UTC_OFFSET), buf, utc_cb, NULL);
@@ -267,6 +276,12 @@ lv_obj_t *ui_settings_create(void *arg)
     ui_setting_row(c, tr(STR_SET_NTP), buf, ntp_cb, NULL);
     ui_label(c, tr(STR_SET_UTC_NOTE), FONT_SMALL, UI_MUTED);
     ui_setting_row(c, tr(STR_OTA_URL), g_settings.ota_url, ota_url_row_cb, NULL);
+    ui_section_title(c, "Companion");
+    char mac[48], cpath[64];
+    cc_settings_server_name(mac, sizeof(mac));
+    ui_setting_row(c, "Mac", mac[0] ? mac : "Not set", companion_mac_cb, NULL);
+    ui_setting_row(c, "Claude path", cc_settings_claude_path(cpath, sizeof(cpath)), companion_path_cb, NULL);
+    ui_label(c, "The Mac is one of your SSH servers. The Tab5 lists its Claude Code sessions and runs claude from this path.", FONT_SMALL, UI_MUTED);
 
     c = settings_panel(deck, 1);
     slider_row(c, tr(STR_SET_BRIGHTNESS), 5, 100, g_settings.brightness, bright_cb);
@@ -289,14 +304,7 @@ lv_obj_t *ui_settings_create(void *arg)
     ui_label(c, tr(STR_SB_NOTE), FONT_SMALL, UI_MUTED);
 
     c = settings_panel(deck, 3);
-    const char *src = ime_get_source() == IME_SRC_JA ? tr(STR_IME_JA) : ime_get_source() == IME_SRC_ZH ? tr(STR_IME_ZH) : tr(STR_IME_EN);
-    ui_setting_row(c, tr(STR_IME_MODE), src, ime_cb, NULL);
-    ui_setting_row(c, tr(STR_IME_JA), ime_get_ja_mode() == IME_JA_KATA ? tr(STR_IME_KATA) : tr(STR_IME_HIRA), kana_cb, NULL);
-    ui_label(c, tr(STR_IME_SWITCH_KEY), FONT_SMALL, UI_MUTED);
     ui_label(c, tr(STR_GESTURE_NOTE), FONT_SMALL, UI_MUTED);
-    snprintf(buf, sizeof(buf), "%s: %s", tr(STR_IME_SKK_DICT), ime_dict_info());
-    ui_switch_row(c, tr(STR_IME_DICT_SD), g_settings.ime_skk_sd, skk_sd_cb, NULL);
-    ui_label(c, buf, FONT_SMALL, UI_MUTED);
     snprintf(buf, sizeof(buf), tr(STR_SET_KBD_STATUS), keyboard_present() ? tr(STR_PRESENT) : (keyboard_usb_present() ? "USB" : tr(STR_ABSENT)));
     ui_label(c, buf, FONT_SMALL, UI_MUTED);
     ui_setting_row(c, tr(STR_SET_KBD_LAYOUT),

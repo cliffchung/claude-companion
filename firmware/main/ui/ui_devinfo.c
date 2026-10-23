@@ -17,6 +17,7 @@ static void fill(void)
     esp_chip_info_t ci; esp_chip_info(&ci);
     n += snprintf(buf + n, sizeof(buf) - n, "%s: ESP32-P4 rev %d.%d, %d cores, 360 MHz\n", tr(STR_DEV_CHIP), ci.revision / 100, ci.revision % 100, ci.cores);
     n += snprintf(buf + n, sizeof(buf) - n, "%s: %s\n%s: %s (%s)\n", tr(STR_DEV_IDF), esp_get_idf_version(), tr(STR_DEV_APP_VER), sysinfo_app_version(), tr(STR_APP_TITLE));
+    n += snprintf(buf + n, sizeof(buf) - n, "Based on Clientre 5 by Mozgi512 (MIT)\n");
     uint32_t fsz = 0; esp_flash_get_size(NULL, &fsz);
     n += snprintf(buf + n, sizeof(buf) - n, "%s: %lu MB\n", tr(STR_DEV_FLASH), (unsigned long)(fsz >> 20));
     char up[32]; ui_format_duration(up, sizeof(up), sysinfo_uptime_s());

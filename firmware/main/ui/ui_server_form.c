@@ -57,7 +57,7 @@ lv_obj_t *ui_server_form_create(void *arg)
     s_f.pass = field(c, tr(STR_PASSWORD), s ? s->pass : "", true);
     lv_obj_t *sw = ui_switch_row(c, tr(STR_AUTH_KEY), s ? s->use_key : false, NULL, NULL);
     s_f.use_key = lv_obj_get_user_data(sw);
-    s_f.key = field(c, tr(STR_KEY_PATH), s && s->keypath[0] ? s->keypath : "/sdcard/.ssh/id_ed25519", false);
+    s_f.key = field(c, tr(STR_KEY_PATH), s && s->keypath[0] ? s->keypath : "device", false);
     ui_button(c, tr(STR_SAVE), save_cb, NULL);
     return scr;
 }

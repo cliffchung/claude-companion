@@ -6,11 +6,12 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "companion/cc_cmd.h"
 
 static const char *TAG = "settings";
 #define NS "app"
 #define KEY "cfg"
-#define CFG_VERSION 16
+#define CFG_VERSION 17
 
 app_settings_t g_settings;
 
@@ -23,9 +24,6 @@ typedef struct {
 void settings_reset_defaults(void)
 {
     memset(&g_settings, 0, sizeof(g_settings));
-    g_settings.lang = LANG_UNSET;
-    g_settings.ime_src = IME_SRC_EN;
-    g_settings.ime_ja_mode = IME_JA_HIRA;
     g_settings.rotation = 1;            /* landscape, USB-C on the left */
     g_settings.brightness = 80;
     g_settings.ss_enable = 1;
@@ -51,13 +49,13 @@ void settings_reset_defaults(void)
     ui_theme_set_preset(0);
     g_settings.term_font = 0;
     g_settings.volume = 60;
-    g_settings.webfm_autostart = 0;
-    g_settings.ime_skk_sd = 1;
-    strcpy(g_settings.ota_url, "https://raw.githubusercontent.com/Mozgi512/Clientre5/main/update.json");
+    g_settings.ota_url[0] = 0;           /* no update manifest yet; the OTA tile is hidden */
     g_settings.ssh_bell = 1;
     g_settings.ts_enable = 0;
     g_settings.ts_direct = 0;
-    strcpy(g_settings.ts_device_name, "clientre5");
+    strcpy(g_settings.ts_device_name, "claude-companion");
+    g_settings.companion_server[0] = 0;
+    strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 
 void settings_init(void)
@@ -90,14 +88,18 @@ void settings_init(void)
                 g_settings.term_line_height = 32;
             if (old_version <= 14) g_settings.ss_classic = 0;
             if (old_version <= 15) g_settings.kbd_layout = KBD_LAYOUT_STOCK;
+            /* v17 added companion_server and claude_path at the end: defaults stand. */
             settings_save();
         }
         free(blob);
     }
+    /* Builds from the upstream fork stored its manifest URL as the default; drop it. */
+    if (strstr(g_settings.ota_url, "github") && strstr(g_settings.ota_url, "Mozgi512/")) g_settings.ota_url[0] = 0;
     if (g_settings.brightness < 5) g_settings.brightness = 5;
     if (g_settings.ss_idle_min == 0) g_settings.ss_idle_min = 5;
-    if (g_settings.lang != LANG_UNSET && g_settings.lang >= LANG_COUNT) g_settings.lang = LANG_EN;
-    i18n_set_lang(g_settings.lang == LANG_UNSET ? LANG_EN : g_settings.lang);
+    g_settings.companion_server[sizeof(g_settings.companion_server) - 1] = 0;
+    g_settings.claude_path[sizeof(g_settings.claude_path) - 1] = 0;
+    if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 
 void settings_save(void)
