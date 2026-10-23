@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "esp_timer.h"
 #include "lwip/sockets.h"
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
@@ -23,6 +24,7 @@ static ts_event_cb_t s_cb; static void *s_cb_user;
 static char s_ip[16] = "";
 static char s_err[96] = "";
 static bool s_started = false;
+static volatile bool s_fast_resume;
 
 static void notify(void) { if (s_cb) s_cb(s_cb_user); }
 
@@ -107,7 +109,82 @@ void tailscale_on_wifi(bool connected)
 {
     if (!g_settings.ts_enable) return;
     if (connected && !s_started) tailscale_start();
-    else if (connected && s_started) microlink_rebind(s_ml);
+    else if (connected && s_started && !s_fast_resume) microlink_rebind(s_ml);
+    else if (connected && s_started) ESP_LOGI(TAG, "Wi-Fi back: fast resume, no rebind (the check-in handshakes first)");
+}
+
+void tailscale_set_fast_resume(bool on) { s_fast_resume = on; }
+bool tailscale_fast_resume(void) { return s_fast_resume; }
+
+const char *tailscale_checkin_name(ts_checkin_t c)
+{
+    return c == TS_CHECKIN_HANDSHAKE ? "handshake" : c == TS_CHECKIN_REBIND ? "rebind" : "failed";
+}
+
+#define CHECKIN_CONNECT_MS 60000
+#define CHECKIN_HANDSHAKE_MS 8000
+#define CHECKIN_REBIND_MS 60000
+
+static uint32_t ms_since(int64_t t0_us) { return (uint32_t)((esp_timer_get_time() - t0_us) / 1000); }
+
+/* One handshake + CMM, then up to wait_ms for the peer. */
+static bool handshake_wait(uint32_t dest, uint32_t wait_ms)
+{
+    if (ml_wg_mgr_peer_is_up(s_ml, dest)) return true;
+    ml_wg_mgr_trigger_handshake(s_ml, dest);
+    ml_wg_mgr_send_cmm(s_ml, dest);
+    for (uint32_t waited = 0; waited < wait_ms; waited += 250) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        if (ml_wg_mgr_peer_is_up(s_ml, dest)) return true;
+        if (waited && waited % 4000 == 0) { ml_wg_mgr_trigger_handshake(s_ml, dest); ml_wg_mgr_send_cmm(s_ml, dest); }
+    }
+    return false;
+}
+
+ts_checkin_t tailscale_checkin(const char *host, bool force_rebind, uint32_t *ms_out)
+{
+    int64_t t0 = esp_timer_get_time();
+    ts_checkin_t r = TS_CHECKIN_FAILED;
+    char ip[16] = "";
+    if (!host || !host[0]) goto done;
+    if (!g_settings.ts_enable) {   /* no Tailscale: the Mac is on the LAN, nothing to bring up */
+        r = TS_CHECKIN_HANDSHAKE;
+        goto done;
+    }
+    if (!s_started && wifi_mgr_is_connected()) tailscale_start();
+    while (s_state != TS_CONNECTED && ms_since(t0) < CHECKIN_CONNECT_MS) vTaskDelay(pdMS_TO_TICKS(250));
+    if (s_state != TS_CONNECTED || !s_ml) {
+        ESP_LOGW(TAG, "check-in: MicroLink not connected after %u ms (%s)", (unsigned)ms_since(t0), tailscale_state_text());
+        goto done;
+    }
+    if (microlink_parse_ip(host)) strlcpy(ip, host, sizeof(ip));
+    else if (!tailscale_resolve(host, ip, sizeof(ip))) {
+        ESP_LOGW(TAG, "check-in: %s doesn't resolve on the tailnet", host);
+        goto done;
+    }
+    if (!tailscale_is_tailnet_ip(ip)) { r = TS_CHECKIN_HANDSHAKE; goto done; }
+    uint32_t dest = microlink_parse_ip(ip);
+    if (!force_rebind && handshake_wait(dest, CHECKIN_HANDSHAKE_MS)) { r = TS_CHECKIN_HANDSHAKE; goto done; }
+    ESP_LOGW(TAG, "check-in: %s, rebinding", force_rebind ? "rebind forced" : "no handshake in 8 s");
+    microlink_rebind(s_ml);
+    EventBits_t bits = xEventGroupWaitBits(s_ml->events, ML_EVT_COORD_REGISTERED | ML_EVT_DERP_CONNECTED, pdFALSE, pdTRUE,
+                                           pdMS_TO_TICKS(CHECKIN_REBIND_MS));
+    ESP_LOGI(TAG, "check-in: rebind: coord %s, derp %s after %u ms", (bits & ML_EVT_COORD_REGISTERED) ? "registered" : "NOT registered",
+             (bits & ML_EVT_DERP_CONNECTED) ? "connected" : "NOT connected", (unsigned)ms_since(t0));
+    if (handshake_wait(dest, CHECKIN_HANDSHAKE_MS)) r = TS_CHECKIN_REBIND;
+done:
+    if (ms_out) *ms_out = ms_since(t0);
+    ESP_LOGI(TAG, "check-in to %s: %s in %u ms", ip[0] ? ip : (host ? host : "?"), tailscale_checkin_name(r), (unsigned)ms_since(t0));
+    return r;
+}
+
+void tailscale_kick_peer(const char *ip)
+{
+    if (!s_ml || s_state != TS_CONNECTED || !ip || !tailscale_is_tailnet_ip(ip)) return;
+    uint32_t dest = microlink_parse_ip(ip);
+    ml_wg_mgr_trigger_handshake(s_ml, dest);
+    ml_wg_mgr_send_cmm(s_ml, dest);
+    ESP_LOGI(TAG, "kicked a handshake to %s", ip);
 }
 
 void tailscale_init(void)

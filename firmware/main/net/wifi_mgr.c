@@ -12,6 +12,8 @@
 #include "bsp/m5stack_tab5.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
+#include "sys/power_rules.h"
 
 static const char *TAG = "wifi";
 #define NS "wifi"
@@ -28,6 +30,19 @@ static int s_retry = 0;
 static char s_err[64];
 static wifi_scan_item_t s_scan[24]; static int s_scan_n = 0;
 static bool s_user_disconnect = false;
+static bool s_auto_connect;          /* the running connect is the saved network's (boot, unpark), not the user's */
+
+/* Task 8: background reconnect on its own task, the parked radio and modem power save */
+static TaskHandle_t s_rc_task;
+static volatile bool s_rc_active;    /* a drop the user didn't ask for: retry until an IP */
+static volatile bool s_rc_failed;    /* the attempt in flight ended with a disconnect */
+static volatile int s_rc_attempt;
+static volatile int64_t s_rc_next_ms;
+static volatile bool s_parked;
+static bool s_park_disconnect;       /* sticky: the C6 refused stop or start */
+static bool s_parked_by_disconnect;  /* how the current park was done */
+static volatile int s_ps_target = -1;  /* wifi_ps_type_t wanted, -1 = leave the driver's default */
+static volatile int s_ps_applied = -1; /* what the driver has (reset when the radio starts again) */
 
 static void emit(wifi_ev_t ev) { if (s_gcb) s_gcb(ev, s_gcb_user); if (s_cb) s_cb(ev, s_cb_user); }
 
@@ -68,6 +83,9 @@ static void saved_put(const char *ssid, const char *pass)
     saved_store();
 }
 
+static void rc_kick(void) { if (s_rc_task) xTaskNotifyGive(s_rc_task); }
+static int64_t ms_now(void) { return esp_timer_get_time() / 1000; }
+
 static void do_connect(const char *ssid, const char *pass)
 {
     wifi_config_t cfg = { 0 };
@@ -90,7 +108,17 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         switch (id) {
         case WIFI_EVENT_STA_START:
             s_started = true;
-            if (s_last_ssid[0]) { int i = saved_find(s_last_ssid); if (i >= 0) do_connect(s_saved[i].ssid, s_saved[i].pass); }
+            s_ps_applied = -1;   /* a restarted radio gets the wanted power save again */
+            rc_kick();
+            if (s_parked) break;   /* a park in progress: never auto-connect */
+            if (s_last_ssid[0]) {
+                int i = saved_find(s_last_ssid);
+                if (i >= 0) { do_connect(s_saved[i].ssid, s_saved[i].pass); s_auto_connect = true; }
+            }
+            break;
+        case WIFI_EVENT_STA_STOP:
+            s_started = false;
+            s_connecting = false;
             break;
         case WIFI_EVENT_STA_CONNECTED:
             esp_netif_create_ip6_linklocal(s_netif);
@@ -99,17 +127,41 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
             wifi_event_sta_disconnected_t *d = data;
             bool was = s_connected;
             s_connected = false;
-            if (s_user_disconnect) { s_connecting = false; emit(WIFI_EV_DISCONNECTED); break; }
+            if (s_parked) {
+                /* our own stop or disconnect: never reconnect while parked */
+                s_connecting = false;
+                s_rc_active = false;
+                if (was) emit(WIFI_EV_DISCONNECTED);
+                break;
+            }
+            if (s_user_disconnect) { s_connecting = false; s_rc_active = false; emit(WIFI_EV_DISCONNECTED); break; }
+            if (s_rc_active) {
+                /* a background attempt failed: the wifi_rc task waits its backoff and tries again */
+                s_connecting = false;
+                s_rc_failed = true;
+                if (was) emit(WIFI_EV_DISCONNECTED);
+                rc_kick();
+                break;
+            }
             if (s_connecting && s_retry < 3) { s_retry++; esp_wifi_connect(); break; }
             if (s_connecting) {
                 s_connecting = false;
                 snprintf(s_err, sizeof(s_err), "reason %d", d ? d->reason : -1);
                 emit(WIFI_EV_CONNECT_FAILED);
+                /* the saved network at boot or after an unpark: keep trying in the background (a
+                   user's join with a wrong password is left to the Wi-Fi screen) */
+                if (s_auto_connect) {
+                    s_rc_active = true; s_rc_attempt = 0; s_rc_failed = false;
+                    s_rc_next_ms = ms_now() + (int64_t)pr_backoff_s(0) * 1000;
+                    rc_kick();
+                }
             } else if (was) {
                 emit(WIFI_EV_DISCONNECTED);
-                /* background reconnect */
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                esp_wifi_connect();
+                /* background reconnect on the wifi_rc task: never a delay in the event handler */
+                s_rc_active = true; s_rc_attempt = 0; s_rc_failed = false;
+                s_rc_next_ms = ms_now() + (int64_t)pr_backoff_s(0) * 1000;
+                ESP_LOGW(TAG, "dropped (reason %d): reconnecting in %d s", d ? d->reason : -1, pr_backoff_s(0));
+                rc_kick();
             }
             break;
         }
@@ -141,11 +193,163 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == IP_EVENT) {
         if (id == IP_EVENT_STA_GOT_IP) {
             s_connected = true; s_connecting = false; s_retry = 0;
+            if (s_rc_active) ESP_LOGI(TAG, "reconnected after %d background attempt(s)", s_rc_attempt);
+            s_rc_active = false; s_rc_attempt = 0; s_auto_connect = false;
             emit(WIFI_EV_CONNECTED);
         } else if (id == IP_EVENT_GOT_IP6) {
             emit(WIFI_EV_GOT_IP6);
         }
     }
+}
+
+/* ---- the wifi_rc task -------------------------------------------------------- */
+
+#define RC_ATTEMPT_MS 15000   /* an attempt with no IP and no failure in this long counts as failed */
+
+static void rc_apply_ps(void)
+{
+    int want = s_ps_target;
+    if (want < 0 || want == s_ps_applied || !s_started) return;
+    esp_err_t e = esp_wifi_set_ps((wifi_ps_type_t)want);
+    ESP_LOGI(TAG, "power save: %s (%s)", want == WIFI_PS_MAX_MODEM ? "max modem" : "min modem", esp_err_to_name(e));
+    s_ps_applied = want;   /* a refusal isn't retried every wake-up; the next change or start tries again */
+}
+
+static void rc_task(void *arg)
+{
+    (void)arg;
+    int64_t attempt_at = 0;
+    for (;;) {
+        TickType_t wait = portMAX_DELAY;
+        if (s_rc_active) {
+            int64_t left = (attempt_at ? attempt_at + RC_ATTEMPT_MS : s_rc_next_ms) - ms_now();
+            wait = pdMS_TO_TICKS(left > 0 ? left : 1);
+        }
+        ulTaskNotifyTake(pdTRUE, wait);
+        rc_apply_ps();
+        if (!s_rc_active || s_connected || s_parked || s_user_disconnect) {
+            s_rc_active = false;
+            attempt_at = 0;
+            continue;
+        }
+        int64_t now = ms_now();
+        if (attempt_at) {
+            /* an attempt in flight: wait for its IP (rc inactive) or its failure */
+            if (!s_rc_failed && now < attempt_at + RC_ATTEMPT_MS) continue;
+            attempt_at = 0;
+            s_connecting = false;   /* a join stuck with no event counts as failed too */
+            int wait_s = pr_backoff_s(s_rc_attempt);
+            s_rc_next_ms = now + (int64_t)wait_s * 1000;
+            ESP_LOGW(TAG, "reconnect attempt %d failed: next in %d s", s_rc_attempt, wait_s);
+            continue;
+        }
+        if (now < s_rc_next_ms) continue;
+        s_rc_failed = false;
+        s_rc_attempt++;
+        attempt_at = now;
+        if (s_connecting) {   /* an unpark's own join is still running: count it as this attempt */
+            ESP_LOGI(TAG, "reconnect attempt %d: the join in progress", s_rc_attempt);
+            continue;
+        }
+        esp_err_t e;
+        if (!s_started) {
+            e = esp_wifi_start();   /* an unpark's start failed: STA_START joins the saved network */
+            if (e != ESP_OK) s_park_disconnect = true;
+        } else {
+            if (s_last_ssid[0]) {
+                int i = saved_find(s_last_ssid);
+                if (i >= 0) strlcpy(s_cur_ssid, s_saved[i].ssid, sizeof(s_cur_ssid));
+            }
+            s_connecting = true;
+            e = esp_wifi_connect();
+        }
+        ESP_LOGI(TAG, "reconnect attempt %d: %s", s_rc_attempt, esp_err_to_name(e));
+        if (e != ESP_OK) { s_rc_failed = true; s_connecting = false; }
+        xTaskNotifyGive(xTaskGetCurrentTaskHandle());   /* handle an immediate failure at once */
+    }
+}
+
+bool wifi_mgr_park(void)
+{
+    s_parked = true;
+    s_rc_active = false;
+    s_auto_connect = false;
+    rc_kick();
+    esp_err_t e = ESP_FAIL;
+    if (!s_park_disconnect) {
+        e = esp_wifi_stop();
+        if (e != ESP_OK) {
+            s_park_disconnect = true;
+            ESP_LOGW(TAG, "park mode: disconnect (esp_wifi_stop: %s)", esp_err_to_name(e));
+        }
+    }
+    if (e == ESP_OK) {
+        s_parked_by_disconnect = false;
+        s_connected = false;
+        ESP_LOGI(TAG, "parked (stop)");
+        return true;
+    }
+    s_parked_by_disconnect = true;
+    esp_err_t d = esp_wifi_disconnect();
+    esp_err_t p = esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+    if (p == ESP_OK) s_ps_applied = WIFI_PS_MAX_MODEM;
+    ESP_LOGI(TAG, "parked (disconnect): disconnect %s, power save %s", esp_err_to_name(d), esp_err_to_name(p));
+    return d == ESP_OK || d == ESP_ERR_WIFI_NOT_CONNECT;
+}
+
+void wifi_mgr_unpark(void)
+{
+    if (!s_parked) return;
+    s_parked = false;
+    s_user_disconnect = false;
+    /* the background reconnect is the safety net: a join that fails (or never starts) is retried
+       with the backoff, and a join that works ends it */
+    s_rc_attempt = 0; s_rc_failed = false;
+    s_rc_next_ms = ms_now() + RC_ATTEMPT_MS;
+    s_rc_active = true;
+    if (!s_parked_by_disconnect) {
+        esp_err_t e = esp_wifi_start();   /* STA_START joins the saved network */
+        if (e != ESP_OK) {
+            s_park_disconnect = true;
+            s_rc_next_ms = ms_now() + (int64_t)pr_backoff_s(0) * 1000;
+            ESP_LOGW(TAG, "park mode: disconnect (esp_wifi_start: %s); retrying in the background", esp_err_to_name(e));
+        } else {
+            ESP_LOGI(TAG, "unparked (start)");
+        }
+        rc_kick();
+        return;
+    }
+    int i = s_last_ssid[0] ? saved_find(s_last_ssid) : -1;
+    ESP_LOGI(TAG, "unparked (disconnect)");
+    if (i >= 0 && !s_connected) { do_connect(s_saved[i].ssid, s_saved[i].pass); s_auto_connect = true; }
+    rc_kick();
+}
+
+bool wifi_mgr_parked(void) { return s_parked; }
+const char *wifi_mgr_park_mode(void)
+{
+    if (s_parked) return s_parked_by_disconnect ? "disconnect" : "stop";
+    return s_park_disconnect ? "disconnect" : "stop";
+}
+
+void wifi_mgr_set_ps_max(bool max)
+{
+    s_ps_target = max ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM;
+    rc_kick();
+}
+
+void wifi_mgr_test_drop(void)
+{
+    ESP_LOGW(TAG, "test drop: disconnecting as a real drop would");
+    esp_wifi_disconnect();
+}
+
+void wifi_mgr_reconnect_text(char *buf, size_t cap)
+{
+    if (s_parked) { snprintf(buf, cap, "wifi parked (%s)", wifi_mgr_park_mode()); return; }
+    if (!s_rc_active) { snprintf(buf, cap, "reconnect: idle (park mode %s)", wifi_mgr_park_mode()); return; }
+    int64_t left = s_rc_next_ms - ms_now();
+    snprintf(buf, cap, "reconnect: attempt %d, next in %lld s", s_rc_attempt, (long long)(left > 0 ? (left + 999) / 1000 : 0));
 }
 
 void wifi_mgr_init(void)
@@ -163,6 +367,8 @@ void wifi_mgr_init(void)
     esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, on_wifi, NULL);
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
     esp_wifi_set_mode(WIFI_MODE_STA);
+    if (!s_rc_task && xTaskCreate(rc_task, "wifi_rc", 3072, NULL, 3, &s_rc_task) != pdPASS)
+        ESP_LOGE(TAG, "no memory for the reconnect task");
     e = esp_wifi_start();
     if (e != ESP_OK) ESP_LOGE(TAG, "esp_wifi_start: %s", esp_err_to_name(e));
 }
@@ -213,13 +419,16 @@ void wifi_mgr_connect(const char *ssid, const char *pass, bool save)
 {
     if (!s_started) return;
     if (save) saved_put(ssid, pass);
+    s_rc_active = false;
     if (s_connected || s_connecting) { s_user_disconnect = true; esp_wifi_disconnect(); vTaskDelay(pdMS_TO_TICKS(200)); }
     do_connect(ssid, pass);
+    s_auto_connect = false;
 }
 
 void wifi_mgr_disconnect(void)
 {
     s_user_disconnect = true;
+    s_rc_active = false;
     esp_wifi_disconnect();
 }
 

@@ -19,6 +19,7 @@
 #include "net/tailscale.h"
 #include "settings/settings.h"
 #include "sys/power.h"
+#include "sys/checkin.h"
 #include "input/keyboard.h"
 #include "ui/hotkeys.h"
 #include "esp_log.h"
@@ -858,7 +859,7 @@ static bool dash_key(const key_event_t *ev, void *user)
     /* Local shortcuts first: they work with no cards on screen and never reach s_draft
        (which stays as it was, for Esc back from Settings or More). */
     switch (hk_dashboard(ev)) {
-    case HK_D_OPEN:     if (s_shown_live) open_selected(); return true;
+    case HK_D_OPEN:     if (s_shown_live && cc_link_connected()) open_selected(); return true;
     case HK_D_SETTINGS: ui_nav_push(ui_settings_create, NULL); return true;
     case HK_D_MORE:     ui_nav_push(ui_home_create, NULL); return true;
     case HK_D_KEYS:     ui_dashboard_keys_overlay(true); return true;
@@ -866,6 +867,7 @@ static bool dash_key(const key_event_t *ev, void *user)
     case HK_D_NONE:     break;
     }
     if (!s_shown_live) return true;   /* no cards on screen: nothing to act on */
+    if (!cc_link_connected()) return true;   /* stale cards while reconnecting after Radio off: inert */
     const cc_session_t *s = selected();
     if (ev->type == KEY_EV_SPECIAL) {
         switch (ev->key) {
@@ -961,7 +963,8 @@ static void load_snapshot(void)
    A wake from Dim never marks them: the link ran at I = 3 s throughout. */
 static pr_cards_t cards_view(void)
 {
-    bool hib = hibernate_boot_kind() == POWER_BOOT_HIB_WAKE;
+    /* a key during a Hibernate check-in boot is an ordinary wake: the same Waking line */
+    bool hib = hibernate_boot_kind() == POWER_BOOT_HIB_WAKE || hibernate_boot_kind() == POWER_BOOT_HIB_CHECKIN;
     bool dark_wake = power_wake_seq() > 0 && power_woke_from() >= PS_OFF;
     if (!hib && !dark_wake) return PR_CARDS_LIVE;
     return pr_cards_view(hib, cc_poll_generation(), dark_wake ? power_wake_gen() : 0,
@@ -976,6 +979,8 @@ static void update_status(void)
     int64_t now = mono_ms();
     uint32_t dot = C_MUTED, color = C_FG;
     pr_cards_t view = cards_view();
+    /* woken from Radio off: the radio comes back first, so say so over the stale cards (Task 8) */
+    bool reconnecting = name[0] && checkin_woke_parked() && view == PR_CARDS_STALE;
     if (!name[0]) {
         strlcpy(line, "Set up your Mac in Settings \xe2\x86\x92 Companion.", sizeof(line));
         s_down_since_ms = 0;
@@ -995,7 +1000,10 @@ static void update_status(void)
         bool net = wifi && (!g_settings.ts_enable || tailscale_state() == TS_CONNECTED);
         if (!net) s_down_since_ms = 0;
         else if (!s_down_since_ms) s_down_since_ms = now;
-        if (!wifi && !wifi_mgr_is_connecting()) {
+        if (reconnecting) {
+            snprintf(line, sizeof(line), "Reconnecting to %s\xe2\x80\xa6", name);
+            color = C_MUTED;
+        } else if (!wifi && !wifi_mgr_is_connecting()) {
             snprintf(line, sizeof(line), "No Wi-Fi, so the Tab5 can't reach %s.", name);
             color = dot = C_RED;
         } else if (s_down_since_ms && now - s_down_since_ms >= UNREACHABLE_MS) {
@@ -1021,6 +1029,7 @@ static void update_status(void)
             snprintf(line, sizeof(line), "Can't load sessions from %s, so these cards aren't updating.", name);
             color = dot = C_RED;
         } else if (view == PR_CARDS_WAKING) { strlcpy(line, "Waking: reconnecting to Mac", sizeof(line)); color = C_MUTED; }
+        else if (reconnecting) { snprintf(line, sizeof(line), "Reconnecting to %s\xe2\x80\xa6", name); color = C_MUTED; }
         else if (view == PR_CARDS_STALE && s_n >= 0) { strlcpy(line, "Updating\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
         else if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
         else if (s_n == 0) snprintf(line, sizeof(line), "No sessions on %s. Start one on your Mac with claude --bg.", name);
@@ -1041,7 +1050,8 @@ static void update_status(void)
         if (view == PR_CARDS_WAKING) lv_obj_add_flag(s_list, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_remove_flag(s_list, LV_OBJ_FLAG_HIDDEN);
     }
-    bool live = up && name[0];
+    /* after a wake from Radio off the stale cards stay up (dimmed, inert) while the radio comes back */
+    bool live = (up || reconnecting) && name[0];
     if (live != s_shown_live) { s_shown_live = live; rebuild(); }
 }
 

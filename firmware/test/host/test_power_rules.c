@@ -351,6 +351,86 @@ void test_cards_view_after_hibernate(void)
     TEST_ASSERT_EQUAL_INT(PR_CARDS_STALE, pr_cards_view(false, 0, 0, false));
 }
 
+/* ---- Task 8: reconnect backoff, Radio off, check-ins ------------------ */
+
+void test_backoff(void)
+{
+    int want[] = { 1, 2, 4, 8, 16, 30, 30, 30 };
+    for (int i = 0; i < 8; i++) TEST_ASSERT_EQUAL_INT(want[i], pr_backoff_s(i));
+    TEST_ASSERT_EQUAL_INT(30, pr_backoff_s(1000));
+    TEST_ASSERT_EQUAL_INT(30, pr_backoff_s(2147483647));
+    TEST_ASSERT_EQUAL_INT(1, pr_backoff_s(-1));   /* never below the first step */
+}
+
+void test_radio_off_rule(void)
+{
+    /* saving 20 mWh per period; the average falls from 300 to 84 mW */
+    TEST_ASSERT_TRUE(pr_radio_off_worth_it(300, 60, 2.0f, 5, 12));
+    TEST_ASSERT_FALSE(pr_radio_off_worth_it(300, 60, 25.0f, 5, 12));
+    TEST_ASSERT_FALSE(pr_radio_off_worth_it(300, 60, 2.0f, 5, 31));
+    TEST_ASSERT_FALSE(pr_radio_off_worth_it(300, 60, 2.0f, 5, 30));   /* "under 30 s" */
+    /* the saving (0.83 mWh) passes the first condition; the average falls only 8.8% */
+    TEST_ASSERT_FALSE(pr_radio_off_worth_it(100, 90, 0.1f, 5, 12));
+    TEST_ASSERT_FALSE(pr_radio_off_worth_it(300, 60, 2.0f, 0, 12));   /* no period */
+}
+
+void test_checkin_needs_you_keeps_light(void)
+{
+    TEST_ASSERT_EQUAL_INT(PR_HC_REHIBERNATE_KEEP_RAIL, pr_hib_checkin_next(true, true, true));
+    TEST_ASSERT_EQUAL_INT(PR_HC_STAY_DEEP_IDLE, pr_hib_checkin_next(true, true, false));
+}
+
+void test_checkin_nothing_rehibernates(void)
+{
+    TEST_ASSERT_EQUAL_INT(PR_HC_REHIBERNATE, pr_hib_checkin_next(true, false, true));
+    TEST_ASSERT_EQUAL_INT(PR_HC_REHIBERNATE, pr_hib_checkin_next(true, false, false));
+    /* a failed poll never lights a stale needs-you */
+    TEST_ASSERT_EQUAL_INT(PR_HC_REHIBERNATE, pr_hib_checkin_next(false, true, true));
+    TEST_ASSERT_EQUAL_INT(PR_HC_REHIBERNATE, pr_hib_checkin_next(false, false, false));
+    TEST_ASSERT_EQUAL_INT(PR_HC_REHIBERNATE, pr_hib_checkin_next(false, true, false));
+}
+
+void test_checkin_clamp(void)
+{
+    int in[] = { 0, 1, 14, 15, 60, 720, 721, 5000, -5 };
+    int want[] = { 0, 15, 15, 15, 60, 720, 720, 720, 0 };
+    for (unsigned i = 0; i < sizeof(in) / sizeof(in[0]); i++)
+        TEST_ASSERT_EQUAL_INT(want[i], pr_hib_checkin_clamp_min(in[i]));
+}
+
+void test_deep_idle_backoff(void)
+{
+    TEST_ASSERT_EQUAL_INT(5, pr_checkin_period_min(PS_RADIO_OFF, 5, 0));
+    TEST_ASSERT_EQUAL_INT(5, pr_checkin_period_min(PS_RADIO_OFF, 5, 9));   /* k is Deep idle's only */
+    TEST_ASSERT_EQUAL_INT(15, pr_checkin_period_min(PS_DEEP_IDLE, 5, 0));
+    TEST_ASSERT_EQUAL_INT(30, pr_checkin_period_min(PS_DEEP_IDLE, 5, 1));
+    TEST_ASSERT_EQUAL_INT(30, pr_checkin_period_min(PS_DEEP_IDLE, 5, 7));
+    TEST_ASSERT_EQUAL_INT(20, pr_checkin_period_min(PS_DEEP_IDLE, 20, 0));
+    TEST_ASSERT_EQUAL_INT(30, pr_checkin_period_min(PS_DEEP_IDLE, 20, 1));
+    TEST_ASSERT_EQUAL_INT(45, pr_checkin_period_min(PS_DEEP_IDLE, 45, 3));   /* never shorter than the user's */
+    TEST_ASSERT_EQUAL_INT(0, pr_checkin_period_min(PS_OFF, 5, 0));
+    TEST_ASSERT_EQUAL_INT(0, pr_checkin_period_min(PS_ACTIVE, 5, 0));
+    TEST_ASSERT_EQUAL_INT(0, pr_checkin_period_min(PS_DIM, 5, 0));
+    TEST_ASSERT_EQUAL_INT(0, pr_checkin_period_min(PS_HIBERNATE, 5, 0));
+    /* a 30-minute Deep-idle period keeps the amber */
+    TEST_ASSERT_EQUAL_INT64(1860000, pr_light_max_age_ms(true, 30));
+}
+
+void test_hib_checkin_hold(void)
+{
+    /* a needs-you check-in that stays in Deep idle: no hibernate by the hours rule */
+    pr_in_t in = base(PS_DEEP_IDLE, 10 * H_MS);
+    in.hib_checkin_hold = true;
+    next_is(PS_DEEP_IDLE, &in);
+    in.battery_pct = 10;
+    next_is(PS_HIBERNATE, &in);   /* except the battery <= 10% trigger */
+    in.battery_pct = 50; in.hib_checkin_hold = false;
+    next_is(PS_HIBERNATE, &in);
+    in = base(PS_OFF, 10 * H_MS);
+    in.hib_checkin_hold = true; in.deep_idle_min = 0;
+    next_is(PS_OFF, &in);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -377,5 +457,12 @@ int main(void)
     RUN_TEST(test_long_idle_held);
     RUN_TEST(test_still_brings_hibernate_sooner);
     RUN_TEST(test_cards_view_after_hibernate);
+    RUN_TEST(test_backoff);
+    RUN_TEST(test_radio_off_rule);
+    RUN_TEST(test_checkin_needs_you_keeps_light);
+    RUN_TEST(test_checkin_nothing_rehibernates);
+    RUN_TEST(test_checkin_clamp);
+    RUN_TEST(test_deep_idle_backoff);
+    RUN_TEST(test_hib_checkin_hold);
     return UNITY_END();
 }

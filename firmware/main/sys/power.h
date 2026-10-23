@@ -55,7 +55,8 @@ void *power_shield_obj(void);               /* the shield (lv_obj_t *), or NULL;
 
 /* ---- console and bench helpers ---- */
 /* `power set <name> <n>` and Settings -> Power: the Settings clamps, then saves.
-   Names: dim, off, sleep-usb, needs-wake, deep-idle, hibernate. False for an unknown name. */
+   Names: dim, off, sleep-usb, needs-wake, deep-idle, hibernate, radio-off, radio-after, checkin,
+   hib-checkin. False for an unknown name. */
 bool power_setting_set(const char *name, int n);
 void power_settings_defaults(void);         /* every Plan 2 power setting back to its Task 2 default */
 void power_settings_text(char *buf, size_t cap);   /* name=value ... on one line */
@@ -67,6 +68,12 @@ void power_wakes_print(void);               /* the last 8 wakes: "<seconds ago> 
 void power_touch_poll_pause(bool pause);    /* bench: Off with the poll stopped */
 typedef enum { POWER_BENCH_LIGHT_NONE, POWER_BENCH_LIGHT_AMBER, POWER_BENCH_LIGHT_OFF } power_bench_light_t;
 void power_bench_light(power_bench_light_t l);
+
+/* ---- Task 8: Radio off and the check-ins (sys/checkin.h) ---- */
+bool power_needs_you(void);                 /* pr_any_needs_you of the last result from the Mac */
+/* True once the power task has judged the newest result (its needs-you wake, or not): a check-in
+   waits for this before it parks again. */
+bool power_results_judged(void);
 
 /* ---- Hibernate: sys/hibernate.h (Task 6) ---- */
 #include "sys/hibernate.h"

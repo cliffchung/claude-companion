@@ -14,6 +14,7 @@
 #include "companion/cc_sessions.h"
 #include "servers/server_store.h"
 #include "sys/power.h"
+#include "sys/checkin.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +41,8 @@ int sysinfo_rssi_cached(void) { return env_int("PREVIEW_RSSI", -60); }
 const char *sysinfo_app_version(void) { return "preview"; }
 void sysinfo_apply_timezone(void) {}
 void sysinfo_start_sntp(void) {}
-bool wifi_mgr_is_connected(void) { return true; }
+static bool s_rc_preview;   /* dashboard-reconnecting: woken from Radio off, Wi-Fi and the link not back yet */
+bool wifi_mgr_is_connected(void) { return !s_rc_preview; }
 bool wifi_mgr_is_connecting(void) { return false; }
 void wifi_mgr_get_ip4(char *b, size_t n) { snprintf(b,n,"192.168.1.25"); }
 void wifi_mgr_disconnect(void) {}
@@ -57,9 +59,10 @@ bool power_setting_set(const char *name, int n) { (void)name; (void)n; return tr
 bool hibernate_supported(void) { return false; }
 power_boot_t hibernate_boot_kind(void) { return POWER_BOOT_NORMAL; }
 void power_hold(power_hold_t h, bool on) { (void)h; (void)on; }
-uint32_t power_wake_seq(void) { return 0; }
-uint32_t power_wake_gen(void) { return 0; }
-power_state_t power_woke_from(void) { return PS_ACTIVE; }
+uint32_t power_wake_seq(void) { return s_rc_preview ? 1 : 0; }
+uint32_t power_wake_gen(void) { return s_rc_preview ? 1 : 0; }   /* no result newer than the wake: stale */
+power_state_t power_woke_from(void) { return s_rc_preview ? PS_RADIO_OFF : PS_ACTIVE; }
+bool checkin_woke_parked(void) { return s_rc_preview; }
 power_wake_t power_wake_reason(void) { return PW_CONSOLE; }
 bool power_shield_up(void) { return false; }
 ts_state_t tailscale_state(void)
@@ -120,7 +123,7 @@ bool cc_link_busy(void) { return false; }
 void cc_link_watch_enable(bool on) { (void)on; }
 void cc_link_watch_test_fallback(void) {}
 const char *cc_watch_status_text(char *b, size_t cap) { snprintf(b, cap, "watch: on I=3s, last block 4s ago, heartbeat 12s ago"); return b; }
-bool cc_link_connected(void) { return true; }
+bool cc_link_connected(void) { return !s_rc_preview; }
 const char *cc_link_status_text(char *b, size_t cap) { snprintf(b, cap, "connected Mac"); return b; }
 cc_link_fail_t cc_link_failure(void) { return CC_LINK_FAIL_NONE; }
 int cc_poll_failures(bool *too_big) { if (too_big) *too_big = false; return 0; }
@@ -583,6 +586,22 @@ int main(int argc,char **argv) {
         lv_obj_t *s=lv_screen_active();
         lv_obj_update_layout(s); lv_refr_now(d);
         return snapshot(s,"/tmp/claude-dashboard.ppm");
+    }
+    if (argc>1 && !strcmp(argv[1],"dashboard-reconnecting")) {
+        /* A key woke it from Radio off: "Reconnecting to Mac…" (muted) over the stale cards, not "No Wi-Fi". */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
+        s_rc_preview = true;
+        ui_nav_home(); step(d,400);
+        assert(ui_nav_is_top(ui_dashboard_create));
+        step(d,400);
+        lv_obj_t *s=lv_screen_active();
+        lv_obj_update_layout(s); lv_refr_now(d);
+        assert(find_label(s,"Reconnecting to Mac\xe2\x80\xa6",false));
+        assert(!find_label(s,"No Wi-Fi",true));
+        printf("dashboard-reconnecting: ok\n");
+        return snapshot(s,"/tmp/claude-dashboard-reconnecting.ppm");
     }
     if (argc>1 && !strcmp(argv[1],"settings-forget")) {
         /* Settings -> Companion -> Forget Mac host key: the confirm, then the toast after OK. */

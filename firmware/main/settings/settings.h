@@ -83,7 +83,9 @@ typedef struct {
     uint8_t  pw_light_sleep;     /* 0; gated (Task 6, Task 10) */
     uint16_t pw_deep_idle_min;   /* 60; 0 = never */
     uint8_t  pw_hibernate_h;     /* 2; 0 = never (the battery <= 10% trigger stays) */
-    uint8_t  pw_hibernate_checkin_h; /* 0 = off; gated (Task 8, Task 10) */
+    uint8_t  pw_hibernate_checkin_h; /* reserved (v18): uint8 hours can't hold 15-720 min; see below */
+    /* v19 (Task 8, PT16) */
+    uint16_t pw_hibernate_checkin_min; /* spec hibernate_checkin: 15; 0 = off; clamped by pr_hib_checkin_clamp_min to 0 or 15-720 */
 } app_settings_t;
 
 #define TZ_DEFAULT "PST8PDT,M3.2.0,M11.1.0"

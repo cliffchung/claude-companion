@@ -121,6 +121,24 @@ bool cc_link_is_companion_server(int idx);
 void cc_link_set_server(const char *name);
 bool cc_link_set_claude_path(const char *path);   /* false unless cc_path_valid */
 
+/* ---- Plan 2 Task 8: Radio off ---- */
+/* Parked closes the session (the Tab5's own close: never counted toward the watch fallback) and
+   doesn't reconnect; unparked reconnects at once (the backoff starts again). */
+void cc_link_park(bool parked);
+bool cc_link_parked(void);
+/* One plain refresh() now, as a queued request: ESP_OK when it published a result, ESP_FAIL when the
+   poll failed, ESP_ERR_INVALID_STATE when not connected, ESP_ERR_TIMEOUT. Blocks up to timeout_ms. */
+esp_err_t cc_link_poll_now(int timeout_ms);
+/* The stale-peer fix: after a failed ssh_connect to a tailnet IP, kick a handshake before the next
+   retry. Console `companion kick on|off` (RAM only, default on). */
+void cc_link_set_kick(bool on);
+bool cc_link_kick_on(void);
+/* The last 8 link down/up events with wall-clock time, one per line (for the Mac sleep measurement). */
+const char *cc_link_reconnect_log(char *buf, size_t cap);
+/* The Mac's address for a check-in: the address the link last pinned (a tailnet IP after MagicDNS),
+   else the server entry's host. False when no Mac is set up. */
+bool cc_link_mac_address(char *out, size_t cap);
+
 /* Registers companion, sessions, reply, logs and wifi console commands. */
 void cc_console_init(void);
 #ifdef __cplusplus

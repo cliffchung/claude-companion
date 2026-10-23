@@ -130,11 +130,18 @@ static const int k_dim_opts[] = { 10, 15, 30, 60, 120, 300, 600 };
 static const int k_off_opts[] = { 20, 30, 60, 120, 300, 600, 1800, 3600 };
 static const int k_deep_opts[] = { 0, 15, 30, 60, 120, 240, 480, 720 };
 static const int k_hib_opts[] = { 0, 1, 2, 4, 8, 12, 24, 48 };
+static const int k_radio_after_opts[] = { 5, 10, 20, 30, 60, 120, 240 };
+static const int k_checkin_opts[] = { 1, 2, 5, 10, 15, 30, 60 };
+static const int k_hib_checkin_opts[] = { 0, 15, 30, 60, 120, 240, 480, 720 };
 #define N_OPTS(a) ((int)(sizeof(a) / sizeof(a[0])))
 static const pw_menu_t k_pw_dim = { "Dim after (s)", "dim", "s", k_dim_opts, N_OPTS(k_dim_opts) };
 static const pw_menu_t k_pw_off = { "Screen off after (s)", "off", "s", k_off_opts, N_OPTS(k_off_opts) };
 static const pw_menu_t k_pw_deep = { "Deep idle after (min)", "deep-idle", "min", k_deep_opts, N_OPTS(k_deep_opts) };
 static const pw_menu_t k_pw_hib = { "Hibernate after (h)", "hibernate", "h", k_hib_opts, N_OPTS(k_hib_opts) };
+static const pw_menu_t k_pw_radio_after = { "Radio off after (min)", "radio-after", "min", k_radio_after_opts, N_OPTS(k_radio_after_opts) };
+static const pw_menu_t k_pw_checkin = { "Check in every (min)", "checkin", "min", k_checkin_opts, N_OPTS(k_checkin_opts) };
+static const pw_menu_t k_pw_hib_checkin = { "Hibernate check-in every (min)", "hib-checkin", "min", k_hib_checkin_opts,
+                                            N_OPTS(k_hib_checkin_opts) };
 
 static void pw_value(const pw_menu_t *m, int v, char *buf, size_t cap)
 {
@@ -322,10 +329,15 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         ui_switch_row(c, tr(STR_SET_KBD_NEEDS_LIGHT), g_settings.kbd_needs_light, led_needs_cb, NULL);
         ui_switch_row(c, "Stay awake in SSH Terminal", g_settings.ss_disable_in_ssh, ssh_awake_cb, NULL);
         ui_setting_row(c, "Time zone", tz_label(), tz_cb, NULL);
+        ui_switch_row(c, "Radio off", g_settings.pw_radio_off, pw_switch_cb, (void *)"radio-off");
+        pw_row(c, &k_pw_radio_after, g_settings.pw_radio_off_min, NULL);
+        pw_row(c, &k_pw_checkin, g_settings.pw_checkin_min, NULL);
         pw_row(c, &k_pw_deep, g_settings.pw_deep_idle_min, NULL);
         pw_row(c, &k_pw_hib, g_settings.pw_hibernate_h, hibernate_supported() ? NULL : "(not available yet)");
-        ui_label(c, "Deep idle and Hibernate apply on battery only. Any key or touch wakes the screen; "
-                    "the key or touch that wakes it is not passed on.", FONT_SMALL, UI_MUTED);
+        pw_row(c, &k_pw_hib_checkin, g_settings.pw_hibernate_checkin_min, NULL);
+        ui_label(c, "Radio off, Deep idle and Hibernate apply on battery only. With Radio off the Tab5 turns Wi-Fi off "
+                    "while the screen is off and checks in with your Mac at the set interval; Hibernate checks in too. "
+                    "Any key or touch wakes the screen; the key or touch that wakes it is not passed on.", FONT_SMALL, UI_MUTED);
         break;
     }
     case 3: {

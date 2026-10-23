@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -40,7 +41,7 @@ static const char *TAG = "cc_link";
 #define DEFAULT_CLAUDE  "~/.local/bin/claude"
 
 typedef enum { LS_NO_MAC, LS_CONNECTING, LS_WAITING, LS_CONNECTED } link_state_t;
-typedef enum { REQ_EXEC, REQ_PASTE, REQ_CHECK } req_type_t;
+typedef enum { REQ_EXEC, REQ_PASTE, REQ_CHECK, REQ_POLL } req_type_t;
 
 typedef struct {
     req_type_t type;
@@ -90,6 +91,14 @@ static volatile bool s_forget;         /* the task tears down and reconnects now
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 
+/* Task 8 */
+static volatile bool s_parked;              /* cc_link_park: no session, no reconnect */
+static volatile bool s_kick = true;         /* companion kick on|off: the stale-peer fix */
+#define RLOG_N 8
+typedef struct { uint32_t epoch; int64_t mono_ms; bool up; char why[24]; } rlog_t;
+static rlog_t s_rlog[RLOG_N];               /* under s_lock */
+static int s_rlog_n, s_rlog_head;
+
 /* ---------- long-poll watch state ----------
  * One pty exec channel runs cc_cmd_watch's loop on the Mac for as long as the link is up and
  * the effective interval is > 0. Its output is parsed into s_wbody (its own buffer, so the
@@ -131,6 +140,19 @@ static void lock(void) { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 static int64_t now_us(void) { return esp_timer_get_time(); }
 static int64_t s_last_ok_ms;   /* esp_timer ms of the last successful result, 0 = none */
+
+static void rlog_add(bool up, const char *why)
+{
+    lock();
+    rlog_t *r = &s_rlog[s_rlog_head];
+    r->epoch = (uint32_t)time(NULL);
+    r->mono_ms = now_us() / 1000;
+    r->up = up;
+    strlcpy(r->why, why ? why : "", sizeof(r->why));
+    s_rlog_head = (s_rlog_head + 1) % RLOG_N;
+    if (s_rlog_n < RLOG_N) s_rlog_n++;
+    unlock();
+}
 
 static void kick(void)
 {
@@ -236,6 +258,11 @@ const char *cc_link_status_text(char *b, size_t cap)
         return b;
     }
     lock();
+    if (s_parked && s_state != LS_CONNECTED && s_state != LS_NO_MAC) {
+        snprintf(b, cap, "parked (radio off): %s", s_shown);
+        unlock();
+        return b;
+    }
     switch (s_state) {
     case LS_NO_MAC:
         strlcpy(b, "no Mac set up", cap);
@@ -306,9 +333,13 @@ static bool drain_queue_down(TickType_t wait)
 
 static void watch_close(bool asked);
 
+static const char *s_down_why = "dropped";   /* task only: why the next teardown happens */
+
 static void teardown(void)
 {
     watch_close(true);   /* the Tab5's own close: never counted toward a fallback */
+    if (s_sess) rlog_add(false, s_down_why);
+    s_down_why = "dropped";
     if (s_sess) {
         ssh_disconnect(s_sess);
         ssh_free(s_sess);
@@ -375,6 +406,9 @@ static bool connect_once(const char *name)
         ESP_LOGW(TAG, "connect %s:%d failed: %s", host, port, ssh_get_error(s));
         set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreachable */
         ssh_free(s);
+        /* the stale-peer fix: MicroLink can report a peer up on a dead keypair (the Mac slept), so
+           kick a fresh handshake now, before the backoff's next retry */
+        if (s_kick && tailscale_is_tailnet_ip(host)) tailscale_kick_peer(host);
         return false;
     }
     char fp[80];
@@ -435,6 +469,7 @@ static bool connect_once(const char *name)
     s_w_fallback_until_us = 0;   /* a fallback is retried on the next connect */
     memset(s_w_ends, 0, sizeof(s_w_ends));
     ESP_LOGI(TAG, "connected to %s (%s:%d)", name, host, port);
+    rlog_add(true, "connected");
     return true;
 }
 
@@ -700,10 +735,13 @@ static esp_err_t do_paste(req_t *r)
     return ESP_OK;
 }
 
+static int refresh(int64_t deadline_us);
+
 static void handle(req_t *r)
 {
     if (!s_sess || s_drop) { answer(r, ESP_ERR_INVALID_STATE); return; }
     if (now_us() > r->deadline_us) { answer(r, ESP_ERR_TIMEOUT); return; }
+    if (r->type == REQ_POLL) { answer(r, refresh(r->deadline_us) >= 0 ? ESP_OK : ESP_FAIL); return; }
     answer(r, r->type == REQ_EXEC ? do_exec(r) : do_paste(r));   /* paste and check */
 }
 
@@ -1067,6 +1105,15 @@ static void link_task(void *arg)
             s_forget_ack = s_forget_req;
             unlock();
         }
+        if (s_parked) {
+            /* Radio off: the Tab5's own close (never counted toward the watch fallback), and no
+               reconnect until unparked */
+            if (s_sess) { s_down_why = "parked"; teardown(); }
+            attempt = 0;
+            if (s_state != LS_WAITING) set_state(LS_WAITING);
+            drain_queue_down(pdMS_TO_TICKS(1000));
+            continue;
+        }
         if (s_sess && s_drop) {
             teardown();
             attempt = 0;     /* first retry right away, then back off */
@@ -1097,7 +1144,7 @@ static void link_task(void *arg)
             s_retry_at_us = now_us() + (int64_t)wait * 1000000;
             s_state = LS_WAITING;
             unlock();
-            while (now_us() < s_retry_at_us && !s_reconfig && !s_reset_backoff && !s_forget) {
+            while (now_us() < s_retry_at_us && !s_reconfig && !s_reset_backoff && !s_forget && !s_parked) {
                 int64_t left_ms = (s_retry_at_us - now_us()) / 1000;
                 drain_queue_down(pdMS_TO_TICKS(left_ms > 0 ? left_ms : 1));
             }
@@ -1149,6 +1196,7 @@ static esp_err_t submit(req_t *r)
     if (!s_queue || !cc_link_connected()) return ESP_ERR_INVALID_STATE;
     if (xTaskGetCurrentTaskHandle() == s_task) {   /* a subscriber calling back in */
         if (!s_sess || s_drop) return ESP_ERR_INVALID_STATE;
+        if (r->type == REQ_POLL) return refresh(r->deadline_us) >= 0 ? ESP_OK : ESP_FAIL;
         return r->type == REQ_EXEC ? do_exec(r) : do_paste(r);
     }
     r->done = xSemaphoreCreateBinary();
@@ -1425,6 +1473,74 @@ esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)
     s_drop = true;   /* reconnect, so the next connect meets the wrong pin */
     kick();
     return ESP_OK;
+}
+
+void cc_link_park(bool parked)
+{
+    if (s_parked == parked) return;
+    s_parked = parked;
+    if (!parked) s_reset_backoff = true;   /* connect at once */
+    ESP_LOGI(TAG, "%s", parked ? "parked (radio off)" : "unparked: connecting");
+    kick();
+}
+
+bool cc_link_parked(void) { return s_parked; }
+
+esp_err_t cc_link_poll_now(int timeout_ms)
+{
+    if (timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+    req_t r = { .type = REQ_POLL, .deadline_us = now_us() + (int64_t)timeout_ms * 1000 };
+    return submit(&r);
+}
+
+void cc_link_set_kick(bool on) { s_kick = on; }
+bool cc_link_kick_on(void) { return s_kick; }
+
+const char *cc_link_reconnect_log(char *b, size_t cap)
+{
+    if (!b || !cap) return "";
+    b[0] = 0;
+    rlog_t r[RLOG_N];
+    int n, head;
+    lock();
+    memcpy(r, s_rlog, sizeof(r));
+    n = s_rlog_n;
+    head = s_rlog_head;
+    unlock();
+    if (!n) { strlcpy(b, "reconnect log: empty", cap); return b; }
+    int64_t now = now_us() / 1000;
+    size_t len = 0;
+    for (int i = 0; i < n && len + 1 < cap; i++) {
+        const rlog_t *e = &r[(head - n + i + RLOG_N) % RLOG_N];
+        char when[24] = "-";
+        time_t t = (time_t)e->epoch;
+        struct tm tm;
+        if (t > 1600000000 && localtime_r(&t, &tm)) strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &tm);
+        int w = snprintf(b + len, cap - len, "%s%s %s %s (%.1f s ago)", i ? "\n" : "", when, e->up ? "up" : "down", e->why,
+                         (now - e->mono_ms) / 1000.0);
+        if (w < 0) break;
+        len += (size_t)w;
+        if (len >= cap) { len = cap - 1; break; }
+    }
+    return b;
+}
+
+bool cc_link_mac_address(char *out, size_t cap)
+{
+    if (!out || !cap) return false;
+    out[0] = 0;
+    lock();
+    strlcpy(out, s_pin_host, cap);
+    char name[sizeof(g_settings.companion_server)];
+    strlcpy(name, g_settings.companion_server, sizeof(name));
+    unlock();
+    if (out[0]) return true;
+    if (!name[0]) return false;
+    int idx = server_index(name);
+    const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
+    if (!sv) return false;
+    strlcpy(out, sv->host, cap);
+    return out[0] != 0;
 }
 
 void cc_link_on_wifi(bool connected)

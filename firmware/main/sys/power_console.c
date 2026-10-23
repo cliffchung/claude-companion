@@ -12,6 +12,8 @@
 #include "sys/power_bench.h"
 #include "sys/vitals.h"
 #include "sys/power.h"
+#include "sys/checkin.h"
+#include "net/wifi_mgr.h"
 #include "input/keyboard.h"
 #include "settings/settings.h"
 
@@ -30,9 +32,11 @@ static int usage(void)
 {
     printf("usage: power | power log on|off|status|dump|clear | power resets [clear] | "
            "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe] | "
-           "power go active|dim|off|deep-idle|hibernate | power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate <n> | "
+           "power go active|dim|off|radio-off|deep-idle|hibernate | "
+           "power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate|radio-off|radio-after|checkin|hib-checkin <n> | "
+           "power checkin [rebind] | power checkin hibernate [keep|nokeep] | power checkins | "
            "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch | "
-           "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s>] | power boot | "
+           "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s> | backstop [<s> <n>]] | power boot | "
            "power rails | power rail speaker|camera|usb|ext5v on|off | power imu [suspend]\n");
     return 1;
 }
@@ -50,7 +54,7 @@ static bool parse_int(const char *s, int *out)
 static int cmd_go(const char *name)
 {
     static const struct { const char *n; power_state_t s; } k[] = {
-        { "active", PS_ACTIVE }, { "dim", PS_DIM }, { "off", PS_OFF }, { "deep-idle", PS_DEEP_IDLE },
+        { "active", PS_ACTIVE }, { "dim", PS_DIM }, { "off", PS_OFF }, { "radio-off", PS_RADIO_OFF }, { "deep-idle", PS_DEEP_IDLE },
         { "hibernate", PS_HIBERNATE },
     };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
@@ -67,6 +71,40 @@ static int cmd_go(const char *name)
     return usage();
 }
 
+/* The radio and the check-ins (Task 8): in Radio off and Deep idle, next-checkin=<s> and period=<min>. */
+static void radio_line(void)
+{
+    char rc[64];
+    wifi_mgr_reconnect_text(rc, sizeof(rc));
+    power_state_t st = power_state();
+    if (st == PS_RADIO_OFF || st == PS_DEEP_IDLE)
+        printf("radio: %s next-checkin=%d period=%d%s%s\n", rc, checkin_next_s(), checkin_period_min(),
+               checkin_busy() ? " (a job is running)" : "", checkin_hib_hold() ? " hib-checkin-hold" : "");
+    else
+        printf("radio: %s%s\n", rc, checkin_busy() ? " (a job is running)" : "");
+}
+
+static int cmd_checkin(int argc, char **argv)
+{
+    if (argc == 2) { checkin_force(false); printf("checkin: one check-in now\n"); }
+    else if (argc == 3 && strcmp(argv[2], "rebind") == 0) { checkin_force(true); printf("checkin: one check-in now, rebind forced\n"); }
+    else if (argc >= 3 && argc <= 4 && strcmp(argv[2], "hibernate") == 0) {
+        int force = 0;
+        if (argc == 4) {
+            if (strcmp(argv[3], "keep") == 0) force = 1;
+            else if (strcmp(argv[3], "nokeep") == 0) force = 2;
+            else return usage();
+        }
+        checkin_hibernate_test(force);
+        return 1;   /* only if the hibernate failed */
+    } else return usage();
+    power_state_t st = power_state();
+    if (!(st == PS_RADIO_OFF || (st == PS_DEEP_IDLE && g_settings.pw_radio_off)))
+        printf("checkin: it runs once the radio is parked (radio-off, or deep-idle with radio-off 1); state=%s\n",
+               power_state_name(st));
+    return 0;
+}
+
 static int cmd_power(int argc, char **argv)
 {
     int h = argc >= 2 ? hibernate_console(argc, argv) : -1;   /* hib, boot, rails, rail, imu */
@@ -81,11 +119,13 @@ static int cmd_power(int argc, char **argv)
         if (!p.valid) {
             printf("power: - V - mA - W %s charging=- src=%s chg_pin=%d state=%s idle=%lds holds=%s\n", pct,
                    src_name(p.src), sysinfo_charge_pin(), st, idle, holds);
+            radio_line();
             return 0;
         }
         printf("power: %.2f V %d mA %.2f W %s charging=%s src=%s chg_pin=%d state=%s idle=%lds holds=%s\n",
                p.bus_v, (int)lroundf(p.current_a * 1000.0f), p.bus_v * fabsf(p.current_a), pct,
                p.src == PWR_USB_CHARGING ? "yes" : "no", src_name(p.src), sysinfo_charge_pin(), st, idle, holds);
+        radio_line();
         return 0;
     }
     if (strcmp(argv[1], "log") == 0 && argc == 3) {
@@ -122,6 +162,11 @@ static int cmd_power(int argc, char **argv)
             printf("ok\n");
             return 0;
         }
+    } else if (strcmp(argv[1], "checkin") == 0) {
+        return cmd_checkin(argc, argv);
+    } else if (strcmp(argv[1], "checkins") == 0 && argc == 2) {
+        checkin_print();
+        return 0;
     } else if (strcmp(argv[1], "go") == 0 && argc == 3) {
         return cmd_go(argv[2]);
     } else if (strcmp(argv[1], "set") == 0 && argc == 3 && strcmp(argv[2], "defaults") == 0) {
@@ -224,6 +269,7 @@ void power_console_init(void)
         .command = "power",
         .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort | "
                 "light [test bind|user|reprobe] | go <state> | set <name> <n> | set defaults | settings | "
+                "checkin [rebind] | checkin hibernate [keep|nokeep] | checkins | "
                 "sim battery <pct|off> | sim idle <s> | sim touch | touch | wakes | hib ... | boot | rails | rail <n> on|off | imu",
         .func = cmd_power,
     };

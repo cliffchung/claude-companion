@@ -13,7 +13,7 @@
 static const char *TAG = "settings";
 #define NS "app"
 #define KEY "cfg"
-#define CFG_VERSION 18
+#define CFG_VERSION 19
 
 app_settings_t g_settings;
 
@@ -38,7 +38,8 @@ void settings_power_defaults(void)
     g_settings.pw_light_sleep = 0;
     g_settings.pw_deep_idle_min = 60;
     g_settings.pw_hibernate_h = 2;
-    g_settings.pw_hibernate_checkin_h = 0;
+    g_settings.pw_hibernate_checkin_h = 0;      /* reserved */
+    g_settings.pw_hibernate_checkin_min = 15;   /* PT16, PT18 */
 }
 
 static void plan2_defaults(void)
@@ -119,6 +120,8 @@ void settings_init(void)
             /* v18 added the Plan 2 fields at the end. The old blob's tail padding may have
                landed on them, so set them all, whatever the old UTC offset was. */
             if (old_version <= 17) plan2_defaults();
+            /* v19 added pw_hibernate_checkin_min (PT16): an existing device gets the default */
+            if (old_version <= 18) g_settings.pw_hibernate_checkin_min = 15;
             settings_save();
         }
         free(blob);
@@ -140,7 +143,11 @@ void settings_init(void)
     vitals_clamp_dim_off(&g_settings.pw_dim_s, &g_settings.pw_off_s);
     g_settings.pw_deep_idle_min = vitals_clamp_or_zero(g_settings.pw_deep_idle_min, 15, 720);
     g_settings.pw_hibernate_h = vitals_clamp_or_zero(g_settings.pw_hibernate_h, 1, 48);
-    g_settings.pw_hibernate_checkin_h = vitals_clamp_or_zero(g_settings.pw_hibernate_checkin_h, 1, 24);
+    g_settings.pw_hibernate_checkin_min = (uint16_t)pr_hib_checkin_clamp_min(g_settings.pw_hibernate_checkin_min);
+    if (g_settings.pw_radio_off_min < 5) g_settings.pw_radio_off_min = 5;
+    if (g_settings.pw_radio_off_min > 240) g_settings.pw_radio_off_min = 240;
+    if (g_settings.pw_checkin_min < 1) g_settings.pw_checkin_min = 1;
+    if (g_settings.pw_checkin_min > 60) g_settings.pw_checkin_min = 60;
     if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 

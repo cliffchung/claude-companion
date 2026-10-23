@@ -28,6 +28,7 @@
 #include "sys/power_console.h"
 #include "sys/power.h"
 #include "sys/hibernate.h"
+#include "sys/checkin.h"
 #include "sys/imu.h"
 #include "sys/display_ctl.h"
 #include "sys/usb_mgr.h"
@@ -39,8 +40,11 @@ static void wifi_global_cb(wifi_ev_t ev, void *user)
 {
     (void)user;
     if (ev == WIFI_EV_CONNECTED) {
+        /* a Radio-off check-in (fast resume): no rebind (it handshakes first) and no SNTP restart every
+           few minutes (the RTC keeps the time across a park) */
+        bool fast = tailscale_fast_resume();
         tailscale_on_wifi(true);
-        sysinfo_start_sntp();
+        if (!fast) sysinfo_start_sntp();
         cc_link_on_wifi(true);
     } else if (ev == WIFI_EV_DISCONNECTED) {
         cc_link_on_wifi(false);
@@ -50,6 +54,7 @@ static void wifi_global_cb(wifi_ev_t ev, void *user)
 static const char *TAG = "app";
 static lv_display_t *s_display;
 static int64_t s_boot_logo_visible_at;
+static bool s_dark_boot;   /* a Hibernate check-in boot (PT16): the screen stays dark throughout */
 
 #define BOOT_LOGO_MIN_VISIBLE_MS 1000
 
@@ -83,7 +88,7 @@ static bool display_init_early(void)
     ui_boot_show();
     bsp_display_unlock();
     /* Draw before lighting the panel to avoid a blank flash. */
-    bsp_display_brightness_set(80);
+    bsp_display_brightness_set(s_dark_boot ? 0 : 80);
     s_boot_logo_visible_at = esp_timer_get_time();
     ESP_LOGI(TAG, "display ready in %lld ms; boot logo submitted in %lld ms",
              (esp_timer_get_time() - display_started) / 1000,
@@ -97,11 +102,12 @@ static void display_apply_settings(void)
     lv_display_set_rotation(s_display, (lv_display_rotation_t)(g_settings.rotation & 3));
     lv_refr_now(s_display);
     bsp_display_unlock();
-    bsp_display_brightness_set(g_settings.brightness);
+    bsp_display_brightness_set(s_dark_boot ? 0 : g_settings.brightness);
 }
 
 static void boot_logo_wait_minimum(void)
 {
+    if (s_dark_boot) return;   /* nobody sees the logo */
     int64_t elapsed_us = esp_timer_get_time() - s_boot_logo_visible_at;
     int64_t remaining_us = (int64_t)BOOT_LOGO_MIN_VISIBLE_MS * 1000 - elapsed_us;
     if (remaining_us > 0)
@@ -114,7 +120,9 @@ static void idle_task(void *arg)
     power_poll_task_set(xTaskGetCurrentTaskHandle());
     for (;;) {
         sysinfo_poll();
+        checkin_on_sample();   /* a check-in's mWh */
         uint8_t tag = power_bench_tag();
+        if (!tag) tag = checkin_log_tag();   /* 0x83, 0x84 or 0x85 while a check-in runs */
         power_log_sample(tag ? tag : (uint8_t)power_state());
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(power_poll_period_ms()));
     }
@@ -130,6 +138,7 @@ void app_main(void)
      * revision by probing that controller and asserts if it is still starting. */
     bsp_i2c_init();
     hibernate_boot_early();   /* before any rail: a bench probe boot samples the INA226 and sleeps again here */
+    s_dark_boot = hibernate_boot_kind() == POWER_BOOT_HIB_CHECKIN;
     bsp_io_expander_init();
     bsp_io_expander1_init();
     bsp_feature_enable(BSP_FEATURE_LCD, true);

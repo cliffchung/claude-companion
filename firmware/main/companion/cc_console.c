@@ -101,8 +101,21 @@ static int cmd_companion(int argc, char **argv)
         printf("debug: host key pin for %s overwritten; reconnecting\n", hp);
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "kick") == 0 && (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0)) {
+        cc_link_set_kick(strcmp(argv[2], "on") == 0);   /* RAM only: Task 10 measures with and without */
+        printf("companion: kick a handshake after a failed connect: %s\n", cc_link_kick_on() ? "on" : "off");
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "reconnect-log") == 0) {
+        char *b = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
+        if (!b) return 1;
+        printf("%s\n", cc_link_reconnect_log(b, 1024));
+        heap_caps_free(b);
+        return 0;
+    }
     printf("usage: companion host <server name> | companion claude-path <path> | companion status |\n"
-           "       companion watch on|off|status|test-fallback | companion hostkey forget|corrupt\n");
+           "       companion watch on|off|status|test-fallback | companion hostkey forget|corrupt |\n"
+           "       companion kick on|off | companion reconnect-log\n");
     return 1;
 }
 
@@ -223,18 +236,30 @@ static int cmd_wifi(int argc, char **argv)
         printf("wifi: no saved network%s%s\n", want[0] ? " named " : "", want);
         return 1;
     }
-    printf("usage: wifi leave | wifi join [ssid]   (join uses the saved password)\n");
+    if (argc == 3 && strcmp(argv[1], "test") == 0 && strcmp(argv[2], "drop") == 0) {
+        /* debug: a drop the user didn't ask for, so the background reconnect takes it */
+        wifi_mgr_test_drop();
+        printf("wifi: test drop\n");
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "status") == 0) {
+        char rc[64];
+        wifi_mgr_reconnect_text(rc, sizeof(rc));
+        printf("wifi: %s %s; %s\n", wifi_mgr_is_connected() ? "connected" : "not connected", wifi_mgr_ssid(), rc);
+        return 0;
+    }
+    printf("usage: wifi leave | wifi join [ssid] | wifi status | wifi test drop   (join uses the saved password)\n");
     return 1;
 }
 
 void cc_console_init(void)
 {
     const esp_console_cmd_t cmds[] = {
-        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug)", .func = cmd_companion },
+        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug) | kick on|off | reconnect-log", .func = cmd_companion },
         { .command = "sessions", .help = "List Claude sessions from the last poll: <STATE> <id> <repo> <name>", .func = cmd_sessions },
         { .command = "reply", .help = "reply <id> <text...>: type a quick answer into a running background session", .func = cmd_reply },
         { .command = "logs", .help = "logs <id>: recent output of a session, ANSI stripped", .func = cmd_logs },
-        { .command = "wifi", .help = "wifi leave | wifi join [ssid]", .func = cmd_wifi },
+        { .command = "wifi", .help = "wifi leave | wifi join [ssid] | wifi status | wifi test drop (debug)", .func = cmd_wifi },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) debug_console_register(&cmds[i]);
 }

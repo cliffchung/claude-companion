@@ -62,6 +62,7 @@ power_state_t pr_next_state(const pr_in_t *in)
         bool low = in->battery_pct >= 0 && in->battery_pct <= PR_LOW_BATTERY_PCT && !in->charging;
         bool still = in->still_hibernate_ms > 0 && in->still_ms >= in->still_hibernate_ms &&
                      idle >= in->still_hibernate_ms;
+        if (in->hib_checkin_hold) hours = still = false;   /* PT16: a needs-you check-in stays up */
         if (hours || low || still) return PS_HIBERNATE;
     }
     if (in->deep_idle_min > 0 && idle >= (int64_t)in->deep_idle_min * 60000) return PS_DEEP_IDLE;
@@ -115,4 +116,47 @@ int pr_dim_brightness(int brightness)
 {
     int b = brightness * 20 / 100;
     return b > 5 ? b : 5;
+}
+
+/* ---- reconnect, Radio off and check-ins (Task 8) ---------------------- */
+
+#define BACKOFF_MAX_S 30
+#define HIB_CHECKIN_MIN_MIN 15
+#define HIB_CHECKIN_MAX_MIN 720
+
+int pr_backoff_s(int attempt)
+{
+    if (attempt <= 0) return 1;
+    if (attempt >= 5) return BACKOFF_MAX_S;   /* 1 << 5 = 32 > 30; also no overflow for huge attempts */
+    return 1 << attempt;
+}
+
+bool pr_radio_off_worth_it(float a_mw, float b_mw, float c_mwh, int checkin_min, int checkin_s)
+{
+    if (checkin_min <= 0 || checkin_s >= 30) return false;
+    float period_h = checkin_min / 60.0f;
+    if ((a_mw - b_mw) * period_h <= c_mwh) return false;
+    float avg = b_mw + c_mwh / period_h;      /* the average draw with toggling */
+    return avg <= 0.8f * a_mw;
+}
+
+int pr_checkin_period_min(power_state_t st, int checkin_min, int deep_checkins_done)
+{
+    if (st == PS_RADIO_OFF) return checkin_min;
+    if (st != PS_DEEP_IDLE) return 0;
+    int floor_min = deep_checkins_done <= 0 ? 15 : 30;
+    return checkin_min > floor_min ? checkin_min : floor_min;
+}
+
+pr_hc_t pr_hib_checkin_next(bool poll_ok, bool needs_you, bool kbd_rail_survives)
+{
+    if (!poll_ok || !needs_you) return PR_HC_REHIBERNATE;
+    return kbd_rail_survives ? PR_HC_REHIBERNATE_KEEP_RAIL : PR_HC_STAY_DEEP_IDLE;
+}
+
+int pr_hib_checkin_clamp_min(int min)
+{
+    if (min <= 0) return 0;
+    if (min < HIB_CHECKIN_MIN_MIN) return HIB_CHECKIN_MIN_MIN;
+    return min > HIB_CHECKIN_MAX_MIN ? HIB_CHECKIN_MAX_MIN : min;
 }

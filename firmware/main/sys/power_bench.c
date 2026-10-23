@@ -18,6 +18,7 @@
 #include "input/keyboard.h"
 #include "esp_timer.h"
 #include "companion/cc_link.h"
+#include "sys/checkin.h"
 
 /* Battery bench: runs a fixed list of steps, one log tag each (0x10+n), and keeps the summaries in NVS
  * (ns "power", key "bench") so they survive a brownout reset. */
@@ -80,7 +81,27 @@ static bool step_floor(void) { return probe_start(PROBE_FLOOR); }
 static bool step_hibernate_light(void) { return hibernate_kbd_rail_survives() && probe_start(PROBE_LIGHT); }
 static bool step_hibernate(void) { return hibernate_mode() != HIB_MODE_NONE && probe_start(PROBE_HIB); }
 
-/* Task 8 adds its steps here, before `floor`; `hibernate` stays last. */
+/* ---- Task 8: Radio off and the check-ins ---- */
+/* Radio off with the radio parked and no check-in due inside the step (the first is pw_checkin_min away) */
+static bool step_radio_off(void) { power_go(PS_RADIO_OFF); return true; }
+/* one check-in each, from the parked radio; the step ends when it has re-parked (up to 120 s) */
+static uint32_t s_ck_seq;
+static bool checkin_step_start(bool rebind)
+{
+    power_go(PS_RADIO_OFF);
+    vTaskDelay(pdMS_TO_TICKS(1000));   /* still parked from `radio-off`; a fresh park needs this */
+    s_ck_seq = checkin_seq();
+    checkin_force(rebind);
+    return true;
+}
+static bool step_checkin_handshake(void) { return checkin_step_start(false); }
+static bool step_checkin_rebind(void) { return checkin_step_start(true); }
+static bool checkin_step_done(void) { return checkin_ran_since(s_ck_seq) && checkin_radio_parked(); }
+/* Deep idle's floor: parked whatever pw_radio_off says, the first check-in 15 min away */
+static bool step_deep_idle(void) { checkin_bench_park(true); power_go(PS_DEEP_IDLE); return true; }
+static void leave_deep_idle(void) { checkin_bench_park(false); }
+
+/* Task 8's steps sit before the probe steps; `floor` and `hibernate` stay the last two. */
 static const bench_step_t k_steps[] = {
     { "settle", 60, step_active, leave_active },
     { "active", 120, step_active, leave_active },
@@ -90,6 +111,10 @@ static const bench_step_t k_steps[] = {
     { "off-touch-asleep", 120, step_off_touch_asleep, leave_touch_asleep },
     { "off-light-amber", 90, step_off_light_amber, leave_light },
     { "off-light-off", 90, step_off_light_off, leave_light },
+    { "radio-off", 180, step_radio_off, NULL },
+    { "checkin-handshake", 120, step_checkin_handshake, NULL, checkin_step_done },
+    { "checkin-rebind", 120, step_checkin_rebind, NULL, checkin_step_done },
+    { "deep-idle", 180, step_deep_idle, leave_deep_idle },
     { "hibernate-light", PROBE_SLEEP_S, step_hibernate_light, NULL },
     { "floor", PROBE_SLEEP_S, step_floor, NULL },
     { "hibernate", PROBE_SLEEP_S, step_hibernate, NULL },
@@ -137,11 +162,12 @@ static void load_rows(void)
 
 uint8_t power_bench_tag(void) { return s_running && s_step >= 0 ? (uint8_t)(0x10 + s_step) : 0; }
 
-/* Sleeps up to secs seconds in 1 s slices; false if aborted. */
-static bool wait_s(int secs)
+/* Sleeps up to secs seconds in 1 s slices, or until done() (may be NULL); false if aborted. */
+static bool wait_s(int secs, bool (*done)(void))
 {
     for (int i = 0; i < secs; i++) {
         if (s_abort) return false;
+        if (done && done()) break;
         vTaskDelay(pdMS_TO_TICKS(1000));
         /* USB mid-step: keep going (the rest of the run is still useful) but the step won't be "ok" */
         if (!s_fast && (sysinfo_power().current_a < 0 || sysinfo_charge_pin_last() == 0)) s_usb_seen = true;
@@ -188,7 +214,9 @@ static void bench_task(void *arg)
         s_rows[i].status = ST_RUNNING;
         save_rows();
         ESP_LOGI(TAG, "step %u %s: %us", (unsigned)i, st->name, (unsigned)s_rows[i].seconds);
-        bool ran = wait_s(s_rows[i].seconds);
+        int64_t t0 = esp_timer_get_time();
+        bool ran = wait_s(s_rows[i].seconds, s_fast ? NULL : st->done);
+        if (st->done && !s_fast) s_rows[i].seconds = (uint16_t)((esp_timer_get_time() - t0 + 500000) / 1000000);
         if (st->leave) st->leave();
         power_log_sum_get((uint8_t)(0x10 + i), &s_rows[i].sum);
         if (!ran) s_rows[i].status = ST_ABORTED;

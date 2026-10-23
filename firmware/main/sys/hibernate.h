@@ -41,6 +41,24 @@ void hibernate_init(void);                   /* after cc_link_start: starts the 
 
 uint32_t hibernate_test_wake_s(void);        /* `power hib test-wake`, 0 when not armed */
 
+/* ---- Task 8: the Hibernate check-in (PT16) ---- */
+uint32_t hibernate_checkin_s(void);          /* pr_hib_checkin_clamp_min(pw_hibernate_checkin_min) * 60; 0 = Off */
+/* The ladder's (and `power go hibernate`'s) hibernate: a check-in wake after hibernate_checkin_s()
+   (deep sleep, next = POWER_BOOT_HIB_CHECKIN), or no timed wake (the power-off) when the check-in is Off,
+   when low_battery (the battery <= 10% trigger: a nearly flat pack isn't drained further) or when
+   `power hib test-wake` is armed (its own timer, next = HIB_WAKE, as in Task 6). */
+void hibernate_ladder(bool low_battery);
+/* Debug flags for the next check-in boot, kept in the "hib" record (RAM until then) */
+#define HIB_DBG_STAY_AWAKE   1   /* a re-hibernate result stays awake, so the console comes back */
+#define HIB_DBG_FORCE_KEEP   2   /* the keyboard-rail-survives branch, whatever Task 6 found */
+#define HIB_DBG_FORCE_NOKEEP 4   /* the stay-in-Deep-idle branch */
+void hibernate_set_debug_next(uint8_t flags);
+uint8_t hibernate_boot_debug(void);          /* this boot's flags */
+/* `power hib backstop <s> <n>`: an extra timer wake after s seconds on each of the next n hibernates
+   (RTC memory: it survives deep sleep and the watchdog reset on the way up, not a power-off, which
+   it prevents by making the hibernate timed). n = 0 ends it. */
+void hibernate_backstop_set(uint32_t s, uint32_t n);
+
 /* Console (`power hib ...`, `power boot`, `power rails`, `power rail`, `power imu`). */
 int hibernate_console(int argc, char **argv);
 

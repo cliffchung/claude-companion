@@ -5,8 +5,9 @@
 extern "C" {
 #endif
 
-typedef struct { const char *name; uint16_t seconds; bool (*enter)(void); void (*leave)(void); } bench_step_t;
-/* enter() returns false when the feature isn't built yet: the step is reported "skipped: not built". */
+typedef struct { const char *name; uint16_t seconds; bool (*enter)(void); void (*leave)(void); bool (*done)(void); } bench_step_t;
+/* enter() returns false when the feature isn't built yet: the step is reported "skipped: not built".
+   done (may be NULL) ends the step early: `seconds` is then its limit (the check-in steps). */
 
 void power_bench_start(bool fast);   /* fast: on USB, 3 s per step, no battery wait (scaffold check) */
 void power_bench_abort(void);

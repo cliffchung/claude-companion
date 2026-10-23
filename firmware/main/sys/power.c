@@ -19,6 +19,8 @@
 #include "sys/vitals.h"
 #include "sys/power_log.h"
 #include "sys/display_ctl.h"
+#include "sys/checkin.h"
+#include "net/wifi_mgr.h"
 #include "ui/ui.h"
 #include "ui/ui_dashboard.h"
 
@@ -272,6 +274,7 @@ static void fill_in(pr_in_t *in, int64_t now)
     in->sleep_on_usb = g_settings.pw_sleep_on_usb;
     in->radio_off_enabled = g_settings.pw_radio_off;
     in->hibernate_ok = hibernate_supported() && !s_hib_blocked;
+    in->hib_checkin_hold = checkin_hib_hold();
 }
 
 static TaskHandle_t s_poll_task;
@@ -282,7 +285,7 @@ int power_poll_period_ms(void)
 {
     power_state_t s = s_state;
     bool dark = s == PS_OFF || s == PS_RADIO_OFF || s == PS_DEEP_IDLE;
-    return dark && !power_log_on() ? 10000 : 1000;
+    return dark && !power_log_on() && !checkin_busy() ? 10000 : 1000;   /* a check-in's mWh needs 1 Hz */
 }
 
 /* ---- the light ----------------------------------------------------------- */
@@ -311,9 +314,10 @@ static void choose(pr_led_t *out, char *reason, size_t cap)
     int pct;
     bool chg;
     bool screen_off = st >= PS_OFF && on_battery_now(&pct, &chg);   /* F30: the Off cap is for battery */
-    bool deep_idle = st >= PS_DEEP_IDLE;
-    /* radio_off stays false until Task 8 parks the radio */
-    int64_t max_age = pr_light_max_age_ms(false, g_settings.pw_checkin_min);
+    bool deep_idle = st >= PS_DEEP_IDLE || checkin_hib_quiet();   /* a Hibernate check-in boot: amber 30% or off */
+    /* with the radio parked a result can be a whole check-in period old (Review Focus 4) */
+    int period = checkin_period_min();
+    int64_t max_age = pr_light_max_age_ms(period > 0, period);
     power_bench_light_t bl = s_bench_light;
     if (bl == POWER_BENCH_LIGHT_OFF) {
         *out = PR_LED_OFF;
@@ -416,6 +420,24 @@ static void on_sessions(const cc_session_t *s, int n, void *ctx)
     s_ids_gen++;
     if (s_lock) xSemaphoreGive(s_lock);
     notify();
+}
+
+bool power_needs_you(void)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool n = s_needs;
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
+bool power_results_judged(void)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool j = s_armed_gen == s_ids_gen;
+    xSemaphoreGive(s_lock);
+    return j;
 }
 
 /* ---- the shield and the notice (under bsp_display_lock) ------------------ */
@@ -558,6 +580,7 @@ static void enter_dark(power_state_t target)
     bsp_display_unlock();
     keyboard_set_quiet(true);
     cc_poll_set_floor(OFF_FLOOR_S);
+    wifi_mgr_set_ps_max(true);   /* modem power save in Off and deeper (applied on the wifi_rc task) */
     arm_needs_you();
     s_dark = true;
     s_poll_on = display_ctl_board_version() != 1 && !s_poll_paused;   /* after LVGL is quiet */
@@ -606,6 +629,7 @@ static void do_wake(void)
     if (s_shield) lv_obj_move_foreground(s_shield);   /* over anything added to the top layer meanwhile */
     bsp_display_unlock();
     cc_poll_set_floor(0);
+    wifi_mgr_set_ps_max(false);   /* a parked radio comes back from checkin_step on this loop */
     keyboard_set_quiet(false);
     power_poll_kick();   /* back to 1 Hz at once */
     int64_t now = now_ms();
@@ -637,10 +661,11 @@ static void internal_wake(power_wake_t why)
 /* hibernate_now() on a task of its own: NVS writes, the expander I2C and esp_deep_sleep_start() were
    not sized for the power task's 4 KB (about 2 KB free). Gives s_hib_done only if it failed. */
 static SemaphoreHandle_t s_hib_done;
+static bool s_hib_low;              /* the battery <= 10% trigger: no check-in armed */
 static void hib_task(void *arg)
 {
     (void)arg;
-    hibernate_now(0, POWER_BOOT_HIB_WAKE);   /* doesn't return when it works */
+    hibernate_ladder(s_hib_low);   /* a check-in timer (PT16) unless it's Off or the battery is low; doesn't return when it works */
     xSemaphoreGive(s_hib_done);
     vTaskDelete(NULL);
 }
@@ -664,6 +689,9 @@ static void run_hibernate(power_state_t back_to)
     }
     if (!cancel) {
         apply_light(true);   /* the Deep-idle rule: off unless something needs you */
+        pr_in_t in;
+        fill_in(&in, now_ms());
+        s_hib_low = in.on_battery && in.battery_pct >= 0 && in.battery_pct <= PR_LOW_BATTERY_PCT && !in.charging;
         if (!s_hib_done) s_hib_done = xSemaphoreCreateBinary();
         if (s_hib_done && xTaskCreate(hib_task, "hib", 6144, NULL, 4, NULL) == pdPASS)
             xSemaphoreTake(s_hib_done, portMAX_DELAY);   /* back here only if it failed */
@@ -711,8 +739,14 @@ static void handle_go(void)
 
 static void ladder_step(int64_t now)
 {
-    if (s_pinned) return;
     pr_in_t in;
+    if (s_pinned) {
+        /* a Hibernate check-in holding in Deep idle (pinned) still hibernates on a low battery */
+        if (!checkin_hib_hold()) return;
+        fill_in(&in, now);
+        if (pr_next_state(&in) == PS_HIBERNATE) run_hibernate(s_state);
+        return;
+    }
     fill_in(&in, now);
     power_state_t st = s_state, next = pr_next_state(&in);
     if (next == st) return;
@@ -738,7 +772,8 @@ static void needs_you_step(void)
     s_armed_gen = s_ids_gen;
     xSemaphoreGive(s_lock);
     if (!fresh) return;
-    bool wake = g_settings.pw_wake_needs_you && pr_needs_you_new(s_armed, s_step_ids);
+    /* a Hibernate check-in boot never lights the screen: the keyboard light shows it (PT16) */
+    bool wake = g_settings.pw_wake_needs_you && !checkin_hib_quiet() && pr_needs_you_new(s_armed, s_step_ids);
     *s_armed = *s_step_ids;   /* the new ids join; ids that stopped needing you leave (a later block counts again) */
     if (wake) internal_wake(PW_NEEDS_YOU);
 }
@@ -775,6 +810,7 @@ static void power_task(void *arg)
         shield_on_top();
         shield_expire(now_ms());
         ladder_step(now_ms());
+        checkin_step(s_state, now_ms());   /* parks, unparks and starts check-ins on its own task */
         int64_t now = now_ms();
         if (notified || now >= next_light) {
             apply_light(false);
@@ -812,6 +848,14 @@ bool power_setting_set(const char *name, int n)
         g_settings.pw_deep_idle_min = (uint16_t)vitals_clamp_or_zero(u16(n), 15, 720);
     } else if (strcmp(name, "hibernate") == 0) {
         g_settings.pw_hibernate_h = (uint8_t)vitals_clamp_or_zero(u16(n), 1, 48);
+    } else if (strcmp(name, "radio-off") == 0) {
+        g_settings.pw_radio_off = n ? 1 : 0;
+    } else if (strcmp(name, "radio-after") == 0) {
+        g_settings.pw_radio_off_min = (uint16_t)(n < 5 ? 5 : n > 240 ? 240 : n);
+    } else if (strcmp(name, "checkin") == 0) {
+        g_settings.pw_checkin_min = (uint16_t)(n < 1 ? 1 : n > 60 ? 60 : n);
+    } else if (strcmp(name, "hib-checkin") == 0) {
+        g_settings.pw_hibernate_checkin_min = (uint16_t)pr_hib_checkin_clamp_min(n);
     } else {
         return false;
     }
@@ -835,7 +879,7 @@ void power_settings_text(char *buf, size_t cap)
              g_settings.pw_dim_s, g_settings.pw_off_s, g_settings.pw_sleep_on_usb, g_settings.pw_wake_lift,
              g_settings.pw_wake_needs_you, g_settings.kbd_needs_light, g_settings.kbd_off_cap, g_settings.pw_radio_off,
              g_settings.pw_radio_off_min, g_settings.pw_checkin_min, g_settings.pw_light_sleep,
-             g_settings.pw_deep_idle_min, g_settings.pw_hibernate_h, g_settings.pw_hibernate_checkin_h,
+             g_settings.pw_deep_idle_min, g_settings.pw_hibernate_h, g_settings.pw_hibernate_checkin_min,
              g_settings.ss_disable_in_ssh);
 }
 
@@ -925,6 +969,7 @@ void power_init(void)
     if (!ids) { ESP_LOGE(TAG, "no memory for the power owner"); return; }
     s_now_ids = &ids[0]; s_armed = &ids[1]; s_poll_ids = &ids[2]; s_step_ids = &ids[3];
     s_last_input_ms = now_ms();
+    checkin_init();   /* a Hibernate check-in boot asks for Off (dark, pinned) before the task starts */
     keyboard_set_led_source(led_source);
     cc_poll_subscribe(on_sessions, NULL);
     dlock(__LINE__);

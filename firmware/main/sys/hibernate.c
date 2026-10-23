@@ -8,6 +8,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
+#include "esp_attr.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -19,6 +20,7 @@
 #include "sys/power_bench.h"
 #include "sys/imu.h"
 #include "sys/hib_rules.h"
+#include "sys/power_rules.h"
 #include "net/wifi_mgr.h"
 #include "companion/cc_link.h"
 #include "input/keyboard.h"
@@ -83,8 +85,10 @@ typedef struct {
     uint8_t fell_back;     /* power-off didn't take (USB keeps the board on): deep sleep instead */
     uint32_t epoch;
     uint32_t wake_after_s;
+    uint8_t debug;         /* HIB_DBG_* for the next boot (Task 8) */
+    uint8_t pad[3];
 } hib_rec_t;
-#define HIB_VER 1
+#define HIB_VER 2
 
 static power_boot_t s_kind = POWER_BOOT_NORMAL;
 static uint32_t s_src;
@@ -93,6 +97,24 @@ static uint8_t s_fell_back;
 static uint32_t s_to_live;              /* the last hibernate wake's boot-to-live, from NVS "hibl" */
 static uint32_t s_test_wake_s;          /* `power hib test-wake`: RAM only */
 static bool s_early;                    /* going down from hibernate_boot_early: nothing else has started */
+static uint8_t s_dbg_next, s_dbg_boot;  /* HIB_DBG_*: for the next boot, and this boot's */
+
+/* the persistent backstop: RTC memory, valid only with its magic and check word */
+typedef struct { uint32_t magic, s, n, check; } backstop_t;
+#define BACKSTOP_MAGIC 0x42534b31u
+static RTC_NOINIT_ATTR backstop_t s_backstop;
+static bool backstop_armed(void)
+{
+    const backstop_t *b = &s_backstop;
+    return b->magic == BACKSTOP_MAGIC && b->check == (b->s ^ b->n ^ BACKSTOP_MAGIC) && b->n > 0 && b->s > 0;
+}
+void hibernate_backstop_set(uint32_t s, uint32_t n)
+{
+    s_backstop = (backstop_t){ BACKSTOP_MAGIC, s, n, s ^ n ^ BACKSTOP_MAGIC };
+}
+uint32_t hibernate_checkin_s(void) { return (uint32_t)pr_hib_checkin_clamp_min(g_settings.pw_hibernate_checkin_min) * 60u; }
+void hibernate_set_debug_next(uint8_t flags) { s_dbg_next = flags; }
+uint8_t hibernate_boot_debug(void) { return s_dbg_boot; }
 
 power_boot_t hibernate_boot_kind(void) { return s_kind; }
 uint32_t hibernate_wake_src(void) { return s_src; }
@@ -196,6 +218,7 @@ void hibernate_boot_early(void)
     nvs_erase_key_ns("power", "hib");
     s_kind = (power_boot_t)r.next;
     s_fell_back = r.fell_back;
+    s_dbg_boot = r.debug;
     esp_sleep_wakeup_cause_t c = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t rr = esp_reset_reason();
     /* On this P4 (rev < 3) the timer wake from deep sleep goes through an HP watchdog reset (hw reason 7)
@@ -308,6 +331,12 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
     bool probe = next == POWER_BOOT_HIB_PROBE;
     if (s_test_wake_s && !wake_after_s) wake_after_s = s_test_wake_s;
     s_test_wake_s = 0;
+    if (backstop_armed()) {
+        /* Task 8: tests spanning cold boots can't strand the device */
+        if (!wake_after_s || s_backstop.s < wake_after_s) wake_after_s = s_backstop.s;
+        hibernate_backstop_set(s_backstop.s, s_backstop.n - 1);
+        ESP_LOGW(TAG, "backstop: wake after %u s (%u more hibernates)", (unsigned)wake_after_s, (unsigned)s_backstop.n);
+    }
     ESP_LOGW(TAG, "hibernate: %s, wake after %u s, next boot %d", mode == HIB_MODE_POWEROFF ? "power-off" : "deep sleep",
              (unsigned)wake_after_s, (int)next);
     if (!s_early) {
@@ -318,7 +347,8 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
         vTaskDelay(pdMS_TO_TICKS(200));
     }
     hib_rec_t r = { .ver = HIB_VER, .mode = (uint8_t)mode, .next = (uint8_t)next, .epoch = (uint32_t)time(NULL),
-                    .wake_after_s = wake_after_s };
+                    .wake_after_s = wake_after_s, .debug = s_dbg_next };
+    s_dbg_next = 0;
     nvs_set_blob_ns("power", "hib", &r, sizeof(r));
     imu_suspend();
     if (!probe) sysinfo_ina226_power_down();
@@ -352,7 +382,19 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
 /* A timed wake needs deep sleep: nothing proved switches a powered-off board on but the button. */
 void hibernate_now(uint32_t wake_after_s, power_boot_t next)
 {
-    go_down(wake_after_s, next, wake_after_s || s_test_wake_s ? HIB_MODE_DEEPSLEEP : hibernate_mode());
+    bool timed = wake_after_s || s_test_wake_s || backstop_armed();
+    go_down(wake_after_s, next, timed ? HIB_MODE_DEEPSLEEP : hibernate_mode());
+}
+
+void hibernate_ladder(bool low_battery)
+{
+    uint32_t s = hibernate_checkin_s();
+    if (low_battery || !s || s_test_wake_s) {
+        if (low_battery) ESP_LOGW(TAG, "battery low: hibernating with no check-in");
+        hibernate_now(0, POWER_BOOT_HIB_WAKE);
+    } else {
+        hibernate_now(s, POWER_BOOT_HIB_CHECKIN);
+    }
 }
 void hibernate_deep_sleep(uint32_t wake_after_s, power_boot_t next) { go_down(wake_after_s, next, HIB_MODE_DEEPSLEEP); }
 
@@ -446,8 +488,9 @@ int hibernate_console(int argc, char **argv)
 {
     /* argv[0] is "power" */
     if (argc == 2 && strcmp(argv[1], "boot") == 0) {
-        printf("boot: reason=%d kind=%s cause=%s wakeup=%d to_live=%u%s\n", (int)esp_reset_reason(), kind_name(s_kind), s_cause,
-               (int)esp_sleep_get_wakeup_cause(), (unsigned)s_to_live, s_fell_back ? " (power-off fell back to deep sleep)" : "");
+        printf("boot: reason=%d kind=%s cause=%s wakeup=%d to_live=%u%s%s\n", (int)esp_reset_reason(), kind_name(s_kind), s_cause,
+               (int)esp_sleep_get_wakeup_cause(), (unsigned)s_to_live, s_fell_back ? " (power-off fell back to deep sleep)" : "",
+               s_dbg_boot ? " (debug check-in)" : "");
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "rails") == 0) { rails_print(); return 0; }
@@ -469,6 +512,19 @@ int hibernate_console(int argc, char **argv)
         char b[48];
         sources_text(hibernate_wake_sources(), b, sizeof(b));
         printf("hibernate: mode=%s sources=%s supported=%s\n", mode_name(hibernate_mode()), b, hibernate_supported() ? "yes" : "no");
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[2], "backstop") == 0) {
+        if (backstop_armed()) printf("hib backstop: %u s on each of the next %u hibernates\n", (unsigned)s_backstop.s, (unsigned)s_backstop.n);
+        else printf("hib backstop: off\n");
+        return 0;
+    }
+    if (argc == 5 && strcmp(argv[2], "backstop") == 0) {
+        uint32_t bs, bn;
+        if (!parse_u32(argv[3], &bs) || !parse_u32(argv[4], &bn) || (bn && !bs)) return 1;
+        hibernate_backstop_set(bs, bn);
+        if (bn) printf("hib backstop: %u s on each of the next %u hibernates (RTC memory)\n", (unsigned)bs, (unsigned)bn);
+        else printf("hib backstop: off\n");
         return 0;
     }
     if (argc == 4 && strcmp(argv[2], "test-wake") == 0) {

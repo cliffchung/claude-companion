@@ -37,6 +37,7 @@ typedef struct {
     int battery_pct;                               /* -1 = unknown */
     bool held, on_battery, sleep_on_usb, radio_off_enabled;
     bool charging, hibernate_ok;                   /* hibernate_ok = hibernate_supported() (false until Task 6) */
+    bool hib_checkin_hold;                         /* a Hibernate check-in found needs-you and stays awake (PT16) */
 } pr_in_t;
 #define PR_LOW_BATTERY_PCT 10
 /* In order:
@@ -48,6 +49,7 @@ typedef struct {
    on_battery && deep_idle_min > 0 && idle >= deep_idle_min min -> DEEP_IDLE;
    RADIO_OFF when already OFF/RADIO_OFF, on_battery, radio_off_enabled and now - off_since >= radio_off_min min;
    else OFF. Without on_battery, RADIO_OFF and DEEP_IDLE fall back to OFF and HIBERNATE is never chosen.
+   hib_checkin_hold drops the hours and still triggers (never the battery <= 10% one).
    HIBERNATE is terminal: the caller never feeds it back in (the device powers down). */
 power_state_t pr_next_state(const pr_in_t *in);
 
@@ -65,6 +67,27 @@ typedef struct { char ids[PR_IDS_MAX][16]; int n; } pr_idset_t;
 void pr_needs_you_ids(const cc_session_t *s, int n, pr_idset_t *out);   /* background, live, NEEDS_YOU */
 bool pr_needs_you_new(const pr_idset_t *armed, const pr_idset_t *now);   /* an id in now not in armed */
 int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
+
+/* ---- reconnect, Radio off and check-ins (Task 8) ---------------------- */
+
+/* Wi-Fi background reconnect wait: 1, 2, 4, 8, 16, then 30 s for every later attempt (no cap on attempts) */
+int  pr_backoff_s(int attempt);
+/* The spec's rule for shipping Radio off on: with period = checkin_min min,
+   (a - b) * period > c, the average with toggling (b + c / period) is at least 20% under a,
+   and checkin_s < 30. a, b in mW; c in mWh per check-in. */
+bool pr_radio_off_worth_it(float a_mw, float b_mw, float c_mwh, int checkin_min, int checkin_s);
+/* Minutes to the next check-in: Radio off -> checkin_min; Deep idle -> max(checkin_min, 15) for the first
+   check-in after entering it (deep_checkins_done == 0), then max(checkin_min, 30); any other state 0 (none). */
+int  pr_checkin_period_min(power_state_t st, int checkin_min, int deep_checkins_done);
+
+/* PT16: what a Hibernate check-in does next */
+typedef enum { PR_HC_REHIBERNATE, PR_HC_REHIBERNATE_KEEP_RAIL, PR_HC_STAY_DEEP_IDLE } pr_hc_t;
+/* !poll_ok -> REHIBERNATE (light off; recorded as hib-failed); !needs_you -> REHIBERNATE (PR_LED_OFF);
+   needs_you && kbd_rail_survives -> REHIBERNATE_KEEP_RAIL (amber 30% held through deep sleep);
+   needs_you && !kbd_rail_survives -> STAY_DEEP_IDLE (radio parked, amber 30% until input or nothing needs you) */
+pr_hc_t pr_hib_checkin_next(bool poll_ok, bool needs_you, bool kbd_rail_survives);
+/* 0 (or less) -> 0 (Off); 1..14 -> 15; 721.. -> 720 */
+int  pr_hib_checkin_clamp_min(int min);
 
 #ifdef __cplusplus
 }
