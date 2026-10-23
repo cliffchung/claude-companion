@@ -168,6 +168,25 @@ static void test_age_format(void)
     TEST_ASSERT_EQUAL_STRING("2d", o);
 }
 
+/* `claude stop` leaves the entry listed, often still "state":"done", but without a pid. */
+static void test_parse_live_from_pid(void)
+{
+    const char *j = "[{\"id\":\"aaaaaaa1\",\"sessionId\":\"11111111-1111-4111-8111-111111111111\",\"kind\":\"background\","
+                    "\"state\":\"done\",\"status\":\"idle\",\"pid\":4242,\"startedAt\":2},"
+                    "{\"id\":\"aaaaaaa2\",\"sessionId\":\"22222222-2222-4222-8222-222222222222\",\"kind\":\"background\","
+                    "\"state\":\"done\",\"startedAt\":1}]";
+    cc_session_t s[4];
+    int n = cc_sessions_parse(j, s, 4);
+    TEST_ASSERT_EQUAL(2, n);
+    TEST_ASSERT_TRUE(find(s, n, "aaaaaaa1")->live);
+    TEST_ASSERT_FALSE(find(s, n, "aaaaaaa2")->live);
+    char *real = slurp("agents_captured.json");
+    cc_session_t r[8];
+    int m = cc_sessions_parse(real, r, 8);
+    free(real);
+    TEST_ASSERT_TRUE(find(r, m, "d0000001")->live);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -180,5 +199,6 @@ int main(void)
     RUN_TEST(test_visible_limits_finished);
     RUN_TEST(test_summary_text);
     RUN_TEST(test_age_format);
+    RUN_TEST(test_parse_live_from_pid);
     return UNITY_END();
 }

@@ -98,6 +98,8 @@ int cc_sessions_parse(const char *json, cc_session_t *out, int cap)
         s->needs_permission = wf && !strcmp(wf, "permission prompt");
         const cJSON *st = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "startedAt");
         s->started_ms = cJSON_IsNumber(st) ? (int64_t)st->valuedouble : 0;
+        const cJSON *pid = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "pid");
+        s->live = cJSON_IsNumber(pid) && pid->valuedouble > 0;
     }
     qsort(all, (size_t)n, sizeof(*all), cmp_sessions);
     if (n > cap) n = cap;

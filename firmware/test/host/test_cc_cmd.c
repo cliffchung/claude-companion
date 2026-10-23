@@ -165,6 +165,32 @@ static void test_paste_build_rejects(void)
     TEST_ASSERT_EQUAL_UINT(0, cc_paste_build("blue", o, 0));
 }
 
+/* Synthetic screens, ANSI already stripped: a Bash permission dialog and a plain input prompt. */
+static const char PERM_SCREEN[] =
+    "Bash command\n\n  curl -sI https://example.com\n  Fetch headers\n\n"
+    "Do you want to proceed?\n\xe2\x9d\xaf 1. Yes\n  2. Yes, and don't ask again for curl commands\n"
+    "  3. No, and tell Claude what to do differently (esc)\n";
+static const char INPUT_SCREEN[] =
+    "\xe2\x8f\xba What's your favorite color?\n\n"
+    "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n\xe2\x9d\xaf \n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n"
+    "  ? for shortcuts\n";
+
+static void test_screen_permission_prompt(void)
+{
+    TEST_ASSERT_TRUE(cc_screen_is_permission_prompt(PERM_SCREEN));
+    TEST_ASSERT_TRUE(cc_screen_is_permission_prompt("DO YOU WANT TO make this edit to a.c?"));
+    TEST_ASSERT_TRUE(cc_screen_is_permission_prompt("Allow this tool?"));
+}
+
+static void test_screen_input_prompt_is_not_permission(void)
+{
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(INPUT_SCREEN));
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(""));
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(NULL));
+    /* "allow" only as a word: "allowed" or "shallow" don't count */
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt("that is allowed in shallow water"));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -179,5 +205,7 @@ int main(void)
     RUN_TEST(test_paste_build_strips_esc);
     RUN_TEST(test_paste_build_controls);
     RUN_TEST(test_paste_build_rejects);
+    RUN_TEST(test_screen_permission_prompt);
+    RUN_TEST(test_screen_input_prompt_is_not_permission);
     return UNITY_END();
 }

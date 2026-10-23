@@ -168,3 +168,35 @@ size_t cc_paste_build(const char *text, char *out, size_t cap)
     memcpy(out + o, end, sizeof(end));
     return o + sizeof(end) - 1;
 }
+
+static char lower(char c)
+{
+    return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+static bool is_word(char c)
+{
+    c = lower(c);
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+/* Case-insensitive search for needle (lowercase) at s; whole word if word is set. */
+static bool has_ci(const char *s, const char *needle, bool word)
+{
+    size_t n = strlen(needle);
+    for (const char *p = s; *p; p++) {
+        size_t i = 0;
+        while (i < n && p[i] && lower(p[i]) == needle[i]) i++;
+        if (i < n) continue;
+        if (!word) return true;
+        if ((p == s || !is_word(p[-1])) && !is_word(p[n])) return true;
+    }
+    return false;
+}
+
+bool cc_screen_is_permission_prompt(const char *plain)
+{
+    if (!plain) return false;
+    return has_ci(plain, "do you want to", false) || has_ci(plain, "1. yes", false) ||
+           has_ci(plain, "don't ask again", false) || has_ci(plain, "allow", true);
+}
