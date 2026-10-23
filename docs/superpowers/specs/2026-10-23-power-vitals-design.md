@@ -2,7 +2,7 @@
 
 Status: written 2026-10-23 as a follow-on to the main spec
 (`docs/superpowers/specs/2026-10-22-claude-tab5-design.md`, which stays binding). Roadmap row:
-"backlight dim → light sleep; wake on keyboard, touch or lift; fast reconnect on wake; full vitals
+"backlight dim → light sleep; wake on keyboard or touch (lift dropped, PT15); fast reconnect on wake; full vitals
 bar". The user said "keep going with stage 2" and gave no further direction, so every choice below
 marked *(my call)* is mine and can be overruled.
 
@@ -28,9 +28,9 @@ toward battery. The first minutes of idle stay responsive.
 ## Goals
 
 1. **Idle ladder.** Active → Dim → Screen off → Radio off → Deep idle → Hibernate (and automatic
-   light sleep only if the spike proves it). Any key, touch or
-   lift goes straight back to Active.
-2. **Wake on keyboard, touch and lift.** The first key press that wakes the device is swallowed. It
+   light sleep only if the spike proves it). Any key or touch
+   goes straight back to Active. (PT15: lift removed.)
+2. **Wake on keyboard and touch (PT15: lift removed; Hibernate wakes on the side button).** The first key press that wakes the device is swallowed. It
    wakes the device and does not type or act, so a sleepy keypress can never answer a session.
 3. **A needs-you wake** *(my call)*. When a background session turns NEEDS YOU while the screen is
    off, the screen comes back at the dim level showing the dashboard. This is the companion's whole
@@ -88,6 +88,9 @@ They touch the same code (cc_link, reconnect), so they belong here:
 - Updating or reflashing the C6, or using esp_hosted's own host power-save protocol. The C6 stays
   untouched, as the main spec says.
 - Camera, voice or the typography pass (Plans 3 and 4).
+- Motion wake (PT15): lift wake, stillness-driven Hibernate, IMU wake from Hibernate and anticipatory
+  wake were dropped at the user's request on 2026-10-23 ("forced to press the button"). They can
+  come back later as their own task.
 - Notifications other than the screen waking: no sound or vibration *(my call)*.
 - Battery life on any battery other than the one fitted.
 
@@ -166,12 +169,7 @@ They touch the same code (cc_link, reconnect), so they belong here:
   pull-up after the display starts, as `~/workspace/generative-tab5` `prov_device.c`
   `touch_interrupt_init` does. While the CPU stays awake in Off, the INT is read as an ordinary
   interrupt.
-- **Lift:** the BMI270 (I²C 0x68) via `espressif/bmi270` 1.1.0. It is Apache-2.0 and already a
-  transitive BSP dependency in dependencies.lock.
-  - That driver has no any-motion or interrupt API, so poll the accelerometer at about 2 Hz in
-    Off.
-  - Wake on a ≥ 0.15 g change held for about 200 ms (the generative-tab5 value, `prov_imu.c:53`).
-  - Don't copy generative-tab5's unlicensed `accel_gyro_bmi270` wrapper.
+- **Lift (PT15): removed.** No accelerometer polling and no IMU wake. The BMI270 is only suspended (see Rails).
 - **Needs-you:** a watch block that shows a new NEEDS YOU.
 
 ### Light sleep and DFS: a spike, expected to fail (builder check)
@@ -257,7 +255,7 @@ They touch the same code (cc_link, reconnect), so they belong here:
   6. a new NEEDS YOU wakes the screen dimmed and lights the keyboard; otherwise park again.
   - Measure both paths. A check-in that needs a rebind can take a minute or more, which is too
     long to be worth it.
-- **Input during Radio off.** A key, touch or lift goes to Active and brings the radio up at once.
+- **Input during Radio off.** A key or touch goes to Active (PT15) and brings the radio up at once.
   The dashboard shows "Reconnecting…" with stale cards until the first fresh result.
 - **Decided by measurement** (see Measurement):
   - (a) average mW in Off with the long poll and modem power save;
@@ -280,26 +278,32 @@ states follow Radio off.
 - **Waking from Hibernate.** The keyboard INT (GPIO50) and the touch INT (GPIO23) are not LP GPIOs,
   so neither can wake the P4 from deep sleep. Wake comes from:
   - the side power or reset button, the expected answer;
-  - an RTC (RX8130) alarm, if its IRQ reaches the power circuit or an LP GPIO;
-  - the IMU INT, only if it reaches an LP GPIO.
+  - an RTC (RX8130) alarm, if its IRQ reaches the power circuit or an LP GPIO (used for the
+    Hibernate check-in, PT16).
+
+  There is no IMU wake (PT15).
 
   The spike finds which of these exist on this board. The screen tells you before it hibernates:
   "Sleeping to save battery. Press the side button to wake."
 - **After wake.** The device cold-boots straight to the dashboard. It shows "Waking: reconnecting
   to Mac" until the link is live, measured at 50–130 s today. The cards come back from the first
   poll; nothing stale is shown as live.
-- **Needs-you during Hibernate is not signalled** by default *(my call)*. Overnight that is the
-  point.
-  - An optional "Hibernate check-in every N h" uses the RTC or a timer wake to boot, connect, poll,
-    light the keyboard amber on a needs-you, and power down again.
-  - It is off by default. Each check-in is a cold boot plus a Tailscale connect, about 2–3 W for
-    1–2 min, so the bench measures it before any default changes.
+- **Needs-you during Hibernate: a periodic check-in, on by default (PT16).** It runs every 60 min
+  by default (setting: 15 min to 12 h, or Off). A check-in cold-boots, connects and polls, then:
+  - **Something needs you:** it lights the keyboard amber (at most 30%). If Task 6 Step 4c shows the
+    keyboard rail survives deep sleep with the light held, it goes back to Hibernate with that rail
+    kept. Otherwise it stays in Deep idle (radio parked, light amber) until input, or until a later
+    poll shows nothing needs you, and then hibernates again.
+  - **Nothing needs you:** straight back to Hibernate.
+  - Cost: each check-in is a cold boot plus a Tailscale connect, about 2.5 W for ~90 s, roughly
+    60 mWh, so ~1.5 Wh/day at 60 min. That leans against the max-battery priority, so the bench
+    (Task 10) measures it and may revise the default.
 - **Why Hibernate exists.** With the display off, the P4 plus the C6 still draw on the order of
   hundreds of mW, while deep sleep or power-off draws close to nothing. For a night, the difference
   is most of the battery. The bench gives the real numbers, and the defaults (60 min and 2 h) are
   revised from them.
 - **The spike (Task 6) gains a hibernate part.** It:
-  - finds the wake sources above;
+  - finds the wake sources above (no IMU INT probe, PT15);
   - measures deep-sleep or power-off current on battery;
   - measures cold boot to a live dashboard;
   - checks that NVS, the Tailscale identity and the host-key pins survive.
@@ -309,82 +313,44 @@ states follow Radio off.
 - **Follow-up, not in this plan:** a faster cold connect, by caching MicroLink's coordination
   state. That would make Hibernate cheaper to leave.
 
-### IMU-driven deep sleep (the user, 2026-10-23): where the power actually goes
+### Rails and the power floor (PT15: IMU wake removed; this section was "IMU-driven deep sleep")
 
-**The idea.** Keep only the BMI270 awake in its interrupt mode, and use a pick-up to wake everything
-else. That lets the screen, touch, the C6 and the P4 itself go fully off.
-
-**Being critical about the numbers.** These are rough guesses to rank the work. The bench replaces
-them.
+**Where the power actually goes.** These are rough guesses to rank the work. The bench replaces them.
 
 | Part | State | Rough draw | What it means |
 |---|---|---|---|
-| Backlight | on | 0.5–1.5 W | already off in Off |
-| P4 | awake at 360 MHz, display pinning max frequency | 100–250 mW | the biggest cost in Off and Deep idle. Only P4 deep sleep or power-off removes it |
-| C6 Wi-Fi | associated, modem power save | 20–80 mW average | Radio off cuts most of it; cutting `WIFI_EN` cuts all of it |
-| Panel | display-off but powered | ~10–50 mW | the `LCD_EN` rail can cut it once the display is torn down |
-| Keyboard (A164 MCU + light) | powered | ~5–50 mW (light on) | it matters in Hibernate |
-| Touch controller | powered, idle | ~1–10 mW | small. Cutting it alone saves little while the P4 is awake |
-| BMI270 any-motion, low-power accel | interrupt mode | ~0.02–0.1 mW | negligible |
-| Board floor: charger, regulators, IO expanders, INA226, RTC | always on | unknown, maybe 2–20 mW | **This sets Hibernate's battery life.** Measure it first |
+| Backlight | on | 0.5-1.5 W | already off in Off |
+| P4 | awake at 360 MHz, display pinning max frequency | 100-250 mW | the biggest cost in Off and Deep idle. Only P4 deep sleep or power-off removes it |
+| C6 Wi-Fi | associated, modem power save | 20-80 mW average | Radio off cuts most of it; cutting `WIFI_EN` cuts all of it |
+| Panel | display-off but powered | ~10-50 mW | the `LCD_EN` rail can cut it once the display is torn down |
+| Keyboard (A164 MCU + light) | powered | ~5-50 mW (light on) | it matters in Hibernate |
+| Touch controller | powered, idle | ~1-10 mW | small. Cutting it alone saves little while the P4 is awake |
+| BMI270 | suspended (`imu_suspend`, PT15) | ~0.003 mW | negligible |
+| Board floor: charger, regulators, IO expanders, INA226, RTC | always on | unknown, maybe 2-20 mW | **This sets Hibernate's battery life.** Measure it first |
 
-**What follows from that:**
+**Hibernate cuts every rail it can** (rail cutting stays; PT15):
+- `LCD_EN`, `TOUCH_EN`, `USB_EN`, the speaker and the camera;
+- **`WIFI_EN`, so the C6 is fully off.** In Hibernate this is safe, because waking is a cold boot
+  that re-initialises SDIO anyway. Radio off still doesn't cut it.
+- the keyboard's power, if a switch reaches it (see the check-in bullet: a check-in that finds a
+  needs-you may need this rail kept);
+- the BMI270 is put into suspend (`imu_suspend`, raw I2C, chip ID read first) and stays there in
+  Hibernate; there is no IMU wake (PT15);
+- the INA226 goes into power-down mode, except during the bench.
 
-1. Turning off touch while the P4 stays awake saves little, because touch is about 1% of the Off
-   budget. The value of the IMU is that it can wake the P4 from deep sleep or power-off. Keys and
-   touch can't (GPIO50 and GPIO23 are not LP GPIOs). So a pick-up becomes the natural way out of
-   Hibernate, instead of the side button.
-2. Hibernate cuts every rail it can:
-   - `LCD_EN`, `TOUCH_EN`, `USB_EN`, the speaker and the camera;
-   - **`WIFI_EN`, so the C6 is fully off.** In Hibernate this is safe, because waking is a cold boot
-     that re-initialises SDIO anyway. Radio off still doesn't cut it.
-   - the keyboard's power, if a switch reaches it;
-   - the INA226 goes into power-down mode, except during the bench.
-
-   The floor that's left is what the bench must measure.
-3. **Stillness is a better idle signal than time.** If the device has been still (BMI270
-   no-motion) and has had no input for `still_hibernate_min` (default 30 min, *my call*),
-   Hibernate comes sooner than the 2 h idle limit. A device lying untouched on a table or
-   nightstand is the overnight case.
-4. **Anticipatory wake.** A pick-up in Off or Deep idle starts the radio and the link before the
-   screen is needed, so the dashboard is live sooner.
+The floor that's left is what the bench must measure (`floor`, including `imu_suspend`).
 
 **What must be found first** (in the spike, Task 6). Each is a yes/no on this board:
-- Are the BMI270's INT1/INT2 wired to a P4 GPIO at all? If so, is it an LP GPIO (0–15, needed to
-  wake deep sleep), or does it go through an IO expander whose own INT reaches the P4?
-  - Probe it: set any-motion with the INT pin driven, move the device (that needs the user, or use
-    the INT test mode), and watch every candidate GPIO plus the expanders' input registers.
-- Does the board have a real power-off with a wake source (a power latch, or an RTC/IMU IRQ into
-  the power circuit)? Power-off beats deep sleep.
+- Does the board have a real power-off with a wake source (a power latch, or an RTC IRQ into the
+  power circuit)? Power-off beats deep sleep.
 - Which rails the IO expanders can cut, and what the floor is with everything cut.
+- Whether the keyboard rail survives deep sleep with the light held (Task 6 Step 4c, PT16).
 
-If the IMU INT doesn't reach an LP GPIO, Hibernate wakes only on the side button, and the IMU's
-role shrinks to the Off/Deep idle lift wake (CPU awake) and the stillness signal. A timer wake to
-poll the IMU is rejected: each one is a cold boot.
-
-**Waking from the IMU.**
-- Use the BMI270's any-motion feature (or Bosch's wrist-wake gesture, if it's in the feature blob)
-  through raw register writes. The espressif/bmi270 1.1.0 driver has no interrupt API. Bosch's
-  feature config is BSD-3; check what the blob already contains.
-- Use a threshold and duration that ignore a bump, such as about 1 s of motion. Tune them on the
-  bench, and say which values were chosen.
-- **False wakes cost a cold boot** (about 2–3 W for 1–2 min of Tailscale connect). In a bag or a car
-  they could drain the battery. Two guards:
-  1. After an IMU wake from Hibernate, the device boots straight to a dim "Waking: reconnecting"
-     screen and starts the radio at once, so real wakes are fast. With no key, touch or continued
-     motion within 20 s, it powers down again.
-  2. A **false-wake cap**: after 3 unconfirmed IMU wakes within an hour, IMU wake turns off until a
-     side-button or key wake. The notes record how often that fired on the bench.
-- While the P4 is awake (Off, Deep idle), the IMU INT can replace the plan's accelerometer polling,
-  saving the I²C traffic and CPU wakeups.
-
-**Touch off in Deep idle.** Once IMU lift wake is proven to work while the P4 is awake, Deep idle
-cuts `TOUCH_EN` and stops the 10 Hz touch poll. Keys and lift still wake it. A tap on a device lying
-flat won't wake it in Deep idle; that is the trade-off, and it's recorded. Off keeps touch, because
-it's cheap relative to the P4 and a tap is the natural gesture in the first minutes.
+Touch stays on in Deep idle (PT15: the "touch off in Deep idle" idea depended on IMU lift wake and
+is dropped).
 
 **Follow-up made more important by this:** faster cold connect, by caching MicroLink's coordination
-state. Every Hibernate exit pays the 50–130 s Tailscale connect. That stays out of this plan; it is
+state. Every Hibernate exit pays the 50-130 s Tailscale connect. That stays out of this plan; it is
 the first thing to do after it.
 
 ### Measurement (one battery session with the user)
@@ -472,12 +438,11 @@ the first thing to do after it.
 
 - Dim after (s);
 - Screen off after (s);
-- Wake on lift;
 - Wake when a session needs you;
 - Keyboard light shows needs-you;
 - Radio off after (min) and check-in every (min);
-- Deep idle after (min), Hibernate after (h), Hibernate when still for (min), Hibernate check-in every (h, off by default);
-- Wake on pick-up (IMU), with the false-wake cap;
+- Deep idle after (min), Hibernate after (h), Hibernate check-in every (min, default 60; 15 min-12 h or Off) (PT16);
+- (PT15: "Wake on lift", "Hibernate when still for" and "Wake on pick-up (IMU)" rows removed.)
 - Sleep on USB power;
 - Time zone (a short list of POSIX rules, with US Pacific as default);
 - Forget Mac host key (under Companion).

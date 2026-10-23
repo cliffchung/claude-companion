@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The Tab5 dims and turns its screen off on its own, wakes instantly on a key, touch, lift or a session that needs you (without the waking input acting), keeps the Mac link live through a long poll, shows battery, charging, Wi-Fi, Tailscale, link and the right local time, and lights the keyboard amber while a session needs you. After an hour without input it saves battery first (Deep idle, then Hibernate), and its shortcuts work with two thumbs. All of it is measured on battery in one visit with the user.
+**Goal:** The Tab5 dims and turns its screen off on its own, wakes instantly on a key, touch or a session that needs you (lift wake dropped, PT15; Hibernate wakes on the side button) (without the waking input acting), keeps the Mac link live through a long poll, shows battery, charging, Wi-Fi, Tailscale, link and the right local time, and lights the keyboard amber while a session needs you. After an hour without input it saves battery first (Deep idle, then Hibernate), and its shortcuts work with two thumbs. All of it is measured on battery in one visit with the user.
 
-**Architecture:** A new `sys/power.c` owns one state machine (Active → Dim → Off → Radio off → Deep idle → Hibernate) and the keyboard light. Hibernate itself (power-off or ESP deep sleep, its wake sources, the rails it cuts and the cold-boot path) lives in `sys/hibernate.c`, built in the Task 6 spike. `sys/imu.c` drives the BMI270's any-motion and no-motion interrupts through raw feature-register writes (Task 6 probes where its INT pins go; Task 7 uses them for lift wake, stillness, anticipatory wake and the IMU wake from Hibernate with a false-wake guard). Its decisions are pure functions in `sys/power_rules.c`, and the battery and clock maths are pure functions in `sys/vitals.c`, all host-tested. `cc_link` replaces the fixed poll with one long-lived pty exec channel. That channel runs a fixed `/bin/sh` loop built by `cc_cmd_watch`, and a pure marker parser (`companion/cc_watch.c`) reads its output. `wifi_mgr` gains a reconnect task and a parked state for the Radio-off tier. The light-sleep spike, Radio off and the light's Off cap are built behind settings that default off. One battery session with the user sets them from INA226 numbers logged on the device.
+**Architecture:** A new `sys/power.c` owns one state machine (Active → Dim → Off → Radio off → Deep idle → Hibernate) and the keyboard light. Hibernate itself (power-off or ESP deep sleep, its wake sources, the rails it cuts and the cold-boot path) lives in `sys/hibernate.c`, built in the Task 6 spike. `sys/imu.c` only reads the BMI270 chip ID and suspends it by raw I²C (PT15: no motion wake of any kind, no `bmi270` component). Hibernate has a periodic check-in, on by default, so a needs-you still lights the keyboard (PT16). Its decisions are pure functions in `sys/power_rules.c`, and the battery and clock maths are pure functions in `sys/vitals.c`, all host-tested. `cc_link` replaces the fixed poll with one long-lived pty exec channel. That channel runs a fixed `/bin/sh` loop built by `cc_cmd_watch`, and a pure marker parser (`companion/cc_watch.c`) reads its output. `wifi_mgr` gains a reconnect task and a parked state for the Radio-off tier. The light-sleep spike, Radio off and the light's Off cap are built behind settings that default off. One battery session with the user sets them from INA226 numbers logged on the device.
 
-**Tech Stack:** C, ESP-IDF v5.5.6 (`esp32p4`), LVGL 9.4 + esp_lvgl_port 2.8.0~1, BSP m5stack_tab5 1.3.2, esp_hosted 3.0.10 / esp_wifi_remote, libssh 0.11, MicroLink, `espressif/bmi270` 1.1.0 (Apache-2.0), cJSON, `esp_console`, Unity host tests, Python 3 (`pty`, `unittest`, pyserial).
+**Tech Stack:** C, ESP-IDF v5.5.6 (`esp32p4`), LVGL 9.4 + esp_lvgl_port 2.8.0~1, BSP m5stack_tab5 1.3.2, esp_hosted 3.0.10 / esp_wifi_remote, libssh 0.11, MicroLink, cJSON, `esp_console`, Unity host tests, Python 3 (`pty`, `unittest`, pyserial).
 
 **Spec:** `docs/superpowers/specs/2026-10-23-power-vitals-design.md` (this plan's spec), under `docs/superpowers/specs/2026-10-22-claude-tab5-design.md` (binding overall). Read both. Also read `docs/superpowers/notes/2026-10-22-plan1-rulings.md` and `docs/superpowers/notes/2026-10-22-couch-path-check.md`.
 
@@ -32,12 +32,12 @@
 - **No cc_link calls from subscriber callbacks** (`cc_poll_subscribe`). A callback copies what it needs and notifies its own task.
 - **A wake input never reaches the Mac or acts on a card.**
 - **The long-poll loop leaves nothing running on the Mac.**
-- New pure modules (`sys/power_rules.c`, `sys/vitals.c`, `sys/plog.c`, `sys/lift_detect.c`, `companion/cc_watch.c`, `ui/hotkeys.c`) include no ESP-IDF headers and also build in `firmware/test/host`.
+- New pure modules (`sys/power_rules.c`, `sys/vitals.c`, `sys/plog.c`, `companion/cc_watch.c`, `ui/hotkeys.c`) include no ESP-IDF headers and also build in `firmware/test/host`.
 - **This Tab5 is board v2: LCD ST7123, touch ST7123, no GT911** (Ruling P1). Controller ruling PT1: v2 has no touch INT wake, so touch wake in Off and deeper comes from polling the touch controller at about 10 Hz from the power task while LVGL is paused. The GT911 INT path is v1-only code.
 - Match Clientre5's C style: 4-space indent, function brace on its own line, `static const char *TAG`, `s_` statics, `/* */` comments.
-- Every gated feature (light sleep, Radio off, the light's Off cap, the Hibernate check-in) is built behind its setting with the default off before Task 10. Nothing waits on the measurement. The exception is the spec's Priority: Deep idle (60 min) and Hibernate (2 h) are on by default, and Hibernate's default stays on only if Task 6 finds a wake path that needs nothing more than the side button (Amendment A4).
+- Every gated feature (light sleep, Radio off, the light's Off cap) is built behind its setting with the default off before Task 10. Nothing waits on the measurement. The exception is the spec's Priority: Deep idle (60 min) and Hibernate (2 h) are on by default, and Hibernate's default stays on only if Task 6 finds a wake path that needs nothing more than the side button (Amendment A4). A second exception (PT16): the Hibernate check-in is on by default at 60 min; Task 10 revises the number from the measured energy.
 - Record each judgment call as a ruling in `docs/superpowers/notes/2026-10-23-plan2-rulings.md`, in Plan 1's format (`Ruling Pn: … — why — cost if wrong`).
-- **Never hibernate the device without a timer backstop while the user isn't there.** Nothing on the Mac can wake a sleeping P4, and a device lying on the desk gives the IMU no motion. Every agent-run hibernate arms a timer wake (`power hib test …`, `power hib test-wake`, or the persistent `power hib backstop` from Task 7 when a test spans several cold boots).
+- **Never hibernate the device without a timer backstop while the user isn't there.** Nothing on the Mac can wake a sleeping P4. Every agent-run hibernate arms a timer wake (`power hib test …`, `power hib test-wake`, or the persistent `power hib backstop` from Task 8 when a test spans several cold boots; PT15 moved it from Task 7).
 
 ## Review Focus
 
@@ -46,7 +46,7 @@
 3. **No battery fitted, or the INA226 not found** → the bar shows no percentage (never a red 0%), and Radio off, Deep idle and Hibernate never engage, because "on battery" is false; an unknown percentage never counts as ≤ 10%. With the INA226 present and no pack, the bus voltage is below 5.5 V and counts as no battery. Covered by Task 2 `test_battery_unknown_not_low` and `test_no_pack_is_unknown`, and Task 5 `test_radio_off_needs_battery` and `test_long_idle_needs_battery`.
 4. **Radio off and Deep idle with check-ins up to 30 min apart** → the amber keyboard light is not dropped between check-ins by the 5-minute staleness rule; the age limit follows the period actually scheduled (`checkin_min`, or Deep idle's 15 and 30 min). Covered by Task 3 `test_light_age_limit_follows_checkin` and Task 8 `test_deep_idle_backoff`.
 5. **A wake from Hibernate (a cold boot) shows cards as live** before the first fresh result → the dashboard shows `Waking: reconnecting to Mac` and no cards until `cc_poll_generation()` first moves. Covered by Task 5 `test_cards_view_after_hibernate` and the Task 6 Step 9 screenshot taken straight after a wake boot. (The amber-like saved colour that used to be item 5 stays covered by Task 3 `test_amber_like_colours`.)
-6. **A false IMU wake in a bag or a car drains the battery** (each wake from Hibernate is a cold boot plus a Tailscale connect, about 2–3 W for 1–2 min, and a bag can keep the device moving for hours) → no key or touch within 20 s powers it down again; a wake confirmed only by motion goes back to Hibernate when it reaches Off without a key or touch; 3 unconfirmed IMU wakes within an hour turn IMU wake off until a side-button or key wake, and that count survives the cold boots (NVS). Covered by Task 7 `test_imu_cap`, `test_imu_confirm` and the Task 7 Step 7 data-ready wake loop on USB, and measured by the Task 10 Step 6b bag walk.
+6. **The default Hibernate check-in drains the battery** (PT16; each check-in is a cold boot plus a Tailscale connect, about 2.5 W for ~90 s, ~60 mWh, ~1.5 Wh/day at 60 min) → a needs-you check-in keeps the light and re-hibernates, a no-needs-you check-in goes straight back to Hibernate, and the period is user-settable (15 min–12 h or Off). Covered by Task 8 `test_checkin_needs_you_keeps_light` and `test_checkin_nothing_rehibernates` and the Task 10 Step 6b check-in energy measurement. (The old item 6, a false IMU wake in a bag, is void: PT15 dropped IMU wake.)
 
 ---
 
@@ -193,6 +193,7 @@ git commit -m "feat(power): power console, on-device power log and bench, reset-
   - It also clamps `pw_dim_s` to 10–600 and `pw_off_s` to `pw_dim_s + 10`–3600.
   - It clamps `pw_deep_idle_min` to 0 or 15–720, `pw_hibernate_h` to 0 or 1–48, and `pw_hibernate_checkin_h` to 0 or 1–24 (a value in the gap goes to the nearest end of the range).
   - Still a single bump to `CFG_VERSION 18` for every field above.
+  - PT16 note: `pw_hibernate_checkin_h` (hours, uint8) cannot hold the new 15 min–12 h range, so it becomes reserved and unused; Task 8 appends `uint16_t pw_hibernate_checkin_min` (default 60) with `CFG_VERSION 19`.
 - Produces, in `vitals.h`:
 
 ```c
@@ -561,7 +562,7 @@ git commit -m "feat(companion): long-poll watch channel with keepalive, liveness
 >   `int64_t still_hibernate_ms;` (the Hibernate-when-still threshold; 0 = off).
 > - `pr_next_state` gains a third Hibernate trigger inside the existing `on_battery && hibernate_ok && (…)` clause, beside the idle-hours and low-battery triggers:
 >   `still_hibernate_ms > 0 && still_ms >= still_hibernate_ms && idle >= still_hibernate_ms` (idle = `now_ms - last_input_ms`, so there has been no input for as long as it has been still). It doesn't depend on `hibernate_h`. Held, USB and `idle < off_s` are still checked first, so it only acts from Off or deeper, and never without battery.
-> - The power task passes `still_ms = 0` and `still_hibernate_ms = 0`, so the trigger never fires in Task 5. Task 7 supplies both values. Task 5 adds no setting, Settings row or console command for it.
+> - The power task passes `still_ms = 0` and `still_hibernate_ms = 0`, so the trigger never fires. (PT15: Task 7 is removed, so nothing ever supplies them; the hook stays in the already-built Task 5 code, inert at 0, and Task 8 or 9 may delete it as cleanup, with `test_hibernate_when_still`.) Task 5 adds no setting, Settings row or console command for it.
 > - One more host test in Step 1, `test_hibernate_when_still`. Long-idle defaults plus `still_hibernate_ms` = 30 min:
 >   - state OFF, idle 30 min, still 30 min → HIBERNATE;
 >   - idle 30 min, still 29 min → OFF;
@@ -600,8 +601,8 @@ typedef struct {
     int64_t now_ms, last_input_ms, off_since_ms;   /* monotonic (esp_timer), never wall clock */
     int dim_s, off_s, radio_off_min;
     int deep_idle_min, hibernate_h;                /* 0 = never */
-    int64_t still_ms;                              /* BMI270 no-motion duration; 0 = unknown or moving (Task 7 supplies it) */
-    int64_t still_hibernate_ms;                    /* Hibernate-when-still threshold; 0 = off (Task 7: pw_still_hib_min) */
+    int64_t still_ms;                              /* BMI270 no-motion duration; 0 = unknown or moving (PT15: stays 0, inert; may be deleted as cleanup in Task 8 or 9) */
+    int64_t still_hibernate_ms;                    /* Hibernate-when-still threshold; 0 = off (PT15: stays 0, inert) */
     int battery_pct;                               /* -1 = unknown */
     bool held, on_battery, sleep_on_usb, radio_off_enabled;
     bool charging, hibernate_ok;                   /* hibernate_ok = hibernate_supported() (false until Task 6) */
@@ -641,7 +642,7 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - `screenshot.c` calls `display_ctl_touch()` each time it needs the handle, and caches nothing.
 - Produces, in `power.h`:
   - `power_state_t power_state(void);` and `uint32_t power_wake_seq(void);` (bumped on every wake).
-  - `typedef enum { PW_KEY, PW_TOUCH, PW_LIFT, PW_NEEDS_YOU, PW_CONSOLE } power_wake_t;` and `power_wake_t power_wake_reason(void);`.
+  - `typedef enum { PW_KEY, PW_TOUCH, PW_LIFT, PW_NEEDS_YOU, PW_CONSOLE } power_wake_t;` (PT15: `PW_LIFT` stays in the enum, unused; delete it as cleanup if convenient) and `power_wake_t power_wake_reason(void);`.
   - `bool power_take_key(void);` is called by the keyboard drain on the LVGL task. It returns false when the key must be dropped, using `pr_swallow`. A drop in Dim wakes.
   - `void power_wake(power_wake_t why);` and `void power_wake_from_isr(power_wake_t why);`. Any of these wakes resets idle.
   - `typedef enum { POWER_HOLD_TAKEOVER, POWER_HOLD_SSH } power_hold_t;` and `void power_hold(power_hold_t h, bool on);`. `POWER_HOLD_SSH` counts only while `g_settings.ss_disable_in_ssh`. `cc_link_busy()` is polled as the third hold.
@@ -736,7 +737,7 @@ Keep the `ss_*` fields in `app_settings_t`, marked reserved, so old blobs load. 
 - [ ] **Step 5: Check the ladder with short timings**
 
 Run: `python3 $T5 "power settings"`.
-Expected: the Task 2 defaults, including `deep-idle=60 hibernate=2 hib-checkin=0`.
+Expected: the Task 2 defaults, including `deep-idle=60 hibernate=2 hib-checkin=0` (Task 2's hour field; Task 8 replaces it with `hib-checkin=60` minutes, PT16).
 
 Run: `python3 $T5 "power set dim 10" "power set off 20"`. Then run `python3 $T5 "power"` at 5 s, 15 s and 25 s.
 Expected: `state=active`, then `state=dim`, then `state=off`. At `state=off`, `screenshot` still works (it is an LVGL snapshot), and `power touch` shows `poll on` with `reads` climbing by about 10 a second and `errors=0` (the ST7123 still answers with the panel off).
@@ -792,7 +793,7 @@ git commit -m "feat(power): Active/Dim/Off ladder with Deep idle and Hibernate s
 
 ### Task 6: Light-sleep and hibernate spike (light sleep expected to fail)
 
-Two parts. **Part A** is the display-teardown and light-sleep spike, as before; if its teardown checks pass, Deep idle also tears the display down and lowers the CPU clock. **Part B** finds out how this board can hibernate and wake, and builds `sys/hibernate.c` on what works. It starts (Steps 4a–4c, ahead of everything else in Part B) by finding where the BMI270's INT pins go, whether the board has a real power-off, and which rails the IO expanders can cut, because Hibernate's wake path and its floor depend on all three. Each part records its outcome in the notes, pass or fail.
+Two parts. **Part A** is the display-teardown and light-sleep spike, as before; if its teardown checks pass, Deep idle also tears the display down and lowers the CPU clock. **Part B** finds out how this board can hibernate and wake, and builds `sys/hibernate.c` on what works. It starts (Steps 4a–4c, ahead of everything else in Part B) by reading the BMI270 chip ID and suspending it (PT15: no INT probe, no self-test, no any-motion), finding whether the board has a real power-off, and mapping which rails the IO expanders can cut and whether the keyboard rail survives deep sleep with the light held (PT16), because Hibernate's wake path, its floor and its check-in depend on these. Each part records its outcome in the notes, pass or fail.
 
 **Files:**
 - Modify: `firmware/main/sys/display_ctl.c`, `display_ctl.h` (teardown and re-create)
@@ -802,9 +803,8 @@ Two parts. **Part A** is the display-teardown and light-sleep spike, as before; 
 - Modify: `firmware/sdkconfig.defaults` (only if Step 3 keeps the Deep-idle teardown: `CONFIG_PM_ENABLE=y`, `CONFIG_CC_DEEP_IDLE_TEARDOWN=y`; tickless idle stays spike-only)
 - Modify: `firmware/main/ui/ui_settings.c` (the "Light sleep (experimental)" row; the Hibernate row now shows its value)
 - Create: `firmware/main/sys/hibernate.c`, `firmware/main/sys/hibernate.h` (replaces Task 5's stubs in `power.c`; the rail table and the cuts)
-- Create: `firmware/main/sys/imu.c`, `firmware/main/sys/imu.h` (raw BMI270 register access, the INT probe, any-motion and data-ready on a pin; Task 7 extends it)
-- Modify: `firmware/main/idf_component.yml` (`espressif/bmi270: "==1.1.0"`, today only a BSP dependency; this rewrites `firmware/dependencies.lock`)
-- Modify: `firmware/main/sys/power.c` (`hibernate_ok = hibernate_supported()`; Deep idle teardown and CPU clock), `power_bench.c`, `power_bench.h` (steps `light-sleep`, `floor` and `hibernate`; `power_bench_boot()`), `power_console.c`
+- Create: `firmware/main/sys/imu.c`, `firmware/main/sys/imu.h` (PT15: chip ID read and `imu_suspend` by raw I²C only; no `bmi270` component, no INT probe, self-test, any-motion or data-ready)
+- Modify: `firmware/main/sys/power.c` (`hibernate_ok = hibernate_supported()`; Deep idle teardown and CPU clock), `power_bench.c`, `power_bench.h` (steps `light-sleep`, `floor`, optional `hibernate-light` and `hibernate`; `power_bench_boot()`), `power_console.c`
 - Modify: `firmware/main/sys/sysinfo.c`, `sysinfo.h` (INA226 slow averaging, power-down, and a raw read for the early boot)
 - Modify: `firmware/main/app_main.c` (`hibernate_boot_early()` right after `bsp_i2c_init()`, before the first `bsp_feature_enable`; boot-to-live timing)
 - Modify: `firmware/main/settings/settings.c` (only if Step 12 turns the Hibernate default off)
@@ -816,14 +816,14 @@ Two parts. **Part A** is the display-teardown and light-sleep spike, as before; 
   - Teardown, under the LVGL lock: `lvgl_port_remove_touch`, `lvgl_port_remove_disp`, `bsp_display_delete()` (panel, IO, DSI bus, PHY LDO, backlight PWM) and `esp_lcd_touch_del`.
   - Re-create: `bsp_display_new_with_handles` with the board's lane rate, then `lvgl_port_add_disp_dsi` with the app's Plan 1 config, then `bsp_touch_new` + `lvgl_port_add_touch`, then `ui_nav_refresh()`.
   - The lane rate is the BSP default on this board (v2). Only board version 3 (ST7121) needs 965 Mbps (`BSP_LCD_ST712X_MIPI_DSI_LANE_BITRATE_MBPS`).
-  - The ST7123 is one chip for display and touch. So teardown also checks whether touch still answers an I²C read after the panel is deleted, and keeps the touch handle (no `esp_lcd_touch_del`) when it does, so the v2 poll keeps working. If it doesn't answer, Deep idle has no touch wake (keys and lift still wake). Record which.
+  - The ST7123 is one chip for display and touch. So teardown also checks whether touch still answers an I²C read after the panel is deleted, and keeps the touch handle (no `esp_lcd_touch_del`) when it does, so the v2 poll keeps working. If it doesn't answer, Deep idle has no touch wake (keys still wake; PT15: no lift). Record which.
   - With `pw_light_sleep` set, on battery only, Off calls teardown and configures `esp_pm_configure({.max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = true})` plus `gpio_wakeup_enable(GPIO50, GPIO_INTR_LOW_LEVEL)`, `gpio_wakeup_enable(GPIO23, GPIO_INTR_LOW_LEVEL)` (v1 only) and `esp_sleep_enable_gpio_wakeup()`. Before every sleep it clears the A164's `REG_INT_STA`. Wake re-creates the display, then calls `display_ctl_touch_int_init` again on v1 (`bsp_touch_new` sets GPIO23 back to output-low there).
   - **Deep idle teardown** (`CONFIG_CC_DEEP_IDLE_TEARDOWN`, kept only if Step 3 passes the teardown checks): entering Deep idle calls `display_ctl_teardown()` and releases power's own `ESP_PM_CPU_FREQ_MAX` lock (`s_pm_max`, held in every other state) after `esp_pm_configure({.max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = false})`, so the CPU drops to 40 MHz once nothing else holds a lock. Waking takes the lock first, then calls `display_ctl_recreate()`, then runs the usual wake steps. Wake-to-picture must stay under 500 ms.
 - `screenshot.c` already asks `display_ctl_touch()` each time, so it never holds a dangling handle. In Deep idle with teardown it reports `screenshot: display torn down`.
 - Part B, in `hibernate.h`:
 
 ```c
-typedef enum { HIB_SRC_TIMER = 1, HIB_SRC_BUTTON = 2, HIB_SRC_RESET = 4, HIB_SRC_RTC = 8, HIB_SRC_IMU = 16 } hib_src_t;
+typedef enum { HIB_SRC_TIMER = 1, HIB_SRC_BUTTON = 2, HIB_SRC_RESET = 4, HIB_SRC_RTC = 8 } hib_src_t;   /* PT15: no HIB_SRC_IMU */
 typedef enum { HIB_MODE_NONE, HIB_MODE_POWEROFF, HIB_MODE_DEEPSLEEP } hib_mode_t;
 typedef enum { POWER_BOOT_NORMAL, POWER_BOOT_HIB_WAKE, POWER_BOOT_HIB_CHECKIN, POWER_BOOT_HIB_PROBE } power_boot_t;
 bool hibernate_supported(void);         /* mode != NONE and a wake source other than the timer works */
@@ -832,15 +832,16 @@ uint32_t hibernate_wake_sources(void);  /* hib_src_t bits that Step 9 proved; a 
 void hibernate_now(uint32_t wake_after_s, power_boot_t next);
 /* 0 = no timed wake. Saves the power-log sums, writes NVS ns "power" key "hib"
    {mode, next, epoch, wake_after_s}, sets the light by the Deep-idle rule, cc_link_park(true),
-   wifi off, then arms the wake sources (the IMU only for `power hib test imu*` until Task 7),
-   suspends the BMI270 when it isn't a wake source (imu_suspend), cuts every rail in
+   wifi off, then arms the wake sources (timer, RTC and the side button; PT15: never the IMU),
+   suspends the BMI270 (imu_suspend), cuts every rail in
    hibernate_rails() marked cut (LCD_EN, TOUCH_EN, speaker, camera, USB_EN, then WIFI_EN, so the
-   C6 is fully off, plus the keyboard's rail if Step 4c finds a switch), puts the INA226 into
+   C6 is fully off, plus the keyboard's rail if Step 4c finds a switch, except that a PT16 check-in that found a needs-you keeps it when Step 4c shows it survives deep sleep), puts the INA226 into
    power-down (sysinfo_ina226_power_down) unless a bench probe is running, then a full
    power-off or esp_deep_sleep_start(). Never returns. The cold boot re-enables the rails
    through the usual staggered bsp_feature_enable calls. */
 power_boot_t hibernate_boot_kind(void); /* from "hib" + esp_sleep_get_wakeup_cause() (or the RX8130 AF flag after power-off); cleared after it is read */
-uint32_t hibernate_wake_src(void);      /* the hib_src_t bit that woke this boot (ext1 on the IMU's LP GPIO → HIB_SRC_IMU), 0 on a normal boot */
+uint32_t hibernate_wake_src(void);      /* the hib_src_t bit that woke this boot, 0 on a normal boot */
+bool hibernate_kbd_rail_survives(void); /* PT16: compile-time answer from Step 4c: the keyboard stays powered through deep sleep and its light holds */
 typedef struct { const char *name; uint8_t addr; uint8_t pin; bool cut; } hib_rail_t;
 const hib_rail_t *hibernate_rails(int *n);
 /* compile-time table from Step 4c. Known from the BSP: 0x43 P1 speaker, P4 LCD_EN, P5 TOUCH_EN,
@@ -853,33 +854,16 @@ uint32_t hibernate_boot_to_live_ms(void); /* boot to the first rc-0 result, kept
 ```
 
 - In `sysinfo.h`: `void sysinfo_ina226_slow(bool slow);` (slow: config `0x4E3F` = 1024 averages, bus 140 µs, shunt 8.244 ms, continuous; one result every ≈ 8.6 s; otherwise the Plan 1 config `0x4527`). `sysinfo_init` writes the Plan 1 config, so a probe boot that goes on to a normal boot is back to fast sampling. `void sysinfo_ina226_power_down(void);` writes config `0x4520` (mode 000, power-down; the cold boot's `sysinfo_init` writes `0x4527` again).
-- Produces, in `imu.h` (Part B, Steps 4a and 7; Task 7 extends it). The espressif/bmi270 1.1.0 driver has no interrupt API, so everything past `bmi270_create` is raw register access through the public `bmi270_handle_t.i2c_handle`:
+- Produces, in `imu.h` (Part B, Step 4a; PT15 cut it down). No `espressif/bmi270` component; everything is raw I²C on `bsp_i2c_get_handle()` at 0x68:
 
 ```c
-esp_err_t imu_init(void);     /* bmi270_create at BMI270_I2C_ADDRESS_L (0x68) on bsp_i2c_get_handle() (uploads the feature blob); idempotent, called on first use */
-esp_err_t imu_reg_read(uint8_t reg, uint8_t *buf, size_t n);
-esp_err_t imu_reg_write(uint8_t reg, const uint8_t *buf, size_t n);   /* waits 450 us after a write while PWR_CONF.adv_power_save is set */
-esp_err_t imu_feat_write(uint8_t page, uint8_t off, const uint8_t *buf, size_t n);   /* FEAT_PAGE 0x2F, then 0x30 + off; reads back and compares */
-typedef enum { IMU_INT1 = 1, IMU_INT2 = 2 } imu_pin_t;
-esp_err_t imu_pin_config(imu_pin_t p, bool output, bool active_high, bool open_drain, bool latched);
-/* INT1_IO_CTRL 0x53 / INT2_IO_CTRL 0x54: bit1 lvl, bit2 od, bit3 output_en; INT_LATCH 0x55 bit0 */
-esp_err_t imu_any_motion_arm(imu_pin_t p, uint16_t thr, uint16_t dur);
-/* accel on (PWR_CTRL 0x7D bit2), ACC_CONF 0x40 = 0x17 (50 Hz, avg2, power-optimised), then the any-motion
-   feature: page 1, offset 0x0C, word0 = dur (13 bits, 20 ms units) | x,y,z select (bits 13-15),
-   word1 = thr (11 bits, 1 g / 2048 per LSB) | enable (bit 15); mapped by INTx_MAP_FEAT (0x56 / 0x57) bit6.
-   Offsets and bits are Bosch BMI270_SensorAPI bmi270.h facts; imu_feat_write's read-back and the
-   Step 4a self-test check them on this blob. */
-esp_err_t imu_drdy_map(imu_pin_t p, bool on);   /* INT_MAP_DATA 0x58: drdy on INT1 bit2, INT2 bit6 */
-esp_err_t imu_int_status(uint8_t *st0);         /* INT_STATUS_0 0x1C (any-motion bit6, no-motion bit5); clears a latched INT */
-esp_err_t imu_suspend(void);                    /* features off, PWR_CTRL 0, adv_power_save on: Hibernate without IMU wake, and `floor` */
-typedef struct { int gpio; bool lp; int exp_addr, exp_pin, exp_int_gpio; } imu_route_t;   /* -1 where none */
-imu_route_t imu_route(imu_pin_t p);             /* compile-time table from Step 4a */
-#define IMU_ANYMOT_THR    0x0AA   /* 83 mg, Bosch's default; start value, Task 10 tunes */
-#define IMU_ANYMOT_HIB_DUR 50     /* 50 x 20 ms = 1 s of motion, so a bump doesn't wake Hibernate; start value */
+esp_err_t imu_chip_id(uint8_t *id);   /* reads CHIP_ID 0x00; expect 0x24 */
+esp_err_t imu_suspend(void);          /* PWR_CTRL 0x7D = 0 (accel, gyro, aux off), PWR_CONF 0x7C adv_power_save on: Hibernate, and `floor` */
 ```
 
-- Bench step `floor` (probe-type like `hibernate`, inserted just before it): deep sleep with every rail in `hibernate_rails()` cut (the ones marked kept stay on), the BMI270 suspended, the keyboard light off and only the timer armed. It is the board floor the spec asks for (charger, regulators, IO expanders, INA226, RTC). It reuses the probe mechanism below, with its own row; after its last cycle the probe boot goes straight into the `hibernate` step's first cycle without bringing the rails up. The INA226 stays on in both probe steps (it is the meter), so both rows include its own draw (about 330 µA from its supply, datasheet typical), which a shipped Hibernate doesn't pay; the notes say so.
-- Bench step `hibernate`. It is always the **last** step in `k_steps`, and later tasks insert their steps before `floor`. It measures Hibernate as shipped: rails cut as in `floor`, plus the IMU armed with any-motion on its LP GPIO when Step 4a found one (otherwise suspended, and the row equals `floor` plus nothing). On battery its `enter`:
+- Bench step `floor` (probe-type like `hibernate`, inserted just before it): deep sleep with every rail in `hibernate_rails()` cut (the ones marked kept stay on), the BMI270 suspended (`imu_suspend`), the keyboard light off and only the timer armed. It is the board floor the spec asks for (charger, regulators, IO expanders, INA226, RTC). It reuses the probe mechanism below, with its own row; after its last cycle the probe boot goes straight into the `hibernate` step's first cycle without bringing the rails up. The INA226 stays on in both probe steps (it is the meter), so both rows include its own draw (about 330 µA from its supply, datasheet typical), which a shipped Hibernate doesn't pay; the notes say so.
+- Optional bench step `hibernate-light` (PT16; built only if Step 4c shows the keyboard rail survives deep sleep with the light held; probe-type like `floor`, inserted just before it): deep sleep with the keyboard rail kept and the light amber at 30%, the timer armed. The `hibernate-light` row minus `floor` is the cost of holding the light; Task 10 reads it. It makes 16 steps with Task 8's, within `BENCH_MAX` 16.
+- Bench step `hibernate`. It is always the **last** step in `k_steps`, and later tasks insert their steps before `floor`. It measures Hibernate as shipped: rails cut as in `floor`, with the BMI270 suspended too (PT15: the row equals `floor` by design; a difference is measurement noise or the C6). On battery its `enter`:
   1. sets `sysinfo_ina226_slow(true)`;
   2. writes the probe record (`cycles_left = 3`, its row index);
   3. calls `hibernate_now(60, POWER_BOOT_HIB_PROBE)` (fast mode: 10 s; `wake_after_s` uses the timer, which deep sleep always has).
@@ -889,12 +873,12 @@ imu_route_t imu_route(imu_pin_t p);             /* compile-time table from Step 
 - Settings → Power: the Hibernate row shows its value once `hibernate_supported()`.
 - Console:
   - `power spike recreate <n>` runs n teardown/re-create cycles and prints the internal and PSRAM free heap after each one and the slowest wake-to-picture time (the first flush after re-create).
-  - `power hib test <timer|rtc|imu|off> [s]`: one hibernate with only that wake source armed (default 30 s for timer and rtc). It prints `hib test: armed <src>, sleeping` and then sleeps.
+  - `power hib test <timer|rtc|off> [s]`: one hibernate with only that wake source armed (default 30 s for timer and rtc). It prints `hib test: armed <src>, sleeping` and then sleeps.
   - `power hib test-wake <s>` arms a one-shot timer wake for the next hibernate of any kind (RAM only), so a rule-driven hibernate can be tested without a press.
   - `power boot` prints `boot: reason=<r> kind=<normal|hib-wake|hib-checkin|hib-probe> cause=<wakeup cause> to_live=<ms>`.
   - `power hib` prints `hibernate: mode=<off|deepsleep|none> sources=<list> supported=yes|no`.
-  - `power hib test imu-drdy`: one hibernate with ext1 armed on the IMU's LP GPIO and data-ready mapped to the INT pin (latched), plus the 30 s timer backstop. Data-ready fires at 50 Hz, so it proves the electrical wake path from the INT pin without any motion.
-  - `power imu probe` runs the Step 4a probe and prints its result lines; `power imu selftest` runs the Step 4a self-test attempt; `power imu` prints `imu: chip=0x24 int1=<route> int2=<route> st0=0x<hex>`.
+  - `power imu` prints `imu: chip=0x24 suspended=<yes|no>` (PT15: no `probe`, `selftest` or INT routing).
+  - `power hib test light [s]` (PT16, only if Step 4c named a keyboard rail): one hibernate with the keyboard rail kept and the light amber at 30%, timer armed; `power light` after the wake shows what survived.
   - `power rails` prints both expanders' pins as `0x43 P4 LCD_EN out 1 cut` (address, pin, name from the table or `?`, direction from register 0x03, level from 0x05 or input 0x0F, cut or kept). `power rail <name> on|off` switches one named rail while awake, only for `speaker`, `camera`, `usb` and a keyboard rail if Step 4c names one; LCD, touch and Wi-Fi are cut only on the hibernate path.
 
 **Part A: display teardown and light sleep**
@@ -935,30 +919,18 @@ If teardown failed, revert the teardown code, delete `sdkconfig.spike` and `Kcon
 
 Steps 4a–4c run first, ahead of everything else in Part B. They are lettered so that the Step numbers cited elsewhere (Step 9 in Review Focus 5, Steps 5, 7 and 12) stay right.
 
-- [ ] **Step 4a: Find where the BMI270's INT1 and INT2 go, and try to trigger any-motion without moving the device**
+- [ ] **Step 4a: Read the BMI270 chip ID and suspend it (PT15)**
 
-On paper first: the Tab5 schematic (M5Stack's Tab5 docs page) for the BMI270's INT1/INT2 nets. The BSP header names no IMU INT pin. The candidates are a P4 GPIO, an LP GPIO (0–15, the only ones that can wake deep sleep through ext1), or an input of one of the two PI4IOE5V6408 expanders (0x43, 0x44), whose own INT line may in turn reach a P4 GPIO.
+Write `imu.c` with the two functions above and `power imu`; build and flash. No INT probe, no self-test, no any-motion, no data-ready and no `bmi270` component: the user dropped motion wake (PT15).
 
-Write `imu.c` with the Interfaces above (only the Part B parts) and `power imu probe`, add `espressif/bmi270: "==1.1.0"` to `idf_component.yml`, build and flash. The probe, for INT1 and then INT2:
-1. takes the candidate GPIOs: every P4 GPIO 0–54 that `gpio_dump_io_configuration` shows unclaimed (no peripheral signal, output off), never 24 and 25 (USB-Serial-JTAG). It sets input enable on them with no pull, and drives nothing;
-2. reads them, and both expanders' input (0x0F) and interrupt-status (0x13) registers, with every expander input pin unmasked in its interrupt-mask register (0x11) for the run and the old mask restored after;
-3. enables the pin's output (push-pull, nothing mapped, so it sits at its inactive level) and flips its level bit 3 times (active-high ↔ active-low), reading everything after each flip;
-4. maps data-ready to the pin for 1 s and counts edges on the candidate GPIOs (a temporary any-edge ISR) and sets of the expanders' interrupt-status bits;
-5. turns the pin's output off again and unmaps data-ready.
-
-Run: `python3 $T5 "power imu probe"`.
-Expected: for each pin, one line `imu int1: gpio<N> lp=<yes|no>`, or `imu int1: expander 0x4<x> pin <p> (expander int -> gpio<M> lp=<yes|no> | expander int -> none)`, or `imu int1: not found`. A real route follows all 3 flips and shows about 50 edges in the data-ready second (or the expander's status bit). A line that follows only some flips is noise: run the probe twice more and record all three outputs. Fill `imu_route()` from the result.
-
-Then try to fire any-motion itself without a move. Run: `python3 $T5 "power imu selftest"`. It arms any-motion (Interfaces, threshold `IMU_ANYMOT_THR`, duration 5) on the routed pin, runs the BMI270 accelerometer self-test (±16 g, 1600 Hz, performance mode, ACC_SELF_TEST 0x6D positive then negative; the deflection is several g), reads INT_STATUS_0 and the routed pin, then soft-resets and runs `imu_init()` again (the self-test leaves the sensor in a test configuration).
-Expected: `any-motion during self-test: yes|no`. The BMI270 has no documented INT test mode, so if it prints `no`, any-motion's trigger by real motion needs a physical move: record "any-motion trigger: Task 10 Step 4". Data-ready (step 4 above) has already proved the pin's routing either way.
-
-Also record which feature blob the driver uploads: compare the length and first 64 bytes of `bmi270_config_file` (`managed_components/espressif__bmi270/include_priv/bmi270_priv.h`) with Bosch BMI270_SensorAPI's `bmi270.c` (the standard blob, with any-motion and no-motion) and `bmi270_maximum_fifo.c` (no features), and whether `imu_feat_write` reads page 1 offset 0x0C back as written. If the blob has no motion features, record it: Task 7 then uploads Bosch's standard blob itself (Task 7 Step 4 has the licence check).
+Run: `python3 $T5 "power imu"`.
+Expected: `imu: chip=0x24 suspended=yes` after `imu_suspend` has run once (it runs on every Hibernate path and for `floor`). Record the chip ID read. If the chip doesn't answer at 0x68, record it and let `imu_suspend` fail quietly.
 
 - [ ] **Step 4b: Find whether the board has a real power-off with a wake source**
 
 From the schematic and M5Stack's Tab5 factory firmware (look for a power-off call, a power-latch or "power off pulse" pin on an expander, or a PMIC register), record:
 - whether a line powers the whole board off, and which (expander and pin, or register);
-- what can switch it back on: the side button, the RX8130 `IRQ`, the IMU INT (into the power circuit), USB power, or only a press.
+- what can switch it back on: the side button, the RX8130 `IRQ`, USB power, or only a press.
 
 Don't drive an unknown expander pin to find out. The electrical check is Step 7's `power hib test off`, only once this step has named the line. Power-off beats deep sleep only if something other than USB can switch it back on.
 
@@ -972,7 +944,9 @@ Expected: every known rail listed with its name, and the unknown pins as `?`.
 If a keyboard rail is named, run `python3 $T5 "power rail kbd off" "power light"`, then `python3 $T5 "power rail kbd on"` and wait 3 s, then `python3 $T5 "power light test reprobe" "power light"`.
 Expected: the keyboard drops out while off and re-probes with the owner's colour after. Record it. Without a keyboard rail, the keyboard keeps its power in Hibernate and the notes give its share of the floor as "not separable".
 
-Record, too, whether `TOUCH_EN` cuts only the touch side of the one-chip ST7123 or the panel as well (from the schematic; Task 7's touch-off in Deep idle depends on it).
+Record, too, whether `TOUCH_EN` cuts only the touch side of the one-chip ST7123 or the panel as well (from the schematic; informational now, PT15 dropped the touch-off in Deep idle that depended on lift wake).
+
+**Does the keyboard rail survive deep sleep, and does the light hold? (PT16)** If a keyboard rail is named, or the keyboard keeps its power in deep sleep, the Hibernate check-in (Task 8) can leave the amber light on after a needs-you. Check it: with the keyboard light set amber at 30% (`power light test user`), run `python3 $T5 "power hib test light 60"` (timer backstop), and look at the keyboard, or after the wake run `power light` and `power rails`. Expected: the light stays amber through the whole 60 s and `power light` shows the A164 answers again without a re-probe. Record `kbd rail survives deep sleep: yes|no`, `light holds: yes|no`, and, with the INA226 in the `hibernate-light` bench row, what holding it costs. Set `hibernate_kbd_rail_survives()` to yes only if both are yes. Add the optional `hibernate-light` bench step only if it is.
 
 - [ ] **Step 5: Find the other wake sources on paper**
 
@@ -980,10 +954,9 @@ Read the Tab5 schematic and the BSP pin map (`managed_components/espressif__m5st
 - the side button: whether it drives the power latch or EN, or reaches a GPIO;
 - the reset button;
 - the RX8130 `IRQ` output: whether it reaches the power circuit, an LP GPIO (0–15) or nothing;
-- the BMI270 INT1/INT2: from Step 4a;
 - the power-off line: from Step 4b.
 
-Note too whether the keyboard connector's rail stays up in deep sleep (Step 4c), because a Hibernate check-in's amber light depends on it (Task 8).
+Note too the Step 4c answer on whether the keyboard rail survives deep sleep with the light held, because the Hibernate check-in's amber light depends on it (Task 8, PT16).
 
 - [ ] **Step 6: Build `hibernate.c` and the console**, add the preview stubs, then build and flash
 
@@ -994,9 +967,6 @@ Expected: `Project build complete`, and `power hib` prints a mode and the source
 Before each one, run `python3 $T5 "power hib test <src> …"`. Then wait, reconnect the console, and run `python3 $T5 "power boot"`:
 - `power hib test timer 30` → back within 30–40 s, `kind=hib-wake cause=timer`.
 - `power hib test rtc 60` (only if Step 5 found the RTC IRQ routed) → back within 60–70 s.
-- `power hib test imu-drdy` (only if Step 4a found the INT on an LP GPIO, directly or through an expander's INT) → back within a few seconds with `kind=hib-wake cause=ext1` and `power boot` naming the IMU as the source. This proves the electrical wake path with ext1 on that GPIO, which Hibernate then uses for the IMU (`hibernate_wake_sources()` gets `HIB_SRC_IMU`).
-- `power hib test imu` (the same GPIO, any-motion armed with `IMU_ANYMOT_THR` and `IMU_ANYMOT_HIB_DUR`) → with the device still on the desk it should stay asleep until the timer backstop: `cause=timer`. That shows a still device doesn't wake itself. The pick-up that fires it needs the user, so record "any-motion wake: Task 10 Step 6b" (unless the Step 4a self-test fired any-motion, which still doesn't prove a real pick-up).
-- If the INT isn't on an LP GPIO, Hibernate has no IMU wake: record it. The IMU's role shrinks to the lift wake while the P4 is awake and the stillness signal (Task 7).
 - `power hib test off` (only if Step 5 found a power-off line) → record whether USB power keeps it on.
 - The side button and the reset button need a real press: the user does them in Task 10. The USB-Serial-JTAG peripheral is off in deep sleep and the Tab5 has no USB-UART bridge, so nothing on the Mac can reset a sleeping P4. Every test here therefore arms the timer as a backstop.
 
@@ -1038,7 +1008,7 @@ Expected: the notice for 3 s, then hibernate (the console drops), then back with
   - Record which path that is: power-off with the side button, deep sleep with the button on an LP GPIO, or "reset only".
   - Write `docs/superpowers/notes/2026-10-23-light-sleep-spike.md`, covering:
     - Part A: what was tried, each check's result with numbers, the teardown and light-sleep decisions and why, and touch after teardown. Also record that `lvgl_port_remove_disp` deletes every screen of the display (the nav stack, the layer-top shield and toasts), and that `ui_nav_refresh()` rebuilds only the top screen. If light sleep failed, say that Off ships as panel off + quiet tasks + modem power save + the long poll + the Radio-off tier.
-    - Part B: each answer from Steps 4a–4c as its own line (INT1 route, INT2 route, LP or not, expander INT routing, the self-test result, the feature blob; power-off yes/no with its line and wake sources; the rail map with each rail cut or kept, the keyboard rail, and whether `TOUCH_EN` takes the panel too); each wake source (on paper, then tried, `imu-drdy` included); the mode chosen; the survival checks with the rails cut; the three boot-to-live times; the probe's USB plumbing result for `floor` and `hibernate`; whether the keyboard rail stays up in deep sleep; and the Hibernate default with the path it relies on.
+    - Part B: each answer from Steps 4a–4c as its own line (the IMU chip ID; power-off yes/no with its line and wake sources; the rail map with each rail cut or kept, the keyboard rail, and whether `TOUCH_EN` takes the panel too); each wake source (on paper, then tried); the mode chosen; the survival checks with the rails cut; the three boot-to-live times; the probe's USB plumbing result for `floor` and `hibernate`; whether the keyboard rail stays up in deep sleep with the light held (PT16), and the `hibernate-light` row if built; and the Hibernate default with the path it relies on.
 
 - [ ] **Step 13: Commit**
 
@@ -1047,204 +1017,9 @@ git add -A firmware docs/superpowers/notes/2026-10-23-light-sleep-spike.md docs/
 git commit -m "spike(power): display teardown <kept for Deep idle | dropped>, light sleep <kept behind a setting | dropped>, hibernate via <power-off | deep sleep>, see notes"
 ```
 
-### Task 7: Lift wake, stillness and the IMU wake from Hibernate (interrupt-first)
+### Task 7: removed (PT15)
 
-The BMI270 does the watching. Its any-motion and no-motion features run on the sensor with the accelerometer in low-power mode, and the P4 hears about them on the INT pin that Task 6 Step 4a found. Polling is only the fallback when the INT isn't wired. On top of that, this task supplies `still_ms` to the ladder (Task 5's stillness trigger), starts the link early on a pick-up, and guards the IMU wake from Hibernate against false wakes.
-
-**Files:**
-- Create: `firmware/main/sys/lift_detect.c`, `firmware/main/sys/lift_detect.h` (pure)
-- Create: `firmware/main/sys/lift.c`, `firmware/main/sys/lift.h` (the `lift` task: INT-driven, polling fallback)
-- Create: `firmware/test/host/test_lift_detect.c`
-- Modify: `firmware/main/sys/imu.c`, `imu.h` (no-motion, low-power mode, the INT ISR; Task 6 created it)
-- Modify: `firmware/main/sys/power_rules.c`, `power_rules.h`, `firmware/test/host/test_power_rules.c` (stillness accounting, the false-wake cap, the confirm window)
-- Modify: `firmware/main/settings/settings.h`, `settings.c` (`pw_still_hib_min`, `pw_imu_wake`; `CFG_VERSION 19`)
-- Modify: `firmware/main/sys/power.c`, `power.h` (`still_ms` into `pr_in_t`, `power_anticipate`, the IMU-wake boot, the Deep-idle touch-off behind a flag), `firmware/main/sys/hibernate.c`, `hibernate.h` (IMU wake armed by the setting and the cap; the persistent backstop)
-- Modify: `firmware/main/app_main.c` (`lift_init()` after `power_init()`)
-- Modify: `firmware/main/ui/ui_settings.c` (Wake on lift, Wake on pick-up from Hibernate, Hibernate when still for), `firmware/main/sys/power_console.c`, `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls), `firmware/test/host/CMakeLists.txt` (add `lift_detect.c`, `test_lift_detect`)
-- Create (only if Step 4 finds the driver's blob has no motion features): `firmware/main/sys/bmi270_cfg_bosch.h` (Bosch's standard blob, BSD-3-Clause header kept)
-
-**Interfaces:**
-- Produces, in `lift_detect.h` (unchanged from before; it now confirms a lift after an any-motion interrupt, and is the whole detector in the polling fallback):
-
-```c
-typedef enum { LIFT_SLOW, LIFT_FAST, LIFT_WAKE } lift_ev_t;   /* next sample in 500 ms, in 50 ms, or wake */
-typedef struct { float bx, by, bz; bool init; int over; } lift_detect_t;
-#define LIFT_THRESHOLD_G 0.15f   /* generative-tab5 prov_imu.c:53 */
-#define LIFT_HOLD_SAMPLES 4      /* 4 x 50 ms ≈ 200 ms held */
-void lift_reset(lift_detect_t *d);
-lift_ev_t lift_feed(lift_detect_t *d, float x, float y, float z);
-/* first sample seeds the baseline; |v - baseline| >= 0.15 g starts a candidate (FAST);
-   LIFT_HOLD_SAMPLES more in a row over the threshold → WAKE; a sample under it ends the
-   candidate (SLOW); while SLOW the baseline follows with alpha 0.1 */
-```
-
-- Produces, in `power_rules.h` (pure, host-tested):
-
-```c
-typedef struct { bool known, still; int64_t since_ms; } pr_still_t;
-void pr_still_init(pr_still_t *s);   /* unknown */
-void pr_still_event(pr_still_t *s, int64_t now_ms, bool imu_ok, bool any_motion, bool no_motion, int64_t no_motion_dur_ms);
-/* !imu_ok → unknown. any_motion → known, moving (it wins when both are set).
-   no_motion while not already still → still, since = now - no_motion_dur_ms (the sensor had
-   already seen that long without motion). Otherwise unchanged. */
-int64_t pr_still_ms(const pr_still_t *s, int64_t now_ms);   /* known && still ? now - since : 0 */
-
-#define PR_IMU_CONFIRM_MS 20000       /* the confirm window after an IMU wake from Hibernate */
-#define PR_IMU_MOTION_CONFIRM_S 5     /* 1 s buckets with motion that count as "continued motion"; start value */
-#define PR_IMU_CAP 3
-#define PR_IMU_CAP_WINDOW_S 3600
-typedef struct { uint32_t t_s[PR_IMU_CAP]; uint8_t n; uint8_t disabled; } pr_imu_cap_t;   /* NVS ns "power" key "imucap" */
-void pr_imu_cap_unconfirmed(pr_imu_cap_t *c, uint32_t now_s);
-/* drops entries with now_s > 0 && t > 0 && now_s - t >= PR_IMU_CAP_WINDOW_S (an entry or a now of 0,
-   a clock not yet valid, never ages out: the safe side), appends now_s (the oldest falls off when
-   full); PR_IMU_CAP entries left → disabled = 1 */
-void pr_imu_cap_rearm(pr_imu_cap_t *c);   /* a side-button wake from Hibernate or a key wake: n = 0, disabled = 0 */
-bool pr_imu_wake_armed(const pr_imu_cap_t *c, bool setting_on);   /* setting_on && !disabled */
-typedef enum { PR_CONF_WAIT, PR_CONF_INPUT, PR_CONF_MOTION, PR_CONF_FAIL } pr_confirm_t;
-pr_confirm_t pr_imu_confirm(int64_t since_wake_ms, bool key_or_touch, int motion_s);
-/* key_or_touch → INPUT; else motion_s >= PR_IMU_MOTION_CONFIRM_S → MOTION;
-   else since_wake_ms >= PR_IMU_CONFIRM_MS → FAIL; else WAIT */
-```
-
-- Produces, in `imu.h` (added to Task 6's):
-
-```c
-esp_err_t imu_no_motion_arm(imu_pin_t p, uint16_t thr, uint16_t dur);
-/* page 2, offset 0x00, the same word layout as any-motion; mapped by INTx_MAP_FEAT bit5 */
-esp_err_t imu_low_power(bool on);   /* PWR_CONF 0x7C adv_power_save; ACC_CONF 0x17 (50 Hz, avg2, power-optimised); gyro off */
-void imu_set_isr(void (*isr)(void *));
-/* on imu_route()'s GPIO (any edge to active), or on the expander INT GPIO, where the task then
-   reads the expander's interrupt status (0x13) to see that it was the IMU's pin; none when unrouted */
-#define IMU_ANYMOT_AWAKE_DUR 5   /* 100 ms: while the P4 is awake, any-motion only starts a lift check */
-#define IMU_NOMOT_THR 0x090      /* 70 mg */
-#define IMU_NOMOT_DUR 250        /* 5 s; also the no_motion_dur_ms credited by pr_still_event */
-```
-
-  Only one any-motion config is live at a time: the awake one (`IMU_ANYMOT_AWAKE_DUR`, not latched) while the P4 runs, the Hibernate one (`IMU_ANYMOT_HIB_DUR`, latched) written by `hibernate_now`. These are start values; Task 10 tunes them and the notes say which values were chosen.
-
-- Produces, in `lift.h`:
-  - `void lift_init(void);` calls `imu_init()`, `imu_low_power(true)`, arms any-motion (awake) and no-motion on the routed pin, installs the ISR, and starts the `lift` task (stack 3072, priority 4).
-  - `int64_t lift_still_ms(void);` is `pr_still_ms` under the module's lock.
-  - `const char *lift_path(void);` gives `int(gpio<N>)`, `int(expander 0x4<x>)` or `poll`.
-  - The task waits on its notification (the ISR's, or a 500 ms timeout in the polling fallback, where it reads INT_STATUS_0 instead of a pin). On each event it reads INT_STATUS_0 (which also clears it) and:
-    1. feeds `pr_still_event` with the any-motion and no-motion bits (`imu_ok` false after 3 failed reads in a row);
-    2. on any-motion while the state is Off or deeper, calls `power_anticipate()`;
-    3. on any-motion while the state is Dim or deeper and `pw_wake_lift` is set, samples the accelerometer at 50 ms with `lift_feed` for up to 2 s, and calls `power_wake(PW_LIFT)` on WAKE. The baseline isn't reset for this: while no motion is reported the task feeds one sample every 10 s, so the burst compares against the resting pose.
-  - It also reads INT_STATUS_0 once every 10 s when nothing has come, so a missed edge can't freeze the stillness.
-  - The IMU runs in every state, so stillness is known in all of them. There is no `lift_arm` and no continuous polling while the INT is wired.
-- Produces, in `power.h`:
-  - `void power_anticipate(void);`. In Off or Deep idle it sets `cc_poll_set_floor(0)` so the next watch block comes within I = 3 s, and logs `anticipate`. If no wake follows within 30 s, it sets the floor back to 15. Task 8 extends it for a parked radio. It never lights the screen.
-  - The power task fills `pr_in_t.still_ms = lift_still_ms()` and `still_hibernate_ms = pw_still_hib_min * 60000`.
-- The IMU wake from Hibernate:
-  - `hibernate_now` arms the IMU (any-motion latched, `IMU_ANYMOT_THR`, `IMU_ANYMOT_HIB_DUR`, ext1 on the LP GPIO) only when `hibernate_wake_sources() & HIB_SRC_IMU` and `pr_imu_wake_armed(&cap, pw_imu_wake)`. Otherwise it calls `imu_suspend()`.
-  - If the mode is power-off and the boot can't tell an IMU wake from a button press, Hibernate uses deep sleep whenever it arms the IMU, so the guard always knows the source (my call, A17; record the draw difference).
-  - On a boot where `hibernate_wake_src() == HIB_SRC_IMU`, the device shows the dim `Waking: reconnecting to Mac` view (brightness `pr_dim_brightness`, WAKING cards) and starts the radio at once, as every boot does. The power task runs the confirm window: it reads INT_STATUS_0 once a second and counts `motion_s`, the 1 s buckets with the any-motion bit set from 2 s after boot, and asks `pr_imu_confirm` every second.
-    - INPUT (a key or a touch): a normal wake. A key also calls `pr_imu_cap_rearm`.
-    - MOTION: a provisional wake. If the ladder reaches Off before any key or touch, it is counted with `pr_imu_cap_unconfirmed`, saved, and the device calls `hibernate_now(0, POWER_BOOT_HIB_WAKE)` at once, with no notice, instead of walking the ladder (my call, A16).
-    - FAIL: `pr_imu_cap_unconfirmed`, save `imucap` in NVS, then `hibernate_now(0, POWER_BOOT_HIB_WAKE)` at once, with no notice.
-  - A wake from Hibernate whose cause is neither the IMU nor the timer (the side button, reset or power-on), and any `PW_KEY` wake, call `pr_imu_cap_rearm` and save.
-  - `now_s` is `time(NULL)` when the clock is valid (year ≥ 2026: deep sleep keeps the RTC-backed system time, and after power-off `sysinfo_time_from_rtc` runs first), else 0.
-- Touch off in Deep idle (built now, switched on only after the lift wake is proven on the device):
-  - `#define PW_DEEP_IDLE_TOUCH_OFF 0` in `power.c`. Task 10 sets it to 1 once a real pick-up has woken the device from Deep idle. `power set deep-touch-off 0|1` overrides it in RAM for testing.
-  - When on, Deep idle entry stops the 10 Hz touch poll and cuts `TOUCH_EN` (`bsp_feature_enable(BSP_FEATURE_TOUCH, false)`). Keys and lift still wake it. Waking turns `TOUCH_EN` on, waits 50 ms, and re-creates the touch handle (`esp_lcd_touch_del`, `bsp_touch_new`, `lvgl_port_add_touch`), unless the Task 6 teardown re-creates it anyway.
-  - If Task 6 Step 4c found that `TOUCH_EN` takes the ST7123 panel down too, this needs the Deep-idle teardown. Without the teardown it only stops the poll and leaves `TOUCH_EN` on. Record which.
-  - Off keeps touch, because it's cheap relative to the P4 and a tap is the natural gesture in the first minutes.
-- Produces, appended to `app_settings_t` (after `pw_hibernate_checkin_h`):
-
-```c
-    uint16_t pw_still_hib_min;   /* spec still_hibernate_min: 30; 0 = off; clamped to 0 or 10-240 */
-    uint8_t  pw_imu_wake;        /* 1: wake from Hibernate on a pick-up (with the false-wake cap) */
-```
-  `CFG_VERSION` becomes 19. When migrating from 18 or older, `settings_init` sets both to their defaults (`if (old_version <= 18)`), as `plan2_defaults` does for v17: the old blob's tail padding may have landed on them. It clamps `pw_still_hib_min` with `vitals_clamp_or_zero(…, 10, 240)`.
-- Settings → Power:
-  - Wake on lift (`pw_wake_lift`);
-  - Wake on pick-up from Hibernate (`pw_imu_wake`), shown only when `hibernate_wake_sources() & HIB_SRC_IMU`, with the muted note `Turns itself off after 3 false wakes in an hour` and, while the cap holds, `Off after false wakes. Press a key to turn it back on.`;
-  - Hibernate when still for (min): Off, 10–240, shown when `hibernate_supported()`.
-- Persistent backstop for multi-boot tests, in `hibernate.c`: `power hib backstop <s> <n>` arms an extra timer wake after s seconds on each of the next n hibernates of any kind. The counter lives in `RTC_NOINIT_ATTR` memory, so it survives deep sleep (not power-off: the tests below need deep sleep). `power hib test imu-drdy [n]` now takes a count: the next n hibernates map data-ready instead of any-motion, so each one wakes at once as an IMU wake (debug, RTC memory too).
-- Console:
-  - `power imu` prints `imu: path=<int(gpio N)|int(expander 0x4x)|poll> lowpower=<yes|no> acc_conf=0x<hex> anymot=<n> nomot=<n> still=<s|unknown> anticipate=<n> reads=<n> cap=<n>/3 <armed|disabled> last-wake=<none|imu input|imu motion|imu fail>` (`reads` counts the I²C reads of the sensor since boot);
-  - `power imu cap [clear]` prints the cap's entries with their ages, or rearms it;
-  - `power sim still <s>` sets the stillness to s seconds (RAM only), `power sim anymotion` feeds one any-motion event through the task, `power sim lift` calls `power_wake(PW_LIFT)`;
-  - `power set still-hib <min>`, `power set imu-wake 0|1`, `power set deep-touch-off 0|1` (RAM only); `power settings` and `power set defaults` include `still-hib` and `imu-wake`;
-  - `power lift` prints the last sample, the baseline and the path.
-
-- [ ] **Step 1: Write the failing host tests** in `test_lift_detect.c` and `test_power_rules.c`
-  - `test_still_noise_never_wakes`: 1000 samples of (0, 0, 1) ± 0.03 g pseudo-noise → never WAKE.
-  - `test_tilt_held_wakes`: baseline (0, 0, 1), then (0.3, 0, 0.95) five times → FAST, FAST, FAST, FAST, WAKE.
-  - `test_single_spike_no_wake`: one sample at (0.5, 0, 1), then back to rest → FAST, then SLOW.
-  - `test_slow_drift_follows`: a 0.001 g/sample drift over 500 samples → no WAKE.
-  - `test_still_accounting`: after init, `pr_still_ms` = 0 at any time; no_motion at t = 100 000 with dur 5 000 → 5 000 at t = 100 000 and 1 805 000 at t = 1 900 000; a repeated no_motion at t = 1 950 000 leaves it at 1 855 000; any_motion at t = 2 000 000 → 0; no_motion at 2 100 000 → 5 000 there; an event with `imu_ok` false → 0 (unknown) until the next no_motion; any_motion and no_motion in one event → 0.
-  - `test_imu_cap`: unconfirmed at 1 000, 2 000 and 3 000 → disabled, `pr_imu_wake_armed(c, true)` false; rearm → armed and n 0. Unconfirmed at 1 000 and 2 000, then at 4 600 → the 1 000 entry aged out (4 600 − 1 000 = 3 600), n 2, not disabled. Setting off → not armed with n 0. A clock of 0: unconfirmed at 0, 0, then 5 000 → disabled (the 0 entries never age out).
-  - `test_imu_confirm`: (5 000, true, 0) → INPUT; (25 000, true, 0) → INPUT; (5 000, false, 5) → MOTION; (5 000, false, 4) → WAIT; (19 999, false, 0) → WAIT; (20 000, false, 4) → FAIL.
-
-- [ ] **Step 2: Run them to make sure they fail**
-
-Run the host test command.
-Expected: FAIL
-
-- [ ] **Step 3: Implement `lift_detect.c` and the `power_rules.c` additions** and run the tests until they pass
-
-- [ ] **Step 4: Check the feature blob and the licences**
-  - Take Task 6 Step 4a's finding on which blob the driver uploads. If it is Bosch's standard blob, use it as it is: it comes inside the espressif/bmi270 component (Apache-2.0), and Bosch publishes the blob under BSD-3-Clause.
-  - If it has no any-motion and no-motion, `imu_init` uploads Bosch's standard `bmi270_config_file` from BMI270_SensorAPI itself, after `bmi270_create`. Keep it in `firmware/main/sys/bmi270_cfg_bosch.h` with Bosch's BSD-3-Clause header kept whole, and add a line for it beside the existing licence notices.
-  - Check whether the blob has Bosch's wrist-wake gesture (it is in the wearable `bmi270_wh` config, not the standard one, so expect no). Use any-motion unless it's there.
-  - The register offsets and bit positions written in `imu.c` are datasheet facts, not copied code. If any function is copied from the SensorAPI, it keeps Bosch's header.
-  - Record the result as a ruling.
-
-- [ ] **Step 5: Implement `imu.c` additions, `lift.c`, the power and hibernate hooks, the settings and the rows**, add the preview stubs, build the preview, then build and flash
-
-Expected: the boot log shows `imu: bmi270 0x24 at 0x68, blob <standard|bosch upload>, path <int(gpio N)|int(expander 0x4x)|poll>`, and `power settings` shows `still-hib=30 imu-wake=1` (the CFG 19 migration ran).
-
-- [ ] **Step 6: Check on hardware without moving the device**
-
-Run: `python3 $T5 "power imu"`.
-Expected: the path Task 6 found, `lowpower=yes`, `acc_conf=0x17`.
-
-Leave the device on the desk 60 s, then run `python3 $T5 "power imu"`.
-Expected: `nomot` at least 1 and `still` at least 50 s, with no I²C reads in between except the 10 s status read (`power imu` counts them as `reads=`). On the polling fallback, `reads` climbs at 2 a second instead: record it.
-
-Run: `python3 $T5 "power set dim 10" "power set off 20"`. Wait for `state=off`, then run `python3 $T5 "power sim anymotion" "power imu" "companion watch status"`.
-Expected: `anticipate=1`, the watch at `I=3s` within a few seconds, and `state=off` still (the screen stays dark). After 30 s, `I=15s` again.
-
-Run: `python3 $T5 "power sim lift" "power wakes"`.
-Expected: `lift swallowed=0`, `state=active`.
-
-Leave it in Off for 3 minutes on the desk.
-Expected: no `lift` wake in `power wakes`, and `still` keeps growing. Lifting it for real is Task 10 Step 4.
-
-- [ ] **Step 7: Check the stillness trigger and the false-wake guard on USB**
-
-Stillness: run `python3 $T5 "power hib test-wake 40" "power sim battery 50" "power sim still 1800" "power sim idle 1800" "power"`.
-Expected: the notice for 3 s, then hibernate, then back within about 40 s with `power boot` showing `kind=hib-wake cause=timer`. Run `power set defaults`.
-
-The guard (only if Task 6 proved `imu-drdy` from an LP GPIO; otherwise record "IMU wake from Hibernate: not wired, guard not exercised"). Run: `python3 $T5 "power imu cap clear" "power hib backstop 60 6" "power hib test imu-drdy 4"`. Don't send any key: the console reconnecting after each boot is not input.
-Expected, over about 3 minutes:
-- three IMU wakes in a row, each powering down again about 20 s after boot (`imu fail` in the log, which `power log dump` or the next boot's `power imu` shows);
-- after the third, `cap=3/3 disabled`, and the next hibernate arms no IMU source, so the 60 s backstop wakes it (`cause=timer`, which neither counts nor rearms);
-- `power imu` then shows `cap=3/3 disabled` and Settings → Power shows the "Off after false wakes" note.
-
-Run: `python3 $T5 "power go off"`, then `python3 $T5 "key esc" "power imu"`.
-Expected: `cap=0/3 armed` (a key wake rearms it).
-
-Confirm by input: run `python3 $T5 "power hib backstop 60 2" "power hib test imu-drdy 1"`, and as soon as the console is back (within the 20 s), run `python3 $T5 "key esc" "power imu" "power"`.
-Expected: `last-wake=imu input`, `cap=0/3 armed`, and the device stays up and follows the normal ladder.
-
-Run `python3 $T5 "power hib backstop 0 0" "power set defaults"`.
-
-- [ ] **Step 8: Check the Deep-idle touch-off on USB** (the code only; it stays off until Task 10)
-
-Run: `python3 $T5 "power set deep-touch-off 1" "power go deep-idle" "power touch" "power rails"`.
-Expected: `touch: poll off`, and `TOUCH_EN` at 0 (or still 1 with `touch-off: poll only` in the log when Task 6 found that `TOUCH_EN` also takes the panel and the teardown wasn't kept).
-
-Run: `python3 $T5 "key esc"`, take a screenshot, then `python3 $T5 "power go off"`, wait 5 s, and run `python3 $T5 "power touch"`.
-Expected: the dashboard is back, and in Off the touch poll reads again with `errors=0` (the re-created handle works). Run `power set deep-touch-off 0`.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add firmware/main firmware/test/host firmware/tools/ui_preview docs/superpowers/notes/2026-10-23-plan2-rulings.md
-git commit -m "feat(power): BMI270 any/no-motion interrupts for lift wake, stillness, anticipatory link and a guarded IMU wake from Hibernate"
-```
+Task 7 (lift wake, stillness, the IMU wake from Hibernate, the false-wake guard, anticipatory wake, `pw_still_hib_min`, `pw_imu_wake`, `lift_detect`, `lift.c`, the IMU interrupt code) is removed at the user's request on 2026-10-23 ("I'd probably be ok with no auto detection wake up and just be forced to press the button"), per Ruling PT15. Nothing moved, apart from `imu_suspend`, which now lives in Task 6 (`imu.c` is the chip ID and `imu_suspend` only). The persistent `power hib backstop` moved to Task 8, which builds the Hibernate check-in and needs a multi-boot timer backstop. The spec and plan text for Task 7 stays in git history; motion wake can come back later as its own task. Task numbers are not renumbered, so every other "Task N" reference stays right.
 
 ### Task 8: wifi_mgr reconnect, parked state and the Radio-off tier
 
@@ -1255,12 +1030,25 @@ git commit -m "feat(power): BMI270 any/no-motion interrupts for lift wake, still
 - Modify: `firmware/main/sys/power.c`, `power_rules.c`, `power_rules.h`, `firmware/test/host/test_power_rules.c`
 - Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls)
 - Modify: `firmware/main/app_main.c` (`wifi_global_cb`; the Hibernate check-in boot), `firmware/main/ui/ui_settings.c` (Radio-off rows, Hibernate check-in row), `firmware/main/ui/ui_dashboard.c` (`Reconnecting…`), `firmware/main/sys/power_bench.c` (steps `radio-off` 180 s, `checkin-handshake` and `checkin-rebind`, each up to 120 s, and `deep-idle` 180 s, all inserted before Task 6's `floor` and `hibernate`, which stay the last two; that makes 15 steps, within `BENCH_MAX` 16), `firmware/main/sys/power_console.c`
-- Modify: `firmware/main/sys/hibernate.c`, `hibernate.h` (the check-in wake and boot)
+- Modify: `firmware/main/sys/hibernate.c`, `hibernate.h` (the check-in wake and boot; the persistent `power hib backstop`, moved from the removed Task 7)
+- Modify: `firmware/main/settings/settings.h`, `settings.c` (PT16: `pw_hibernate_checkin_min`, `CFG_VERSION 19`)
 
 **Interfaces:**
 - Produces, in `power_rules.h`:
   - `int pr_backoff_s(int attempt);` gives 1, 2, 4, 8, 16, then 30 for every later attempt, with no cap on attempts.
   - `bool pr_radio_off_worth_it(float a_mw, float b_mw, float c_mwh, int checkin_min, int checkin_s);`. It is the spec's rule: `(a − b) × period > c`, the average draw drops at least 20%, and `checkin_s < 30`. The average with toggling is `b + c / period`.
+  - PT16, the Hibernate check-in decision (pure):
+
+```c
+typedef enum { PR_HC_REHIBERNATE, PR_HC_REHIBERNATE_KEEP_RAIL, PR_HC_STAY_DEEP_IDLE } pr_hc_t;
+pr_hc_t pr_hib_checkin_next(bool poll_ok, bool needs_you, bool kbd_rail_survives);
+/* !poll_ok (the check-in failed or timed out) → REHIBERNATE (light off; recorded as hib-failed);
+   !needs_you → REHIBERNATE (the light is off, PR_LED_OFF);
+   needs_you && kbd_rail_survives → REHIBERNATE_KEEP_RAIL (the light stays amber at 30%, the keyboard rail is not cut);
+   needs_you && !kbd_rail_survives → STAY_DEEP_IDLE (radio parked, light amber at 30% until input,
+   or until a later poll shows nothing needs you, and then hibernate_now again). */
+int pr_hib_checkin_clamp_min(int min);   /* 0 stays 0 (Off); 1..14 → 15; 721.. → 720 */
+```
   - `int pr_checkin_period_min(power_state_t st, int checkin_min, int deep_checkins_done);`. Radio off: `checkin_min`. Deep idle backs off 5 → 15 → 30 min: `max(checkin_min, 15)` for the first check-in after entering Deep idle (`deep_checkins_done == 0`), then `max(checkin_min, 30)` for every later one. Any other state: 0 (no check-ins).
 - Produces, in `wifi_mgr.h`:
   - Background reconnect moves to a `wifi_rc` task (stack 3072). The disconnect handler only notifies it, never `vTaskDelay`. The task calls `esp_wifi_connect()` after `pr_backoff_s(attempt)` seconds until it gets an IP, is parked, or the user disconnected. A background attempt that fails is retried, so it never stops for good.
@@ -1288,34 +1076,36 @@ git commit -m "feat(power): BMI270 any/no-motion interrupts for lift wake, still
     5. `cc_link_poll_now(15000)`;
     6. a new needs-you does a needs-you wake (Dim) and stays up; otherwise run `cc_link_park(true)` + `wifi_mgr_park()` again, then `tailscale_set_fast_resume(false)`.
   - Each check-in's path, total ms and mWh go into the power log and `power checkins`. The path `handshake` is recorded only after step 4's SSH connect succeeds, because a stale keypair can report the peer as up.
-  - A key, touch or lift during Radio off wakes to Active: unpark at once, then reconnect, while the dashboard shows the muted `Reconnecting to <host>…` with stale cards until the first fresh result.
+  - A key or touch (PT15: no lift) during Radio off wakes to Active: unpark at once, then reconnect, while the dashboard shows the muted `Reconnecting to <host>…` with stale cards until the first fresh result.
   - Input wake from Radio off uses the same steps 1–5 (handshake first, so the target is about 10 s), then stays up. When that reconnect finishes it calls `tailscale_set_fast_resume(false)`, so a later real Wi-Fi drop still rebinds.
   - The keyboard light uses `pr_light_max_age_ms(true, period)` in Radio off and Deep idle, where `period` is the one `pr_checkin_period_min` scheduled for the next check-in (Review Focus 4).
   - Off entry also calls `wifi_mgr_set_ps_max(true)`, and every wake calls `wifi_mgr_set_ps_max(false)`.
-  - `power_anticipate()` (Task 7) with the radio parked, in Radio off or Deep idle, runs check-in steps 1–5 without lighting the screen and then stays unparked for 60 s instead of step 6, so a lift or key that follows finds the link up. If nothing wakes the device in those 60 s, it parks again as after a check-in. It logs as a check-in with path `anticipate`.
 - Power, Deep idle:
   - With `pw_radio_off` on, Deep idle keeps the radio parked (it parks it first if Radio off hadn't yet) and runs the same check-in steps 1–6, at `pr_checkin_period_min(PS_DEEP_IDLE, pw_checkin_min, k)`, logging tag `0x84`. Leaving Deep idle resets k.
   - With `pw_radio_off` off (the default until Task 10), Deep idle leaves the link on the long poll at I = 15 s, as in Off. There are no check-ins, so nothing backs off.
   - A check-in that finds a new needs-you does a needs-you wake, as in Radio off. The light rule is the Deep-idle one (amber at 30%) only until that wake lands in Dim.
   - Bench step `deep-idle` (180 s): `power_go(PS_DEEP_IDLE)` with the radio parked and no check-in due inside the step, so it measures the floor (with the Task 6 teardown and 40 MHz clock if they were kept).
-- Hibernate check-in (`pw_hibernate_checkin_h`, default 0 = off):
-  - When it is set, `hibernate_now` arms a wake after `pw_hibernate_checkin_h` hours with `next = POWER_BOOT_HIB_CHECKIN`. The wake comes from the timer, or the RX8130 alarm when Task 6 chose power-off with the RTC as a source.
+- Hibernate check-in (PT16: **on by default, every 60 min**; setting `pw_hibernate_checkin_min`, 0 = Off, otherwise 15–720):
+  - Setting storage: Task 2's `pw_hibernate_checkin_h` is uint8 hours and cannot hold 15–720 min, so it becomes reserved and unused (like `utc_offset_min`). Append `uint16_t pw_hibernate_checkin_min; /* spec hibernate_checkin: 60; 0 = off; clamped by pr_hib_checkin_clamp_min to 0 or 15–720 */` after it. `CFG_VERSION` becomes 19; when migrating from 18 or older, `settings_init` sets it to 60 (`if (old_version <= 18)`, as `plan2_defaults` does for v17), so an existing device gets the default. Task 10 bumps to 20 to set any revised default once.
+  - Unless it is Off, `hibernate_now` arms a wake after `pw_hibernate_checkin_min` minutes with `next = POWER_BOOT_HIB_CHECKIN`. The wake comes from the timer, or the RX8130 alarm when Task 6 chose power-off with the RTC as a source. The battery ≤ 10% trigger still hibernates with no check-in armed (`wake_after_s` 0) so a nearly flat battery isn't drained further.
   - On a check-in boot, `app_main` keeps the screen dark (brightness 0, panel off, power state Off from the start) and runs:
     1. Wi-Fi up;
     2. `tailscale_checkin(mac_ip, false, &ms)`;
     3. `cc_link_park(false)` and wait for connected;
     4. `cc_link_poll_now(15000)`;
-    5. any background needs-you → keyboard light amber at 30% (the Deep-idle rule), else `PR_LED_OFF`;
-    6. `hibernate_now(pw_hibernate_checkin_h * 3600, POWER_BOOT_HIB_CHECKIN)` again.
+    5. `pr_hib_checkin_next(poll_ok, any_background_needs_you, hibernate_kbd_rail_survives())`:
+       - **needs-you, keyboard rail survives deep sleep with the light held** (Task 6 Step 4c): the light goes amber at 30% (the Deep-idle rule) and `hibernate_now(pw_hibernate_checkin_min * 60, POWER_BOOT_HIB_CHECKIN)` runs again with the keyboard rail kept (not cut) and the light left on;
+       - **needs-you, rail doesn't survive:** the device stays in Deep idle (radio parked, light amber at 30%) until input, or until a later poll (the long poll, or a Deep-idle check-in) shows nothing needs you, and then hibernates again (`hibernate_now` as above). A `hib_checkin_hold` flag keeps `pr_next_state` from hibernating in the meantime, except for the battery ≤ 10% trigger;
+       - **nothing needs you (or the poll failed):** the light is off and it goes straight back to `hibernate_now(pw_hibernate_checkin_min * 60, POWER_BOOT_HIB_CHECKIN)`.
   - The whole check-in has 180 s. When that runs out it hibernates anyway and records `failed`.
-  - A key, touch or lift during a check-in boot is an ordinary wake to Active, and the check-in is abandoned.
-  - If Task 6 found that the keyboard rail drops in deep sleep or power-off, or Task 6 Step 4c put a keyboard rail among the ones Hibernate cuts, the amber light can't outlast the check-in. Then a needs-you check-in stays up in Deep idle with the light amber, instead of hibernating, until input or the next `pw_hibernate_h` (my call, Amendment A9).
+  - A key or touch during a check-in boot is an ordinary wake to Active, and the check-in is abandoned. (PT15: no lift wake.)
+  - The persistent backstop: `power hib backstop <s> <n>` arms an extra timer wake after s seconds on each of the next n hibernates (RTC memory), so tests that span several cold boots can't strand the device. It was Task 7's; PT15 moved it here.
   - Each check-in goes into `power checkins` with path `hib-handshake`, `hib-rebind` or `hib-failed`, its ms and its mWh (summed from 1 Hz samples during the boot, tag `0x85`). `power checkins` keeps its last 8 entries in NVS (ns `power`, key `chk`) so they survive the hibernate.
-- Settings → Power: Radio off (switch, default off), Radio off after (min) 5–240, Check in every (min) 1–60, Hibernate check-in every (h): Off, 1–24.
+- Settings → Power: Radio off (switch, default off), Radio off after (min) 5–240, Check in every (min) 1–60, **Hibernate check-in every (min): Off, 15–720, default 60** (PT16).
 - Console:
   - `power go radio-off`, `power checkin [rebind]` (one check-in now), `power checkins` (last 8: path, ms, mWh);
-  - `power set radio-off 0|1`, `power set radio-after <min>`, `power set checkin <min>`, `power set hib-checkin <h>`;
-  - `power checkin hibernate` runs one Hibernate check-in cycle with a 60 s wake. After that one check-in it stays awake instead of hibernating again (debug), so the console comes back;
+  - `power set radio-off 0|1`, `power set radio-after <min>`, `power set checkin <min>`, `power set hib-checkin <min>` (0 = Off; RAM only);
+  - `power checkin hibernate` runs one Hibernate check-in cycle with a 60 s wake, then follows the PT16 rule as usual, except that on a REHIBERNATE result it stays awake instead of hibernating again (debug), so the console comes back; `power checkin hibernate keep` forces the keyboard-rail-survives branch and `power checkin hibernate nokeep` the stay-in-Deep-idle branch, whatever Task 6 found (RAM only);
   - `power` prints `next-checkin=<s>` and `period=<min>` in Radio off and Deep idle;
   - `companion reconnect-log` prints `cc_link_reconnect_log`;
   - the debug-only `wifi test drop` calls `esp_wifi_disconnect()` without setting the user flag, like a real drop.
@@ -1323,6 +1113,9 @@ git commit -m "feat(power): BMI270 any/no-motion interrupts for lift wake, still
 - [ ] **Step 1: Write the failing host tests** (in `test_power_rules.c`)
   - `test_backoff`: attempts 0..7 → 1, 2, 4, 8, 16, 30, 30, 30; attempt 1000 → 30.
   - `test_radio_off_rule`: a = 300, b = 60, c = 2.0 mWh, 5 min, 12 s → true (the saving is 20 mWh per period; the average falls from 300 to 84 mW); c = 25 mWh → false; check-in 31 s → false; a = 100, b = 90, c = 0.1 mWh → false (the saving, 0.83 mWh, passes the first condition; the average falls only 8.8%, under 20%).
+  - `test_checkin_needs_you_keeps_light` (PT16; Review Focus 6): `pr_hib_checkin_next(true, true, true)` → `PR_HC_REHIBERNATE_KEEP_RAIL`; `(true, true, false)` → `PR_HC_STAY_DEEP_IDLE`.
+  - `test_checkin_nothing_rehibernates` (PT16): `(true, false, true)` and `(true, false, false)` → `PR_HC_REHIBERNATE`; a failed poll `(false, true, true)` and `(false, false, false)` → `PR_HC_REHIBERNATE` (never lights a stale needs-you).
+  - `test_checkin_clamp` (PT16): `pr_hib_checkin_clamp_min` of 0 → 0; 1 → 15; 14 → 15; 15 → 15; 60 → 60; 720 → 720; 721 → 720; 5000 → 720.
   - `test_deep_idle_backoff` (Review Focus 4): `pr_checkin_period_min(PS_RADIO_OFF, 5, 0)` = 5; `(PS_DEEP_IDLE, 5, 0)` = 15; `(PS_DEEP_IDLE, 5, 1)` = 30; `(PS_DEEP_IDLE, 5, 7)` = 30; `(PS_DEEP_IDLE, 20, 0)` = 20; `(PS_DEEP_IDLE, 20, 1)` = 30; `(PS_DEEP_IDLE, 45, 3)` = 45 (never shorter than the user's); `(PS_OFF, 5, 0)` = 0. And `pr_light_max_age_ms(true, 30)` = 1 860 000, so a 30-minute Deep-idle period keeps the amber.
 
 - [ ] **Step 2: Run them to make sure they fail**
@@ -1370,12 +1163,14 @@ Expected: `state=deep-idle`, the radio parked, `period=15`.
 Run: `python3 $T5 "power checkin"`, wait 60 s, then `python3 $T5 "power"` (a forced check-in counts as the first one).
 Expected: `period=30`, and `power light` shows `light: 1 0 0 0 0 (nobody needs you)`.
 
-Start `companion-test-hib` on the Mac (Task 3 prompt) and wait for it to block. Run: `python3 $T5 "power set hib-checkin 1" "power checkin hibernate"`. The console drops for about 60 s plus the cold connect. When it is back, run `python3 $T5 "power checkins" "power light" "power boot" "power"`.
+Start `companion-test-hib` on the Mac (Task 3 prompt) and wait for it to block. Run: `python3 $T5 "power set hib-checkin 60" "power checkin hibernate keep"`. (The default is 60 min, PT16; the forced 60 s wake keeps the test short.) The console drops for about 60 s plus the cold connect. When it is back, run `python3 $T5 "power checkins" "power light" "power boot" "power"`.
 Expected:
 - a `hib-handshake` or `hib-rebind` entry with its ms and mWh;
 - `light: 1 30 f4 b5 45 (needs you: companion-test-hib)`;
 - `kind=hib-checkin`;
 - `state=off` with brightness 0: the screen stayed dark (an LVGL screenshot still renders, so it can't show this).
+
+Then the other two branches. Run `python3 $T5 "power checkin hibernate nokeep"` with `companion-test-hib` still blocked: expected, after the cold connect, `state=deep-idle` with the radio parked, `power light` amber, and no further hibernate. Stop `companion-test-hib` (or answer it with a `reply` to your own test session), wait for the next poll (15 s in Deep idle with Radio off disabled), and expected: `power light` goes off and the device hibernates (use `power hib backstop 60 1` first, so it comes back). Finally, with no test session blocked, run `python3 $T5 "power checkin hibernate"`: expected, `light: 1 0 0 0 0 (nobody needs you)` and an immediate re-hibernate (again behind the backstop).
 
 Record the check-in's total time. Stop `companion-test-hib`, then run `power set defaults`.
 
@@ -1584,14 +1379,13 @@ This is the only task that needs the user. Tasks 1–9b are done and flashed, an
 - Create: `docs/superpowers/notes/2026-10-23-power-measurements.md`
 - Modify: `firmware/tools/power_report.py`, `firmware/tools/test_power_report.py` (`ladder_mwh` and `--ladder`)
 - Modify: `firmware/main/sys/sysinfo.c` (only if Step 4 shows the charge pin doesn't track)
-- Modify: `firmware/main/settings/settings.c`, `settings.h` (gated and long-idle defaults from the data, `pw_still_hib_min` among them; `CFG_VERSION 20`, since Task 7 took 19, with a migration that sets each changed default once)
-- Modify: `firmware/main/sys/imu.h` (the any-motion and no-motion values chosen from Step 6b), `firmware/main/sys/power.c` (`PW_DEEP_IDLE_TOUCH_OFF` 1 if Step 4 proves the lift wake from Deep idle)
+- Modify: `firmware/main/settings/settings.c`, `settings.h` (gated and long-idle defaults from the data, `pw_hibernate_checkin_min` among them; `CFG_VERSION 20`, since Task 8 took 19, with a migration that sets each changed default once)
 - Modify: `firmware/main/ui/hotkeys.c`, `hotkeys.h`, `firmware/test/host/test_hotkeys.c` (only if Step 3 shows Ctrl+] isn't reported)
 - Modify: `docs/superpowers/specs/2026-10-22-claude-tab5-design.md` (Known issues: Mac sleep/wake reconnect, brownout counts; Roadmap row 2 done)
 
 **Interfaces:**
-- Consumes: `power bench`, `power_report.py`, `power wakes`, `power checkins`, `power boot`, `power light test bind`, `key log`, `cc_link_reconnect_log` and `companion kick` from the earlier tasks, plus `pr_radio_off_worth_it` (Task 8), and `power imu`, `power imu cap`, `power rails` and `power hib backstop` (Tasks 6, 7).
-- Produces, in `power_report.py`: `ladder_mwh(mw: dict[str, float], hours: float, *, dim_s=30, off_s=120, radio_off_min: int | None = 20, checkin_min=5, deep_idle_min: int | None = 60, hibernate_h: int | None = 2, checkin_mwh=0.0, hib_checkin_h=0, hib_checkin_mwh=0.0) -> dict`. It returns `{"mwh", "by_state", "checkins"}` for `hours` of idle after the last input.
+- Consumes: `power bench`, `power_report.py`, `power wakes`, `power checkins`, `power boot`, `power light test bind`, `key log`, `cc_link_reconnect_log` and `companion kick` from the earlier tasks, plus `pr_radio_off_worth_it` and `power checkin hibernate` (Task 8), and `power rails` and `power hib test light` (Task 6) and `power hib backstop` (Task 8).
+- Produces, in `power_report.py`: `ladder_mwh(mw: dict[str, float], hours: float, *, dim_s=30, off_s=120, radio_off_min: int | None = 20, checkin_min=5, deep_idle_min: int | None = 60, hibernate_h: int | None = 2, checkin_mwh=0.0, hib_checkin_min: int | None = 60, hib_checkin_mwh=0.0) -> dict`. It returns `{"mwh", "by_state", "checkins"}` for `hours` of idle after the last input.
   - `mw` has the keys `active`, `dim`, `off`, `radio_off`, `deep_idle` and `hibernate`. `None` turns a tier off.
   - The timeline follows `pr_next_state`:
     - Active until `dim_s`;
@@ -1603,13 +1397,14 @@ This is the only task that needs the user. Tasks 1–9b are done and flashed, an
   - Check-ins:
     - one every `checkin_min` in Radio off;
     - in Deep idle, only when Radio off is on, at `max(checkin_min, 15)` and then every `max(checkin_min, 30)` min (`pr_checkin_period_min`);
-    - every `hib_checkin_h` in Hibernate.
+    - every `hib_checkin_min` in Hibernate (PT16: default 60; `None` = Off), each costing `hib_checkin_mwh`.
   - The CLI's `--ladder 8,10` prints, for each number of hours, the mWh and the share of `--capacity-mwh` it uses, each with `(estimate)`.
 
 - [ ] **Step 1: Write the failing `ladder_mwh` tests** in `test_power_report.py`, then implement it until they pass
   - `test_ladder_default_8h`: mw {active 3000, dim 2000, off 1000, radio_off 300, deep_idle 200, hibernate 5}, 8 h, defaults → 828.33 mWh (±0.1): 25 + 50 + 333.33 + 190 + 200 + 30.
   - `test_ladder_checkins`: the same with `checkin_mwh=2` → 9 check-ins (7 in Radio off, 2 in Deep idle at +15 and +45 min), 846.33 mWh.
   - `test_ladder_no_radio_off`: `radio_off_min=None`, `checkin_mwh=2` → 0 check-ins, 1 271.67 mWh (Off runs to 60 min).
+  - `test_ladder_hib_checkin` (PT16): the default case (8 h, `hibernate_h` 2) with `hib_checkin_mwh=60` → 5 Hibernate check-ins (at 3, 4, 5, 6 and 7 h; one landing exactly at the end is not counted), 1 128.33 mWh; `hib_checkin_min=None` → 828.33 mWh; `hib_checkin_min=120` → 2 check-ins (at 4 and 6 h), 948.33 mWh.
   - `test_ladder_no_hibernate_10h`: `hibernate_h=None`, 10 h → 2 398.33 mWh (Deep idle to the end).
 
 Run the Python tests.
@@ -1622,22 +1417,18 @@ Flash the final build, then run `python3 $T5 "power set defaults" "power log cle
 - [ ] **Step 3: Ask the user once, in one message, for everything**
   1. Confirm a battery is fitted, and read its capacity from the label if you can.
   2. While it's still plugged in, before the bench:
-     - tap the dark screen once, press one key, and pick the Tab5 up off the table; I'll check that each one only wakes it;
-     - pick it up twice more when I ask: once while it's in its deepest idle with the screen dark, and once more just to check the motion sensor's wiring (only if I couldn't prove it without you);
+     - tap the dark screen once and press one key; I'll check that each one only wakes it (no lift wake any more, PT15);
      - look at the keyboard light for 5 s while I switch it to the keyboard's own mode, and tell me what it shows;
      - press Ctrl+], Ctrl+P, Ctrl+M and Ctrl+K when I ask, in both keyboard layouts (I switch the layout between rounds).
   3. When I say so, unplug USB for about 30 minutes while `power bench` runs. Near the end the Tab5 goes dark and restarts by itself three times; that is the bench measuring Hibernate. It shows `Bench done. Plug USB back in.` when it's finished; then plug it back in.
-  4. After the bench: the Tab5 will go to sleep with the same message. Press the side button once to wake it, and tell me when you pressed. If nothing happens within 10 s, press the reset button and tell me that instead.
-  5. Then it goes to sleep again. Leave it on the table for a minute, then pick it up as you normally would, and tell me when. Then I'll put it to sleep a last time: put it in a bag, unplugged, and carry it on a short walk of about 10 minutes (stairs or a car are fine), then take it out, plug it back in and tell me. I'm counting how often the motion wakes it by mistake.
+  4. After the bench, leave it unplugged: the Tab5 will go to sleep with the same message. Press the side button once to wake it, and tell me when you pressed. If nothing happens within 10 s, press the reset button and tell me that instead.
+  5. Then (still unplugged) it goes to sleep once more with a test session waiting for you. Leave it on the table and look at the keyboard light when I tell you the next check-in is due (a few minutes); tell me if it is amber. Then plug it back in.
   6. Then put the Mac to sleep (Apple menu → Sleep) for about 3 minutes, and wake it.
 
 - [ ] **Step 4: The wake and hotkey checks with the user** (on USB, before the bench)
   - Run `python3 $T5 "power go off"`, then ask for the tap. Then `power wakes`.
     Expected: `touch swallowed≥1`, no card action, and the screen lit. This is the first real-finger proof of the v2 touch poll (PT1).
-  - The same for a key (`key swallowed=1`) and for a lift (`lift`). Run `power imu` before and after the lift.
-    Expected: `anymot` went up on the path Task 6 found (`int(gpio N)` or `int(expander …)`). If Task 6 couldn't fire any-motion without a move, this pick-up is the proof of the INT routing: record it. If `anymot` didn't move on an `int` path, the routing is wrong: record it and set the path to `poll` for the rest of the visit.
-  - Run `python3 $T5 "power go deep-idle"`, then ask for the pick-up in Deep idle. Then `power wakes` and `power imu`.
-    Expected: a `lift` wake, and `anticipate` went up before it. If it works, set `PW_DEEP_IDLE_TOUCH_OFF` to 1 in `power.c` (the spec's touch-off, now that the lift wake is proven on the device), rebuild, flash, and run `power go deep-idle`, `power touch` (expected `poll off`) and `key esc`. Otherwise leave it at 0 and record why.
+  - The same for a key (`key swallowed=1`).
   - Run `power light test bind`, then `power light test user`, and record the user's description of mode 0.
   - Run `python3 $T5 "key log on"`, then, for the stock layout and then JIS (Settings → keyboard layout), ask for Ctrl+], Ctrl+P, Ctrl+M and Ctrl+K on the dashboard, and Ctrl+] again inside a take-over of `companion-test-bench`.
     Expected, in both layouts:
@@ -1654,7 +1445,7 @@ Flash the final build, then run `python3 $T5 "power set defaults" "power log cle
 - [ ] **Step 5: The bench on battery**
 
 Run: `python3 $T5 "power bench start"`, then ask the user to unplug. After the user plugs back in, run `python3 firmware/tools/power_report.py --port /dev/cu.usbmodem211201 --bench --capacity-mwh <N>` and `--log`.
-Expected: every row `ok` (or `skipped: not built` for what Task 6 dropped), including `deep-idle`, `floor` (3 samples: the board floor with every rail cut and the IMU suspended) and `hibernate` (3 samples, boot-to-live in `seconds`: Hibernate as it ships, with the C6 cut through `WIFI_EN`, and the IMU armed when it is a wake source). `hibernate` minus `floor` is the IMU's armed cost (plus the keyboard's, when no rail cuts it).
+Expected: every row `ok` (or `skipped: not built` for what Task 6 dropped), including `deep-idle`, `floor` (3 samples: the board floor with every rail cut and the IMU suspended), `hibernate-light` if Task 6 built it (3 samples: the same with the keyboard rail kept and the light amber) and `hibernate` (3 samples, boot-to-live in `seconds`: Hibernate as it ships, with the C6 cut through `WIFI_EN` and the IMU suspended, PT15). `hibernate` should read the same as `floor` within noise; `hibernate-light` minus `floor` is what holding the amber light through Hibernate costs.
 
 Check the charge pin: in the log, `flags` bit 0 should change at the unplug and the plug-in. If it doesn't track, set charging detection to the current direction only and record why.
 
@@ -1668,22 +1459,17 @@ Expected:
 
 The wake time is from the user's press to `to_live`, and the notes give both parts. If only the reset button worked, record "reset only". Hibernate's default then becomes 0 in Step 8.
 
-- [ ] **Step 6b: Wake from Hibernate with a pick-up, and the bag walk** (only if `power hib` lists the IMU as a source; otherwise record "IMU wake: not wired" and skip)
+- [ ] **Step 6b: The Hibernate check-in on battery (PT16)**
 
-Run: `python3 $T5 "power imu cap clear" "power go hibernate"`. Ask the user to leave it a minute, then pick it up and say when. When the console is back, run `python3 $T5 "power boot" "power imu"` and take a screenshot.
-Expected: `kind=hib-wake` with the IMU as the source, `last-wake=imu input` or `imu motion` (the user's touch or a key confirms it), the dim `Waking: reconnecting to Mac` view, and `to_live` recorded. The notes give pick-up to boot and boot to live.
-
-If the pick-up didn't wake it within 5 s, the any-motion values are too strict: lower `IMU_ANYMOT_HIB_DUR` to 25 (0.5 s), rebuild, flash, and try once more. If a still device woke on its own during the minute on the table, they are too loose: raise `IMU_ANYMOT_THR` to 0x100 (125 mg) and try once more. Record the values that worked.
-
-The bag walk, a short labelled test: run `python3 $T5 "power imu cap clear" "power log on" "power go hibernate"`, then ask the user to carry it in a bag, unplugged, for about 10 minutes. When it's back on USB, run `python3 $T5 "power imu" "power imu cap" "power resets"` and `python3 firmware/tools/power_report.py --port /dev/cu.usbmodem211201 --log`.
+Still unplugged after Step 6. Start `companion-test-bench` blocked (Task 3 prompt) if it isn't, and run `python3 $T5 "power log on" "power set hib-checkin 15" "power hib backstop 60 3" "power go hibernate"`. (15 min is the shortest period; the 60 s backstop adds an extra wake after each hibernate so the visit doesn't wait.) Wait for the next check-in boot. Ask the user to look at the keyboard light and say what it shows. When the console is back, run `python3 $T5 "power checkins" "power light" "power boot"` and take the `power_report.py --log` samples for the check-in boot.
 Expected, and record each:
-- the number of IMU wakes during the walk (the `deepsleep` reset count went up by that number, and `power imu cap` lists the unconfirmed ones with their ages);
-- whether the cap fired (`disabled`);
-- the energy those wakes cost (tag 0 samples from the wake boots, from the log);
-- the walk's length and kind (bag, stairs, car).
-It is about 10 minutes of one walk, not a day's carry: label it so in the notes. If the walk gave more than 1 false wake per 10 minutes, raise `IMU_ANYMOT_HIB_DUR` to 100 (2 s) for the Step 8 defaults and record it.
+- `kind=hib-checkin`, a `hib-handshake` or `hib-rebind` entry with its ms and mWh (tag `0x85` samples from the boot), and `power light` amber for `companion-test-bench`;
+- the branch taken: `hibernate_kbd_rail_survives()` yes means it went back to Hibernate with the light still amber (the user's report confirms the light held through Hibernate); no means `state=deep-idle`, radio parked, light amber;
+- the user's description of the light after the check-in.
 
-Run `python3 $T5 "power imu cap clear"`.
+Then stop `companion-test-bench`, run `power checkin hibernate` again, and record the nothing-needs-you check-in's ms and mWh (the straight-back case). These two energies, E_chk(needs-you) and E_chk(none), go in the notes: Step 8 uses E_chk(none) for the daily cost.
+
+Run `python3 $T5 "power set defaults"`.
 
 - [ ] **Step 7: The Mac sleep/wake reconnect**
 
@@ -1705,13 +1491,8 @@ The reconnect time is link-up minus the Mac wake. If it is over 30 s, run the sl
     - otherwise 1 h if `(deep-idle − hibernate) mW × 1 h > 3 × E_boot`, where E_boot is the `hibernate` row's boot-to-live seconds × the `active` step's mW (an estimate), because the spec's Priority leans to battery after an hour;
     - otherwise keep 2 h.
   - **Deep idle after (`pw_deep_idle_min`):** stays 60. The Priority keeps the first hour responsive. Record the measured saving against the step it replaces (`radio-off` if Radio off ships on, else Off).
-  - **Hibernate check-in:** stays 0. Record the Task 8 check-in's energy and time for the user to decide.
-  - **Hibernate when still (`pw_still_hib_min`):** t_be = E_boot / (deep-idle − hibernate) mW is how long Hibernate must last to pay back one wake.
-    - 0 (off) if stillness never read as still during the visit (`power imu` showed `still=unknown`), or Step 6 needed the reset button;
-    - otherwise 30 if 3 × t_be ≤ 30 min;
-    - otherwise 3 × t_be rounded up to 10 min, at most 120.
-  - **IMU wake from Hibernate (`pw_imu_wake`):** stays 1 if Step 6b woke on the pick-up and the bag walk gave at most 1 false wake per 10 minutes; otherwise 0, and record why. The any-motion values in `imu.h` are the ones Step 6b settled on.
-  - Bump `CFG_VERSION` to 20 (Task 7 took 19) so the device picks up each changed default once.
+  - **Hibernate check-in (`pw_hibernate_checkin_min`, PT16):** E_day = E_chk(none) × (1440 / period) from Step 6b. Stays 60 min if E_day at 60 min is at most 10% of the battery capacity (about 1.5 Wh/day from the ruling's estimate); otherwise the smallest of 90, 120, 180, 240, 360 or 720 min that brings E_day under 10%, and record the number (the user can still turn it Off). Record both check-in energies and the time.
+  - Bump `CFG_VERSION` to 20 (Task 8 took 19) so the device picks up each changed default once.
   - Build, flash and spot-check with `power settings`.
 
 - [ ] **Step 9: Write the notes**
@@ -1722,10 +1503,9 @@ Write `docs/superpowers/notes/2026-10-23-power-measurements.md`:
 - `power_report.py --ladder 8,10 --capacity-mwh <N>` with the defaults Step 8 chose: an **overnight** case (8 h idle) and a **day-out** case (10 h idle), each as mWh, the share of the battery, and the charge left, all labelled **estimate**; plus the same two with Hibernate off, for comparison;
 - the touch costs: `off-touch-poll` vs `off-touch-awake` (the 10 Hz poll) vs `off-touch-asleep` (and whether touch came back);
 - the keyboard light's cost;
-- both check-in paths, the Deep-idle backoff and the Hibernate check-in;
+- both check-in paths, the Deep-idle backoff and the Hibernate check-in (PT16: both energies, the branch taken, the user's light report, E_day at the chosen period);
 - the Hibernate wake: the source that worked, press to boot, boot to live;
-- the board floor (`floor`) and Hibernate as shipped (`hibernate`, C6 cut), and the difference; the INA226's own draw is in both rows and not in a shipped Hibernate;
-- the IMU: the INT routing (proved by Task 6 or by the Step 4 pick-up), the pick-up wake from Hibernate (pick-up to boot, boot to live), the any-motion threshold and duration chosen, the bag walk's false wakes (labelled as one short test), whether the cap fired, and the touch-off in Deep idle (on or off, and why);
+- the board floor (`floor`), `hibernate-light` if built, and Hibernate as shipped (`hibernate`, C6 cut, IMU suspended), and the differences; the INA226's own draw is in both rows and not in a shipped Hibernate;
 - the hotkey results in both layouts;
 - the charge-pin result and what mode 0 shows;
 - the `power` reading with no pack fitted (bus voltage, percent -1), if the user can briefly disconnect it, else "not tested";
@@ -1740,7 +1520,7 @@ Keep simulated or forced-state (USB) results apart from battery results. Update 
 Stop `companion-test-bench`, then run `power log off`.
 
 ```bash
-git add firmware/main/settings firmware/main/sys/sysinfo.c firmware/main/sys/imu.h firmware/main/sys/power.c firmware/main/ui/hotkeys.c firmware/main/ui/hotkeys.h firmware/test/host/test_hotkeys.c firmware/tools/power_report.py firmware/tools/test_power_report.py docs/superpowers
+git add firmware/main/settings firmware/main/sys/sysinfo.c firmware/main/ui/hotkeys.c firmware/main/ui/hotkeys.h firmware/test/host/test_hotkeys.c firmware/tools/power_report.py firmware/tools/test_power_report.py docs/superpowers
 git commit -m "docs(power): battery measurements, gated and long-idle defaults from the data"
 ```
 
@@ -1817,6 +1597,8 @@ These came from the spec's new Priority, "Long idle: Deep idle and Hibernate" an
 
 ## Amendments (2026-10-23, IMU-driven deep sleep)
 
+> **Superseded in part by PT15 (see the last section).** A14 (kept inert), and A15's INT probe, self-test and IMU wake, A16, A17, A18, A19, A20 (the backstop moved to Task 8), A21 and A22 are void; the rail cutting, `floor` and `imu_suspend` parts of A15 stand.
+
 These come from the spec's new section "IMU-driven deep sleep (the user, 2026-10-23): where the power actually goes" and its updated Settings list. Tasks 1–4 were already done, and Task 5's brief had already been extracted, so Task 5 only gains an input hook; the IMU-dependent work sits in Tasks 6 and 7.
 
 - A14: Task 5 gets a minimal hook. `pr_in_t` gains `still_ms` (the IMU's no-motion time, 0 when unknown) and `still_hibernate_ms` (0 = off), and `pr_next_state` enters Hibernate when on battery, with `hibernate_ok`, `still_ms ≥ still_hibernate_ms` and no input for that long, beside the idle-hours and low-battery triggers. Task 5 passes 0 for both, so it never fires until Task 7. One host test, `test_hibernate_when_still`. The "Amendment for Task 5" block at the top of Task 5 is the text to append to the extracted brief (Task 5).
@@ -1848,3 +1630,11 @@ These come from the spec's new section "IMU-driven deep sleep (the user, 2026-10
   - it sets `pw_still_hib_min` by a stated payback rule (3 × the time Hibernate needs to repay one wake, at least 30 min, at most 120) and keeps `pw_imu_wake` only if the pick-up worked and the walk gave at most 1 false wake per 10 min;
   - its `CFG_VERSION` bump becomes 20, since Task 7 took 19. The user's one message gains the pick-ups and the bag walk (Task 10).
 - A22: Review Focus gains item 6, a false IMU wake in a bag draining the battery, covered by `test_imu_cap`, `test_imu_confirm`, the Task 7 Step 7 loop and the Task 10 Step 6b walk.
+
+## Amendments (2026-10-23, button-only wake and a default Hibernate check-in: PT15, PT16)
+
+The user said: "I'd probably be ok with no auto detection wake up and just be forced to press the button. We still should have some periodic wake up though to notify when I need input and set the notification light."
+
+- A23 (PT15): all IMU wake work is dropped. Task 7 is removed (stub in place); Task 6's `imu.c` is the chip ID plus `imu_suspend` by raw I²C, with no `bmi270` component, no INT probe, self-test, any-motion or data-ready, and no `HIB_SRC_IMU`. Rail cutting, `floor` and the BMI270 suspend in Hibernate stay. The notice stays "Sleeping to save battery. Press the side button to wake." Task 5's `still_ms`/`still_hibernate_ms` hook stays in the built code, inert at 0, and `PW_LIFT` stays unused; Task 8 or 9 may delete both as cleanup. Settings `pw_wake_lift` (Task 2, built) stays in the struct and does nothing. Motion wake can come back later as its own task (Tasks 5, 6, 7, 8, 10).
+- A24 (PT16): the Hibernate check-in is on by default at 60 min (setting 15 min–12 h or Off), stored in a new uint16 `pw_hibernate_checkin_min` (the old uint8 hours field is reserved), `CFG_VERSION 19` in Task 8. On a needs-you it lights the keyboard amber at 30% and re-hibernates with the keyboard rail kept if Task 6 Step 4c shows the rail survives deep sleep with the light held, else stays in Deep idle until input or a later poll shows nothing needs you. No needs-you goes straight back to Hibernate. Pure rule `pr_hib_checkin_next` with `test_checkin_needs_you_keeps_light` and `test_checkin_nothing_rehibernates`. Cost: ~60 mWh per check-in, ~1.5 Wh/day at 60 min, against the Priority; Task 10 measures it and may lengthen the default (Tasks 2, 6, 8, 10).
+- A25: Task 10 loses the pick-up, bag-walk and stillness-tuning steps; it gains Step 6b (the check-in on battery, both branches' energies) and a Step 8 rule for the check-in default. The optional bench step `hibernate-light` (Task 6) measures what holding the amber light through Hibernate costs. `power hib backstop` moved from Task 7 to Task 8.
