@@ -19,7 +19,8 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
 - **R5** A beautiful, functional UI we control: a native dashboard, with a terminal only when you
   open a session.
 - **R6** Power-efficient: sleeps on its own. Shows battery %, charging, Wi-Fi and the clock.
-- **R7** Later: send a camera photo into a session; voice after that.
+- **R7** Later: voice input with the mic, so you don't have to type on the small keyboard (the
+  user's priority, 2026-10-23). A camera photo into a session comes last.
 - **R8** Shareable open source (MIT).
 - **R9** Not a security or hacking tool. Never propose Evil-M5Project or anything like it.
 
@@ -181,9 +182,11 @@ Known issues:
 |---|---|
 | **1 Session control** (`docs/superpowers/plans/2026-10-22-session-control.md`) | baseline build, debug console, a hands-on check of the couch path with the user, trimmed and rebranded fork, session dashboard with quick answers and take-over. Done when, from the couch, the Tab5 shows your Mac sessions, the amber ones need you, and you can answer or open them. |
 | 2 Power & vitals | backlight dim → light sleep; wake on keyboard, touch or lift; fast reconnect on wake; full vitals bar |
-| 3 Camera | take a photo, copy it to the Mac over SFTP, and ask the open session about it |
-| 4 Design pass | typography (IBM Plex via the fork's font tools), motion, plus a look at voice options |
-| 5 Release | final name, README, GitHub publish (visibility approved by the user), OTA manifest |
+| 3 Home screen | a home screen tailored to the companion: drop the fork's camera and music tiles; sessions, needs-you and vitals first (the user, 2026-10-23) |
+| 4 Voice input | dictate answers and session input with the mic instead of typing. Transcription runs on the user's own machines (R3: no API key), for example whisper.cpp on the Mac fed over SSH, or on-device if feasible. Push-to-talk on the keyboard. |
+| 5 Design pass | typography (IBM Plex via the fork's font tools), motion |
+| 6 Camera | take a photo, copy it to the Mac over SFTP, and ask the open session about it (lowest priority) |
+| 7 Release | final name, README, GitHub publish (visibility approved by the user), OTA manifest |
 
 Write each later plan when the previous one ships, against this spec.
 
