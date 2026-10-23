@@ -54,29 +54,53 @@ void ssh_known_hosts_clear(void)
     if (nvs_open("kh", NVS_READWRITE, &h) == ESP_OK) { nvs_erase_all(h); nvs_commit(h); nvs_close(h); }
 }
 
-static int verify_host(ssh_client_t *c)
+kh_result_t ssh_known_host_check(ssh_session session, const char *host, int port, char *fp_out, size_t fp_cap)
 {
+    if (fp_out && fp_cap) fp_out[0] = 0;
     ssh_key srv_key = NULL;
-    if (ssh_get_server_publickey(c->session, &srv_key) != SSH_OK) return -1;
+    if (ssh_get_server_publickey(session, &srv_key) != SSH_OK) return KH_ERROR;
     unsigned char *hash = NULL; size_t hlen = 0;
     int rc = ssh_get_publickey_hash(srv_key, SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
     ssh_key_free(srv_key);
-    if (rc != 0) return -1;
-    char *fp = ssh_get_fingerprint_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
-    char key[16]; kh_key(c->p.host, c->p.port, key);
+    if (rc != 0) return KH_ERROR;
+    if (fp_out && fp_cap) {
+        char *fp = ssh_get_fingerprint_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
+        strlcpy(fp_out, fp ? fp : "?", fp_cap);
+        ssh_string_free_char(fp);
+    }
+    char key[16]; kh_key(host, port, key);
     void *stored = NULL; size_t slen = 0;
     bool known = nvs_get_blob_alloc("kh", key, &stored, &slen);
     bool changed = known && (slen != hlen || memcmp(stored, hash, hlen) != 0);
-    bool ok = known && !changed;
-    if (!ok) {
-        set_state(c, SSH_ST_HOSTKEY, fp);
-        bool trust = c->hostkey_cb ? c->hostkey_cb(c->p.host, c->p.port, fp ? fp : "?", changed, c->user) : true;
-        if (trust) { nvs_set_blob_ns("kh", key, hash, hlen); ok = true; }
-    }
     free(stored);
-    ssh_string_free_char(fp);
     ssh_clean_pubkey_hash(&hash);
-    return ok ? 0 : -1;
+    return !known ? KH_UNKNOWN : changed ? KH_CHANGED : KH_OK;
+}
+
+bool ssh_known_host_trust(ssh_session session, const char *host, int port)
+{
+    ssh_key srv_key = NULL;
+    if (ssh_get_server_publickey(session, &srv_key) != SSH_OK) return false;
+    unsigned char *hash = NULL; size_t hlen = 0;
+    int rc = ssh_get_publickey_hash(srv_key, SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
+    ssh_key_free(srv_key);
+    if (rc != 0) return false;
+    char key[16]; kh_key(host, port, key);
+    bool ok = nvs_set_blob_ns("kh", key, hash, hlen);
+    ssh_clean_pubkey_hash(&hash);
+    return ok;
+}
+
+static int verify_host(ssh_client_t *c)
+{
+    char fp[80];
+    kh_result_t r = ssh_known_host_check(c->session, c->p.host, c->p.port, fp, sizeof(fp));
+    if (r == KH_OK) return 0;
+    if (r == KH_ERROR) return -1;
+    set_state(c, SSH_ST_HOSTKEY, fp);
+    bool trust = c->hostkey_cb ? c->hostkey_cb(c->p.host, c->p.port, fp, r == KH_CHANGED, c->user) : true;
+    if (trust && ssh_known_host_trust(c->session, c->p.host, c->p.port)) return 0;
+    return -1;
 }
 
 /* libssh returns SSH_AUTH_AGAIN while a call is pending (slow relayed links);

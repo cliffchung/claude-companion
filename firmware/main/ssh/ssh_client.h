@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "libssh/libssh.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,8 +33,13 @@ void ssh_client_resize(ssh_client_t *c, int cols, int rows);
 void ssh_client_stop(ssh_client_t *c);        /* async; object freed by the task */
 ssh_state_t ssh_client_state(ssh_client_t *c);
 const char *ssh_client_error(ssh_client_t *c);
-/* known hosts (NVS) */
+/* known hosts (NVS "kh"): key = hash of host:port, value = SHA256 of the server key */
 void ssh_known_hosts_clear(void);
+typedef enum { KH_OK, KH_UNKNOWN, KH_CHANGED, KH_ERROR } kh_result_t;
+/* Compares the connected session's server key with the pin for host:port; fp_out gets "SHA256:..." (optional). */
+kh_result_t ssh_known_host_check(ssh_session session, const char *host, int port, char *fp_out, size_t fp_cap);
+/* Pins the connected session's server key for host:port. */
+bool ssh_known_host_trust(ssh_session session, const char *host, int port);
 
 #ifdef __cplusplus
 }

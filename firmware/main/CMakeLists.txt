@@ -1,4 +1,5 @@
-# companion/ (cc_sessions.c, cc_cmd.c) is picked up by the glob below; both are pure C with no ESP-IDF headers.
+# companion/ is picked up by the glob below. cc_sessions.c and cc_cmd.c are pure C with no ESP-IDF headers
+# (also built by test/host); cc_link.c and cc_console.c are the device side.
 file(GLOB_RECURSE APP_SRCS
     "*.c")
 list(FILTER APP_SRCS EXCLUDE REGEX ".*/fonts/font_.*_unused\\.c$")

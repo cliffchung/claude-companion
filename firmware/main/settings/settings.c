@@ -6,11 +6,12 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "companion/cc_cmd.h"
 
 static const char *TAG = "settings";
 #define NS "app"
 #define KEY "cfg"
-#define CFG_VERSION 16
+#define CFG_VERSION 17
 
 app_settings_t g_settings;
 
@@ -53,6 +54,8 @@ void settings_reset_defaults(void)
     g_settings.ts_enable = 0;
     g_settings.ts_direct = 0;
     strcpy(g_settings.ts_device_name, "claude-companion");
+    g_settings.companion_server[0] = 0;
+    strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 
 void settings_init(void)
@@ -85,6 +88,7 @@ void settings_init(void)
                 g_settings.term_line_height = 32;
             if (old_version <= 14) g_settings.ss_classic = 0;
             if (old_version <= 15) g_settings.kbd_layout = KBD_LAYOUT_STOCK;
+            /* v17 added companion_server and claude_path at the end: defaults stand. */
             settings_save();
         }
         free(blob);
@@ -93,6 +97,9 @@ void settings_init(void)
     if (strstr(g_settings.ota_url, "github") && strstr(g_settings.ota_url, "Mozgi512/")) g_settings.ota_url[0] = 0;
     if (g_settings.brightness < 5) g_settings.brightness = 5;
     if (g_settings.ss_idle_min == 0) g_settings.ss_idle_min = 5;
+    g_settings.companion_server[sizeof(g_settings.companion_server) - 1] = 0;
+    g_settings.claude_path[sizeof(g_settings.claude_path) - 1] = 0;
+    if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 
 void settings_save(void)

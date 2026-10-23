@@ -65,6 +65,8 @@ typedef struct {
     uint8_t  term_line_height;   /* 28..40 px, MaruMinya 24px glyphs + leading */
     uint8_t ss_classic;          /* 0: standby cards, 1: movable legacy widgets */
     uint8_t  kbd_layout;         /* kbd_layout_t: STOCK follows the keycaps */
+    char     companion_server[48];   /* name of the Mac in the server list; "" = none */
+    char     claude_path[64];        /* Claude CLI on the Mac; must pass cc_path_valid */
 } app_settings_t;
 
 extern app_settings_t g_settings;
