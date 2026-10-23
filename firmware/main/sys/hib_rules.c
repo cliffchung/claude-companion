@@ -18,6 +18,9 @@ hib_cause_t hib_cause(const hib_wake_in_t *in)
     bool t = timed(in);
     /* a flag alone may be stale (a timer that fired without switching the board on) */
     if ((in->rtc_flags & (RTC_AF | RTC_TF)) && t) return HIB_CAUSE_RTC;
+    /* a power-off that took is ended only by the power controller: the button (or a USB plug-in), whatever
+       reset reason the P4 reports (this one reports an HP watchdog reset) */
+    if (in->was_poweroff) return HIB_CAUSE_BUTTON;
     if (in->wakeup_timer) return HIB_CAUSE_TIMER;
     if (t && in->reset_deepsleep_or_wdt) return HIB_CAUSE_TIMER;
     if (in->reset_poweron) return HIB_CAUSE_BUTTON;

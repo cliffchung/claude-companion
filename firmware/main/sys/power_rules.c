@@ -59,7 +59,7 @@ power_state_t pr_next_state(const pr_in_t *in)
     if (!in->on_battery) return PS_OFF;   /* no Radio off, Deep idle or Hibernate without a battery */
     if (in->hibernate_ok) {
         bool hours = in->hibernate_h > 0 && idle >= (int64_t)in->hibernate_h * 3600000;
-        bool low = in->battery_pct >= 0 && in->battery_pct <= PR_LOW_BATTERY_PCT && !in->charging;
+        bool low = pr_battery_low(true, in->battery_pct, in->charging);   /* on_battery checked above */
         bool still = in->still_hibernate_ms > 0 && in->still_ms >= in->still_hibernate_ms &&
                      idle >= in->still_hibernate_ms;
         if (in->hib_checkin_hold) hours = still = false;   /* PT16: a needs-you check-in stays up */
@@ -159,4 +159,15 @@ int pr_hib_checkin_clamp_min(int min)
     if (min <= 0) return 0;
     if (min < HIB_CHECKIN_MIN_MIN) return HIB_CHECKIN_MIN_MIN;
     return min > HIB_CHECKIN_MAX_MIN ? HIB_CHECKIN_MAX_MIN : min;
+}
+
+bool pr_battery_low(bool on_battery, int pct, bool charging)
+{
+    return on_battery && pct >= 0 && pct <= PR_LOW_BATTERY_PCT && !charging;
+}
+
+pr_hc_t pr_hib_checkin_decide(bool low_battery, bool poll_ok, bool needs_you, bool kbd_rail_survives)
+{
+    if (low_battery) return PR_HC_POWEROFF;
+    return pr_hib_checkin_next(poll_ok, needs_you, kbd_rail_survives);
 }

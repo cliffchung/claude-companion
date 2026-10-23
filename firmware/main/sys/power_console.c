@@ -74,7 +74,7 @@ static int cmd_go(const char *name)
 /* The radio and the check-ins (Task 8): in Radio off and Deep idle, next-checkin=<s> and period=<min>. */
 static void radio_line(void)
 {
-    char rc[64];
+    char rc[96];
     wifi_mgr_reconnect_text(rc, sizeof(rc));
     power_state_t st = power_state();
     if (st == PS_RADIO_OFF || st == PS_DEEP_IDLE)
@@ -99,7 +99,7 @@ static int cmd_checkin(int argc, char **argv)
         return 1;   /* only if the hibernate failed */
     } else return usage();
     power_state_t st = power_state();
-    if (!(st == PS_RADIO_OFF || (st == PS_DEEP_IDLE && g_settings.pw_radio_off)))
+    if (!(st == PS_RADIO_OFF || (st == PS_DEEP_IDLE && power_cfg(PCFG_RADIO_OFF))))
         printf("checkin: it runs once the radio is parked (radio-off, or deep-idle with radio-off 1); state=%s\n",
                power_state_name(st));
     return 0;
@@ -177,7 +177,9 @@ static int cmd_power(int argc, char **argv)
         return 0;
     } else if (strcmp(argv[1], "set") == 0 && argc == 4) {
         int n;
-        if (!parse_int(argv[3], &n) || !power_setting_set(argv[2], n)) return usage();
+        if (!parse_int(argv[3], &n)) return usage();
+        /* the Task 8 names are test values, RAM only (P93); the others save as before */
+        if (!power_setting_set_ram(argv[2], n) && !power_setting_set(argv[2], n)) return usage();
         char b[320];
         power_settings_text(b, sizeof(b));
         printf("%s\n", b);

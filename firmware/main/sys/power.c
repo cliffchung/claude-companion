@@ -264,7 +264,7 @@ static void fill_in(pr_in_t *in, int64_t now)
     taskEXIT_CRITICAL(&s_mux);
     in->dim_s = g_settings.pw_dim_s;
     in->off_s = g_settings.pw_off_s;
-    in->radio_off_min = g_settings.pw_radio_off_min;
+    in->radio_off_min = power_cfg(PCFG_RADIO_AFTER);
     in->deep_idle_min = g_settings.pw_deep_idle_min;
     in->hibernate_h = g_settings.pw_hibernate_h;
     in->still_ms = 0;                         /* Task 7: the IMU */
@@ -272,7 +272,7 @@ static void fill_in(pr_in_t *in, int64_t now)
     in->on_battery = on_battery_now(&in->battery_pct, &in->charging);
     in->held = holds_active();
     in->sleep_on_usb = g_settings.pw_sleep_on_usb;
-    in->radio_off_enabled = g_settings.pw_radio_off;
+    in->radio_off_enabled = power_cfg(PCFG_RADIO_OFF);
     in->hibernate_ok = hibernate_supported() && !s_hib_blocked;
     in->hib_checkin_hold = checkin_hib_hold();
 }
@@ -316,8 +316,17 @@ static void choose(pr_led_t *out, char *reason, size_t cap)
     bool screen_off = st >= PS_OFF && on_battery_now(&pct, &chg);   /* F30: the Off cap is for battery */
     bool deep_idle = st >= PS_DEEP_IDLE || checkin_hib_quiet();   /* a Hibernate check-in boot: amber 30% or off */
     /* with the radio parked a result can be a whole check-in period old (Review Focus 4) */
-    int period = checkin_period_min();
+    int period = checkin_light_period_min();   /* the period plus a slow check-in's worst case (M1) */
     int64_t max_age = pr_light_max_age_ms(period > 0, period);
+    /* I3: a check-in boot keeps the light the device went to sleep with until the first result judges it
+       (the A164 held it through deep sleep); a result, a failed check-in (down with the light off) or a
+       wake ends this */
+    pr_led_t held;
+    if (checkin_hib_quiet() && last_ok == 0 && hibernate_boot_light(&held)) {
+        *out = held;
+        if (reason) snprintf(reason, cap, "held from before the sleep (no result yet)");
+        return;
+    }
     power_bench_light_t bl = s_bench_light;
     if (bl == POWER_BENCH_LIGHT_OFF) {
         *out = PR_LED_OFF;
@@ -429,6 +438,22 @@ bool power_needs_you(void)
     bool n = s_needs;
     xSemaphoreGive(s_lock);
     return n;
+}
+
+bool power_battery_low(void)
+{
+    int pct;
+    bool chg;
+    bool batt = on_battery_now(&pct, &chg);
+    return pr_battery_low(batt, pct, chg);
+}
+
+void power_unpin(void)
+{
+    taskENTER_CRITICAL(&s_mux);
+    s_pinned = false;
+    taskEXIT_CRITICAL(&s_mux);
+    notify();
 }
 
 bool power_results_judged(void)
@@ -691,7 +716,7 @@ static void run_hibernate(power_state_t back_to)
         apply_light(true);   /* the Deep-idle rule: off unless something needs you */
         pr_in_t in;
         fill_in(&in, now_ms());
-        s_hib_low = in.on_battery && in.battery_pct >= 0 && in.battery_pct <= PR_LOW_BATTERY_PCT && !in.charging;
+        s_hib_low = pr_battery_low(in.on_battery, in.battery_pct, in.charging);
         if (!s_hib_done) s_hib_done = xSemaphoreCreateBinary();
         if (s_hib_done && xTaskCreate(hib_task, "hib", 6144, NULL, 4, NULL) == pdPASS)
             xSemaphoreTake(s_hib_done, portMAX_DELAY);   /* back here only if it failed */
@@ -832,8 +857,42 @@ void power_go(power_state_t s)
 
 static uint16_t u16(int v) { return v < 0 ? 0 : v > 65535 ? 65535 : (uint16_t)v; }
 
+/* ---- the Task 8 settings: RAM test values over the saved ones (P93) ---- */
+static volatile int s_cfg_ram[PCFG_N] = { -1, -1, -1, -1 };
+static const char *const k_cfg_name[PCFG_N] = { "radio-off", "radio-after", "checkin", "hib-checkin" };
+
+static int cfg_of(const char *name)
+{
+    for (int i = 0; i < PCFG_N; i++) if (strcmp(name, k_cfg_name[i]) == 0) return i;
+    return -1;
+}
+
+static int cfg_clamp(power_cfg_t c, int n)
+{
+    switch (c) {
+    case PCFG_RADIO_OFF: return n ? 1 : 0;
+    case PCFG_RADIO_AFTER: return n < 5 ? 5 : n > 240 ? 240 : n;
+    case PCFG_CHECKIN: return n < 1 ? 1 : n > 60 ? 60 : n;
+    default: return pr_hib_checkin_clamp_min(n);
+    }
+}
+
+int power_cfg(power_cfg_t c)
+{
+    if ((unsigned)c >= PCFG_N) return 0;
+    int v = s_cfg_ram[c];
+    if (v >= 0) return v;
+    switch (c) {
+    case PCFG_RADIO_OFF: return g_settings.pw_radio_off;
+    case PCFG_RADIO_AFTER: return g_settings.pw_radio_off_min;
+    case PCFG_CHECKIN: return g_settings.pw_checkin_min;
+    default: return g_settings.pw_hibernate_checkin_min;
+    }
+}
+
 bool power_setting_set(const char *name, int n)
 {
+    int c;
     if (strcmp(name, "dim") == 0) {
         g_settings.pw_dim_s = u16(n);
         vitals_clamp_dim_off(&g_settings.pw_dim_s, &g_settings.pw_off_s);
@@ -848,14 +907,13 @@ bool power_setting_set(const char *name, int n)
         g_settings.pw_deep_idle_min = (uint16_t)vitals_clamp_or_zero(u16(n), 15, 720);
     } else if (strcmp(name, "hibernate") == 0) {
         g_settings.pw_hibernate_h = (uint8_t)vitals_clamp_or_zero(u16(n), 1, 48);
-    } else if (strcmp(name, "radio-off") == 0) {
-        g_settings.pw_radio_off = n ? 1 : 0;
-    } else if (strcmp(name, "radio-after") == 0) {
-        g_settings.pw_radio_off_min = (uint16_t)(n < 5 ? 5 : n > 240 ? 240 : n);
-    } else if (strcmp(name, "checkin") == 0) {
-        g_settings.pw_checkin_min = (uint16_t)(n < 1 ? 1 : n > 60 ? 60 : n);
-    } else if (strcmp(name, "hib-checkin") == 0) {
-        g_settings.pw_hibernate_checkin_min = (uint16_t)pr_hib_checkin_clamp_min(n);
+    } else if ((c = cfg_of(name)) >= 0) {
+        int v = cfg_clamp((power_cfg_t)c, n);
+        if (c == PCFG_RADIO_OFF) g_settings.pw_radio_off = (uint8_t)v;
+        else if (c == PCFG_RADIO_AFTER) g_settings.pw_radio_off_min = (uint16_t)v;
+        else if (c == PCFG_CHECKIN) g_settings.pw_checkin_min = (uint16_t)v;
+        else g_settings.pw_hibernate_checkin_min = (uint16_t)v;
+        s_cfg_ram[c] = -1;   /* the saved value is in force again */
     } else {
         return false;
     }
@@ -864,8 +922,18 @@ bool power_setting_set(const char *name, int n)
     return true;
 }
 
+bool power_setting_set_ram(const char *name, int n)
+{
+    int c = cfg_of(name);
+    if (c < 0) return false;
+    s_cfg_ram[c] = cfg_clamp((power_cfg_t)c, n);
+    notify();
+    return true;
+}
+
 void power_settings_defaults(void)
 {
+    for (int i = 0; i < PCFG_N; i++) s_cfg_ram[i] = -1;
     settings_power_defaults();
     settings_save();
     power_kbd_light_refresh();
@@ -877,10 +945,13 @@ void power_settings_text(char *buf, size_t cap)
              "dim=%u off=%u sleep-usb=%u wake-lift=%u needs-wake=%u needs-light=%u off-cap=%u radio-off=%u "
              "radio-off-min=%u checkin=%u light-sleep=%u deep-idle=%u hibernate=%u hib-checkin=%u ssh-awake=%u",
              g_settings.pw_dim_s, g_settings.pw_off_s, g_settings.pw_sleep_on_usb, g_settings.pw_wake_lift,
-             g_settings.pw_wake_needs_you, g_settings.kbd_needs_light, g_settings.kbd_off_cap, g_settings.pw_radio_off,
-             g_settings.pw_radio_off_min, g_settings.pw_checkin_min, g_settings.pw_light_sleep,
-             g_settings.pw_deep_idle_min, g_settings.pw_hibernate_h, g_settings.pw_hibernate_checkin_min,
+             g_settings.pw_wake_needs_you, g_settings.kbd_needs_light, g_settings.kbd_off_cap, power_cfg(PCFG_RADIO_OFF),
+             power_cfg(PCFG_RADIO_AFTER), power_cfg(PCFG_CHECKIN), g_settings.pw_light_sleep,
+             g_settings.pw_deep_idle_min, g_settings.pw_hibernate_h, power_cfg(PCFG_HIB_CHECKIN),
              g_settings.ss_disable_in_ssh);
+    bool any = false;
+    for (int i = 0; i < PCFG_N; i++) any |= s_cfg_ram[i] >= 0;
+    if (any) strlcat(buf, " (test values in RAM: power set defaults ends them)", cap);
 }
 
 void power_sim_battery(int pct)

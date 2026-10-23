@@ -91,6 +91,9 @@ bool cc_link_busy(void);
    replaces the fixed poll while connected; it falls back to polling when it can't start or
    keeps ending, and is retried after 10 min or on the next connect. On by default. */
 void cc_link_watch_enable(bool on);
+bool cc_link_watch_wanted(void);           /* the `companion watch on|off` choice */
+/* A check-in's pause and resume: sets the wish only, never forgets a fallback (cc_link_watch_enable(true) does). */
+void cc_link_watch_resume(bool on);
 /* Debug: the next watch start gives up on its banner after 1 ms (tests the fallback). */
 void cc_link_watch_test_fallback(void);
 /* "watch: on I=3s, last block 4s ago, heartbeat 12s ago" | "watch: starting" |

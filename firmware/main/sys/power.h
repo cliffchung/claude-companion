@@ -71,6 +71,16 @@ void power_bench_light(power_bench_light_t l);
 
 /* ---- Task 8: Radio off and the check-ins (sys/checkin.h) ---- */
 bool power_needs_you(void);                 /* pr_any_needs_you of the last result from the Mac */
+bool power_battery_low(void);               /* pr_battery_low now (the sim battery counts): the 10% trigger */
+/* Ends a pin (power_go) without a wake: the ladder decides again, its 10% trigger included. A check-in
+   path that couldn't hibernate calls it, so nothing is left pinned awake with no ladder (I1). */
+void power_unpin(void);
+/* The four Task 8 settings as in force: a console test value (RAM only, P93) or the saved setting. */
+typedef enum { PCFG_RADIO_OFF, PCFG_RADIO_AFTER, PCFG_CHECKIN, PCFG_HIB_CHECKIN, PCFG_N } power_cfg_t;
+int  power_cfg(power_cfg_t c);
+/* `power set radio-off|radio-after|checkin|hib-checkin <n>`: clamped like Settings, RAM only (gone at the
+   next boot or `power set defaults`; Settings saving that name ends it). False for another name. */
+bool power_setting_set_ram(const char *name, int n);
 /* True once the power task has judged the newest result (its needs-you wake, or not): a check-in
    waits for this before it parks again. */
 bool power_results_judged(void);

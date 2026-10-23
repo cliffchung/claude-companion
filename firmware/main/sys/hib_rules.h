@@ -11,6 +11,7 @@ typedef struct {
     bool wakeup_timer;             /* esp_sleep_get_wakeup_cause() == TIMER */
     uint8_t rtc_flags;             /* RX8130 flag register: AF bit3, TF bit4 */
     bool reset_poweron;            /* ESP_RST_POWERON: the board was off */
+    bool was_poweroff;             /* the hib record says the power-off took (not a deep-sleep fallback) */
     bool reset_deepsleep_or_wdt;   /* ESP_RST_DEEPSLEEP, or ESP_RST_WDT (this P4's timer wake) */
     uint32_t wake_after_s;         /* the timer that was armed, 0 = none */
     long asleep_s;                 /* now - the epoch saved going down (negative when the clock was lost) */

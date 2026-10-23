@@ -23,6 +23,8 @@ bool checkin_busy(void);                        /* a job task is running (idle_p
    cards until the first fresh result (or until that reconnect gives up). */
 bool checkin_woke_parked(void);
 int  checkin_period_min(void);                  /* the period scheduled for the next check-in, 0 = none */
+/* The light's age limit for a parked radio: the period plus the longest a check-in can take (M1), 0 = none */
+int  checkin_light_period_min(void);
 int  checkin_next_s(void);                      /* seconds to the next check-in, -1 = none scheduled */
 uint8_t checkin_log_tag(void);                  /* 0x80|state while a check-in runs (0x83, 0x84, 0x85), else 0 */
 void checkin_on_sample(void);                   /* idle_poll, after each sysinfo_poll: sums the check-in's mW */

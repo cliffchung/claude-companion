@@ -81,11 +81,17 @@ bool pr_radio_off_worth_it(float a_mw, float b_mw, float c_mwh, int checkin_min,
 int  pr_checkin_period_min(power_state_t st, int checkin_min, int deep_checkins_done);
 
 /* PT16: what a Hibernate check-in does next */
-typedef enum { PR_HC_REHIBERNATE, PR_HC_REHIBERNATE_KEEP_RAIL, PR_HC_STAY_DEEP_IDLE } pr_hc_t;
+typedef enum { PR_HC_REHIBERNATE, PR_HC_REHIBERNATE_KEEP_RAIL, PR_HC_STAY_DEEP_IDLE,
+               PR_HC_POWEROFF   /* the battery <= 10% trigger: down with the light off and no check-in armed */
+} pr_hc_t;
 /* !poll_ok -> REHIBERNATE (light off; recorded as hib-failed); !needs_you -> REHIBERNATE (PR_LED_OFF);
    needs_you && kbd_rail_survives -> REHIBERNATE_KEEP_RAIL (amber 30% held through deep sleep);
    needs_you && !kbd_rail_survives -> STAY_DEEP_IDLE (radio parked, amber 30% until input or nothing needs you) */
 pr_hc_t pr_hib_checkin_next(bool poll_ok, bool needs_you, bool kbd_rail_survives);
+/* on_battery && 0 <= pct <= PR_LOW_BATTERY_PCT && !charging (an unknown pct is never low) */
+bool pr_battery_low(bool on_battery, int pct, bool charging);
+/* The check-in boot's whole decision: low_battery -> POWEROFF, else pr_hib_checkin_next (C1) */
+pr_hc_t pr_hib_checkin_decide(bool low_battery, bool poll_ok, bool needs_you, bool kbd_rail_survives);
 /* 0 (or less) -> 0 (Off); 1..14 -> 15; 721.. -> 720 */
 int  pr_hib_checkin_clamp_min(int min);
 

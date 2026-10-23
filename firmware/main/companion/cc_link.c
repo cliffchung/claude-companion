@@ -1313,6 +1313,14 @@ void cc_link_watch_enable(bool on)
     kick();
 }
 
+bool cc_link_watch_wanted(void) { return s_watch_want; }
+
+void cc_link_watch_resume(bool on)
+{
+    s_watch_want = on;
+    kick();
+}
+
 void cc_link_watch_test_fallback(void)
 {
     s_banner_ms = 1;

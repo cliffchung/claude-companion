@@ -29,13 +29,20 @@ static const char *TAG = "checkin";
 #define HIB_LINK_WAIT_MS 30000
 #define HIB_TEST_WAKE_S 60
 #define CHK_N 8
+#define JOB_RETRIES 20              /* failed task creates retried each loop (about 10 s), then the fallback */
+/* M1: the longest a Radio-off check-in can take: Wi-Fi 20 + tunnel (8 + 60 + 8) + link 15 + a stale-key
+   rebind (8 + 60 + 8) + link 15 + poll 15 + judge 2 s = 219 s, plus the connect wait in tailscale_checkin
+   (up to 60 s) = 279 s: the light keeps a result this much longer than the period */
+#define CHECKIN_WORST_MIN 5
+#define HOLD_STALE_MS (60 * 60 * 1000LL)   /* a hold with no result for an hour: down, light off (I1) */
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
 /* ---- records: `power checkins`, NVS ns "power" key "chk" ------------------ */
 
-typedef enum { P_HANDSHAKE, P_REBIND, P_FAILED, P_HIB_HANDSHAKE, P_HIB_REBIND, P_HIB_FAILED } ck_path_t;
-static const char *const k_path[] = { "handshake", "rebind", "failed", "hib-handshake", "hib-rebind", "hib-failed" };
+typedef enum { P_HANDSHAKE, P_REBIND, P_FAILED, P_HIB_HANDSHAKE, P_HIB_REBIND, P_HIB_FAILED, P_HIB_LOW } ck_path_t;
+static const char *const k_path[] = { "handshake", "rebind", "failed", "hib-handshake", "hib-rebind", "hib-failed", "hib-low" };
+#define K_PATH_N 7
 typedef struct { uint32_t epoch, ms, mwh_x1000; uint8_t path, tag, needs, pad; } ck_rec_t;
 typedef struct { uint8_t ver, n, head, pad; ck_rec_t r[CHK_N]; } ck_log_t;
 #define CHK_VER 1
@@ -68,7 +75,12 @@ static bool s_hib_pending;          /* a check-in boot: start JOB_HIB on the fir
 static volatile bool s_quiet;       /* checkin_hib_quiet */
 static volatile bool s_hold;        /* checkin_hib_hold */
 static uint32_t s_hold_gen;
+static int64_t s_hold_gen_ms;       /* when the hold last saw a new result */
 static bool s_watchdog_fired;
+static int s_watchdog_tries, s_hib_tries;
+static volatile bool s_hib_settled;
+static bool s_hold_down;            /* the hold is over: JOB_DOWN until it starts */
+static int s_down_tries; /* the check-in boot reached a state that isn't "going down" (hold, debug, gave up) */
 
 /* the job's arguments */
 static bool s_arg_rebind;
@@ -78,6 +90,11 @@ bool checkin_radio_parked(void) { return s_parked; }
 bool checkin_busy(void) { return s_running; }
 bool checkin_woke_parked(void) { return s_woke_parked; }
 int checkin_period_min(void) { return (s_parked || (s_running && s_job == JOB_CHECKIN)) && s_next_ms ? s_period : 0; }
+int checkin_light_period_min(void)
+{
+    int p = checkin_period_min();
+    return p > 0 ? p + CHECKIN_WORST_MIN : 0;
+}
 int checkin_next_s(void)
 {
     if (!s_parked || !s_next_ms) return -1;
@@ -167,7 +184,7 @@ void checkin_print(void)
         time_t t = (time_t)r->epoch;
         struct tm tm;
         if (t > 1600000000 && localtime_r(&t, &tm)) strftime(when, sizeof(when), "%m-%d %H:%M:%S", &tm);
-        printf("%s 0x%02x %s %u ms %u.%03u mWh%s\n", when, r->tag, r->path < 6 ? k_path[r->path] : "?", (unsigned)r->ms,
+        printf("%s 0x%02x %s %u ms %u.%03u mWh%s\n", when, r->tag, r->path < K_PATH_N ? k_path[r->path] : "?", (unsigned)r->ms,
                (unsigned)(r->mwh_x1000 / 1000), (unsigned)(r->mwh_x1000 % 1000), r->needs ? " needs-you" : "");
     }
 }
@@ -177,7 +194,7 @@ void checkin_print(void)
 static bool want_parked(power_state_t st)
 {
     if (st == PS_RADIO_OFF) return true;
-    if (st == PS_DEEP_IDLE) return g_settings.pw_radio_off || s_bench_park;
+    if (st == PS_DEEP_IDLE) return power_cfg(PCFG_RADIO_OFF) || s_bench_park;
     return false;
 }
 
@@ -248,20 +265,21 @@ static void job_checkin(void)
     int64_t t0 = now_ms();
     power_state_t st = s_arg_state;
     sums_reset((uint8_t)(0x80 | st));
-    cc_link_watch_enable(false);   /* one plain poll: no watch loop started on the Mac for a check-in */
+    bool watch = cc_link_watch_wanted();
+    if (watch) cc_link_watch_resume(false);   /* one plain poll: no watch loop started on the Mac for a check-in */
     bool poll_ok;
     ts_checkin_t ts = bring_up(s_arg_rebind, &poll_ok, t0);
     if (poll_ok) wait_for(judged, JUDGED_WAIT_MS);
     ck_path_t path = !poll_ok ? P_FAILED : ts == TS_CHECKIN_REBIND ? P_REBIND : P_HANDSHAKE;
     bool needs = poll_ok && power_needs_you();
     record(path, (uint32_t)(now_ms() - t0), needs);
-    cc_link_watch_enable(true);
     if (want_parked(power_state())) {
         park_now();
     } else {
         /* a needs-you wake (Dim) or input meanwhile: stay up */
         ESP_LOGI(TAG, "check-in: staying up (%s)", power_state_name(power_state()));
     }
+    if (watch) cc_link_watch_resume(true);   /* after the park: the link can't start a loop just to kill it (M2) */
     tailscale_set_fast_resume(false);   /* a later real Wi-Fi drop still rebinds */
 }
 
@@ -282,18 +300,36 @@ static void job_park(void)
     park_now();
 }
 
-/* Down for the next Hibernate check-in: the light as the rule says, held under the LED lock so the power
-   task can't change it, then deep sleep with the check-in timer. Returns only if that failed. */
+/* Nothing may be left pinned awake with no ladder (I1): the normal ladder takes over, its 10% trigger
+   included. The idle clock already counts from before the sleep (checkin_init), so on battery it hibernates
+   again by the hours rule; on USB it stays in Off. */
+static void give_up(const char *why)
+{
+    ESP_LOGE(TAG, "hibernate check-in: %s: back to the normal ladder", why);
+    s_hib_settled = true;
+    s_hold = false;
+    s_quiet = false;
+    power_unpin();
+}
+
+/* Down for the next Hibernate check-in. The light is the power task's own choice (the Deep-idle rule under
+   checkin_hib_quiet: amber at 30% only for needs-you with "Keyboard light shows needs-you" on, else off; I2),
+   or off; held under the LED lock so the power task can't change it, then deep sleep with the check-in timer.
+   A battery at or under 10% powers off instead, light off and no check-in armed (C1). Returns only if the
+   hibernate failed, and then hands the device back to the ladder. */
 static void down_with_light(bool amber)
 {
-    uint32_t s = hibernate_checkin_s();
+    bool low = power_battery_low();
+    pr_led_t l = PR_LED_OFF;
+    if (amber && !low) power_kbd_light_get(&l);
+    uint32_t s = low ? 0 : hibernate_checkin_s();
     keyboard_led_lock();
-    if (amber) keyboard_write_led(1, 30, 0xf4, 0xb5, 0x45);
-    else keyboard_write_led(PR_LED_OFF.mode, PR_LED_OFF.bright, PR_LED_OFF.r, PR_LED_OFF.g, PR_LED_OFF.b);
-    ESP_LOGI(TAG, "hibernate again: light %s, next check-in in %u s", amber ? "amber 30%" : "off", (unsigned)s);
+    keyboard_write_led(l.mode, l.bright, l.r, l.g, l.b);
+    ESP_LOGI(TAG, "hibernate again: light %u %u %02x%02x%02x, %s", l.mode, l.bright, l.r, l.g, l.b,
+             low ? "battery low: power-off, no check-in" : s ? "next check-in armed" : "check-in off");
     hibernate_now(s, s ? POWER_BOOT_HIB_CHECKIN : POWER_BOOT_HIB_WAKE);
     keyboard_led_unlock();
-    ESP_LOGE(TAG, "hibernate failed: staying up");
+    give_up("the hibernate failed");
 }
 
 static bool hib_abandoned(void)
@@ -311,6 +347,13 @@ static void job_hib(void)
     int64_t end = t0 + HIB_BUDGET_MS;
     sums_reset(0x85);
     uint8_t dbg = hibernate_boot_debug();
+    /* C1: a nearly flat pack gets no Wi-Fi, no tunnel, no poll: off at once (the first INA226 reading first) */
+    for (int i = 0; i < 25 && !sysinfo_power().valid; i++) vTaskDelay(pdMS_TO_TICKS(200));
+    if (power_battery_low()) {
+        record(P_HIB_LOW, (uint32_t)now_ms(), false);
+        down_with_light(false);
+        return;
+    }
     bool poll_ok = false, needs = false;
     ts_checkin_t ts = TS_CHECKIN_FAILED;
     char mac[128];
@@ -322,7 +365,7 @@ static void job_hib(void)
         if (ts != TS_CHECKIN_FAILED && !hib_abandoned() && left > 0)
             ts = link_and_poll(mac, ts, left < HIB_LINK_WAIT_MS ? (int)left : HIB_LINK_WAIT_MS, &poll_ok);
     }
-    if (hib_abandoned()) return;
+    if (hib_abandoned()) { s_hib_settled = true; return; }
     if (poll_ok) {
         wait_for(judged, JUDGED_WAIT_MS);
         needs = power_needs_you();
@@ -330,26 +373,32 @@ static void job_hib(void)
     bool late = now_ms() > end;
     if (late) poll_ok = false;   /* out of time: hibernate anyway, recorded as failed */
     ck_path_t path = !poll_ok ? P_HIB_FAILED : ts == TS_CHECKIN_REBIND ? P_HIB_REBIND : P_HIB_HANDSHAKE;
+    if (power_battery_low()) path = P_HIB_LOW;
     record(path, (uint32_t)now_ms(), poll_ok && needs);
     bool kbd = hibernate_kbd_rail_survives();
     if (dbg & HIB_DBG_FORCE_KEEP) kbd = true;
     if (dbg & HIB_DBG_FORCE_NOKEEP) kbd = false;
-    pr_hc_t next = pr_hib_checkin_next(poll_ok, needs, kbd);
-    static const char *const names[] = { "rehibernate", "rehibernate, light kept", "stay in deep idle" };
+    pr_hc_t next = pr_hib_checkin_decide(power_battery_low(), poll_ok, needs, kbd);
+    static const char *const names[] = { "rehibernate", "rehibernate, light kept", "stay in deep idle",
+                                         "power off (battery low)" };
     ESP_LOGI(TAG, "hibernate check-in: %s%s", names[next], late ? " (out of time)" : "");
     if (hib_abandoned()) return;
     if (next == PR_HC_STAY_DEEP_IDLE) {
+        s_hib_settled = true;
         s_hold = true;
         s_hold_gen = cc_poll_generation();
+        s_hold_gen_ms = now_ms();
         power_go(PS_DEEP_IDLE);   /* pinned: the ladder keeps only its low-battery trigger (checkin_hib_hold) */
         return;
     }
     if (dbg & HIB_DBG_STAY_AWAKE) {
         /* debug (`power checkin hibernate`): the console comes back; the light shows what it would hold */
         ESP_LOGW(TAG, "debug: would %s; staying awake", names[next]);
+        s_hib_settled = true;
+        power_unpin();   /* the ladder runs again (I1); the Deep-idle light rule stays until a wake */
         return;
     }
-    down_with_light(next == PR_HC_REHIBERNATE_KEEP_RAIL);
+    down_with_light(next == PR_HC_REHIBERNATE_KEEP_RAIL);   /* POWEROFF: down_with_light sees the low battery */
 }
 
 static void job_down(void)
@@ -399,7 +448,7 @@ static bool start(job_t j, power_state_t st, int64_t now)
 
 static void schedule(power_state_t st, int64_t now)
 {
-    s_period = pr_checkin_period_min(st, g_settings.pw_checkin_min, s_deep_k);
+    s_period = pr_checkin_period_min(st, power_cfg(PCFG_CHECKIN), s_deep_k);
     s_next_ms = s_period > 0 ? now + (int64_t)s_period * 60000 : 0;
 }
 
@@ -408,6 +457,8 @@ static void hib_watchdog_task(void *arg)
 {
     (void)arg;
     ESP_LOGE(TAG, "hibernate check-in: over %d s, hibernating anyway", HIB_WATCHDOG_MS / 1000);
+    if (!s_tag) sums_reset(0x85);
+    record(P_HIB_FAILED, (uint32_t)now_ms(), false);   /* M3: the stuck case shows in `power checkins` */
     down_with_light(false);
     vTaskDelete(NULL);
 }
@@ -424,6 +475,7 @@ void checkin_step(power_state_t st, int64_t now)
             if (s_quiet || s_hold) ESP_LOGI(TAG, "hibernate check-in: woken, back to normal");
             s_quiet = false;
             s_hold = false;
+            s_hold_down = false;
         } else if (st == PS_DEEP_IDLE) {
             s_deep_k = 0;
             if (s_parked) schedule(st, now);
@@ -432,23 +484,30 @@ void checkin_step(power_state_t st, int64_t now)
         }
         s_prev = st;
     }
-    if (s_running) {
-        if (s_job == JOB_HIB && s_quiet && !s_watchdog_fired && now > HIB_WATCHDOG_MS) {   /* never after a wake */
-            s_watchdog_fired = true;
-            xTaskCreate(hib_watchdog_task, "ck_wd", JOB_STACK, NULL, 4, NULL);
-        }
-        return;
+    /* I1: a check-in boot that hasn't gone down or settled by HIB_WATCHDOG_MS goes down now, whether or
+       not its job still runs (or ever started); a failed create is retried, then the ladder takes over */
+    if (s_quiet && !s_hib_settled && !s_watchdog_fired && now > HIB_WATCHDOG_MS) {
+        if (xTaskCreate(hib_watchdog_task, "ck_wd", JOB_STACK, NULL, 4, NULL) == pdPASS) s_watchdog_fired = true;
+        else if (++s_watchdog_tries >= JOB_RETRIES) { s_watchdog_fired = true; give_up("no memory for the watchdog"); }
     }
+    if (s_running) return;
     if (s_hib_pending) {
-        s_hib_pending = false;
-        start(JOB_HIB, st, now);
+        if (start(JOB_HIB, st, now)) s_hib_pending = false;
+        else if (++s_hib_tries >= JOB_RETRIES) { s_hib_pending = false; give_up("no memory for the check-in"); }
         return;
     }
-    if (s_hold && cc_poll_generation() != s_hold_gen) {
-        s_hold_gen = cc_poll_generation();
-        if (!power_needs_you()) {
-            ESP_LOGI(TAG, "hibernate check-in hold: nobody needs you now");
-            start(JOB_DOWN, st, now);
+    if (s_hold) {
+        uint32_t gen = cc_poll_generation();
+        bool fresh = gen != s_hold_gen;
+        if (fresh) { s_hold_gen = gen; s_hold_gen_ms = now; }
+        bool stale = now - s_hold_gen_ms > HOLD_STALE_MS;   /* the Mac unreachable for an hour: nothing to show */
+        if (!s_hold_down && ((fresh && !power_needs_you()) || stale)) {
+            ESP_LOGI(TAG, "hibernate check-in hold: %s", stale ? "no result for an hour" : "nobody needs you now");
+            s_hold_down = true;
+        }
+        if (s_hold_down) {
+            if (start(JOB_DOWN, st, now)) s_hold_down = false;
+            else if (++s_down_tries >= JOB_RETRIES) { s_hold_down = false; give_up("no memory to hibernate"); }
             return;
         }
     }
@@ -504,6 +563,9 @@ void checkin_init(void)
         s_quiet = true;        /* the Deep-idle light rule and no screen wake from the very first result */
         s_hib_pending = true;
         power_go(PS_OFF);      /* dark from the start, pinned */
+        /* the device has been idle since before the sleep: if a fallback unpins it, the ladder sees that
+           (on battery it hibernates again by the hours rule, on USB it stays in Off), never a fresh input */
+        power_sim_idle(49 * 3600);
         ESP_LOGI(TAG, "hibernate check-in boot (debug 0x%02x)", hibernate_boot_debug());
     }
 }

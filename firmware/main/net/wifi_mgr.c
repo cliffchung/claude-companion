@@ -285,7 +285,10 @@ bool wifi_mgr_park(void)
     }
     if (e == ESP_OK) {
         s_parked_by_disconnect = false;
+        /* M4: the stop's own STA_DISCONNECTED would find s_connected already false, so emit here */
+        bool was = s_connected;
         s_connected = false;
+        if (was) emit(WIFI_EV_DISCONNECTED);
         ESP_LOGI(TAG, "parked (stop)");
         return true;
     }
@@ -346,10 +349,12 @@ void wifi_mgr_test_drop(void)
 
 void wifi_mgr_reconnect_text(char *buf, size_t cap)
 {
-    if (s_parked) { snprintf(buf, cap, "wifi parked (%s)", wifi_mgr_park_mode()); return; }
-    if (!s_rc_active) { snprintf(buf, cap, "reconnect: idle (park mode %s)", wifi_mgr_park_mode()); return; }
+    char hw[24] = "";
+    if (s_rc_task) snprintf(hw, sizeof(hw), " rc-stack-free=%u", (unsigned)uxTaskGetStackHighWaterMark(s_rc_task));   /* M5 */
+    if (s_parked) { snprintf(buf, cap, "wifi parked (%s)%s", wifi_mgr_park_mode(), hw); return; }
+    if (!s_rc_active) { snprintf(buf, cap, "reconnect: idle (park mode %s)%s", wifi_mgr_park_mode(), hw); return; }
     int64_t left = s_rc_next_ms - ms_now();
-    snprintf(buf, cap, "reconnect: attempt %d, next in %lld s", s_rc_attempt, (long long)(left > 0 ? (left + 999) / 1000 : 0));
+    snprintf(buf, cap, "reconnect: attempt %d, next in %lld s%s", s_rc_attempt, (long long)(left > 0 ? (left + 999) / 1000 : 0), hw);
 }
 
 void wifi_mgr_init(void)

@@ -243,7 +243,7 @@ static int cmd_wifi(int argc, char **argv)
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "status") == 0) {
-        char rc[64];
+        char rc[96];
         wifi_mgr_reconnect_text(rc, sizeof(rc));
         printf("wifi: %s %s; %s\n", wifi_mgr_is_connected() ? "connected" : "not connected", wifi_mgr_ssid(), rc);
         return 0;

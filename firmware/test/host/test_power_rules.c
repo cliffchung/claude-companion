@@ -431,6 +431,35 @@ void test_hib_checkin_hold(void)
     next_is(PS_OFF, &in);
 }
 
+void test_battery_low(void)
+{
+    TEST_ASSERT_TRUE(pr_battery_low(true, 10, false));
+    TEST_ASSERT_TRUE(pr_battery_low(true, 0, false));
+    TEST_ASSERT_FALSE(pr_battery_low(true, 11, false));
+    TEST_ASSERT_FALSE(pr_battery_low(true, -1, false));   /* unknown is never low */
+    TEST_ASSERT_FALSE(pr_battery_low(true, 5, true));     /* charging */
+    TEST_ASSERT_FALSE(pr_battery_low(false, 5, false));   /* on USB */
+}
+
+void test_hib_checkin_low_battery(void)
+{
+    /* C1: a check-in boot at <= 10% powers off with no check-in armed, whatever the poll found */
+    TEST_ASSERT_EQUAL_INT(PR_HC_POWEROFF, pr_hib_checkin_decide(true, true, true, true));
+    TEST_ASSERT_EQUAL_INT(PR_HC_POWEROFF, pr_hib_checkin_decide(true, false, false, false));
+    TEST_ASSERT_EQUAL_INT(PR_HC_POWEROFF, pr_hib_checkin_decide(true, true, true, false));
+    /* otherwise exactly pr_hib_checkin_next */
+    for (int m = 0; m < 8; m++) {
+        bool ok = m & 1, needs = m & 2, kbd = m & 4;
+        TEST_ASSERT_EQUAL_INT(pr_hib_checkin_next(ok, needs, kbd), pr_hib_checkin_decide(false, ok, needs, kbd));
+    }
+    /* the ladder in a hold still takes the 10% trigger (M7) */
+    pr_in_t in = base(PS_DEEP_IDLE, 10 * MIN_MS);
+    in.hib_checkin_hold = true; in.battery_pct = 10;
+    next_is(PS_HIBERNATE, &in);
+    in.charging = true;
+    TEST_ASSERT_NOT_EQUAL(PS_HIBERNATE, pr_next_state(&in));   /* the pinned hold acts only on HIBERNATE */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -464,5 +493,7 @@ int main(void)
     RUN_TEST(test_checkin_clamp);
     RUN_TEST(test_deep_idle_backoff);
     RUN_TEST(test_hib_checkin_hold);
+    RUN_TEST(test_battery_low);
+    RUN_TEST(test_hib_checkin_low_battery);
     return UNITY_END();
 }

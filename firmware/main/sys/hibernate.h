@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "sys/power_rules.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -54,6 +55,9 @@ void hibernate_ladder(bool low_battery);
 #define HIB_DBG_FORCE_NOKEEP 4   /* the stay-in-Deep-idle branch */
 void hibernate_set_debug_next(uint8_t flags);
 uint8_t hibernate_boot_debug(void);          /* this boot's flags */
+/* I3: the keyboard light last written before this boot's sleep (kept in the "hib" record), so a check-in
+   boot can hold it until its first result instead of switching it off. False on a normal boot. */
+bool hibernate_boot_light(pr_led_t *out);
 /* `power hib backstop <s> <n>`: an extra timer wake after s seconds on each of the next n hibernates
    (RTC memory: it survives deep sleep and the watchdog reset on the way up, not a power-off, which
    it prevents by making the hibernate timed). n = 0 ends it. */

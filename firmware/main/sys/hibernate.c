@@ -21,6 +21,7 @@
 #include "sys/imu.h"
 #include "sys/hib_rules.h"
 #include "sys/power_rules.h"
+#include "sys/power.h"
 #include "net/wifi_mgr.h"
 #include "companion/cc_link.h"
 #include "input/keyboard.h"
@@ -35,9 +36,8 @@ static const char *TAG = "hib";
  * 100 ms pulses on P4 and wakes from an RX8130 alarm. */
 #define HIB_MODE_BUILT HIB_MODE_POWEROFF
 /* Step 7 on USB: deep sleep wakes on the timer (proved); the PWROFF_PULSE power-off took (the board went
-   dark with USB in) but the RX8130 timer didn't switch it back on within 2x its backstop, so RTC is not a
-   source; the side button is the Tab5's documented power-on (M5Stack docs, S1 on the PMS150's SW_PWR),
-   pressed by the user in Task 10. Ruling P60. */
+   dark with USB in); the RX8130 timer never switched it back on, so RTC is not a source; the side button
+   did (S1 on the PMS150's SW_PWR; the user's press, 2026-10-23, 2 h 9 min after the power-off). P60, P70. */
 #define HIB_SOURCES (HIB_SRC_TIMER | HIB_SRC_BUTTON)
 /* Step 4c: the keyboard (J9: SOC_3.3V or SYS_VIN, no expander switch) kept its A164 registers, amber at
    30%, through 60 s of deep sleep. Deep sleep only: a power-off drops SOC_3.3V. Ruling P61. */
@@ -86,9 +86,11 @@ typedef struct {
     uint32_t epoch;
     uint32_t wake_after_s;
     uint8_t debug;         /* HIB_DBG_* for the next boot (Task 8) */
-    uint8_t pad[3];
+    uint8_t led_ok;        /* led[] holds the light last written before the sleep */
+    uint8_t led[5];        /* mode, bright, r, g, b */
+    uint8_t pad;
 } hib_rec_t;
-#define HIB_VER 2
+#define HIB_VER 3
 
 static power_boot_t s_kind = POWER_BOOT_NORMAL;
 static uint32_t s_src;
@@ -112,7 +114,15 @@ void hibernate_backstop_set(uint32_t s, uint32_t n)
 {
     s_backstop = (backstop_t){ BACKSTOP_MAGIC, s, n, s ^ n ^ BACKSTOP_MAGIC };
 }
-uint32_t hibernate_checkin_s(void) { return (uint32_t)pr_hib_checkin_clamp_min(g_settings.pw_hibernate_checkin_min) * 60u; }
+uint32_t hibernate_checkin_s(void) { return (uint32_t)pr_hib_checkin_clamp_min(power_cfg(PCFG_HIB_CHECKIN)) * 60u; }
+static bool s_led_ok;
+static pr_led_t s_led_boot;
+bool hibernate_boot_light(pr_led_t *out)
+{
+    if (!s_led_ok) return false;
+    *out = s_led_boot;
+    return true;
+}
 void hibernate_set_debug_next(uint8_t flags) { s_dbg_next = flags; }
 uint8_t hibernate_boot_debug(void) { return s_dbg_boot; }
 
@@ -219,6 +229,8 @@ void hibernate_boot_early(void)
     s_kind = (power_boot_t)r.next;
     s_fell_back = r.fell_back;
     s_dbg_boot = r.debug;
+    s_led_ok = r.led_ok;
+    s_led_boot = (pr_led_t){ r.led[0], r.led[1], r.led[2], r.led[3], r.led[4] };
     esp_sleep_wakeup_cause_t c = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t rr = esp_reset_reason();
     /* On this P4 (rev < 3) the timer wake from deep sleep goes through an HP watchdog reset (hw reason 7)
@@ -229,6 +241,7 @@ void hibernate_boot_early(void)
     long asleep = (long)(now - (time_t)r.epoch);
     hib_wake_in_t in = { .wakeup_timer = c == ESP_SLEEP_WAKEUP_TIMER, .rtc_flags = rtc_flags,
                          .reset_poweron = rr == ESP_RST_POWERON,
+                         .was_poweroff = r.mode == HIB_MODE_POWEROFF && !r.fell_back,
                          .reset_deepsleep_or_wdt = rr == ESP_RST_DEEPSLEEP || rr == ESP_RST_WDT,
                          .wake_after_s = r.wake_after_s, .asleep_s = asleep };
     static const struct { uint32_t src; const char *name; } k_cause[] = {
@@ -349,6 +362,12 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
     hib_rec_t r = { .ver = HIB_VER, .mode = (uint8_t)mode, .next = (uint8_t)next, .epoch = (uint32_t)time(NULL),
                     .wake_after_s = wake_after_s, .debug = s_dbg_next };
     s_dbg_next = 0;
+    if (!s_early) {   /* the light the keyboard holds through the sleep (I3); the LED lock is recursive */
+        keyboard_led_lock();
+        keyboard_get_last_led(&r.led[0], &r.led[1], &r.led[2], &r.led[3], &r.led[4]);
+        keyboard_led_unlock();
+        r.led_ok = 1;
+    }
     nvs_set_blob_ns("power", "hib", &r, sizeof(r));
     imu_suspend();
     if (!probe) sysinfo_ina226_power_down();
