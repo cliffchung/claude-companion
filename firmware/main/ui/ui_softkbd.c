@@ -1,14 +1,12 @@
 #include "ui_softkbd.h"
 #include "ui.h"
 #include "input/keyboard.h"
-#include "ime/ime.h"
-#include "ime/ime_ui.h"
 #include <string.h>
 
 #define KBD_H 300
 
 typedef struct { const char *label; int type; uint32_t cp; special_key_t sk; int w; } key_def_t;
-enum { KT_CHAR, KT_SPECIAL, KT_SHIFT, KT_SYM, KT_IME, KT_HIDE, KT_CTRL, KT_ALT };
+enum { KT_CHAR, KT_SPECIAL, KT_SHIFT, KT_SYM, KT_HIDE, KT_CTRL, KT_ALT };
 
 static const char *ROWS_LOWER[4] = { "qwertyuiop", "asdfghjkl", "zxcvbnm", "" };
 static const char *ROWS_UPPER[4] = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM", "" };
@@ -18,7 +16,7 @@ static const char *ROWS_SYM2[4]  = { "[]{}#%^*+=", "_\\<>€£¥•", ".,?!'~`|"
 typedef struct {
     lv_obj_t *root, *rows[4];
     bool shift, sym, sym2, ctrl, alt;
-    lv_obj_t *ime_btn, *shift_btn, *sym_btn, *ctrl_btn, *alt_btn;
+    lv_obj_t *shift_btn, *sym_btn, *ctrl_btn, *alt_btn;
 } kbd_t;
 
 static kbd_t *s_kbd = NULL;
@@ -49,7 +47,6 @@ static void key_cb(lv_event_t *e)
     case KT_SPECIAL: send_special(k, d->sk); break;
     case KT_SHIFT: if (k->sym) { k->sym2 = !k->sym2; } else k->shift = !k->shift; rebuild(k); break;
     case KT_SYM: k->sym = !k->sym; k->sym2 = false; rebuild(k); break;
-    case KT_IME: ime_toggle_source(); rebuild(k); break;
     case KT_HIDE: softkbd_hide_all(); break;
     case KT_CTRL: k->ctrl = !k->ctrl; rebuild(k); break;
     case KT_ALT: k->alt = !k->alt; rebuild(k); break;
@@ -111,7 +108,6 @@ static void rebuild(kbd_t *k)
     }
     free_keys(k->rows[3]);
     mk_key(k->rows[3], k->sym ? "abc" : "?123", KT_SYM, 0, 0, 3, false);
-    mk_key(k->rows[3], ime_status_label(), KT_IME, 0, 0, 2, ime_is_active());
     mk_key(k->rows[3], "Ctrl", KT_CTRL, 0, 0, 2, k->ctrl);
     mk_key(k->rows[3], "Alt", KT_ALT, 0, 0, 2, k->alt);
     mk_key(k->rows[3], " ", KT_CHAR, ' ', 0, 8, false);
@@ -125,7 +121,6 @@ static void kbd_delete_cb(lv_event_t *e)
 {
     (void)e;
     if (s_kbd) { for (int r = 0; r < 4; r++) free_keys(s_kbd->rows[r]); lv_free(s_kbd); s_kbd = NULL; }
-    ime_ui_set_anchor(-1);
 }
 
 lv_obj_t *softkbd_create(lv_obj_t *parent)
@@ -160,8 +155,6 @@ lv_obj_t *softkbd_create(lv_obj_t *parent)
     }
     rebuild(k);
     lv_obj_update_layout(k->root);
-    lv_area_t a; lv_obj_get_coords(k->root, &a);
-    ime_ui_set_anchor(a.y1);
     return k->root;
 }
 
@@ -172,7 +165,6 @@ void softkbd_hide_all(void)
 {
     if (s_kbd) lv_obj_delete(s_kbd->root);
     s_kbd = NULL;
-    ime_reset();
 }
 
 /* ---- text area integration ---- */
@@ -188,7 +180,7 @@ static void ta_event_cb(lv_event_t *e)
         /* make sure the text area is visible above the keyboard */
         lv_obj_scroll_to_view_recursive(ta, LV_ANIM_ON);
     } else if (code == LV_EVENT_READY || code == LV_EVENT_DEFOCUSED) {
-        if (code == LV_EVENT_READY) { ime_commit_preedit(); softkbd_hide_all(); }
+        if (code == LV_EVENT_READY) softkbd_hide_all();
         if (code == LV_EVENT_DEFOCUSED && keyboard_lvgl_focused() == ta) keyboard_lvgl_focus(NULL);
     } else if (code == LV_EVENT_DELETE) {
         if (keyboard_lvgl_focused() == ta) keyboard_lvgl_focus(NULL);

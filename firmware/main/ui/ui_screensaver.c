@@ -87,7 +87,7 @@ static void standby_create(void)
     int rx=portrait ? pad : pad+cw+gap, ry=portrait ? top+ch+gap : top;
     int rw=portrait ? width : width-cw-gap, rh=portrait ? height-ch-gap : height;
     int status_h=160, cal_h=rh-status_h-gap;
-    lv_obj_t *brand=standby_label(s_scr,"CLIENTRE 5  /  STANDBY",FONT_SMALL,UI_MUTED);
+    lv_obj_t *brand=standby_label(s_scr,"CLAUDE COMPANION  /  STANDBY",FONT_SMALL,UI_MUTED);
     lv_obj_set_pos(brand,pad,22);
     lv_obj_t *card=standby_card(pad,top,cw,ch);
     lv_obj_t *l=standby_label(card,"LOCAL TIME",FONT_SMALL,UI_MUTED); lv_obj_align(l,LV_ALIGN_TOP_LEFT,0,0);

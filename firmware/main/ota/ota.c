@@ -19,7 +19,7 @@ static const char *TAG = "ota";
 
 static esp_http_client_handle_t open_http(const char *url, int *status, int *len)
 {
-    esp_http_client_config_t cfg = { .url = url, .timeout_ms = 15000, .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 4096, .buffer_size_tx = 2048, .user_agent = "Clientre5/1.0" };
+    esp_http_client_config_t cfg = { .url = url, .timeout_ms = 15000, .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 4096, .buffer_size_tx = 2048, .user_agent = "ClaudeCompanion/1.0" };
     esp_http_client_handle_t h = esp_http_client_init(&cfg);
     if (!h) return NULL;
     /* open/fetch_headers do not follow redirects by themselves, and GitHub release

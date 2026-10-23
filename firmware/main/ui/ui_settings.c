@@ -4,7 +4,6 @@
 #include "settings/settings.h"
 #include "sys/sysinfo.h"
 #include "input/keyboard.h"
-#include "ime/ime.h"
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
 #include "storage/sd.h"
@@ -14,8 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-static void lang_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_lang_create, NULL); }
 
 static void bright_cb(lv_event_t *e)
 {
@@ -68,33 +65,6 @@ static void ntp_cb(lv_event_t *e)
     if (!wifi_mgr_is_connected()) { ui_toast(tr(STR_WIFI_NOT_CONNECTED)); return; }
     sysinfo_start_sntp();
     ui_toast(tr(STR_PLEASE_WAIT));
-}
-
-static void ime_menu_cb(int i, void *ud) { (void)ud; if (i >= 0) { ime_set_source((ime_src_t)i); ui_nav_refresh(); } }
-static void ime_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *items[] = { tr(STR_IME_EN), tr(STR_IME_JA), tr(STR_IME_ZH) };
-    ui_menu(tr(STR_IME_MODE), items, 3, ime_menu_cb, NULL);
-}
-static void kana_menu_cb(int i, void *ud) { (void)ud; if (i >= 0) { ime_set_ja_mode((ime_ja_mode_t)i); ui_nav_refresh(); } }
-static void kana_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *items[] = { tr(STR_IME_HIRA), tr(STR_IME_KATA) };
-    ui_menu(tr(STR_IME_JA), items, 2, kana_menu_cb, NULL);
-}
-static void skk_sd_cb(lv_event_t *e)
-{
-    bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
-    g_settings.ime_skk_sd = on; settings_save();
-    if (on) {
-        lv_obj_t *b = ui_busy(tr(STR_PLEASE_WAIT));
-        lv_refr_now(NULL);
-        bool ok = ime_load_sd_dict(SD_MOUNT "/skk/SKK-JISYO.L");
-        ui_busy_close(b);
-        ui_toast(ok ? tr(STR_IME_DICT_LOADED) : tr(STR_FAILED));
-    }
 }
 
 static void kbd_layout_menu_cb(int i, void *ud)
@@ -258,7 +228,6 @@ lv_obj_t *ui_settings_create(void *arg)
     char buf[128];
 
     c = settings_panel(deck, 0);
-    ui_setting_row(c, tr(STR_SET_LANGUAGE), i18n_lang_name(i18n_get_lang()), lang_cb, NULL);
     int o = g_settings.utc_offset_min;
     snprintf(buf, sizeof(buf), "UTC%c%d:%02d", o >= 0 ? '+' : '-', abs(o) / 60, abs(o) % 60);
     ui_setting_row(c, tr(STR_SET_UTC_OFFSET), buf, utc_cb, NULL);
@@ -289,14 +258,7 @@ lv_obj_t *ui_settings_create(void *arg)
     ui_label(c, tr(STR_SB_NOTE), FONT_SMALL, UI_MUTED);
 
     c = settings_panel(deck, 3);
-    const char *src = ime_get_source() == IME_SRC_JA ? tr(STR_IME_JA) : ime_get_source() == IME_SRC_ZH ? tr(STR_IME_ZH) : tr(STR_IME_EN);
-    ui_setting_row(c, tr(STR_IME_MODE), src, ime_cb, NULL);
-    ui_setting_row(c, tr(STR_IME_JA), ime_get_ja_mode() == IME_JA_KATA ? tr(STR_IME_KATA) : tr(STR_IME_HIRA), kana_cb, NULL);
-    ui_label(c, tr(STR_IME_SWITCH_KEY), FONT_SMALL, UI_MUTED);
     ui_label(c, tr(STR_GESTURE_NOTE), FONT_SMALL, UI_MUTED);
-    snprintf(buf, sizeof(buf), "%s: %s", tr(STR_IME_SKK_DICT), ime_dict_info());
-    ui_switch_row(c, tr(STR_IME_DICT_SD), g_settings.ime_skk_sd, skk_sd_cb, NULL);
-    ui_label(c, buf, FONT_SMALL, UI_MUTED);
     snprintf(buf, sizeof(buf), tr(STR_SET_KBD_STATUS), keyboard_present() ? tr(STR_PRESENT) : (keyboard_usb_present() ? "USB" : tr(STR_ABSENT)));
     ui_label(c, buf, FONT_SMALL, UI_MUTED);
     ui_setting_row(c, tr(STR_SET_KBD_LAYOUT),

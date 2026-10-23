@@ -7,7 +7,7 @@ extern "C" {
 #endif
 #define OTA_DIR SD_MOUNT_OTA
 #define SD_MOUNT_OTA "/sdcard/update"
-#define OTA_APP_FILE  "/sdcard/update/clientre5.bin"
+#define OTA_APP_FILE  "/sdcard/update/claude_companion.bin"
 #define OTA_REQ_FILE  "/sdcard/update/request.json"
 
 typedef struct {

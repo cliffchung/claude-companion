@@ -16,7 +16,7 @@ static const char *TAG = "backup";
 static char *build_json(bool plain)
 {
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "device", "Clientre 5");
+    cJSON_AddStringToObject(root, "device", "Claude Companion");
     cJSON_AddNumberToObject(root, "format", 1);
     char *srv = server_store_export_json(plain);
     char *wifi = wifi_mgr_export_json();
@@ -76,9 +76,7 @@ static bool apply_json(const char *json, char *err, size_t err_cap)
     if (b64) {
         app_settings_t tmp; size_t n = 0;
         if (mbedtls_base64_decode((unsigned char *)&tmp, sizeof(tmp), &n, (const unsigned char *)b64, strlen(b64)) == 0 && n == sizeof(tmp)) {
-            lang_t keep = g_settings.lang;
             g_settings = tmp;
-            if (g_settings.lang == LANG_UNSET) g_settings.lang = keep;
             settings_save();
         }
     }

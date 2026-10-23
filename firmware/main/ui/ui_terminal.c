@@ -7,8 +7,6 @@
 #include "term/term_view.h"
 #include "term/term_keys.h"
 #include "input/keyboard.h"
-#include "ime/ime.h"
-#include "ime/ime_ui.h"
 #include "settings/settings.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -24,7 +22,7 @@ static const char *TAG = "term_ui";
 #define STATUS_H 44
 
 typedef struct {
-    lv_obj_t *scr, *status, *status_lbl, *ctrl, *kbd, *hint, *ime_lbl, *close_btn;
+    lv_obj_t *scr, *status, *status_lbl, *ctrl, *kbd, *hint, *close_btn;
     term_view_t *tv;
     vt_t *vt;
     ssh_client_t *ssh;
@@ -136,7 +134,6 @@ static void layout(term_ctx_t *c)
         vt_resize(c->vt, cols, rows);
         if (c->ssh) ssh_client_resize(c->ssh, cols, rows);
     }
-    ime_ui_set_anchor(c->kbd_shown ? H - softkbd_height() : -1);
     lv_obj_invalidate(term_view_obj(c->tv));
 }
 
@@ -148,14 +145,14 @@ static void toggle_kbd(term_ctx_t *c)
 }
 
 /* -------------------------------------------------------- control bar */
-typedef struct { const char *label; special_key_t sk; int kind; } ctrl_key_t;  /* kind 0=special 1=ctrl toggle 2=alt toggle 3=ime 4=kbd 5=scroll up 6=scroll down */
+typedef struct { const char *label; special_key_t sk; int kind; } ctrl_key_t;  /* kind 0=special 1=ctrl toggle 2=alt toggle 4=kbd 5=scroll up 6=scroll down */
 static const ctrl_key_t s_ctrl_keys[] = {
     { "ESC", SK_ESC, 0 }, { "TAB", SK_TAB, 0 }, { "CTRL", 0, 1 }, { "ALT", 0, 2 },
     { LV_SYMBOL_UP, SK_UP, 0 }, { LV_SYMBOL_DOWN, SK_DOWN, 0 }, { LV_SYMBOL_LEFT, SK_LEFT, 0 }, { LV_SYMBOL_RIGHT, SK_RIGHT, 0 },
     { "HOME", SK_HOME, 0 }, { "END", SK_END, 0 }, { "PgUp", SK_PGUP, 0 }, { "PgDn", SK_PGDN, 0 },
     { "F1", SK_F1, 0 }, { "F2", SK_F2, 0 }, { "F5", SK_F5, 0 }, { "F10", SK_F10, 0 },
     { "^C", 0, 7 }, { "^Z", 0, 8 }, { "^D", 0, 9 }, { "Enter", SK_ENTER, 0 },
-    { "A/あ", 0, 3 }, { LV_SYMBOL_KEYBOARD, 0, 4 },
+    { LV_SYMBOL_KEYBOARD, 0, 4 },
 };
 
 static void ctrl_key_cb(lv_event_t *e)
@@ -167,7 +164,6 @@ static void ctrl_key_cb(lv_event_t *e)
     case 0: { key_event_t ev = { .type = KEY_EV_SPECIAL, .key = k->sk }; term_key(&ev, c); break; }
     case 1: c->ctrl_on = !c->ctrl_on; break;
     case 2: c->alt_on = !c->alt_on; break;
-    case 3: ime_toggle_source(); break;
     case 4: toggle_kbd(c); return;
     case 7: case 8: case 9: { key_event_t ev = { .type = KEY_EV_CHAR, .cp = k->kind == 7 ? 'c' : k->kind == 8 ? 'z' : 'd', .mods = MOD_CTRL }; term_key(&ev, c); break; }
     }
@@ -178,7 +174,7 @@ static void ctrl_key_cb(lv_event_t *e)
         lv_obj_t *ch = lv_obj_get_child(c->ctrl, i);
         const ctrl_key_t *kk = lv_obj_get_user_data(ch);
         if (!kk) continue;
-        bool on = (kk->kind == 1 && c->ctrl_on) || (kk->kind == 2 && c->alt_on) || (kk->kind == 3 && ime_is_active());
+        bool on = (kk->kind == 1 && c->ctrl_on) || (kk->kind == 2 && c->alt_on);
         lv_obj_set_style_bg_color(ch, on ? UI_ACCENT : UI_CARD_HI, 0);
     }
 }
@@ -230,7 +226,6 @@ static void term_menu_cb(int item, void *ud)
     case 0: ui_confirm(tr(STR_DISCONNECT), tr(STR_TERM_CLOSE_Q), close_confirm_cb, NULL); break;
     case 1: vt_reset(c->vt); term_view_refresh(c->tv); break;
     case 2: vt_scroll_view_reset(c->vt); term_view_refresh(c->tv); break;
-    case 3: ime_toggle_source(); break;
     }
 }
 
@@ -238,8 +233,8 @@ static void term_long_cb(lv_event_t *e)
 {
     term_ctx_t *c = lv_event_get_user_data(e);
     if (lv_indev_active() && !term_view_long_press_allowed(c->tv)) return;
-    const char *items[] = { tr(STR_DISCONNECT), tr(STR_TERM_CLEAR), tr(STR_TERM_SCROLL_END), tr(STR_IME_MODE) };
-    ui_menu(tr(STR_TERM_MENU), items, 4, term_menu_cb, c);
+    const char *items[] = { tr(STR_DISCONNECT), tr(STR_TERM_CLEAR), tr(STR_TERM_SCROLL_END) };
+    ui_menu(tr(STR_TERM_MENU), items, 3, term_menu_cb, c);
 }
 
 static lv_obj_t *build_status(term_ctx_t *c)
@@ -266,9 +261,6 @@ static lv_obj_t *build_status(term_ctx_t *c)
     lv_obj_set_flex_grow(c->status_lbl, 1);
     lv_label_set_long_mode(c->status_lbl, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(c->status_lbl, FONT_SMALL, 0);
-    c->ime_lbl = lv_label_create(bar);
-    lv_label_set_text(c->ime_lbl, ime_status_label());
-    lv_obj_set_style_text_color(c->ime_lbl, UI_ACCENT, 0);
     lv_obj_t *st = lv_label_create(bar);
     char buf[128]; ui_status_text(buf, sizeof(buf));
     lv_label_set_text(st, buf);
@@ -339,7 +331,6 @@ static void pump_cb(lv_timer_t *t)
             if (st == SSH_ST_ERROR || st == SSH_ST_CLOSED) { c->status_shown = true; layout(c); }
         }
     }
-    if (c->ime_lbl) lv_label_set_text(c->ime_lbl, ime_status_label());
 }
 
 /* -------------------------------------------------------- lifecycle */
@@ -348,8 +339,6 @@ static void scr_delete_cb(lv_event_t *e)
     term_ctx_t *c = lv_event_get_user_data(e);
     c->closing = true;
     keyboard_set_sink(NULL);
-    ime_ui_set_indicator(NULL);
-    ime_ui_set_anchor(-1);
     if (c->timer) lv_timer_delete(c->timer);
     if (c->ssh) { ssh_client_stop(c->ssh); c->ssh = NULL; }
     g_ssh_session_active = false;
@@ -406,7 +395,6 @@ lv_obj_t *ui_terminal_create(void *arg)
 
     key_sink_t sink = { .key = term_key, .text = term_send_text, .user = c };
     keyboard_set_sink(&sink);
-    ime_ui_set_indicator(c->ime_lbl);
 
     ssh_params_t p = { 0 };
     strlcpy(p.host, s->host, sizeof(p.host)); p.port = s->port;

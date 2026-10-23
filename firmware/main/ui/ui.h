@@ -99,7 +99,6 @@ void ui_async(lv_async_cb_t fn, void *arg);
 void ui_timer_bind(lv_timer_t *t, lv_obj_t *obj);
 
 /* Screens */
-lv_obj_t *ui_lang_create(void *arg);
 lv_obj_t *ui_home_create(void *arg);
 lv_obj_t *ui_servers_create(void *arg);
 lv_obj_t *ui_server_form_create(void *arg);      /* arg: int index or -1 */
@@ -116,7 +115,6 @@ lv_obj_t *ui_ansi_create(void *arg);
 lv_obj_t *ui_ota_create(void *arg);
 lv_obj_t *ui_devinfo_create(void *arg);
 lv_obj_t *ui_usb_create(void *arg);
-lv_obj_t *ui_webfm_create(void *arg);
 lv_obj_t *ui_backup_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);
 lv_obj_t *ui_screensaver_settings_create(void *arg);

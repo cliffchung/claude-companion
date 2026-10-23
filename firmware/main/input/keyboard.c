@@ -9,7 +9,6 @@
 #include "freertos/queue.h"
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
-#include "ime/ime.h"
 #include "settings/settings.h"
 #include "ui/ui.h"
 
@@ -247,7 +246,6 @@ void keyboard_set_sink(const key_sink_t *sink)
 {
     if (sink) { s_sink = *sink; s_have_sink = true; }
     else s_have_sink = false;
-    ime_reset();
 }
 
 static void sink_text(const char *utf8)
@@ -261,39 +259,29 @@ static bool sink_key(const key_event_t *ev)
     return lvgl_sink_key(ev, NULL);
 }
 
-static void ime_commit_cb(const char *utf8, void *user) { (void)user; sink_text(utf8); }
-
-/* The keys that pick the input source, wherever the focus is. */
-static bool ime_source_key(const key_event_t *ev)
+/* The JIS input-source keys do nothing now; swallow them so they never reach the UI. */
+static bool unused_source_key(const key_event_t *ev)
 {
     if (ev->type != KEY_EV_SPECIAL) return false;
-    switch (ev->key) {
-    case SK_IME_TOGGLE: ime_toggle_source(); return true;
-    case SK_KANA_MODE:  ime_toggle_ja_mode(); return true;
-    case SK_IME_ASCII:
-        if (ime_get_source() != IME_SRC_EN) ime_set_source(IME_SRC_EN);
-        return true;
-    case SK_IME_KANA:
-        if (ime_get_source() != IME_SRC_JA) ime_set_source(IME_SRC_JA);
-        else ime_toggle_ja_mode();
-        return true;
-    default: return false;
-    }
+    return ev->key == SK_IME_TOGGLE || ev->key == SK_KANA_MODE ||
+           ev->key == SK_IME_ASCII || ev->key == SK_IME_KANA;
 }
 
 static void dispatch_input(const key_event_t *ev)
 {
-    /* global: Ctrl+Space toggles the input source */
-    if (ev->type == KEY_EV_CHAR && ev->cp == ' ' && (ev->mods & MOD_CTRL)) { ime_toggle_source(); return; }
-    if (ime_source_key(ev)) return;
-    if (ime_feed_key(ev)) return;
+    if (unused_source_key(ev)) return;
     sink_key(ev);
 }
 
 void keyboard_dispatch(const key_event_t *ev)
 {
-    if (ime_source_key(ev)) return;   /* never routed to the UI */
+    if (unused_source_key(ev)) return;   /* never routed to the UI */
     if (!ui_keyboard_route(ev, s_have_sink)) dispatch_input(ev);
+}
+
+bool keyboard_post(const key_event_t *ev)
+{
+    return s_q && xQueueSend(s_q, ev, pdMS_TO_TICKS(200)) == pdTRUE;
 }
 
 /* On-screen keys already have a text destination; do not navigate the UI. */
@@ -433,7 +421,6 @@ void keyboard_init(void)
 {
     s_q = xQueueCreate(64, sizeof(key_event_t));
     keyboard_set_layout(g_settings.kbd_layout);
-    ime_set_commit_cb(ime_commit_cb, NULL);
     gpio_config_t io = { .pin_bit_mask = 1ULL << KB_INT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&io);
     i2c_master_bus_config_t bc = {

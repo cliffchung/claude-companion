@@ -10,10 +10,10 @@ typedef enum {
     SK_NONE = 0, SK_ENTER, SK_ESC, SK_BACKSPACE, SK_TAB, SK_UP, SK_DOWN, SK_LEFT, SK_RIGHT,
     SK_HOME, SK_END, SK_PGUP, SK_PGDN, SK_INSERT, SK_DELETE,
     SK_F1, SK_F2, SK_F3, SK_F4, SK_F5, SK_F6, SK_F7, SK_F8, SK_F9, SK_F10, SK_F11, SK_F12,
-    SK_IME_TOGGLE,      /* soft keyboard "A/あ" key */
-    SK_KANA_MODE,       /* hiragana <-> katakana */
-    SK_IME_ASCII,       /* JIS "英数": force the ASCII source */
-    SK_IME_KANA,        /* JIS "かな": force Japanese, then hiragana <-> katakana */
+    SK_IME_TOGGLE,      /* unused since the IME was removed; swallowed */
+    SK_KANA_MODE,       /* unused; swallowed */
+    SK_IME_ASCII,       /* JIS key; swallowed */
+    SK_IME_KANA,        /* JIS key; swallowed */
 } special_key_t;
 
 /* Physical layout of the Tab5 keyboard.  STOCK leaves the mapping to the
@@ -33,10 +33,10 @@ typedef struct {
     uint8_t mods;
 } key_event_t;
 
-/* A sink receives keys that the IME did not consume, and committed text. */
+/* A sink receives keys the UI did not consume, and text. */
 typedef struct {
     bool (*key)(const key_event_t *ev, void *user);   /* return true if handled */
-    void (*text)(const char *utf8, void *user);       /* committed text (IME or plain chars) */
+    void (*text)(const char *utf8, void *user);       /* text */
     void *user;
 } key_sink_t;
 
@@ -47,7 +47,9 @@ bool keyboard_any_present(void);
 uint8_t keyboard_fw_version(void);
 void keyboard_set_sink(const key_sink_t *sink);   /* NULL -> default LVGL sink */
 void keyboard_inject(const key_event_t *ev);      /* from soft keyboard / tests (LVGL task) */
-void keyboard_dispatch(const key_event_t *ev);    /* IME -> sink pipeline (LVGL task) */
+void keyboard_dispatch(const key_event_t *ev);    /* UI/sink routing (LVGL task) */
+bool keyboard_post(const key_event_t *ev);        /* queue an event as if the A164 sent it (any task) */
+void key_console_init(void);                      /* registers the `key` debug console command */
 void keyboard_set_layout(uint8_t layout);          /* kbd_layout_t */
 void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
 void keyboard_usb_hid_report(const uint8_t *report, int len); /* called by USB HID glue */

@@ -11,7 +11,6 @@
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
 #include "input/keyboard.h"
-#include "ime/ime.h"
 #include "src/misc/lv_event_private.h" /* LVGL 9.6 has no public event-filter accessor. */
 #include <time.h>
 
@@ -410,12 +409,10 @@ static void confirm_btn_cb(lv_event_t *e)
     if (cb) cb(yes, ud);
 }
 
-static void modal_del_cb(lv_event_t *e) { (void)e; ime_reset(); if (s_modal_count) s_modal_count--; }
+static void modal_del_cb(lv_event_t *e) { (void)e; if (s_modal_count) s_modal_count--; }
 
 static lv_obj_t *modal_overlay(void)
 {
-    /* Uncommitted text must never cross a dialog/SSH input boundary. */
-    ime_reset();
     lv_obj_t *ov = lv_obj_create(lv_layer_top());
     s_modal_count++;
     lv_obj_add_event_cb(ov, modal_del_cb, LV_EVENT_DELETE, NULL);
@@ -610,7 +607,6 @@ static void keyboard_focus_deleted(lv_event_t *e)
 static void keyboard_focus_set(lv_obj_t *obj)
 {
     if (obj == s_keyboard_focus) return;
-    ime_commit_preedit();
     lv_obj_t *old = s_keyboard_focus;
     s_keyboard_focus = NULL;
     if (old) {
@@ -663,7 +659,6 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
     lv_obj_t *modal = keyboard_modal();
     if (!terminal) s_keyboard_terminal_ui = false;
     if (terminal && !modal && ev->type == KEY_EV_SPECIAL && ev->key == SK_TAB && (ev->mods & MOD_CTRL)) {
-        ime_commit_preedit();
         s_keyboard_terminal_ui = !s_keyboard_terminal_ui;
         keyboard_focus_set(NULL);
         ui_toast(s_keyboard_terminal_ui ? "UI: Tab / Enter / Esc" : "SSH input");
@@ -690,7 +685,6 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
     if (!had_focus) keyboard_focus_set(walk.first);
     lv_obj_t *obj = s_keyboard_focus;
     bool textarea = obj && lv_obj_check_type(obj, &lv_textarea_class);
-    if (textarea && ime_is_composing() && !(ev->type == KEY_EV_SPECIAL && ev->key == SK_TAB)) return false;
     if (ev->type == KEY_EV_SPECIAL && ev->key == SK_ESC) {
         if (modal) lv_obj_send_event(modal, LV_EVENT_CANCEL, NULL);
         else if (terminal) { keyboard_focus_set(NULL); s_keyboard_terminal_ui = false; }
@@ -710,7 +704,7 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
                 (ev->type == KEY_EV_CHAR && (ev->cp == 'm' || ev->cp == 'M') &&
                  (ev->mods & (MOD_CTRL | MOD_SHIFT)) == (MOD_CTRL | MOD_SHIFT));
     if (menu) { lv_obj_send_event(obj, LV_EVENT_LONG_PRESSED, NULL); return true; }
-    if (textarea) return false; /* text and cursor keys pass through the IME */
+    if (textarea) return false; /* text and cursor keys pass through to the textarea */
     if (ev->type == KEY_EV_SPECIAL) {
         int direction = (ev->key == SK_LEFT || ev->key == SK_DOWN) ? -1 : 1;
         bool arrow = ev->key == SK_LEFT || ev->key == SK_RIGHT || ev->key == SK_UP || ev->key == SK_DOWN;
@@ -965,7 +959,7 @@ void ui_timer_bind(lv_timer_t *t, lv_obj_t *obj)
 
 void ui_theme_reinit_lvgl(void)
 {
-    fonts_select(ui_theme_pixel(), i18n_get_lang());
+    fonts_select(ui_theme_pixel(), LANG_EN);
     lv_theme_t *th = lv_theme_default_init(NULL, UI_ACCENT, UI_ACCENT2, true, FONT_BODY);
     ui_theme_install_widgets(th);
     /* lv_display_set_theme() only applies the theme to the active screen, so the

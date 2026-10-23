@@ -72,14 +72,14 @@ void ui_boot_show(void)
     lv_obj_remove_flag(mark, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(mark, mark_draw, LV_EVENT_DRAW_MAIN, NULL);
     /* Const fonts can be used before their runtime fallback copies exist. */
-    boot_label(group, "Clientre 5", &font_px36b, BOOT_TEXT);
-    boot_label(group, "STARTING SYSTEM", &font_px20, BOOT_MUTED);
+    boot_label(group, "Claude Companion", &font_px36b, BOOT_TEXT);
+    boot_label(group, "STARTING", &font_px20, BOOT_MUTED);
     lv_obj_center(group);
 
     lv_obj_t *previous = lv_screen_active();
     lv_screen_load(screen);
     if (previous && previous != screen) lv_obj_delete(previous);
-    /* Ensure the logo has actually been submitted before slow SD/IME work.
+    /* Ensure the logo has actually been submitted before slow SD work.
      * There is deliberately no sleep, refresh timer or minimum display time. */
     lv_refr_now(NULL);
 }

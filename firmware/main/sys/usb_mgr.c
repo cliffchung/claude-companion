@@ -18,7 +18,6 @@
 #include "tinyusb_msc.h"
 #include "storage/sd.h"
 #include "media/audio_player.h"
-#include "web/webfm.h"
 #include "input/keyboard.h"
 #include "i18n/i18n.h"
 
@@ -261,7 +260,6 @@ bool usb_mgr_start_disk_mode(void)
     if (tinyusb_msc_new_storage_sdmmc(&sc, &s_disk) != ESP_OK) { ESP_LOGE(TAG, "msc storage failed"); tinyusb_msc_uninstall_driver(); goto fail; }
     /* Both of these read the TF card, so stop them while the PC owns it. */
     if (audio_player_state() != AP_STOPPED) { ESP_LOGI(TAG, "stopping audio before disk mode"); audio_player_stop(); }
-    if (webfm_running()) { ESP_LOGI(TAG, "stopping web file manager before disk mode"); webfm_stop(); }
     s_dev_attached = false; s_disk_note = "";
     usb_c_phy_to_otg(true);
     tinyusb_config_t tc = TINYUSB_CONFIG_FULL_SPEED(disk_event_cb, NULL);

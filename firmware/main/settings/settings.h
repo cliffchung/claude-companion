@@ -7,9 +7,6 @@
 extern "C" {
 #endif
 
-typedef enum { IME_SRC_EN = 0, IME_SRC_JA = 1, IME_SRC_ZH = 2, IME_SRC_COUNT } ime_src_t;
-typedef enum { IME_JA_HIRA = 0, IME_JA_KATA = 1 } ime_ja_mode_t;
-
 /* Status bar elements, as a bitmask in app_settings_t.status_items. */
 #define STATUS_WIFI      (1u << 0)
 #define STATUS_TAILSCALE (1u << 1)
@@ -23,9 +20,10 @@ typedef enum { IME_JA_HIRA = 0, IME_JA_KATA = 1 } ime_ja_mode_t;
                           STATUS_KEYBOARD | STATUS_CLOCK | STATUS_DATE)
 
 typedef struct {
-    uint8_t  lang;              /* lang_t, LANG_UNSET on first boot */
-    uint8_t  ime_src;           /* ime_src_t */
-    uint8_t  ime_ja_mode;       /* ime_ja_mode_t */
+    /* Reserved fields keep the NVS blob layout of older builds; unused. */
+    uint8_t  lang;              /* reserved (was lang_t): English only */
+    uint8_t  reserved_src;          /* reserved: formerly the input source */
+    uint8_t  reserved_kana_mode;    /* reserved: formerly the kana mode */
     uint8_t  rotation;          /* 0..3 -> lv_display_rotation_t */
     uint8_t  brightness;        /* 5..100 */
     uint8_t  ss_enable;
@@ -42,8 +40,8 @@ typedef struct {
     uint8_t  kbd_led_rgb[3];
     uint8_t  term_font;         /* 0=22px (only size shipped) */
     uint8_t  volume;            /* 0..100 */
-    uint8_t  webfm_autostart;
-    uint8_t  ime_skk_sd;        /* prefer SD dictionary when present */
+    uint8_t  reserved_autostart;        /* reserved: formerly a web service autostart */
+    uint8_t  reserved_dict_sd;          /* reserved: formerly a dictionary option */
     char     ota_url[160];
     uint8_t  ssh_bell;
     uint8_t  ts_enable;
