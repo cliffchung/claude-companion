@@ -23,6 +23,7 @@
 #include "servers/server_store.h"
 #include "crypto/secure_store.h"
 #include "sys/screenshot.h"
+#include "sys/debug_console.h"
 #include "sys/usb_mgr.h"
 #include "media/audio_player.h"
 #include "web/webfm.h"
@@ -165,6 +166,7 @@ void app_main(void)
         ui_nav_home();
     }
     bsp_display_unlock();
+    debug_console_start();
     xTaskCreate(idle_task, "idle_poll", 4096, NULL, 2, NULL);
     ESP_LOGI(TAG, "boot complete in %lld ms, free heap %lu",
              (esp_timer_get_time() - boot_started) / 1000, (unsigned long)esp_get_free_heap_size());
