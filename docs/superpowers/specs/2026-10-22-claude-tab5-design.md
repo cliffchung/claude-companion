@@ -41,7 +41,7 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   |---|---|
   | List sessions and their state | `claude agents --json` (`state: "blocked"` = needs you) |
   | Preview a session | `claude logs <id>` |
-  | Quick answer | `claude -p --resume <sessionId> '<text>'` (queues into the running background session) |
+  | Quick answer | `claude -p --resume <sessionId> -- '<text>'` (queues into the running background session) |
   | Take over | `claude attach <id>` in a terminal (pty) channel. ← returns to agent view and Ctrl+Z to the shell; the session keeps running. |
   | Stop | `claude stop <id>` |
 
@@ -66,7 +66,9 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   `~/.local/bin/claude`, Claude Code's native install location; the remote shell expands the `~`.
   Every command uses that setting.
 - **D4 — Safe command lines.** The device builds remote commands from what the user types. Reply
-  text is always passed as one single-quoted argument with `'` escaped as `'\''`. Before use,
+  text is always passed as one single-quoted argument with `'` escaped as `'\''`, after a `--`
+  end-of-options marker so text starting with `-` is a message, not a flag (verified on Claude Code
+  2.1.309: `-p --resume <sid> -- '--help me'` delivered the literal text). Before use,
   session ids are checked: short ids against `^[0-9a-f]{8}$`, session UUIDs against the standard
   UUID form.
 - **D5 — Input versus permission prompts.** Per the docs, a blocked session reports what it's

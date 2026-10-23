@@ -25,6 +25,19 @@ static void test_shell_quote_roundtrip(void)
         pclose(f);
         got[n] = 0;
         TEST_ASSERT_EQUAL_STRING(cases[i], got);
+        /* the user's login shell runs SSH exec commands: repeat under zsh */
+        if (access("/bin/zsh", X_OK) == 0) {
+            char zcmd[600], zq[512];
+            TEST_ASSERT_TRUE(cc_shell_quote(cmd, zq, sizeof(zq)));
+            snprintf(zcmd, sizeof(zcmd), "/bin/zsh -c %s", zq);
+            memset(got, 0, sizeof(got));
+            f = popen(zcmd, "r");
+            TEST_ASSERT_NOT_NULL(f);
+            n = fread(got, 1, sizeof(got) - 1, f);
+            pclose(f);
+            got[n] = 0;
+            TEST_ASSERT_EQUAL_STRING(cases[i], got);
+        }
     }
     TEST_ASSERT_NOT_EQUAL(0, access("/tmp/cc-pwned", F_OK));
 }
@@ -33,7 +46,26 @@ static void test_cmd_reply_exact(void)
 {
     char o[256];
     TEST_ASSERT_TRUE(cc_cmd_reply(CL, SID, "it's ok", o, sizeof(o)));
-    TEST_ASSERT_EQUAL_STRING(CL " -p --resume " SID " 'it'\\''s ok'", o);
+    TEST_ASSERT_EQUAL_STRING(CL " -p --resume " SID " -- 'it'\\''s ok'", o);
+}
+
+static void test_cmd_reply_leading_dash(void)
+{
+    char o[256];
+    TEST_ASSERT_TRUE(cc_cmd_reply(CL, SID, "--help me", o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING(CL " -p --resume " SID " -- '--help me'", o);
+    TEST_ASSERT_TRUE(cc_cmd_reply(CL, SID, "- fix tests", o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING(CL " -p --resume " SID " -- '- fix tests'", o);
+}
+
+static void test_quote_clears_out_on_failure(void)
+{
+    char o[8] = "xxxxxxx";
+    TEST_ASSERT_FALSE(cc_shell_quote("far too long for the buffer", o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING("", o);
+    char r[80] = "junk";
+    TEST_ASSERT_FALSE(cc_cmd_reply(CL, SID, "text that will not fit in eighty bytes of output buffer at all, really not", r, sizeof(r)));
+    TEST_ASSERT_EQUAL_STRING("", r);
 }
 
 static void test_cmd_exact(void)
@@ -79,6 +111,8 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_shell_quote_roundtrip);
     RUN_TEST(test_cmd_reply_exact);
+    RUN_TEST(test_cmd_reply_leading_dash);
+    RUN_TEST(test_quote_clears_out_on_failure);
     RUN_TEST(test_cmd_exact);
     RUN_TEST(test_cmd_rejects);
     RUN_TEST(test_strip_ansi);

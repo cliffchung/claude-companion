@@ -44,9 +44,9 @@ bool cc_session_id_valid(const char *sid)
     return true;
 }
 
-bool cc_shell_quote(const char *in, char *out, size_t cap)
+static bool quote_impl(const char *in, char *out, size_t cap)
 {
-    if (!in || !out || cap == 0) return false;
+    if (!in) return false;
     size_t o = 0;
     if (o + 1 >= cap) return false;
     out[o++] = '\'';
@@ -64,6 +64,14 @@ bool cc_shell_quote(const char *in, char *out, size_t cap)
     out[o++] = '\'';
     out[o] = 0;
     return true;
+}
+
+bool cc_shell_quote(const char *in, char *out, size_t cap)
+{
+    if (!out || cap == 0) return false;
+    if (quote_impl(in, out, cap)) return true;
+    out[0] = 0;
+    return false;
 }
 
 /* Formats into out; false if it doesn't fit. Returns the length through *len. */
@@ -100,8 +108,10 @@ bool cc_cmd_reply(const char *claude, const char *sid, const char *text, char *o
 {
     size_t n;
     if (!out || !text || !text[0] || !cc_path_valid(claude) || !cc_session_id_valid(sid)) return false;
-    if (!put(out, cap, &n, "%s -p --resume %s ", claude, sid)) return false;
-    return cc_shell_quote(text, out + n, cap - n);
+    if (!put(out, cap, &n, "%s -p --resume %s -- ", claude, sid)) return false;
+    if (cc_shell_quote(text, out + n, cap - n)) return true;
+    out[0] = 0;
+    return false;
 }
 
 size_t cc_strip_ansi(char *s)

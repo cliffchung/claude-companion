@@ -98,11 +98,16 @@ static void test_parse_real_capture(void)
     TEST_ASSERT_GREATER_OR_EQUAL(2, n);
     /* companion-test-input was blocked at capture time; companion-test-perm had finished
        (the real Claude Code never produced a permission prompt for it, see task-4 report) */
+    for (int i = 0; i < n; i++) TEST_ASSERT_TRUE(s[i].background);
+    const cc_session_t *in = NULL, *perm = NULL;
     for (int i = 0; i < n; i++) {
-        TEST_ASSERT_TRUE(s[i].background);
-        if (!strcmp(s[i].name, "companion-test-input")) TEST_ASSERT_EQUAL(CC_NEEDS_YOU, s[i].state);
-        if (!strcmp(s[i].name, "companion-test-perm")) TEST_ASSERT_EQUAL(CC_DONE, s[i].state);
+        if (!strcmp(s[i].name, "companion-test-input")) in = &s[i];
+        if (!strcmp(s[i].name, "companion-test-perm")) perm = &s[i];
     }
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(perm);
+    TEST_ASSERT_EQUAL(CC_NEEDS_YOU, in->state);
+    TEST_ASSERT_EQUAL(CC_DONE, perm->state);
     TEST_ASSERT_EQUAL(CC_NEEDS_YOU, s[0].state);
     TEST_ASSERT_EQUAL_STRING("companion-test-input", s[0].name);
 }
