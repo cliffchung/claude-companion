@@ -46,7 +46,7 @@ Rules:
 - On a working session the text is queued as the next user message, and the quiet-wait never ends, so cap it at 2 to 3 s.
 
 Timing, spawn to exit: about 3.0 to 3.3 s with the defaults (quiet 1.0 s, post 1.5 s); about 1.3 s tight (quiet 0.5 s, post 0.3 s).
-Task 6 builds this as `cc_paste_build` and `cc_link_paste`. `--bg --resume` is only right for a session with no live process.
+Task 6 builds this as `cc_paste_build` and `cc_link_paste`, and it is the only reply path the device has. Stopped sessions can't be answered from the device: their card shows "Stopped" with no answer field. `-p --resume` (or `--bg --resume`) would only be right for a session with no live process; `cc_cmd_reply` keeps that command line for a later plan, and only the host tests use it.
 
 ## Moved checks (R14)
 
