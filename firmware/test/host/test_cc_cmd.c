@@ -299,6 +299,38 @@ static void test_screen_input_prompt_is_not_permission(void)
     TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(SEL " 1. Apples\n  2. Pears\n"));
 }
 
+static void test_same_host(void)
+{
+    TEST_ASSERT_TRUE(cc_same_host("100.64.0.18", "100.64.0.18"));
+    TEST_ASSERT_TRUE(cc_same_host("Mac.Tail1234.ts.net", "mac.tail1234.ts.net."));
+    TEST_ASSERT_TRUE(cc_same_host(" mac ", "mac"));
+    TEST_ASSERT_TRUE(cc_same_host("mac", "mac.tail1234.ts.net"));   /* MagicDNS short name */
+    TEST_ASSERT_TRUE(cc_same_host("mac.tail1234.ts.net", "MAC"));
+    TEST_ASSERT_FALSE(cc_same_host("mac", "macmini.tail1234.ts.net"));
+    TEST_ASSERT_FALSE(cc_same_host("100", "100.64.0.18"));        /* not an IP's first byte */
+    TEST_ASSERT_FALSE(cc_same_host("100.64.0.1", "100.64.0.18"));
+    TEST_ASSERT_FALSE(cc_same_host("mac.a", "mac.b"));
+    TEST_ASSERT_FALSE(cc_same_host("", "mac"));
+    TEST_ASSERT_FALSE(cc_same_host(".", "."));
+    TEST_ASSERT_FALSE(cc_same_host(NULL, "mac"));
+    TEST_ASSERT_FALSE(cc_same_host("mac", NULL));
+}
+
+static void test_is_companion_server(void)
+{
+    /* by index */
+    TEST_ASSERT_TRUE(cc_is_companion_server(2, "10.0.0.5", 2, "100.64.0.18"));
+    /* a second entry for the same Mac */
+    TEST_ASSERT_TRUE(cc_is_companion_server(0, "100.64.0.18", 2, "100.64.0.18"));
+    TEST_ASSERT_TRUE(cc_is_companion_server(0, "mac", 2, "mac.tail1234.ts.net"));
+    /* another machine */
+    TEST_ASSERT_FALSE(cc_is_companion_server(0, "100.64.0.19", 2, "100.64.0.18"));
+    /* no companion configured or its entry is missing */
+    TEST_ASSERT_FALSE(cc_is_companion_server(0, "100.64.0.18", -1, NULL));
+    TEST_ASSERT_FALSE(cc_is_companion_server(0, "100.64.0.18", -1, ""));
+    TEST_ASSERT_FALSE(cc_is_companion_server(-1, "x", -1, NULL));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -322,5 +354,7 @@ int main(void)
     RUN_TEST(test_screen_input_prompt_is_not_permission);
     RUN_TEST(test_screen_real_input_after_question);
     RUN_TEST(test_screen_input_ready);
+    RUN_TEST(test_same_host);
+    RUN_TEST(test_is_companion_server);
     return UNITY_END();
 }

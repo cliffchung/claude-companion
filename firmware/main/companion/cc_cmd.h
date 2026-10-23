@@ -8,6 +8,9 @@ bool cc_session_id_valid(const char *sid);  /* lowercase 8-4-4-4-12 hex UUID */
 bool cc_shell_quote(const char *in, char *out, size_t cap);   /* '...' with ' written as '\'' */
 bool cc_cmd_agents(const char *claude, char *out, size_t cap);
 bool cc_cmd_logs(const char *claude, const char *id, char *out, size_t cap);
+/* Reserved: not called by the product. The device only answers live sessions, by bracketed
+   paste over a pty (cc_link_paste, no shell involved). Kept, with its D4 quoting tests, for a
+   later reply to a stopped session (`claude -p --resume <sid> -- '<text>'`). */
 bool cc_cmd_reply(const char *claude, const char *sid, const char *text, char *out, size_t cap);
 bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap);
 /* Removes CSI and OSC escape sequences in place; returns the new length. */
@@ -33,3 +36,11 @@ bool cc_screen_is_permission_prompt(const char *plain);
    \n or the end. Dialogs, spinners without an input line, drafts and unknown screens: false. */
 bool cc_screen_input_ready(const char *plain);
 /* Every builder returns false for an invalid path, id or sid, empty text, or output that doesn't fit cap. */
+/* True when two host strings name the same machine: equal ignoring case, surrounding blanks
+   and one trailing dot, or one is a bare name (with a letter, no dot) that is the other's first
+   DNS label (MagicDNS "mac" and "mac.tail1234.ts.net"). Empty or NULL never matches. */
+bool cc_same_host(const char *a, const char *b);
+/* The SSH Terminal's guard (no interactive shell on the companion's Mac): true when server idx
+   with host is the companion server, by index (comp_idx >= 0) or by cc_same_host(host,
+   comp_host). comp_host may be NULL or "" when the companion entry is missing. */
+bool cc_is_companion_server(int idx, const char *host, int comp_idx, const char *comp_host);

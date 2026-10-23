@@ -91,6 +91,8 @@ void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { (void)cb; (void)ctx; }
 void cc_poll_set_rate(int s) { (void)s; }
 bool cc_link_connected(void) { return true; }
 const char *cc_link_status_text(char *b, size_t cap) { snprintf(b, cap, "connected Mac"); return b; }
+cc_link_fail_t cc_link_failure(void) { return CC_LINK_FAIL_NONE; }
+int cc_poll_failures(bool *too_big) { if (too_big) *too_big = false; return 0; }
 const char *cc_settings_claude_path(char *o, size_t cap) { snprintf(o, cap, "~/.local/bin/claude"); return o; }
 const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "Mac"); return o; }
 int cc_settings_server(void) { return 0; }
@@ -107,9 +109,9 @@ esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { 
 esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; if (cap) err[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
 SCREEN(ui_servers_create) SCREEN(ui_files_create) SCREEN(ui_music_create)
-SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create) SCREEN(ui_webfm_create)
+SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create)
 SCREEN(ui_usb_create) SCREEN(ui_ota_create) SCREEN(ui_devinfo_create)
-SCREEN(ui_server_form_create) SCREEN(ui_lang_create)
+SCREEN(ui_server_form_create)
 SCREEN(ui_backup_create)
 bool camera_start(void) { return true; }
 void camera_stop(void) {}

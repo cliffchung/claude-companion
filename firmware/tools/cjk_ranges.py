@@ -13,8 +13,8 @@ Cyrillic, punctuation, super/subscripts, arrows, math, technical, box drawing,
 block elements, geometric shapes, dingbats, CJK radicals, kana (full *and*
 half width), enclosed and squared CJK forms, fullwidth forms, compatibility
 ideographs, every Han character the font has in the Unified Ideographs block,
-Extension A limited to Big5 / JIS X 0213, and any extra character used by the
-bundled IME dictionary.
+Extension A limited to Big5 / JIS X 0213, and any extra character used by an
+optional dictionary file.
 """
 import sys
 
@@ -49,10 +49,10 @@ def cmap_of(path):
 
 
 def dict_chars(path):
-    """Characters used by a dictionary: SKK-JISYO text (EUC-JP) or an IMD1 blob."""
+    """Characters used by a dictionary: SKK-JISYO text (EUC-JP)."""
     with open(path, 'rb') as f:
         raw = f.read()
-    text = raw.decode('utf-8', 'ignore') if raw[:4] == b'IMD1' else raw.decode('euc_jp', 'ignore')
+    text = raw.decode('euc_jp', 'ignore')
     return {ord(c) for c in text}
 
 

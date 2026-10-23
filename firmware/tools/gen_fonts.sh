@@ -4,8 +4,8 @@
 # carry, plus the symbol blocks. 24 px so its half-width advance (12 px) matches
 # PixelMplus at 24 px and the terminal grid stays intact.
 #   $1 = directory containing NotoSansMonoCJKjp-Regular.otf and DejaVuSansMono.ttf
-#   $2 = dictionary used for extra kanji coverage: SKK-JISYO (EUC-JP) or the
-#        built main/ime/dict/skk_m.bin (optional)
+#   $2 = optional dictionary for extra kanji coverage: an SKK-JISYO file (EUC-JP).
+#        The bundled IME dictionary is gone, so there is no default.
 # DejaVu fills in the codepoints Noto Sans CJK has no glyph for -- U+203E and
 # U+2252 are in JIS X 0208 yet missing from it -- rescaled by mono_match.py so
 # its advance width still matches one terminal cell.
@@ -14,7 +14,7 @@ set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT="$HERE/../main/fonts"
 FONTDIR="$1"
-DICT="${2:-$HERE/../main/ime/dict/skk_m.bin}"
+DICT="${2:-}"
 LVFC="${LV_FONT_CONV:-npx lv_font_conv}"
 PRIMARY_FONT="$FONTDIR/NotoSansMonoCJKjp-Regular.otf"
 TMP=$(mktemp -d)

@@ -492,6 +492,9 @@ static void build_card(int i)
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(card, card_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    /* Ctrl+Tab focus: neutral, never the theme's orange accent (amber means "needs you") */
+    lv_obj_set_style_outline_color(card, HEX(C_FG), LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_opa(card, LV_OPA_COVER, LV_STATE_FOCUS_KEY);
     if (sel) {
         lv_obj_set_style_outline_width(card, 2, 0);
         lv_obj_set_style_outline_color(card, HEX(C_FG), 0);
@@ -700,12 +703,6 @@ static void draft_add(const char *utf8)
     draft_changed();
 }
 
-static void dash_text(const char *utf8, void *user)
-{
-    (void)user;
-    if (s_shown_live && field_visible(selected())) draft_add(utf8);
-}
-
 static bool dash_key(const key_event_t *ev, void *user)
 {
     (void)user;
@@ -804,13 +801,22 @@ static void load_snapshot(void)
 
 static void update_status(void)
 {
-    char name[48], line[160];
+    char name[48], line[224];
     cc_settings_server_name(name, sizeof(name));
     bool up = cc_link_connected();
     int64_t now = mono_ms();
     uint32_t dot = C_MUTED, color = C_FG;
     if (!name[0]) {
         strlcpy(line, "Set up your Mac in Settings \xe2\x86\x92 Companion.", sizeof(line));
+        s_down_since_ms = 0;
+    } else if (!up && cc_link_failure() != CC_LINK_FAIL_NONE) {
+        /* Not a reachability problem (a changed host key, a missing server entry, a refused
+           key): waking the Mac won't help, so say what cc_link knows. */
+        char st[CC_STATUS_MAX];
+        cc_link_status_text(st, sizeof(st));
+        if (st[0] >= 'a' && st[0] <= 'z') st[0] = (char)(st[0] - 'a' + 'A');
+        snprintf(line, sizeof(line), "Can't connect to %s. %s.", name, st);
+        color = dot = C_RED;
         s_down_since_ms = 0;
     } else if (!up) {
         /* The clock starts once the network could reach the Mac: Tailscale takes about a
@@ -832,7 +838,16 @@ static void update_status(void)
     } else {
         s_down_since_ms = 0;
         dot = C_GREEN;
-        if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
+        bool too_big = false;
+        int fails = cc_poll_failures(&too_big);
+        if (too_big) {
+            /* the cards below are from the last poll that fit: not current */
+            strlcpy(line, "Session list too large to load, so these cards aren't updating.", sizeof(line));
+            color = dot = C_RED;
+        } else if (fails >= CC_POLL_FAILS_SHOWN) {
+            snprintf(line, sizeof(line), "Can't load sessions from %s, so these cards aren't updating.", name);
+            color = dot = C_RED;
+        } else if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
         else if (s_n == 0) snprintf(line, sizeof(line), "No sessions on %s. Start one on your Mac with claude --bg.", name);
         else cc_summary(s_items, s_n, line, sizeof(line));
     }
@@ -983,7 +998,8 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_style_pad_row(s_list, 10, 0);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
 
-    /* footer: keys, and the way to the fork's tools */
+    /* footer: keys, and the way to the fork's tools (Ctrl+Tab: Tab walks the cards and the
+       Settings / More buttons, Enter presses one, Esc goes back to the session keys) */
     lv_obj_t *f = box(scr);
     lv_obj_set_size(f, W, FOOTER_H);
     lv_obj_set_pos(f, 0, H - FOOTER_H);
@@ -996,7 +1012,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_flex_flow(f, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(f, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(f, 12, 0);
-    lv_obj_t *keys = text(f, "Up/Down select  \xc2\xb7  Enter send / open  \xc2\xb7  Ctrl+O open  \xc2\xb7  Ctrl+Q leave a session",
+    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 Ctrl+O open \xc2\xb7 Ctrl+Q leave \xc2\xb7 Ctrl+Tab buttons",
                           FONT_SMALL, C_MUTED);
     lv_obj_set_flex_grow(keys, 1);
     lv_label_set_long_mode(keys, LV_LABEL_LONG_DOT);
@@ -1004,7 +1020,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
     footer_button(f, "Settings", settings_cb);
     footer_button(f, "More", more_cb);
 
-    key_sink_t sink = { .key = dash_key, .text = dash_text, .user = scr };   /* per screen */
+    key_sink_t sink = { .key = dash_key, .user = scr };   /* per screen */
     keyboard_set_sink(&sink);
     cc_poll_set_rate(3);
 

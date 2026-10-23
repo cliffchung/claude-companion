@@ -368,3 +368,47 @@ bool cc_screen_input_ready(const char *plain)
     }
     return true;
 }
+
+/* host without surrounding blanks and one trailing dot: start and length */
+static const char *host_trim(const char *h, size_t *len)
+{
+    while (*h == ' ' || *h == '\t') h++;
+    size_t n = strlen(h);
+    while (n && (h[n - 1] == ' ' || h[n - 1] == '\t')) n--;
+    if (n && h[n - 1] == '.') n--;
+    *len = n;
+    return h;
+}
+
+static bool same_ci(const char *a, const char *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        if (lower(a[i]) != lower(b[i])) return false;
+    return true;
+}
+
+bool cc_same_host(const char *a, const char *b)
+{
+    if (!a || !b) return false;
+    size_t la, lb;
+    a = host_trim(a, &la);
+    b = host_trim(b, &lb);
+    if (!la || !lb) return false;
+    if (la == lb) return same_ci(a, b, la);
+    if (la > lb) {   /* a is the shorter one from here */
+        const char *t = a; a = b; b = t;
+        size_t tl = la; la = lb; lb = tl;
+    }
+    bool letter = false;
+    for (size_t i = 0; i < la; i++) {
+        if (a[i] == '.') return false;
+        if ((a[i] >= 'a' && a[i] <= 'z') || (a[i] >= 'A' && a[i] <= 'Z')) letter = true;
+    }
+    return letter && b[la] == '.' && same_ci(a, b, la);
+}
+
+bool cc_is_companion_server(int idx, const char *host, int comp_idx, const char *comp_host)
+{
+    if (comp_idx >= 0 && idx == comp_idx) return true;
+    return cc_same_host(host, comp_host);
+}

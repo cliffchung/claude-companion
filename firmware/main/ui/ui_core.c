@@ -620,7 +620,10 @@ static void keyboard_focus_set(lv_obj_t *obj)
     s_keyboard_focus = obj;
     if (!obj) return;
     lv_obj_add_event_cb(obj, keyboard_focus_deleted, LV_EVENT_DELETE, NULL);
-    lv_obj_set_style_outline_color(obj, UI_ACCENT, LV_STATE_FOCUS_KEY);
+    /* a screen that set its own focus colour keeps it (the dashboard: amber means "needs you") */
+    lv_style_value_t own;
+    if (lv_obj_get_local_style_prop(obj, LV_STYLE_OUTLINE_COLOR, &own, LV_STATE_FOCUS_KEY) != LV_STYLE_RES_FOUND)
+        lv_obj_set_style_outline_color(obj, UI_ACCENT, LV_STATE_FOCUS_KEY);
     lv_obj_set_style_outline_width(obj, 3, LV_STATE_FOCUS_KEY);
     lv_obj_set_style_outline_pad(obj, 2, LV_STATE_FOCUS_KEY);
     lv_obj_add_state(obj, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);

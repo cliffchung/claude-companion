@@ -33,10 +33,9 @@ typedef struct {
     uint8_t mods;
 } key_event_t;
 
-/* A sink receives keys the UI did not consume, and text. */
+/* A sink receives the keys the UI did not consume. */
 typedef struct {
     bool (*key)(const key_event_t *ev, void *user);   /* return true if handled */
-    void (*text)(const char *utf8, void *user);       /* text */
     void *user;
 } key_sink_t;
 

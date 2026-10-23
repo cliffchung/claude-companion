@@ -9,6 +9,7 @@
 #include "input/keyboard.h"
 #include "settings/settings.h"
 #include "companion/cc_cmd.h"
+#include "companion/cc_link.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -154,17 +155,6 @@ static void cmd_error_line(term_ctx_t *c, char *out, size_t cap)
 }
 
 /* -------------------------------------------------------- key sink */
-static void term_send_text(const char *utf8, void *user)
-{
-    term_ctx_t *c = user;
-    if (!c->ssh) return;
-    if (vt_bracketed_paste(c->vt) && strlen(utf8) > 1) {
-        ssh_client_send(c->ssh, (const uint8_t *)"\x1b[200~", 6);
-        ssh_client_send(c->ssh, (const uint8_t *)utf8, strlen(utf8));
-        ssh_client_send(c->ssh, (const uint8_t *)"\x1b[201~", 6);
-    } else ssh_client_send(c->ssh, (const uint8_t *)utf8, strlen(utf8));
-    vt_scroll_view_reset(c->vt);
-}
 static bool term_key(const key_event_t *ev, void *user)
 {
     term_ctx_t *c = user;
@@ -461,10 +451,20 @@ static void scr_delete_cb(lv_event_t *e)
     free(c);
 }
 
+static void back_async(void *arg) { (void)arg; ui_nav_back(); }
+
 static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
 {
     const server_t *s = server_store_get(idx);
     if (!s) return ui_servers_create(NULL);
+    /* No interactive login shell on the companion's Mac: it would start the user's tmux and
+       type into live sessions. Only the dashboard's pty exec (`claude attach`) goes there. */
+    if ((!cmd || !cmd->cmd[0]) && cc_link_is_companion_server(idx)) {
+        ESP_LOGW(TAG, "no login shell on the companion server '%s'", s->name);
+        ui_toast(TERM_COMPANION_REFUSED);
+        lv_async_call(back_async, NULL);
+        return ui_screen_base();
+    }
     term_ctx_t *c = calloc(1, sizeof(*c));
     s_ctx = c;
     c->server_idx = idx;
@@ -513,7 +513,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
         snprintf(banner, sizeof(banner), "\x1b[36m%s %s@%s:%d ...\x1b[0m\r\n\x1b[90m%s\x1b[0m\r\n", tr(STR_CONNECTING), s->user, s->host, s->port, tr(STR_TERM_HINT));
     vt_feed(c->vt, (const uint8_t *)banner, strlen(banner));
 
-    key_sink_t sink = { .key = term_key, .text = term_send_text, .user = c };
+    key_sink_t sink = { .key = term_key, .user = c };
     keyboard_set_sink(&sink);
 
     ssh_params_t p = { 0 };
@@ -537,8 +537,6 @@ lv_obj_t *ui_terminal_create(void *arg)
 {
     return term_create((int)(intptr_t)arg, NULL);
 }
-
-static void back_async(void *arg) { (void)arg; ui_nav_back(); }
 
 /* The nav stack can rebuild its top screen (a refresh, the screensaver). A command
  * terminal runs its command once: a rebuild must not attach again without the dashboard's

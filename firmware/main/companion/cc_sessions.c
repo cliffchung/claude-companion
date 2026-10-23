@@ -99,8 +99,6 @@ int cc_sessions_parse(const char *json, cc_session_t *out, int cap)
         const char *state = jstr(e, "state");
         s->state = map_state(state ? state : jstr(e, "status"));
         s->background = bg;
-        const char *wf = jstr(e, "waitingFor");
-        s->needs_permission = wf && !strcmp(wf, "permission prompt");
         const cJSON *st = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "startedAt");
         s->started_ms = cJSON_IsNumber(st) ? (int64_t)st->valuedouble : 0;
         const cJSON *pid = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "pid");

@@ -16,11 +16,26 @@ extern "C" {
 esp_err_t cc_link_start(void);
 bool cc_link_connected(void);
 #define CC_STATUS_MAX 160
+#define CC_POLL_FAILS_SHOWN 3   /* failed polls in a row before the status says so */
 /* Writes the status into buf and returns buf (safe from any task):
-   "connected <host>" | "connecting to <host>" (attempt running) |
-   "connecting to <host> (retry in Ns)" | "host key changed for <host> (retry in Ns)" |
-   "no Mac set up". */
+   "connected <host>" | "connected <host>; session list over 256 KB, not updating" |
+   "connected <host>; session list not updating (N polls failed)" |
+   "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
+   "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
+   is "host key changed for <ip>; not connecting", "no server named '<name>' in the server
+   list" or "<name> refused the device key". */
 const char *cc_link_status_text(char *buf, size_t cap);
+/* Why the link is down when it isn't reachability (the status text has the words). */
+typedef enum {
+    CC_LINK_FAIL_NONE,        /* connected, or unreachable / no Wi-Fi / still trying */
+    CC_LINK_FAIL_NO_ENTRY,    /* no server with the configured name */
+    CC_LINK_FAIL_HOSTKEY,     /* the Mac's host key doesn't match its pin */
+    CC_LINK_FAIL_AUTH,        /* the Mac refused the device key */
+} cc_link_fail_t;
+cc_link_fail_t cc_link_failure(void);
+/* Failed polls in a row while connected (0 when not connected); *too_big (may be NULL) is
+   set when the last one failed because `agents` output didn't fit the poll buffer. */
+int cc_poll_failures(bool *too_big);
 /* One exec channel on the shared session; out holds stdout and err the first line of stderr,
    both NUL-terminated. Returns ESP_ERR_INVALID_STATE when not connected, ESP_ERR_TIMEOUT on
    timeout, ESP_ERR_INVALID_SIZE when stdout didn't fit (out holds the start). */
@@ -59,6 +74,9 @@ void cc_link_on_wifi(bool connected);
 const char *cc_settings_claude_path(char *out, size_t cap);   /* default "~/.local/bin/claude" */
 int cc_settings_server(void);                /* index in the fork's server list, or -1 */
 const char *cc_settings_server_name(char *out, size_t cap);   /* the configured name, "" when none */
+/* True when server idx is the companion's Mac: its index, or the same host as the companion
+   entry (also after a MagicDNS lookup). The SSH Terminal opens no login shell there. */
+bool cc_link_is_companion_server(int idx);
 /* Store a new server name / Claude path and reconnect (server) as needed. */
 void cc_link_set_server(const char *name);
 bool cc_link_set_claude_path(const char *path);   /* false unless cc_path_valid */

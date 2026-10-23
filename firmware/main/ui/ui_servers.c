@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
+#include "companion/cc_link.h"
 #include <stdio.h>
 
 static void add_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_server_form_create, (void *)(intptr_t)-1); }
@@ -8,6 +9,8 @@ static void add_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_server_form_create, 
 static void do_connect(int idx)
 {
     if (!wifi_mgr_is_connected()) { ui_toast(tr(STR_WIFI_NOT_CONNECTED)); return; }
+    /* the companion's Mac gets no login shell (ui_terminal checks again) */
+    if (cc_link_is_companion_server(idx)) { ui_toast(TERM_COMPANION_REFUSED); return; }
     ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx);
 }
 static void connect_cb(lv_event_t *e) { do_connect((int)(intptr_t)lv_event_get_user_data(e)); }

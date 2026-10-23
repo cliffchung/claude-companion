@@ -58,9 +58,6 @@ static void test_parse_flags(void)
     cc_session_t s[16];
     int n = cc_sessions_parse(j, s, 16);
     free(j);
-    for (int i = 0; i < n; i++) {
-        TEST_ASSERT_EQUAL(!strcmp(s[i].id, "aaaaaaa3"), s[i].needs_permission);
-    }
     /* interactive: kept, never actionable, no ids even though the entry has a sessionId */
     const cc_session_t *desk = find_name(s, n, "desk session");
     TEST_ASSERT_NOT_NULL(desk);

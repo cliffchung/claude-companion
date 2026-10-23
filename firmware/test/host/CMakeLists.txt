@@ -1,10 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 project(companion_host_tests C)
 set(CMAKE_C_STANDARD 11)
-if(NOT DEFINED ENV{IDF_PATH})
-    message(FATAL_ERROR "IDF_PATH not set (run . ~/esp/esp-idf/export.sh)")
+# cJSON and Unity come from ESP-IDF: $IDF_PATH, else the default ~/esp/esp-idf.
+if(DEFINED ENV{IDF_PATH})
+    set(IDF $ENV{IDF_PATH})
+elseif(EXISTS $ENV{HOME}/esp/esp-idf/components/json/cJSON/cJSON.c)
+    set(IDF $ENV{HOME}/esp/esp-idf)
+else()
+    message(FATAL_ERROR "ESP-IDF not found: set IDF_PATH (or run . ~/esp/esp-idf/export.sh)")
 endif()
-set(IDF $ENV{IDF_PATH})
 set(COMP ${CMAKE_CURRENT_SOURCE_DIR}/../../main/companion)
 
 add_library(cjson STATIC ${IDF}/components/json/cJSON/cJSON.c)

@@ -12,7 +12,6 @@ typedef struct {
     char repo[64];          /* basename of cwd, trailing slash ignored */
     cc_state_t state;
     bool background;        /* kind == "background": can be answered and opened */
-    bool needs_permission;  /* waitingFor == "permission prompt" */
     bool live;              /* has a pid: the process runs (a stopped entry has none) */
     int64_t started_ms;
 } cc_session_t;

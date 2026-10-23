@@ -70,7 +70,10 @@ static struct { cc_sessions_cb_t cb; void *ctx; } s_subs[MAX_SUBS];
 static char *s_json;                   /* poll buffer (PSRAM) */
 static char *s_screen;                 /* paste screen buffer (PSRAM) */
 static cc_session_t *s_parse;          /* task only: the newest parse (PSRAM) */
-static char s_hostkey_bad[128];        /* host whose key didn't match its pin; "" = none */
+static cc_link_fail_t s_fail;           /* why the last connect failed, other than reachability */
+static char s_fail_text[128];          /* its text for the status line */
+static int s_poll_fails;               /* consecutive failed refreshes while connected */
+static bool s_poll_too_big;            /* the last refresh failed: output over JSON_CAP */
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 
@@ -133,6 +136,21 @@ int cc_settings_server(void)
     return server_index(name);
 }
 
+bool cc_link_is_companion_server(int idx)
+{
+    const server_t *s = server_store_get(idx);
+    if (!s) return false;
+    int ci = cc_settings_server();
+    const server_t *c = ci >= 0 ? server_store_get(ci) : NULL;
+    if (cc_is_companion_server(idx, s->host, ci, c ? c->host : NULL)) return true;
+    if (!c) return false;
+    /* a name on one entry and its tailnet IP on the other */
+    char a[128], b[128];
+    if (!tailscale_resolve(s->host, a, sizeof(a))) strlcpy(a, s->host, sizeof(a));
+    if (!tailscale_resolve(c->host, b, sizeof(b))) strlcpy(b, c->host, sizeof(b));
+    return cc_same_host(a, b);
+}
+
 void cc_link_set_server(const char *name)
 {
     lock();
@@ -173,23 +191,43 @@ const char *cc_link_status_text(char *b, size_t cap)
         strlcpy(b, "no Mac set up", cap);
         break;
     case LS_CONNECTING:
-        snprintf(b, cap, "connecting to %s", s_shown);
+        if (s_fail != CC_LINK_FAIL_NONE) snprintf(b, cap, "%s (retrying now)", s_fail_text);
+        else snprintf(b, cap, "connecting to %s", s_shown);
         break;
     case LS_WAITING: {
         int64_t left = s_retry_at_us - now_us();
         int sec = left > 0 ? (int)((left + 999999) / 1000000) : 0;
-        if (s_hostkey_bad[0])
-            snprintf(b, cap, "host key changed for %s (retry in %ds)", s_hostkey_bad, sec);
+        if (s_fail != CC_LINK_FAIL_NONE)
+            snprintf(b, cap, "%s (retry in %ds)", s_fail_text, sec);
         else
             snprintf(b, cap, "connecting to %s (retry in %ds)", s_shown, sec);
         break;
     }
     case LS_CONNECTED:
-        snprintf(b, cap, "connected %s", s_shown);
+        if (s_poll_too_big)
+            snprintf(b, cap, "connected %s; session list over %d KB, not updating", s_shown, JSON_CAP / 1024);
+        else if (s_poll_fails >= CC_POLL_FAILS_SHOWN)
+            snprintf(b, cap, "connected %s; session list not updating (%d polls failed)", s_shown, s_poll_fails);
+        else
+            snprintf(b, cap, "connected %s", s_shown);
         break;
     }
     unlock();
     return b;
+}
+
+cc_link_fail_t cc_link_failure(void)
+{
+    return s_state == LS_CONNECTED ? CC_LINK_FAIL_NONE : s_fail;
+}
+
+int cc_poll_failures(bool *too_big)
+{
+    lock();
+    int n = s_state == LS_CONNECTED ? s_poll_fails : 0;
+    if (too_big) *too_big = n > 0 && s_poll_too_big;
+    unlock();
+    return n;
 }
 
 /* ---------- session lifecycle (task only) ---------- */
@@ -224,12 +262,24 @@ static void teardown(void)
     s_drop = false;
 }
 
+/* Records why a connect attempt failed (CC_LINK_FAIL_NONE: reachability, or success). */
+static void set_fail(cc_link_fail_t f, const char *text)
+{
+    lock();
+    s_fail = f;
+    strlcpy(s_fail_text, f != CC_LINK_FAIL_NONE && text ? text : "", sizeof(s_fail_text));
+    unlock();
+}
+
 static bool connect_once(const char *name)
 {
+    char why[sizeof(s_fail_text)];
     int idx = server_index(name);
     const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
     if (!sv) {
         ESP_LOGW(TAG, "no server named '%s' in the server list", name);
+        snprintf(why, sizeof(why), "no server named '%s' in the server list", name);
+        set_fail(CC_LINK_FAIL_NO_ENTRY, why);
         return false;
     }
     char host[128], user[64];
@@ -238,6 +288,7 @@ static bool connect_once(const char *name)
     strlcpy(user, sv->user, sizeof(user));
     if (!wifi_mgr_is_connected()) {
         ESP_LOGW(TAG, "no Wi-Fi");
+        set_fail(CC_LINK_FAIL_NONE, NULL);
         return false;
     }
     char ip[16];
@@ -245,6 +296,7 @@ static bool connect_once(const char *name)
     if (tailscale_is_tailnet_ip(host) && !tailscale_prepare_peer(host, 20000))
         ESP_LOGW(TAG, "tunnel to %s not confirmed, trying anyway", host);
 
+    /* a standing failure stays shown while the next attempt runs, so the line doesn't flicker */
     ssh_session s = ssh_new();
     if (!s) return false;
     long timeout = 10;
@@ -258,6 +310,7 @@ static bool connect_once(const char *name)
     ssh_options_set(s, SSH_OPTIONS_LOG_VERBOSITY, &verb);
     if (ssh_connect(s) != SSH_OK) {
         ESP_LOGW(TAG, "connect %s:%d failed: %s", host, port, ssh_get_error(s));
+        set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreachable */
         ssh_free(s);
         return false;
     }
@@ -270,10 +323,9 @@ static bool connect_once(const char *name)
         else kh = KH_OK;
     }
     if (kh == KH_CHANGED) {
-        lock();
-        strlcpy(s_hostkey_bad, host, sizeof(s_hostkey_bad));
-        unlock();
-    }
+        snprintf(why, sizeof(why), "host key changed for %s; not connecting", host);
+        set_fail(CC_LINK_FAIL_HOSTKEY, why);
+    } else if (kh != KH_OK) set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreadable: retried as unreachable */
     if (kh != KH_OK) {
         ESP_LOGE(TAG, "host key %s for %s:%d (%s); not connecting",
                  kh == KH_CHANGED ? "CHANGED" : "unreadable", host, port, fp);
@@ -293,14 +345,18 @@ static bool connect_once(const char *name)
     }
     if (rc != SSH_AUTH_SUCCESS) {
         ESP_LOGW(TAG, "device key auth failed: %s", ssh_get_error(s));
+        snprintf(why, sizeof(why), "%s refused the device key", name);
+        set_fail(CC_LINK_FAIL_AUTH, why);
         ssh_disconnect(s);
         ssh_free(s);
         return false;
     }
     s_sess = s;
     s_drop = false;
+    set_fail(CC_LINK_FAIL_NONE, NULL);
     lock();
-    s_hostkey_bad[0] = 0;
+    s_poll_fails = 0;
+    s_poll_too_big = false;
     unlock();
     ESP_LOGI(TAG, "connected to %s (%s:%d)", name, host, port);
     return true;
@@ -575,9 +631,22 @@ static void handle(req_t *r)
     answer(r, r->type == REQ_EXEC ? do_exec(r) : do_paste(r));   /* paste and check */
 }
 
-/* Runs `claude agents --json --all`, parses it into s_parse and publishes it.
-   Returns the count, or -1 on failure. */
+static int refresh_once(int64_t deadline_us, bool *too_big);
+
+/* Runs `claude agents --json --all`, parses it into s_parse and publishes it, and counts
+   consecutive failures for the status line. Returns the count, or -1 on failure. */
 static int refresh(int64_t deadline_us)
+{
+    bool too_big = false;
+    int n = refresh_once(deadline_us, &too_big);
+    lock();
+    if (n >= 0) { s_poll_fails = 0; s_poll_too_big = false; }
+    else { s_poll_fails++; s_poll_too_big = too_big; }
+    unlock();
+    return n;
+}
+
+static int refresh_once(int64_t deadline_us, bool *too_big)
 {
     char cmd[128], claude[64];
     if (!cc_cmd_agents(cc_settings_claude_path(claude, sizeof(claude)), cmd, sizeof(cmd))) return -1;
@@ -592,6 +661,7 @@ static int refresh(int64_t deadline_us)
     esp_err_t e = do_exec(&r);
     if (e == ESP_ERR_INVALID_SIZE) {
         ESP_LOGE(TAG, "poll: agents output is over %d KB; session list not updated", JSON_CAP / 1024);
+        *too_big = true;
         return -1;
     }
     if (e != ESP_OK || status != 0) {
@@ -622,11 +692,6 @@ static int refresh(int64_t deadline_us)
     return n;
 }
 
-static void do_poll(void)
-{
-    refresh(INT64_MAX);
-}
-
 static void link_task(void *arg)
 {
     (void)arg;
@@ -639,8 +704,8 @@ static void link_task(void *arg)
             attempt = 0;
             lock();
             s_list_n = -1;
-            s_hostkey_bad[0] = 0;
             unlock();
+            set_fail(CC_LINK_FAIL_NONE, NULL);
         }
         if (s_reset_backoff) { s_reset_backoff = false; attempt = 0; }
         if (s_sess && s_drop) {
@@ -683,7 +748,7 @@ static void link_task(void *arg)
         int rate = s_rate;
         int64_t t = now_us();
         if (rate > 0 && t - last_poll >= (int64_t)rate * 1000000) {
-            do_poll();
+            refresh(INT64_MAX);
             last_poll = now_us();
             last_alive = last_poll;
             continue;

@@ -191,11 +191,6 @@ void keyboard_set_layout(uint8_t layout)
 }
 
 /* --------------------------------------------------------- dispatching */
-static void lvgl_sink_text(const char *utf8, void *user)
-{
-    (void)user;
-    if (s_focused_ta) lv_textarea_add_text(s_focused_ta, utf8);
-}
 static bool lvgl_sink_key(const key_event_t *ev, void *user)
 {
     (void)user;
@@ -253,11 +248,6 @@ void keyboard_clear_sink(void *user)
     if (s_have_sink && s_sink.user == user) s_have_sink = false;
 }
 
-static void sink_text(const char *utf8)
-{
-    if (s_have_sink && !ui_keyboard_owns_input()) { if (s_sink.text) s_sink.text(utf8, s_sink.user); }
-    else lvgl_sink_text(utf8, NULL);
-}
 static bool sink_key(const key_event_t *ev)
 {
     if (s_have_sink && !ui_keyboard_owns_input()) return s_sink.key ? s_sink.key(ev, s_sink.user) : false;
