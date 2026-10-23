@@ -1,3 +1,4 @@
+#include "ssh/device_key.h"
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -157,6 +158,7 @@ void app_main(void)
     bsp_display_unlock();
     debug_console_start();
     key_console_init();
+    device_key_console_init();
     xTaskCreate(idle_task, "idle_poll", 4096, NULL, 2, NULL);
     ESP_LOGI(TAG, "boot complete in %lld ms, free heap %lu",
              (esp_timer_get_time() - boot_started) / 1000, (unsigned long)esp_get_free_heap_size());

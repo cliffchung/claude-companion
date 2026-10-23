@@ -13,6 +13,7 @@
 #include "settings/settings.h"
 #include "nvs.h"
 #include "net/tailscale.h"
+#include "ssh/device_key.h"
 
 static const char *TAG = "ssh";
 int libssh_esp32_init(void);
@@ -87,16 +88,23 @@ static int authenticate(ssh_client_t *c)
     rc = AUTH_RETRY(ssh_userauth_none(c->session, NULL));
     if (rc == SSH_AUTH_SUCCESS) return 0;
     int methods = ssh_userauth_list(c->session, NULL);
-    if (c->p.use_key && c->p.keypath[0]) {
+    if (c->p.use_key) {
+        /* Empty path or "device" selects the Tab5's own key (NVS); anything else is a key file. */
+        bool dev = !c->p.keypath[0] || strcmp(c->p.keypath, "device") == 0;
         ssh_key key = NULL;
-        rc = ssh_pki_import_privkey_file(c->p.keypath, c->p.pass[0] ? c->p.pass : NULL, NULL, NULL, &key);
+        if (dev) {
+            rc = (device_key_ensure() == ESP_OK && device_key_get(&key) == ESP_OK) ? SSH_OK : SSH_ERROR;
+            if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Device key unavailable");
+        } else {
+            rc = ssh_pki_import_privkey_file(c->p.keypath, c->p.pass[0] ? c->p.pass : NULL, NULL, NULL, &key);
+            if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Key import failed: %s", ssh_get_error(c->session));
+        }
         if (rc == SSH_OK) {
             rc = AUTH_RETRY(ssh_userauth_publickey(c->session, NULL, key));
             ssh_key_free(key);
             if (rc == SSH_AUTH_SUCCESS) return 0;
             ESP_LOGW(TAG, "publickey auth failed: %s", ssh_get_error(c->session));
         } else {
-            snprintf(c->err, sizeof(c->err), "Key import failed: %s", ssh_get_error(c->session));
             ESP_LOGW(TAG, "%s", c->err);
             return -1;
         }
