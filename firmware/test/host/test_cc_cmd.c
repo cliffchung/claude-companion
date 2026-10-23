@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include "unity.h"
@@ -96,6 +97,51 @@ static void test_cmd_rejects(void)
     TEST_ASSERT_FALSE(cc_cmd_attach(CL, "aaaaaaa2", buf, need - 1));
     TEST_ASSERT_FALSE(cc_cmd_attach(CL, "aaaaaaa2", small, 10));
     TEST_ASSERT_FALSE(cc_cmd_reply(CL, SID, "hello world long text", small, sizeof(small)));
+}
+
+/* verified against this Mac's /bin/sh (bash 3.2) by firmware/tools/test_watch_loop.py */
+#define WATCH_EXACT "exec /bin/sh -c 'stty -echo 2>/dev/null; C=~/.local/bin/claude; I=3; H=60; T=60; L=1800; echo \"@@CC-WATCH 1\"; b() { echo \"@@CC-BYE $1\" & sleep 0.5; kill 0; }; { while :; do j=$SECONDS; if read -r -t \"$T\" x; then :; elif [ $((SECONDS-j)) -lt \"$T\" ]; then b eof; else b quiet; fi; done; } <&0 & p=; s=0; while [ \"$SECONDS\" -lt \"$L\" ]; do o=$(\"$C\" agents --json --all </dev/null 2>&1); r=$?; if [ \"$o\" != \"$p\" ]; then echo \"@@CC-BEGIN $r\"; printf \"%s\\n\" \"$o\"; echo \"@@CC-END\"; p=$o; s=$SECONDS; elif [ $((SECONDS-s)) -ge \"$H\" ]; then echo \"@@CC-HB $SECONDS\"; s=$SECONDS; fi; sleep \"$I\"; done; b life'"
+
+static void test_cmd_watch_exact(void)
+{
+    char o[2048];
+    cc_watch_params_t p = { 3, 60, 60, 1800 };
+    TEST_ASSERT_TRUE(cc_cmd_watch(CL, &p, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING(WATCH_EXACT, o);
+}
+
+static void test_cmd_watch_rejects(void)
+{
+    char o[2048];
+    cc_watch_params_t ok = { 3, 60, 60, 1800 };
+    TEST_ASSERT_FALSE(cc_cmd_watch("my claude", &ok, o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_watch(CL, NULL, o, sizeof(o)));
+    cc_watch_params_t bad[] = {
+        { 0, 60, 60, 1800 }, { 121, 60, 60, 1800 },
+        { 3, 0, 60, 1800 }, { 3, 601, 60, 1800 },
+        { 3, 60, 1, 1800 }, { 3, 60, 601, 1800 },
+        { 3, 60, 60, 4 }, { 3, 60, 60, 7201 },
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+        TEST_ASSERT_FALSE(cc_cmd_watch(CL, &bad[i], o, sizeof(o)));
+    /* the range ends are accepted */
+    cc_watch_params_t lo = { 1, 1, 2, 5 }, hi = { 120, 600, 600, 7200 };
+    TEST_ASSERT_TRUE(cc_cmd_watch(CL, &lo, o, sizeof(o)));
+    TEST_ASSERT_TRUE(cc_cmd_watch(CL, &hi, o, sizeof(o)));
+    /* exact fit, then one byte too small */
+    TEST_ASSERT_TRUE(cc_cmd_watch(CL, &ok, o, sizeof(o)));
+    size_t need = strlen(o) + 1;
+    char *b = malloc(need);
+    TEST_ASSERT_TRUE(cc_cmd_watch(CL, &ok, b, need));
+    TEST_ASSERT_FALSE(cc_cmd_watch(CL, &ok, b, need - 1));
+    free(b);
+    /* only the two quotes that delimit the sh -c argument */
+    TEST_ASSERT_TRUE(cc_cmd_watch(CL, &ok, o, sizeof(o)));
+    int q = 0;
+    for (const char *c = o; *c; c++) q += *c == '\'';
+    TEST_ASSERT_EQUAL_INT(2, q);
+    TEST_ASSERT_EQUAL_CHAR('\'', o[strlen("exec /bin/sh -c ")]);
+    TEST_ASSERT_EQUAL_CHAR('\'', o[strlen(o) - 1]);
 }
 
 static void test_strip_ansi(void)
@@ -340,6 +386,8 @@ int main(void)
     RUN_TEST(test_quote_clears_out_on_failure);
     RUN_TEST(test_cmd_exact);
     RUN_TEST(test_cmd_rejects);
+    RUN_TEST(test_cmd_watch_exact);
+    RUN_TEST(test_cmd_watch_rejects);
     RUN_TEST(test_strip_ansi);
     RUN_TEST(test_log_tail_cursor_moves);
     RUN_TEST(test_log_tail_drops_rules_and_blanks);

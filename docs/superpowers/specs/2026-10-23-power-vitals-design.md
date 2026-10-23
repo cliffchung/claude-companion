@@ -217,8 +217,10 @@ They touch the same code (cc_link, reconnect), so they belong here:
   the channel: macOS sshd has `ClientAliveInterval 0`, and TCP keepalive takes about 2 h. So the
   liveness runs both ways:
   - The Tab5 writes one keepalive byte on the channel's stdin every `K` = 20 s.
-  - The loop does its sleeping as `read -t <I>` on stdin. It exits if no byte has arrived for
-    `3K` seconds, or if stdin hits EOF.
+  - A reader inside the loop waits on stdin with `read -t 3K`. If no byte has arrived for `3K`
+    seconds, or stdin hits EOF, it kills the loop's whole process group, so the loop dies even
+    while its output is blocked because the Tab5 vanished mid-write (ruling P28; the first
+    design slept in `read -t <I>` and hung in a blocked write on the Wi-Fi drop check).
   - The loop also has a hard maximum lifetime of 30 min; the Tab5 simply restarts the channel.
   - The channel uses a pty, so a clean close also sends SIGHUP.
   - **Test:** check with `ps` on the Mac that no loop survives a clean close, a Wi-Fi drop or a

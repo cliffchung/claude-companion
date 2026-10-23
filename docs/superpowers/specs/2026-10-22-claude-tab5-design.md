@@ -46,7 +46,8 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   | Take over | `claude attach <id>` in a terminal (pty) channel. ← returns to agent view and Ctrl+Z to the shell; the session keeps running. |
   | Stop | `claude stop <id>` (verified on the Mac; the device has no Stop feature in Plan 1) |
 
-- **Nothing extra runs on the Mac:** no daemon, no helper, no port forwarding. Both machines
+- **Nothing extra runs on the Mac:** no daemon, no helper, no port forwarding; the watch loop
+  runs only inside the companion's exec channel and exits on its own (Plan 2). Both machines
   connect outward to Tailscale.
 
 ## Decisions

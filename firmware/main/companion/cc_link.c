@@ -1,5 +1,6 @@
 #include "cc_link.h"
 #include "cc_cmd.h"
+#include "cc_watch.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -74,8 +75,46 @@ static cc_link_fail_t s_fail;           /* why the last connect failed, other th
 static char s_fail_text[128];          /* its text for the status line */
 static int s_poll_fails;               /* consecutive failed refreshes while connected */
 static bool s_poll_too_big;            /* the last refresh failed: output over JSON_CAP */
+static volatile int s_floor;           /* cc_poll_set_floor: overrides s_rate when > 0 */
+static uint32_t s_gen;                 /* successful results published (blocks, heartbeats, polls) */
+static volatile int s_busy;            /* pastes and live checks in flight */
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
+
+/* ---------- long-poll watch state ----------
+ * One pty exec channel runs cc_cmd_watch's loop on the Mac for as long as the link is up and
+ * the effective interval is > 0. Its output is parsed into s_wbody (its own buffer, so the
+ * refresh() calls of a paste or live check never overwrite a half-read block). The task owns
+ * every field; the few the status line shows are copied under s_lock (s_wv). */
+#define WATCH_HEARTBEAT_S   60
+#define WATCH_QUIET_S       (3 * CC_WATCH_KEEPALIVE_S)
+#define WATCH_LIFE_S        1800
+#define WATCH_BANNER_MS     10000
+#define WATCH_RETRY_US      (10 * 60 * 1000000LL)   /* after a fallback */
+#define WATCH_ENDS_WINDOW_US (5 * 60 * 1000000LL)  /* 3 unasked ends in this long: fall back */
+#define WATCH_WAIT_MS       250                     /* queue wait between channel reads */
+
+typedef enum { WM_OFF, WM_STARTING, WM_ON, WM_FALLBACK, WM_PAUSED } watch_mode_t;
+
+static volatile bool s_watch_want = true;   /* companion watch on|off */
+static volatile bool s_watch_reset;         /* on: forget a fallback and retry now */
+static volatile int s_banner_ms = WATCH_BANNER_MS;   /* next start only (test-fallback: 1) */
+static ssh_channel s_wch;                   /* task only */
+static cc_watch_t s_w;                      /* task only */
+static char *s_wbody;                       /* s_w's body (PSRAM, JSON_CAP) */
+static int s_w_interval;                    /* the running channel's I */
+static int s_w_banner_ms;                   /* the running start's banner timeout */
+static int64_t s_w_opened_us, s_w_live_us, s_w_ka_us;
+static bool s_w_good;                       /* the channel's last block parsed (rc 0) */
+static bool s_w_bad;                        /* ... failed (rc != 0, overflow, not JSON) */
+static int64_t s_w_fallback_until_us;       /* fallback: retry the watch after this */
+static int64_t s_w_ends[3];                 /* times of the last unasked channel ends */
+static struct {                             /* for cc_watch_status_text, under s_lock */
+    watch_mode_t mode;
+    int interval;
+    int64_t block_us, hb_us;
+    char why[64];
+} s_wv;
 
 /* Before cc_link_start (or if it failed) there is no lock and no link task: getters then
    read the settings directly and the status is "no Mac set up". */
@@ -252,8 +291,11 @@ static bool drain_queue_down(TickType_t wait)
     return woke;
 }
 
+static void watch_close(bool asked);
+
 static void teardown(void)
 {
+    watch_close(true);   /* the Tab5's own close: never counted toward a fallback */
     if (s_sess) {
         ssh_disconnect(s_sess);
         ssh_free(s_sess);
@@ -359,6 +401,8 @@ static bool connect_once(const char *name)
     s_poll_fails = 0;
     s_poll_too_big = false;
     unlock();
+    s_w_fallback_until_us = 0;   /* a fallback is retried on the next connect */
+    memset(s_w_ends, 0, sizeof(s_w_ends));
     ESP_LOGI(TAG, "connected to %s (%s:%d)", name, host, port);
     return true;
 }
@@ -634,6 +678,23 @@ static void handle(req_t *r)
 
 static int refresh_once(int64_t deadline_us, bool *too_big);
 
+/* Publishes s_parse[0..n) as the newest session list: copies it for snapshots, stamps the
+   last-ok time, counts it and calls the subscribers (on this task). */
+static void publish(int n)
+{
+    struct { cc_sessions_cb_t cb; void *ctx; } subs[MAX_SUBS];
+    lock();
+    memcpy(s_list, s_parse, sizeof(cc_session_t) * n);
+    s_list_n = n;
+    s_last_ok_ms = now_us() / 1000;
+    s_gen++;
+    memcpy(subs, s_subs, sizeof(subs));
+    unlock();
+    for (int i = 0; i < MAX_SUBS; i++) {
+        if (subs[i].cb) subs[i].cb(s_parse, n, subs[i].ctx);
+    }
+}
+
 /* Runs `claude agents --json --all`, parses it into s_parse and publishes it, and counts
    consecutive failures for the status line. Returns the count, or -1 on failure. */
 static int refresh(int64_t deadline_us)
@@ -641,7 +702,9 @@ static int refresh(int64_t deadline_us)
     bool too_big = false;
     int n = refresh_once(deadline_us, &too_big);
     lock();
-    if (n >= 0) { s_poll_fails = 0; s_poll_too_big = false; }
+    /* the loop never repeats unchanged output, so a watch failure stays shown until its
+       next good block, even when a paste's own refresh works */
+    if (n >= 0) { s_poll_fails = s_w_bad ? CC_POLL_FAILS_SHOWN : 0; s_poll_too_big = s_w_bad && s_poll_too_big; }
     else { s_poll_fails++; s_poll_too_big = too_big; }
     unlock();
     return n;
@@ -681,17 +744,266 @@ static int refresh_once(int64_t deadline_us, bool *too_big)
         ESP_LOGW(TAG, "poll: output is not a JSON array");
         return -1;
     }
-    struct { cc_sessions_cb_t cb; void *ctx; } subs[MAX_SUBS];
-    lock();
-    memcpy(s_list, s_parse, sizeof(cc_session_t) * n);
-    s_list_n = n;
-    s_last_ok_ms = now_us() / 1000;
-    memcpy(subs, s_subs, sizeof(subs));
-    unlock();
-    for (int i = 0; i < MAX_SUBS; i++) {
-        if (subs[i].cb) subs[i].cb(s_parse, n, subs[i].ctx);
-    }
+    publish(n);
     return n;
+}
+
+/* ---------- long-poll watch (task only) ---------- */
+
+static int eff_rate(void)
+{
+    int f = s_floor;
+    return f > 0 ? f : s_rate;
+}
+
+static void wv_set_mode(watch_mode_t m, int interval)
+{
+    lock();
+    s_wv.mode = m;
+    s_wv.interval = interval;
+    if (m == WM_STARTING) s_wv.block_us = s_wv.hb_us = 0;
+    unlock();
+}
+
+/* Closes the channel. EOF + close, so sshd hangs up the pty and the loop gets SIGHUP.
+   asked: the Tab5's own close (an interval change, off, a link teardown), never counted. */
+static void watch_close(bool asked)
+{
+    if (!s_wch) return;
+    close_channel(s_wch);
+    s_wch = NULL;
+    s_w_good = s_w_bad = false;
+    ESP_LOGI(TAG, "watch: closed%s", asked ? "" : " (ended by the Mac or the link)");
+}
+
+static void watch_fallback(const char *why)
+{
+    watch_close(true);
+    s_w_fallback_until_us = now_us() + WATCH_RETRY_US;
+    ESP_LOGW(TAG, "watch: falling back to polling: %s", why);
+    lock();
+    s_wv.mode = WM_FALLBACK;
+    strlcpy(s_wv.why, why, sizeof(s_wv.why));
+    unlock();
+}
+
+/* A channel end the Tab5 didn't ask for (EOF, BYE eof, BYE quiet, a read error): three in
+   5 min fall back to polling. Returns true when it fell back. */
+static bool watch_unasked_end(const char *what)
+{
+    watch_close(false);
+    int64_t t = now_us();
+    memmove(s_w_ends, s_w_ends + 1, sizeof(s_w_ends[0]) * 2);
+    s_w_ends[2] = t;
+    ESP_LOGW(TAG, "watch: channel ended: %s", what);
+    if (s_w_ends[0] && t - s_w_ends[0] <= WATCH_ENDS_WINDOW_US) {
+        watch_fallback("the channel ended 3 times in 5 min");
+        return true;
+    }
+    return false;
+}
+
+static void watch_start(int interval)
+{
+    char claude[64], cmd[1024];
+    cc_watch_params_t p = { interval > 120 ? 120 : interval, WATCH_HEARTBEAT_S, WATCH_QUIET_S, WATCH_LIFE_S };
+    if (!cc_cmd_watch(cc_settings_claude_path(claude, sizeof(claude)), &p, cmd, sizeof(cmd))) {
+        watch_fallback("bad watch command");
+        return;
+    }
+    int64_t opened = now_us();         /* the banner deadline counts the requests too */
+    ssh_channel ch = open_channel();   /* a failure here is the link's: s_drop */
+    if (!ch) return;
+    if (ssh_channel_request_pty_size(ch, "xterm-256color", 200, 50) != SSH_OK) {
+        ESP_LOGW(TAG, "watch: pty request failed: %s", ssh_get_error(s_sess));
+        close_channel(ch);
+        watch_fallback("pty request failed");
+        return;
+    }
+    if (ssh_channel_request_exec(ch, cmd) != SSH_OK) {
+        ESP_LOGW(TAG, "watch: exec request failed: %s", ssh_get_error(s_sess));
+        close_channel(ch);
+        watch_fallback("exec request failed");
+        return;
+    }
+    s_wch = ch;
+    cc_watch_init(&s_w, s_wbody, JSON_CAP);
+    s_w_interval = interval;
+    s_w_banner_ms = s_banner_ms;
+    s_banner_ms = WATCH_BANNER_MS;
+    s_w_good = s_w_bad = false;
+    s_w_opened_us = opened;
+    s_w_live_us = now_us();
+    s_w_ka_us = 0;   /* the first keepalive goes at once */
+    wv_set_mode(WM_STARTING, interval);
+    ESP_LOGI(TAG, "watch: starting, I=%ds", interval);
+}
+
+static void watch_block(void)
+{
+    int64_t t = now_us();
+    lock();
+    s_wv.block_us = t;
+    unlock();
+    int n = -1;
+    if (s_w.rc == 0) n = cc_sessions_parse(s_w.body, s_parse, POLL_CAP);
+    if (n >= 0) {
+        s_w_good = true;
+        s_w_bad = false;
+        lock();
+        s_poll_fails = 0;
+        s_poll_too_big = false;
+        unlock();
+        publish(n);
+        return;
+    }
+    char first[120];
+    strlcpy(first, s_w.body, sizeof(first));
+    first_line(first);
+    if (s_w.rc != 0) ESP_LOGW(TAG, "watch: agents exited %d: %s", s_w.rc, first);
+    else ESP_LOGW(TAG, "watch: output is not a JSON array");
+    s_w_good = false;
+    s_w_bad = true;
+    lock();
+    s_poll_fails = CC_POLL_FAILS_SHOWN;   /* unchanged output is never repeated: show it now */
+    s_poll_too_big = false;
+    unlock();
+}
+
+/* Unchanged list, confirmed fresh: stamp it and tell the subscribers (the keyboard light's
+   staleness rule reads the last-ok time). Only after a good block on this channel. */
+static void watch_heartbeat(void)
+{
+    lock();
+    s_wv.hb_us = now_us();
+    int n = s_w_good ? s_list_n : -1;
+    if (n > 0) memcpy(s_parse, s_list, sizeof(cc_session_t) * n);
+    unlock();
+    if (n >= 0) publish(n);
+}
+
+/* Returns false when the channel is gone (closed here, or fallen back). */
+static bool watch_event(cc_watch_ev_t ev)
+{
+    s_w_live_us = now_us();
+    switch (ev) {
+    case CC_WATCH_BANNER:
+        wv_set_mode(WM_ON, s_w_interval);
+        ESP_LOGI(TAG, "watch: on, I=%ds", s_w_interval);
+        break;
+    case CC_WATCH_BLOCK:
+        watch_block();
+        break;
+    case CC_WATCH_OVERFLOW:
+        ESP_LOGE(TAG, "watch: agents output is over %d KB; session list not updated", JSON_CAP / 1024);
+        s_w_good = false;
+        s_w_bad = true;
+        lock();
+        s_poll_fails = CC_POLL_FAILS_SHOWN;
+        s_poll_too_big = true;
+        unlock();
+        break;
+    case CC_WATCH_HEARTBEAT:
+        watch_heartbeat();
+        break;
+    case CC_WATCH_BYE:
+        if (strcmp(s_w.bye, "life") == 0) {
+            ESP_LOGI(TAG, "watch: loop reached its lifetime; restarting");
+            watch_close(true);
+        } else {
+            char what[32];
+            snprintf(what, sizeof(what), "BYE %s", s_w.bye);
+            watch_unasked_end(what);
+        }
+        return false;
+    default:
+        break;
+    }
+    return true;
+}
+
+/* Reads what has arrived without blocking, writes the keepalive, checks liveness. */
+static void watch_service(void)
+{
+    char tmp[1024];
+    int64_t t0 = now_us();
+    /* the banner deadline is checked before reading, so a deadline that has passed wins over
+       a banner that is already buffered (test-fallback's 1 ms) */
+    lock();
+    bool starting = s_wv.mode == WM_STARTING;
+    unlock();
+    if (starting && t0 - s_w_opened_us >= (int64_t)s_w_banner_ms * 1000) {
+        char why[48];
+        if (s_w_banner_ms < 1000) snprintf(why, sizeof(why), "no banner in %d ms", s_w_banner_ms);
+        else snprintf(why, sizeof(why), "no banner in %d s", s_w_banner_ms / 1000);
+        watch_fallback(why);
+        return;
+    }
+    for (;;) {
+        int n = ssh_channel_read_nonblocking(s_wch, tmp, sizeof(tmp), 0);
+        if (n == SSH_EOF || (n == 0 && ssh_channel_is_eof(s_wch))) { watch_unasked_end("EOF"); return; }
+        if (n < 0) {
+            watch_unasked_end("read error");
+            if (!ssh_is_connected(s_sess)) s_drop = true;
+            return;
+        }
+        if (n == 0) break;
+        size_t off = 0;
+        while (off < (size_t)n) {
+            size_t used = 0;
+            cc_watch_ev_t ev = cc_watch_feed(&s_w, tmp + off, (size_t)n - off, &used);
+            off += used;
+            if (ev != CC_WATCH_NONE && !watch_event(ev)) return;
+        }
+        if (now_us() - t0 > 200000) break;   /* serve requests between big reads */
+    }
+    /* drain stderr (a pty merges it into stdout, but don't let it fill a window) */
+    while (ssh_channel_read_nonblocking(s_wch, tmp, sizeof(tmp), 1) > 0) {}
+    int64_t t = now_us();
+    if (!s_w_ka_us || t - s_w_ka_us >= (int64_t)CC_WATCH_KEEPALIVE_S * 1000000) {
+        if (!send_bytes(s_wch, "\n", 1)) { watch_unasked_end("keepalive write failed"); return; }
+        s_w_ka_us = t;
+    }
+    lock();
+    watch_mode_t m = s_wv.mode;
+    unlock();
+    int64_t dead_us = (int64_t)(2 * WATCH_HEARTBEAT_S + s_w_interval) * 1000000;
+    if (m == WM_ON && t - s_w_live_us > dead_us) {
+        ESP_LOGW(TAG, "watch: no block or heartbeat for %ds; the link is dead",
+                 2 * WATCH_HEARTBEAT_S + s_w_interval);
+        s_drop = true;
+    }
+}
+
+/* One step of the connected loop while the watch should run (interval > 0). Returns false
+   when the watch is not wanted or in fallback, so the caller polls instead. */
+static bool watch_step(int interval)
+{
+    if (s_watch_reset) {
+        s_watch_reset = false;
+        s_w_fallback_until_us = 0;
+        memset(s_w_ends, 0, sizeof(s_w_ends));
+    }
+    if (!s_watch_want || interval <= 0) {
+        watch_close(true);
+        wv_set_mode(s_watch_want ? WM_PAUSED : WM_OFF, interval);
+        return false;
+    }
+    if (s_w_fallback_until_us) {
+        if (now_us() < s_w_fallback_until_us) return false;
+        s_w_fallback_until_us = 0;
+        ESP_LOGI(TAG, "watch: retrying after the fallback");
+    }
+    if (s_wch && s_w_interval != interval) {
+        ESP_LOGI(TAG, "watch: interval %ds -> %ds; restarting", s_w_interval, interval);
+        watch_close(true);
+    }
+    if (!s_wch) {
+        watch_start(interval);
+        if (!s_wch) return s_w_fallback_until_us == 0;   /* a channel open failure: s_drop */
+    }
+    watch_service();
+    return true;
 }
 
 static void link_task(void *arg)
@@ -746,8 +1058,16 @@ static void link_task(void *arg)
             }
             continue;
         }
-        /* connected */
-        int rate = s_rate;
+        /* connected: the watch channel feeds the list; Plan 1's fixed poll is the fallback */
+        int rate = eff_rate();
+        if (watch_step(rate)) {
+            last_alive = now_us();
+            req_t *r = NULL;
+            if (!s_drop && s_wch &&
+                xQueueReceive(s_queue, &r, pdMS_TO_TICKS(WATCH_WAIT_MS)) == pdTRUE && r)
+                handle(r);
+            continue;
+        }
         int64_t t = now_us();
         if (rate > 0 && t - last_poll >= (int64_t)rate * 1000000) {
             refresh(INT64_MAX);
@@ -770,6 +1090,14 @@ static void link_task(void *arg)
 }
 
 /* ---------- public calls ---------- */
+
+static void busy(int d)
+{
+    lock();
+    s_busy += d;
+    unlock();
+}
+
 
 static esp_err_t submit(req_t *r)
 {
@@ -835,7 +1163,9 @@ esp_err_t cc_link_paste(const char *id, const char *text, char *err, size_t err_
     }
     req_t r = { .type = REQ_PASTE, .cmd = cmd, .id = id, .payload = payload, .payload_len = n,
                 .err = err, .err_cap = err_cap, .deadline_us = now_us() + (int64_t)PASTE_BUDGET_MS * 1000 };
+    busy(1);
     esp_err_t e = submit(&r);
+    busy(-1);
     free(payload);
     return e;
 }
@@ -851,13 +1181,89 @@ esp_err_t cc_link_check_live(const char *id, char *err, size_t err_cap)
     }
     req_t r = { .type = REQ_CHECK, .id = id, .err = err, .err_cap = err_cap,
                 .deadline_us = now_us() + (int64_t)POLL_TIMEOUT_MS * 1000 };
-    return submit(&r);
+    busy(1);
+    esp_err_t e = submit(&r);
+    busy(-1);
+    return e;
 }
 
 void cc_poll_set_rate(int seconds)
 {
     s_rate = seconds < 0 ? 0 : seconds;
     kick();
+}
+
+void cc_poll_set_floor(int seconds)
+{
+    s_floor = seconds < 0 ? 0 : seconds;
+    kick();
+}
+
+uint32_t cc_poll_generation(void)
+{
+    if (!s_lock) return 0;
+    lock();
+    uint32_t g = s_gen;
+    unlock();
+    return g;
+}
+
+bool cc_link_busy(void)
+{
+    return s_busy > 0;
+}
+
+void cc_link_watch_enable(bool on)
+{
+    s_watch_want = on;
+    if (on) s_watch_reset = true;   /* forget a fallback and try now */
+    kick();
+}
+
+void cc_link_watch_test_fallback(void)
+{
+    s_banner_ms = 1;
+}
+
+static int ago_s(int64_t then_us, int64_t now)
+{
+    return (int)((now - then_us) / 1000000);
+}
+
+const char *cc_watch_status_text(char *b, size_t cap)
+{
+    if (!b || !cap) return "";
+    if (!s_task || !s_watch_want) {
+        strlcpy(b, "watch: off", cap);
+        return b;
+    }
+    lock();
+    watch_mode_t m = s_wv.mode;
+    int iv = s_wv.interval;
+    int64_t blk = s_wv.block_us, hb = s_wv.hb_us;
+    char why[sizeof(s_wv.why)];
+    strlcpy(why, s_wv.why, sizeof(why));
+    bool up = s_state == LS_CONNECTED;
+    unlock();
+    int64_t t = now_us();
+    int rate = eff_rate();
+    if (!up) {
+        strlcpy(b, "watch: starting (link down)", cap);
+    } else if (m == WM_FALLBACK) {
+        snprintf(b, cap, "watch: fallback (%s), polling every %ds", why, rate);
+    } else if (m == WM_PAUSED) {
+        strlcpy(b, "watch: off (polling paused)", cap);
+    } else if (m == WM_ON) {
+        char a[32], h[32];
+        if (blk) snprintf(a, sizeof(a), "last block %ds ago", ago_s(blk, t));
+        else strlcpy(a, "no block yet", sizeof(a));
+        if (hb) snprintf(h, sizeof(h), "heartbeat %ds ago", ago_s(hb, t));
+        else strlcpy(h, "no heartbeat yet", sizeof(h));
+        snprintf(b, cap, "watch: on I=%ds, %s, %s", iv, a, h);
+    } else {
+        strlcpy(b, "watch: starting", cap);
+    }
+    return b;
 }
 
 void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx)
@@ -916,7 +1322,8 @@ esp_err_t cc_link_start(void)
     s_parse = heap_caps_calloc(POLL_CAP, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
     s_json = heap_caps_malloc(JSON_CAP, MALLOC_CAP_SPIRAM);
     s_screen = heap_caps_malloc(SCREEN_CAP, MALLOC_CAP_SPIRAM);
-    if (!s_lock || !s_queue || !s_list || !s_parse || !s_json || !s_screen) return ESP_ERR_NO_MEM;
+    s_wbody = heap_caps_malloc(JSON_CAP, MALLOC_CAP_SPIRAM);
+    if (!s_lock || !s_queue || !s_list || !s_parse || !s_json || !s_screen || !s_wbody) return ESP_ERR_NO_MEM;
     cJSON_Hooks hooks = { .malloc_fn = psram_malloc, .free_fn = heap_caps_free };
     cJSON_InitHooks(&hooks);
     libssh_esp32_init();   /* once only */

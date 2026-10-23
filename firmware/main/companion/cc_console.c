@@ -66,9 +66,26 @@ static int cmd_companion(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "status") == 0) {
         char st[CC_STATUS_MAX];
         printf("%s\n", cc_link_status_text(st, sizeof(st)));
+        printf("%s\n", cc_watch_status_text(st, sizeof(st)));
         return 0;
     }
-    printf("usage: companion host <server name> | companion claude-path <path> | companion status\n");
+    if (argc == 3 && strcmp(argv[1], "watch") == 0) {
+        char st[CC_STATUS_MAX];
+        if (strcmp(argv[2], "on") == 0) cc_link_watch_enable(true);
+        else if (strcmp(argv[2], "off") == 0) cc_link_watch_enable(false);
+        else if (strcmp(argv[2], "test-fallback") == 0) {
+            cc_link_watch_test_fallback();
+            printf("watch: the next start gives up on its banner after 1 ms\n");
+            return 0;
+        } else if (strcmp(argv[2], "status") != 0) {
+            printf("usage: companion watch on|off|status|test-fallback\n");
+            return 1;
+        }
+        printf("%s\n", cc_watch_status_text(st, sizeof(st)));
+        return 0;
+    }
+    printf("usage: companion host <server name> | companion claude-path <path> | companion status |\n"
+           "       companion watch on|off|status|test-fallback\n");
     return 1;
 }
 
@@ -196,7 +213,7 @@ static int cmd_wifi(int argc, char **argv)
 void cc_console_init(void)
 {
     const esp_console_cmd_t cmds[] = {
-        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status", .func = cmd_companion },
+        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | watch on|off|status|test-fallback", .func = cmd_companion },
         { .command = "sessions", .help = "List Claude sessions from the last poll: <STATE> <id> <repo> <name>", .func = cmd_sessions },
         { .command = "reply", .help = "reply <id> <text...>: type a quick answer into a running background session", .func = cmd_reply },
         { .command = "logs", .help = "logs <id>: recent output of a session, ANSI stripped", .func = cmd_logs },

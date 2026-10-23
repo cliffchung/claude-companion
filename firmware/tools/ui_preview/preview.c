@@ -101,6 +101,13 @@ int cc_poll_snapshot(cc_session_t *out, int cap) {
 }
 void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { (void)cb; (void)ctx; }
 void cc_poll_set_rate(int s) { (void)s; }
+void cc_poll_set_floor(int s) { (void)s; }
+uint32_t cc_poll_generation(void) { return 1; }
+int64_t cc_poll_last_ok_ms(void) { return 1; }
+bool cc_link_busy(void) { return false; }
+void cc_link_watch_enable(bool on) { (void)on; }
+void cc_link_watch_test_fallback(void) {}
+const char *cc_watch_status_text(char *b, size_t cap) { snprintf(b, cap, "watch: on I=3s, last block 4s ago, heartbeat 12s ago"); return b; }
 bool cc_link_connected(void) { return true; }
 const char *cc_link_status_text(char *b, size_t cap) { snprintf(b, cap, "connected Mac"); return b; }
 cc_link_fail_t cc_link_failure(void) { return CC_LINK_FAIL_NONE; }

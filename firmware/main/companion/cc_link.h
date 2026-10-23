@@ -59,14 +59,32 @@ esp_err_t cc_link_paste(const char *id, const char *text, char *err, size_t err_
    ESP_OK, or ESP_ERR_NOT_FOUND with err "no such session" / "session has stopped" /
    "not a background session"; ESP_ERR_INVALID_STATE when not connected. */
 esp_err_t cc_link_check_live(const char *id, char *err, size_t err_cap);
-/* Seconds between refreshes: 3 while the dashboard is visible, 30 when dimmed, 0 = paused. */
+/* Seconds between refreshes: 3 while the dashboard is visible, 30 when dimmed, 15 while a
+   session is open full-screen, 0 = paused. With the watch running it is the loop's I. */
 void cc_poll_set_rate(int seconds);
+/* The effective interval is floor > 0 ? floor : rate (Task 5 sets 15 in Off, else 0). */
+void cc_poll_set_floor(int seconds);
+/* Counts successful results published (watch blocks and heartbeats, polls). */
+uint32_t cc_poll_generation(void);
+/* True while a paste or live check is in flight (a power hold). */
+bool cc_link_busy(void);
+/* The long-poll watch (spec "Long poll"): one pty exec channel runs cc_cmd_watch's loop and
+   replaces the fixed poll while connected; it falls back to polling when it can't start or
+   keeps ending, and is retried after 10 min or on the next connect. On by default. */
+void cc_link_watch_enable(bool on);
+/* Debug: the next watch start gives up on its banner after 1 ms (tests the fallback). */
+void cc_link_watch_test_fallback(void);
+/* "watch: on I=3s, last block 4s ago, heartbeat 12s ago" | "watch: starting" |
+   "watch: fallback (<why>), polling every 3s" | "watch: off", plus "watch: starting (link down)"
+   and "watch: off (polling paused)" (rate 0). Safe from any task. */
+const char *cc_watch_status_text(char *buf, size_t cap);
 typedef void (*cc_sessions_cb_t)(const cc_session_t *s, int n, void *ctx);
 /* Called on the poll task after each successful refresh (up to 4 subscribers). */
 void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx);
 /* Copies the last successful poll; returns the count, or -1 if there hasn't been one. */
 int cc_poll_snapshot(cc_session_t *out, int cap);
-/* The esp_timer time (ms) of the last successful result from the Mac, or 0 if there has been none.
+/* The esp_timer time (ms) of the last successful result from the Mac (a poll, a watch block or a
+   watch heartbeat after a good block), or 0 if there has been none.
    Safe from any task; it does not block. */
 int64_t cc_poll_last_ok_ms(void);
 /* Wi-Fi hook (from the app's global Wi-Fi callback). */

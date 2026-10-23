@@ -631,7 +631,7 @@ static void open_now(const cc_session_t *s)
     note_clear(key_of(s));
     ESP_LOGI(TAG, "opening %s", s->id);
     s_session_open = true;
-    cc_poll_set_rate(0);
+    cc_poll_set_rate(15);   /* the watch keeps feeding the keyboard light; nothing redraws */
     ui_terminal_open_command(idx, cmd, session_closed_cb, NULL);
 }
 
