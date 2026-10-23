@@ -1,4 +1,5 @@
 #include "power_log.h"
+#include "sys/hibernate.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -64,10 +65,19 @@ static void save_sums(void)
     nvs_set_blob_ns(NVS_NS, "sum", s_sum, sizeof(s_sum));
 }
 
+void power_log_save(void)
+{
+    lock();
+    save_sums();
+    unlock();
+}
+
 void power_log_boot(void)
 {
     s_mu = xSemaphoreCreateMutex();
     esp_reset_reason_t r = esp_reset_reason();
+    /* a timer wake from Hibernate reaches the app through an HP watchdog reset on this P4 (Task 6 notes) */
+    if (r == ESP_RST_WDT && hibernate_wake_src() == HIB_SRC_TIMER) r = ESP_RST_DEEPSLEEP;
     int i = (r >= 0 && r < RST_MAX) ? (int)r : 0;
     ESP_LOGI(TAG, "reset reason: %s", k_rst_names[i]);
     uint32_t cnt[RST_MAX] = {0};

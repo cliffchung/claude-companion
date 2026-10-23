@@ -1,0 +1,638 @@
+--- a/firmware/main/sys/display_ctl.c
++++ b/firmware/main/sys/display_ctl.c
+@@ -5,7 +5,13 @@
+ #include "driver/i2c_master.h"
+ #include "esp_lvgl_port.h"
+ #include "bsp/m5stack_tab5.h"
++#include "bsp/touch.h"
+ #include "lvgl.h"
++#include "esp_sleep.h"
++#include "esp_lcd_mipi_dsi.h"
++#if CONFIG_PM_ENABLE
++#include "esp_pm.h"
++#endif
+ 
+ static const char *TAG = "display_ctl";
+ 
+@@ -26,13 +32,27 @@
+ 
+ esp_lcd_panel_handle_t display_ctl_panel(void)
+ {
++    if (display_ctl_torn_down()) return NULL;   /* the default display is the placeholder */
+     lv_display_t *d = lv_display_get_default();
+     const port_disp_head_t *ctx = d ? lv_display_get_driver_data(d) : NULL;
+     return ctx ? ctx->panel_handle : NULL;
+ }
+ 
++/* set by a teardown or re-create; until then the BSP's own handles are used */
++static bool s_own;                  /* s_indev / s_tp below replace the BSP's */
++static lv_indev_t *s_indev;
++static esp_lcd_touch_handle_t s_tp;
++static bool s_torn;
++static void (*s_hook)(lv_indev_t *touch);
++
++void display_ctl_set_recreate_hook(void (*hook)(lv_indev_t *touch)) { s_hook = hook; }
++bool display_ctl_torn_down(void) { return s_torn; }
++
++lv_indev_t *display_ctl_indev(void) { return s_own ? s_indev : bsp_display_get_input_dev(); }
++
+ esp_lcd_touch_handle_t display_ctl_touch(void)
+ {
++    if (s_own) return s_tp;
+     lv_indev_t *in = bsp_display_get_input_dev();
+     const port_touch_head_t *ctx = in ? lv_indev_get_driver_data(in) : NULL;
+     return ctx ? ctx->handle : NULL;
+@@ -76,8 +96,11 @@
+     return ver;
+ }
+ 
++static void (*s_touch_isr)(void *);
++
+ void display_ctl_touch_int_init(void (*isr)(void *))
+ {
++    s_touch_isr = isr;
+     int v = display_ctl_board_version();
+     if (v != 1) {
+         ESP_LOGI(TAG, "touch wake: polling on board v%d", v);
+@@ -111,3 +134,181 @@
+     *pressed = cnt > 0;
+     return ESP_OK;
+ }
++
++/* ---- PM lock and display teardown (Plan 2 Task 6) ------------------------- */
++
++#if CONFIG_PM_ENABLE
++static esp_pm_lock_handle_t s_pm_max;   /* CPU_FREQ_MAX, held except in Deep idle */
++#endif
++
++void display_ctl_pm_init(void)
++{
++#if CONFIG_PM_ENABLE
++    if (s_pm_max) return;
++    if (esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "power", &s_pm_max) == ESP_OK) esp_pm_lock_acquire(s_pm_max);
++    /* min 40 MHz from now on: only the lock above (and the display's own) keeps the CPU at 360 */
++    esp_pm_config_t pm = { .max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = false };
++    esp_err_t e = esp_pm_configure(&pm);
++    ESP_LOGI(TAG, "pm: 360/40 MHz, lock held: %s", esp_err_to_name(e));
++#endif
++}
++
++#if DISPLAY_CTL_TEARDOWN
++#include "freertos/FreeRTOS.h"
++#include "freertos/semphr.h"
++#include "esp_timer.h"
++#include "esp_heap_caps.h"
++#include "settings/settings.h"
++#include "ui/ui.h"
++
++static lv_display_t *s_placeholder;
++static SemaphoreHandle_t s_done;
++static esp_err_t s_result;
++static uint32_t s_recreate_ms;
++static int s_touch_after = -1;
++static bool s_low;                  /* display_ctl_low_power(true) in force */
++
++uint32_t display_ctl_recreate_ms(void) { return s_recreate_ms; }
++int display_ctl_touch_after_teardown(void) { return s_touch_after; }
++
++/* LVGL task */
++static void teardown_async(void *arg)
++{
++    (void)arg;
++    s_result = ESP_OK;
++    if (s_torn) goto out;
++    lv_display_t *disp = lv_display_get_default();
++    lv_indev_t *in = display_ctl_indev();
++    esp_lcd_touch_handle_t tp = display_ctl_touch();
++    /* the placeholder first: it becomes the default when the real display goes */
++    s_placeholder = lv_display_create(1, 1);
++    if (!s_placeholder) { s_result = ESP_ERR_NO_MEM; goto out; }
++    lv_display_delete_refr_timer(s_placeholder);
++    esp_lcd_panel_handle_t panel = display_ctl_panel();
++    if (in) lvgl_port_remove_touch(in);
++    /* no DPI "done" callback may reach the port's context once it is freed */
++    const esp_lcd_dpi_panel_event_callbacks_t none = { 0 };
++    if (panel) esp_lcd_dpi_panel_register_event_callbacks(panel, &none, NULL);
++    if (disp) lvgl_port_remove_disp(disp);
++    lv_display_set_default(s_placeholder);
++    bsp_display_delete();
++    /* v2: the ST7123 is one chip; does its touch side still answer with the panel deleted? */
++    bool alive = tp && esp_lcd_touch_read_data(tp) == ESP_OK;
++    s_touch_after = alive ? 1 : 0;
++    ESP_LOGI(TAG, "touch after teardown: %s", alive ? "ok" : "dead");
++    if (tp && !alive) { esp_lcd_touch_del(tp); tp = NULL; }
++    s_own = true;
++    s_indev = NULL;
++    s_tp = tp;
++    s_torn = true;
++out:
++    xSemaphoreGive(s_done);
++}
++
++/* LVGL task */
++static void recreate_async(void *arg)
++{
++    (void)arg;
++    s_result = ESP_OK;
++    if (!s_torn) goto out;
++    int64_t t0 = esp_timer_get_time();
++    /* the BSP default lane rate on v2; only the v3 ST7121 needs 965 Mbps */
++    bsp_display_config_t dc = { .dsi_bus = { .phy_clk_src = 0, .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS } };
++    if (display_ctl_board_version() == 3) dc.dsi_bus.lane_bit_rate_mbps = 965;
++    bsp_lcd_handles_t h = { 0 };
++    s_result = bsp_display_new_with_handles(&dc, &h);
++    if (s_result != ESP_OK) { ESP_LOGE(TAG, "re-create: panel: %s", esp_err_to_name(s_result)); goto out; }
++    esp_lcd_panel_disp_on_off(h.panel, true);
++    /* app_main's display_init_early config (Plan 1) */
++    const lvgl_port_display_cfg_t cfg = {
++        .io_handle = h.io,
++        .panel_handle = h.panel,
++        .buffer_size = BSP_LCD_H_RES * 50,
++        .double_buffer = true,
++        .hres = BSP_LCD_H_RES,
++        .vres = BSP_LCD_V_RES,
++        .flags = { .buff_dma = false, .buff_spiram = true, .sw_rotate = true, .swap_bytes = BSP_LCD_BIGENDIAN },
++    };
++    const lvgl_port_display_dsi_cfg_t dsi = { .flags = { .avoid_tearing = false } };
++    lv_display_t *disp = lvgl_port_add_disp_dsi(&cfg, &dsi);
++    if (!disp) { s_result = ESP_ERR_NO_MEM; ESP_LOGE(TAG, "re-create: lvgl display failed"); goto out; }
++    lv_display_set_default(disp);
++    lv_display_set_rotation(disp, (lv_display_rotation_t)(g_settings.rotation & 3));
++    if (!s_tp && bsp_touch_new(NULL, &s_tp) != ESP_OK) s_tp = NULL;
++    lv_indev_t *in = NULL;
++    if (s_tp) {
++        const lvgl_port_touch_cfg_t tc = { .disp = disp, .handle = s_tp };
++        in = lvgl_port_add_touch(&tc);
++    }
++    /* indevs the old display left without one (the console's virtual pointer) */
++    for (lv_indev_t *i = lv_indev_get_next(NULL); i; i = lv_indev_get_next(i))
++        if (!lv_indev_get_display(i)) lv_indev_set_display(i, disp);
++    s_indev = in;
++    if (s_placeholder) { lv_display_delete(s_placeholder); s_placeholder = NULL; }
++    s_torn = false;
++    ui_display_recreated(in);
++    if (s_hook) s_hook(in);
++    lv_refr_now(disp);
++    s_recreate_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
++    ESP_LOGI(TAG, "re-created in %u ms", (unsigned)s_recreate_ms);
++out:
++    xSemaphoreGive(s_done);
++}
++
++static esp_err_t run_on_lvgl(lv_async_cb_t cb)
++{
++    if (!s_done) s_done = xSemaphoreCreateBinary();
++    if (!s_done) return ESP_ERR_NO_MEM;
++    xSemaphoreTake(s_done, 0);
++    if (!bsp_display_lock(5000)) return ESP_ERR_TIMEOUT;
++    lv_result_t r = lv_async_call(cb, NULL);
++    bsp_display_unlock();
++    if (r != LV_RESULT_OK) return ESP_ERR_NO_MEM;
++    lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);   /* it may be sleeping its 500 ms */
++    if (xSemaphoreTake(s_done, pdMS_TO_TICKS(10000)) != pdTRUE) return ESP_ERR_TIMEOUT;
++    return s_result;
++}
++
++esp_err_t display_ctl_teardown(void) { return run_on_lvgl(teardown_async); }
++esp_err_t display_ctl_recreate(void) { return run_on_lvgl(recreate_async); }
++
++esp_err_t display_ctl_low_power(bool on, bool light_sleep)
++{
++    if (on == s_low) return ESP_OK;
++    esp_err_t e;
++    if (on) {
++        e = display_ctl_teardown();
++        if (e != ESP_OK) return e;
++        esp_pm_config_t pm = { .max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = light_sleep };
++#if CONFIG_CC_LIGHT_SLEEP_SPIKE
++        if (light_sleep) {
++            gpio_wakeup_enable(GPIO_NUM_50, GPIO_INTR_LOW_LEVEL);   /* the keyboard's INT */
++            if (display_ctl_board_version() == 1) gpio_wakeup_enable(BSP_LCD_TOUCH_INT, GPIO_INTR_LOW_LEVEL);
++            esp_sleep_enable_gpio_wakeup();
++        }
++#else
++        pm.light_sleep_enable = false;
++#endif
++        e = esp_pm_configure(&pm);
++        if (s_pm_max) esp_pm_lock_release(s_pm_max);
++        s_low = true;
++        ESP_LOGI(TAG, "low power: display torn down, pm 360/40%s: %s", pm.light_sleep_enable ? " + light sleep" : "",
++                 esp_err_to_name(e));
++        return ESP_OK;
++    }
++    if (s_pm_max) esp_pm_lock_acquire(s_pm_max);   /* first: the re-create runs at full speed */
++    esp_pm_config_t pm = { .max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = false };
++    esp_pm_configure(&pm);
++#if CONFIG_CC_LIGHT_SLEEP_SPIKE
++    gpio_wakeup_disable(GPIO_NUM_50);
++    if (display_ctl_board_version() == 1) {
++        gpio_wakeup_disable(BSP_LCD_TOUCH_INT);
++    }
++#endif
++    s_low = false;
++    e = display_ctl_recreate();
++    /* v1: bsp_touch_new sets GPIO23 back to output-low; the INT ISR needs it as an input again */
++    if (display_ctl_board_version() == 1 && s_touch_isr) display_ctl_touch_int_init(s_touch_isr);
++    return e;
++}
++#endif
+--- a/firmware/main/sys/display_ctl.h
++++ b/firmware/main/sys/display_ctl.h
+@@ -1,8 +1,11 @@
+ #pragma once
+ #include <stdbool.h>
++#include <stdint.h>
++#include "sdkconfig.h"
+ #include "esp_err.h"
+ #include "esp_lcd_panel_ops.h"
+ #include "esp_lcd_touch.h"
++#include "lvgl.h"
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -11,7 +14,8 @@
+  * Call from any task after bsp_display_start; nothing here is cached except the board version. */
+ 
+ esp_lcd_panel_handle_t display_ctl_panel(void);
+-esp_lcd_touch_handle_t display_ctl_touch(void);
++esp_lcd_touch_handle_t display_ctl_touch(void);   /* kept across a teardown when the controller still answers */
++lv_indev_t *display_ctl_indev(void);              /* the touch indev: the BSP's, or the one a re-create made */
+ esp_err_t display_ctl_panel_on(bool on);          /* esp_lcd_panel_disp_on_off */
+ /* The BSP's own probe, repeated once and cached: ST7123 touch FW 3 -> 2, FW 1 -> 3;
+    GT911 at its backup address -> 1; else 0. */
+@@ -23,6 +27,33 @@
+    LVGL's touch input is paused, so it never races LVGL's read callback. */
+ esp_err_t display_ctl_touch_poll(bool *pressed);
+ 
++/* ---- display teardown (Plan 2 Task 6) ----
++ * Teardown, on the LVGL task (lv_async_call; the caller waits): lvgl_port_remove_touch,
++ * lvgl_port_remove_disp (every screen and layer of the display goes with it), bsp_display_delete
++ * (panel, IO, DSI bus, PHY LDO, backlight PWM), then esp_lcd_touch_del unless the ST7123 still
++ * answers a read (v2 is one chip for display and touch: the poll keeps the handle).
++ * A 1x1 placeholder display without a refresh timer stays as the default meanwhile: the LVGL
++ * port task only runs lv_timer_handler while a display exists, and without one it would wake
++ * every tick. Re-create: bsp_display_new_with_handles at the board's lane rate, then
++ * lvgl_port_add_disp_dsi with the app's config, the touch indev, ui_display_recreated() and
++ * the hook below, then one synchronous refresh. Call from any task except LVGL's, never under
++ * the display lock. */
++#if CONFIG_CC_LIGHT_SLEEP_SPIKE || CONFIG_CC_DEEP_IDLE_TEARDOWN
++#define DISPLAY_CTL_TEARDOWN 1
++esp_err_t display_ctl_teardown(void);
++esp_err_t display_ctl_recreate(void);
++uint32_t display_ctl_recreate_ms(void);           /* the last re-create, start to its first flush */
++int display_ctl_touch_after_teardown(void);       /* -1 not torn down yet, 0 dead, 1 answered */
++/* Deep idle (and light sleep in the spike build): teardown, then esp_pm_configure(360/40 MHz,
++   light_sleep) and the CPU_FREQ_MAX lock released. Off: the lock is taken, then re-create. */
++esp_err_t display_ctl_low_power(bool on, bool light_sleep);
++#endif
++bool display_ctl_torn_down(void);                 /* always false without the teardown build */
++void display_ctl_pm_init(void);                   /* takes the CPU_FREQ_MAX lock (PM builds); once, at boot */
++/* Runs on the LVGL task, under its lock, right after a re-create (the power owner re-adds its
++   indev callback and the wake shield). */
++void display_ctl_set_recreate_hook(void (*hook)(lv_indev_t *touch));
++
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/firmware/main/ui/ui_core.c
++++ b/firmware/main/ui/ui_core.c
+@@ -364,6 +364,7 @@
+ 
+ /* ------------------------------------------------------------- toast */
+ static lv_obj_t *s_toast = NULL;
++static void toast_deleted(lv_event_t *e) { if (lv_event_get_target_obj(e) == s_toast) s_toast = NULL; }
+ static void toast_del_cb(lv_timer_t *t)
+ {
+     if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
+@@ -410,6 +411,7 @@
+     if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
+     lv_obj_t *layer = lv_layer_top();
+     s_toast = lv_obj_create(layer);
++    lv_obj_add_event_cb(s_toast, toast_deleted, LV_EVENT_DELETE, NULL);
+     lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+     lv_obj_set_style_max_width(s_toast, LV_PCT(80), 0);
+     lv_obj_set_style_bg_color(s_toast, UI_CARD, 0);
+@@ -1012,6 +1014,19 @@
+     lv_obj_set_style_bg_opa(lv_layer_top(), LV_OPA_TRANSP, 0);
+ }
+ 
++/* After a display teardown and re-create (Task 6): the old display took every screen and layer
++   with it, so the layers get the UI font again, the new touch indev gets the gesture handler and
++   only the top of the nav stack is rebuilt (the rest is rebuilt when navigated back to). */
++void ui_display_recreated(lv_indev_t *touch)
++{
++    s_current = NULL;
++    s_keyboard_scope = NULL;
++    keyboard_lvgl_focus(NULL);   /* a textarea picked by touch went with the old display */
++    ui_theme_reinit_lvgl();
++    if (touch) lv_indev_add_event_cb(touch, indev_gesture_cb, LV_EVENT_GESTURE, NULL);
++    ui_nav_refresh();
++}
++
+ void ui_init(void)
+ {
+     ui_theme_init();
+--- a/firmware/main/ui/ui.h
++++ b/firmware/main/ui/ui.h
+@@ -46,6 +46,7 @@
+ void ui_nav_home(void);
+ bool ui_nav_is_top(ui_screen_create_fn create);
+ lv_obj_t *ui_nav_current(void);
++void ui_display_recreated(lv_indev_t *touch);   /* sys/display_ctl.c, on the LVGL task */
+ void ui_nav_refresh(void);   /* recreate current screen (e.g. after language change) */
+ 
+ /* ---- common widgets ---- */
+--- a/firmware/main/ui/ui_music.c
++++ b/firmware/main/ui/ui_music.c
+@@ -214,6 +214,7 @@
+ 
+ /* ---- background bar (on the top layer, hidden on the music screen itself) ---- */
+ static lv_obj_t *s_bar = NULL, *s_bar_lbl = NULL;
++static void bar_deleted(lv_event_t *e) { if (lv_event_get_target_obj(e) == s_bar) { s_bar = NULL; s_bar_lbl = NULL; } }
+ static void bar_open_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_music_create, NULL); }
+ static void bar_toggle_cb(lv_event_t *e) { lv_event_stop_bubbling(e); audio_player_toggle(); ui_music_bar_update(); }
+ static void bar_stop_cb(lv_event_t *e) { lv_event_stop_bubbling(e); s_user_stopped = true; audio_player_stop(); ui_music_bar_update(); }
+@@ -224,6 +225,7 @@
+     if (!show) { if (s_bar) lv_obj_add_flag(s_bar, LV_OBJ_FLAG_HIDDEN); return; }
+     if (!s_bar) {
+         s_bar = lv_obj_create(lv_layer_top());
++        lv_obj_add_event_cb(s_bar, bar_deleted, LV_EVENT_DELETE, NULL);   /* a display teardown deletes the layer */
+         lv_obj_set_size(s_bar, LV_PCT(100), 48);
+         lv_obj_align(s_bar, LV_ALIGN_BOTTOM_MID, 0, 0);
+         lv_obj_set_style_bg_color(s_bar, UI_CARD, 0);
+--- a/firmware/main/sys/screenshot.c
++++ b/firmware/main/sys/screenshot.c
+@@ -105,6 +105,7 @@
+     uint32_t w = 0, h = 0, jpg_len = 0;
+     size_t in_cap = 0, out_cap = 0;
+ 
++    if (display_ctl_torn_down()) { printf("screenshot: display torn down\n"); return false; }
+     if (!lvgl_port_lock(0)) return false;
+     int64_t locked_us = esp_timer_get_time();
+     snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB888);
+--- a/firmware/main/sys/power.c
++++ b/firmware/main/sys/power.c
+@@ -50,7 +50,7 @@
+ static int s_go_req = -1;
+ static uint32_t s_holds;            /* 1 << power_hold_t */
+ static int s_sim_batt = -1;         /* power sim battery */
+-typedef struct { int64_t at_ms; uint8_t why; uint16_t swallowed; } wake_rec_t;
++typedef struct { int64_t at_ms; uint8_t why; uint16_t swallowed; uint16_t picture_ms; } wake_rec_t;
+ static wake_rec_t s_wakes[WAKES_KEPT];
+ static int s_wakes_n, s_wakes_head;
+ 
+@@ -64,6 +64,7 @@
+ 
+ /* power task only */
+ static bool s_dark;                 /* panel off, LVGL paused, keyboard quiet */
++static bool s_low;                  /* display torn down, CPU lock released (Task 6) */
+ static bool s_hib_blocked;          /* hibernate_now() returned (it failed): don't retry until a wake */
+ static pr_idset_t *s_armed;         /* needs-you ids already known when the screen went off */
+ static pr_idset_t *s_poll_ids;      /* poll task scratch */
+@@ -137,7 +138,7 @@
+     s_wake_pending = true;
+     s_wake_why = why;
+     s_woke_at_ms = now;   /* first: pr_swallow drops the waking input from here on */
+-    s_wakes[s_wakes_head] = (wake_rec_t){ now, (uint8_t)why, 0 };
++    s_wakes[s_wakes_head] = (wake_rec_t){ now, (uint8_t)why, 0, 0 };
+     s_wakes_head = (s_wakes_head + 1) % WAKES_KEPT;
+     if (s_wakes_n < WAKES_KEPT) s_wakes_n++;
+     return true;
+@@ -465,7 +466,7 @@
+ {
+     if (!s_shield || s_state != PS_ACTIVE || s_wake_pending || now - s_woke_at_ms < PR_SWALLOW_MS) return;
+     dlock(__LINE__);
+-    lv_indev_t *tp = bsp_display_get_input_dev();
++    lv_indev_t *tp = display_ctl_indev();
+     bool down = (tp && lv_indev_get_state(tp) == LV_INDEV_STATE_PRESSED) || s_vstate == LV_INDEV_STATE_PRESSED;
+     if (s_shield && !down) { lv_obj_delete(s_shield); s_shield = NULL; }
+     bsp_display_unlock();
+@@ -552,7 +553,7 @@
+     bsp_display_brightness_set(0);
+     /* LVGL's event-mode touch read runs from the INT even with its timers stopped: disable the
+        indev so the poll below is the only reader of the controller */
+-    lv_indev_t *tp = bsp_display_get_input_dev();
++    lv_indev_t *tp = display_ctl_indev();
+     if (tp) lv_indev_enable(tp, false);
+     lvgl_quiet_locked();
+     bsp_display_unlock();
+@@ -566,9 +567,16 @@
+ static void leave_dark(void)
+ {
+     s_poll_on = false;   /* first: it never overlaps LVGL's own touch read */
++#if DISPLAY_CTL_TEARDOWN
++    if (s_low) {   /* the CPU lock first, then the display (its indev comes up disabled: the hook) */
++        esp_err_t e = display_ctl_low_power(false, false);
++        if (e != ESP_OK) ESP_LOGE(TAG, "display re-create: %s", esp_err_to_name(e));
++        s_low = false;
++    }
++#endif
+     dlock(__LINE__);
+     lvgl_wake_locked();
+-    lv_indev_t *tp = bsp_display_get_input_dev();
++    lv_indev_t *tp = display_ctl_indev();
+     if (tp) lv_indev_enable(tp, true);
+     display_ctl_panel_on(true);
+     bsp_display_unlock();
+@@ -595,6 +603,11 @@
+     power_state_t target = why == PW_NEEDS_YOU ? PS_DIM : PS_ACTIVE;
+     if (s_dark) leave_dark();
+     bsp_display_brightness_set(target == PS_DIM ? pr_dim_brightness(g_settings.brightness) : g_settings.brightness);
++    int64_t pic = now_ms() - t0;
++    taskENTER_CRITICAL(&s_mux);
++    wake_rec_t *w = cur_wake_locked();
++    if (w) w->picture_ms = pic > 65535 ? 65535 : (uint16_t)pic;
++    taskEXIT_CRITICAL(&s_mux);
+     /* before the dashboard can be built below: it reads these */
+     s_wake_gen = cc_poll_generation();
+     s_woke_from = from;
+@@ -728,8 +741,49 @@
+     bool wake = g_settings.pw_wake_needs_you && pr_needs_you_new(s_armed, s_step_ids);
+     *s_armed = *s_step_ids;   /* the new ids join; ids that stopped needing you leave (a later block counts again) */
+     if (wake) internal_wake(PW_NEEDS_YOU);
++}
++
++/* Task 6: Deep idle tears the display down and lets the CPU drop to 40 MHz; in the spike build
++   with pw_light_sleep on battery, Off does too, with light sleep. Leaving goes through leave_dark. */
++static void low_power_step(void)
++{
++#if DISPLAY_CTL_TEARDOWN
++    bool want = false, ls = false;
++    if (s_dark && s_state != PS_HIBERNATE && !s_wake_pending) {
++#if CONFIG_CC_DEEP_IDLE_TEARDOWN
++        if (s_state == PS_DEEP_IDLE) want = true;
++#endif
++#if CONFIG_CC_LIGHT_SLEEP_SPIKE
++        int pct;
++        bool chg;
++        if (g_settings.pw_light_sleep && on_battery_now(&pct, &chg)) want = ls = true;
++#endif
++    }
++    if (!want && s_low && s_dark && !s_wake_pending) {
++        /* still dark but no longer wanted (USB back during spike light sleep): the display comes
++           back with the panel off, so the console works again */
++        display_ctl_low_power(false, false);
++        s_low = false;
++        display_ctl_panel_on(false);
++        return;
++    }
++    if (!want || s_low) return;   /* waking is leave_dark's job */
++    esp_err_t e = display_ctl_low_power(true, ls);
++    if (e != ESP_OK) { ESP_LOGE(TAG, "display teardown: %s", esp_err_to_name(e)); return; }
++    s_low = true;
++#endif
+ }
+ 
++/* LVGL task, under its lock: the display was re-created (display_ctl). */
++static void display_recreated(lv_indev_t *tp)
++{
++    if (tp) {
++        lv_indev_add_event_cb(tp, indev_cb, LV_EVENT_ALL, NULL);
++        if (s_dark) lv_indev_enable(tp, false);   /* leave_dark enables it once the poll has stopped */
++    }
++    if (s_state != PS_ACTIVE || s_wake_pending) shield_up_locked();
++}
++
+ static void touch_poll_step(void)
+ {
+     if (!s_poll_on || !s_dark) return;
+@@ -762,6 +816,7 @@
+         shield_on_top();
+         shield_expire(now_ms());
+         ladder_step(now_ms());
++        low_power_step();
+         int64_t now = now_ms();
+         if (notified || now >= next_light) {
+             apply_light(false);
+@@ -898,7 +953,8 @@
+     if (!n) { printf("wakes: none\n"); return; }
+     for (int i = 0; i < n; i++) {
+         const wake_rec_t *r = &w[(head - n + i + WAKES_KEPT) % WAKES_KEPT];
+-        printf("%.1f %s swallowed=%u\n", (now - r->at_ms) / 1000.0, power_wake_name((power_wake_t)r->why), r->swallowed);
++        printf("%.1f %s swallowed=%u picture=%ums\n", (now - r->at_ms) / 1000.0, power_wake_name((power_wake_t)r->why),
++               r->swallowed, r->picture_ms);
+     }
+ }
+ 
+@@ -912,10 +968,12 @@
+     if (!ids) { ESP_LOGE(TAG, "no memory for the power owner"); return; }
+     s_now_ids = &ids[0]; s_armed = &ids[1]; s_poll_ids = &ids[2]; s_step_ids = &ids[3];
+     s_last_input_ms = now_ms();
++    display_ctl_pm_init();
++    display_ctl_set_recreate_hook(display_recreated);
+     keyboard_set_led_source(led_source);
+     cc_poll_subscribe(on_sessions, NULL);
+     dlock(__LINE__);
+-    lv_indev_t *tp = bsp_display_get_input_dev();
++    lv_indev_t *tp = display_ctl_indev();
+     if (tp) lv_indev_add_event_cb(tp, indev_cb, LV_EVENT_ALL, NULL);
+     bsp_display_unlock();
+     if (xTaskCreate(power_task, "power", 4096, NULL, 3, &s_task) != pdPASS)
+--- a/firmware/main/sys/power_console.c
++++ b/firmware/main/sys/power_console.c
+@@ -14,6 +14,11 @@
+ #include "sys/power.h"
+ #include "input/keyboard.h"
+ #include "settings/settings.h"
++#include "sys/display_ctl.h"
++#include "esp_heap_caps.h"
++#include "esp_private/esp_clk.h"
++#include "freertos/FreeRTOS.h"
++#include "freertos/task.h"
+ 
+ static const char *src_name(power_src_t s)
+ {
+@@ -67,6 +72,39 @@
+     return usage();
+ }
+ 
++#if DISPLAY_CTL_TEARDOWN
++/* `power spike recreate <n>`: n teardown/re-create cycles, the heap after each */
++static int cmd_spike_recreate(int n)
++{
++    if (power_state() != PS_ACTIVE) { printf("spike: only while active\n"); return 1; }
++    power_hold(POWER_HOLD_BENCH, true);   /* the ladder must not dim it under us */
++    size_t i0 = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
++    size_t p0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
++    printf("spike: before: internal=%u psram=%u\n", (unsigned)i0, (unsigned)p0);
++    uint32_t slowest = 0;
++    int ok = 0;
++    for (int i = 0; i < n; i++) {
++        esp_err_t e = display_ctl_teardown();
++        if (e == ESP_OK) {
++            vTaskDelay(pdMS_TO_TICKS(200));
++            e = display_ctl_recreate();
++        }
++        if (e != ESP_OK) { printf("spike: cycle %d failed: %s\n", i + 1, esp_err_to_name(e)); break; }
++        ok++;
++        uint32_t ms = display_ctl_recreate_ms();
++        if (ms > slowest) slowest = ms;
++        vTaskDelay(pdMS_TO_TICKS(300));   /* let freed memory settle (async deletes) */
++        printf("spike: cycle %d: picture %u ms internal=%u psram=%u touch after teardown: %s\n", i + 1, (unsigned)ms,
++               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
++               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
++               display_ctl_touch_after_teardown() == 1 ? "ok" : "dead");
++    }
++    power_hold(POWER_HOLD_BENCH, false);
++    printf("spike: %d/%d cycles, slowest wake-to-picture %u ms\n", ok, n, (unsigned)slowest);
++    return ok == n ? 0 : 1;
++}
++#endif
++
+ static int cmd_power(int argc, char **argv)
+ {
+     int h = argc >= 2 ? hibernate_console(argc, argv) : -1;   /* hib, boot, rails, rail, imu */
+@@ -83,9 +121,10 @@
+                    src_name(p.src), sysinfo_charge_pin(), st, idle, holds);
+             return 0;
+         }
+-        printf("power: %.2f V %d mA %.2f W %s charging=%s src=%s chg_pin=%d state=%s idle=%lds holds=%s\n",
++        printf("power: %.2f V %d mA %.2f W %s charging=%s src=%s chg_pin=%d state=%s idle=%lds holds=%s cpu=%dMHz\n",
+                p.bus_v, (int)lroundf(p.current_a * 1000.0f), p.bus_v * fabsf(p.current_a), pct,
+-               p.src == PWR_USB_CHARGING ? "yes" : "no", src_name(p.src), sysinfo_charge_pin(), st, idle, holds);
++               p.src == PWR_USB_CHARGING ? "yes" : "no", src_name(p.src), sysinfo_charge_pin(), st, idle, holds,
++               esp_clk_cpu_freq() / 1000000);
+         return 0;
+     }
+     if (strcmp(argv[1], "log") == 0 && argc == 3) {
+@@ -163,6 +202,12 @@
+         power_touch_text(b, sizeof(b));
+         printf("%s\n", b);
+         return 0;
++#if DISPLAY_CTL_TEARDOWN
++    } else if (strcmp(argv[1], "spike") == 0 && argc == 4 && strcmp(argv[2], "recreate") == 0) {
++        int n;
++        if (!parse_int(argv[3], &n) || n < 1 || n > 100) return usage();
++        return cmd_spike_recreate(n);
++#endif
+     } else if (strcmp(argv[1], "wakes") == 0 && argc == 2) {
+         power_wakes_print();
+         return 0;
+--- /dev/null
++++ b/firmware/main/Kconfig.projbuild
+@@ -0,0 +1,16 @@
++menu "Claude Companion"
++
++    config CC_LIGHT_SLEEP_SPIKE
++        bool "Light-sleep spike (Plan 2 Task 6): Off tears the display down and light-sleeps on battery"
++        default n
++        depends on PM_ENABLE
++        help
++            Spike build only (sdkconfig.spike). With the pw_light_sleep setting on and on battery,
++            Off deletes the display, enables automatic light sleep and wakes on the keyboard INT.
++
++    config CC_DEEP_IDLE_TEARDOWN
++        bool "Deep idle tears the display down and lets the CPU drop to 40 MHz"
++        default n
++        depends on PM_ENABLE
++
++endmenu
+--- /dev/null
++++ b/firmware/sdkconfig.spike
+@@ -0,0 +1,6 @@
++# Plan 2 Task 6 light-sleep spike. Build with:
++#   idf.py -B build-spike -D SDKCONFIG=build-spike/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.spike" build
++CONFIG_PM_ENABLE=y
++CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
++CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
++CONFIG_CC_LIGHT_SLEEP_SPIKE=y

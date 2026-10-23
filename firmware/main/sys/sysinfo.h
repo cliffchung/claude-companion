@@ -31,6 +31,13 @@ void sysinfo_apply_timezone(void);           /* TZ from g_settings.tz_rule */
 void sysinfo_time_from_rtc(void);
 void sysinfo_start_sntp(void);
 bool sysinfo_ina226_present(void);
+/* Task 6. slow: 1024 averages, bus 140 us, shunt 8.244 ms, continuous (0x4E3F; a result every ~8.6 s);
+   otherwise the Plan 1 config (0x4527), which sysinfo_init writes at every boot. */
+void sysinfo_ina226_slow(bool slow);
+void sysinfo_ina226_power_down(void);        /* config 0x4520 (mode 000); the next boot's sysinfo_init undoes it */
+/* Early boot (before sysinfo_init): config, bus (1.25 mV LSB) and shunt (2.5 uV LSB) registers through a
+   device of its own on bsp_i2c_get_handle(). False when the INA226 doesn't answer. */
+bool sysinfo_ina226_raw(uint16_t *config, uint16_t *bus, int16_t *shunt);
 bool sysinfo_rtc_present(void);
 uint32_t sysinfo_uptime_s(void);
 const char *sysinfo_app_version(void);

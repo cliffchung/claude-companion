@@ -27,6 +27,8 @@
 #include "sys/power_bench.h"
 #include "sys/power_console.h"
 #include "sys/power.h"
+#include "sys/hibernate.h"
+#include "sys/imu.h"
 #include "sys/display_ctl.h"
 #include "sys/usb_mgr.h"
 #include "media/audio_player.h"
@@ -127,6 +129,7 @@ void app_main(void)
      * before bsp_display_start_with_config(): the BSP identifies the Tab5 board
      * revision by probing that controller and asserts if it is still starting. */
     bsp_i2c_init();
+    hibernate_boot_early();   /* before any rail: a bench probe boot samples the INA226 and sleeps again here */
     bsp_io_expander_init();
     bsp_io_expander1_init();
     bsp_feature_enable(BSP_FEATURE_LCD, true);
@@ -146,6 +149,7 @@ void app_main(void)
     display_apply_settings();
     secure_store_init();
     sysinfo_init();
+    imu_suspend();   /* nothing uses the BMI270 (PT15); it keeps whatever an earlier firmware left running */
     sd_mount();
     server_store_init();   /* may live on the card, so only after it is mounted */
 
@@ -175,6 +179,8 @@ void app_main(void)
     cc_console_init();
     power_console_init();
     if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
+    hibernate_init();        /* boot-to-live after a hibernate */
+    power_bench_boot();      /* a probe run that just finished */
     display_ctl_touch_int_init(power_touch_isr);   /* v1 only; v2 and v3 poll the touch in Off */
     power_init();
     xTaskCreate(idle_task, "idle_poll", 4096, NULL, 2, NULL);

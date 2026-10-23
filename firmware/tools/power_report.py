@@ -69,6 +69,22 @@ def parse_bench(lines):
     return out
 
 
+# Probe steps sleep between three INA226 samples: their energy column means nothing (Task 6), and they are
+# Hibernate draw, not part of the awake mix the estimate averages.
+PROBE_STEPS = ("hibernate-light", "floor", "hibernate")
+
+
+def format_bench_row(r):
+    mwh = "-" if r["name"] in PROBE_STEPS else "%.2f" % (r["mwh_x1000"] / 1000.0)
+    return "%-15s %5d %7d %7d %7d %7d %8s  %s" % (r["name"], r["seconds"], r["avg_mw"], r["min_mw"], r["max_mw"],
+                                                  r["avg_ma"], mwh, r["status"])
+
+
+def bench_mix_rows(rows):
+    """Indices of the rows the battery estimate averages: ok, nonzero and not a probe step."""
+    return [i for i, r in enumerate(rows) if r["status"] == "ok" and r["avg_mw"] > 0 and r["name"] not in PROBE_STEPS]
+
+
 def summarize(samples):
     acc = {}
     for s in samples:
@@ -134,11 +150,10 @@ def main(argv=None):
                 print("estimated battery life: %.1f h (estimate)" % estimate_hours(a.capacity_mwh, mix, summ))
         else:
             rows = parse_bench(_read_block(a.port, "power bench report", "BENCH"))
-            print("%-14s %5s %7s %7s %7s %7s %8s  %s" % ("step", "s", "avg_mw", "min_mw", "max_mw", "avg_ma", "mWh", "status"))
+            print("%-15s %5s %7s %7s %7s %7s %8s  %s" % ("step", "s", "avg_mw", "min_mw", "max_mw", "avg_ma", "mWh", "status"))
             for r in rows:
-                print("%-14s %5d %7d %7d %7d %7d %8.2f  %s" % (r["name"], r["seconds"], r["avg_mw"], r["min_mw"],
-                                                               r["max_mw"], r["avg_ma"], r["mwh_x1000"] / 1000.0, r["status"]))
-            summ = {i: {"avg_mw": r["avg_mw"]} for i, r in enumerate(rows) if r["status"] == "ok" and r["avg_mw"] > 0}
+                print(format_bench_row(r))
+            summ = {i: {"avg_mw": rows[i]["avg_mw"]} for i in bench_mix_rows(rows)}
             if summ:
                 mix = {i: 1.0 / len(summ) for i in summ}
                 print("estimated battery life: %.1f h (estimate)" % estimate_hours(a.capacity_mwh, mix, summ))

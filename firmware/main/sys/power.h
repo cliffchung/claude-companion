@@ -68,11 +68,8 @@ void power_touch_poll_pause(bool pause);    /* bench: Off with the poll stopped 
 typedef enum { POWER_BENCH_LIGHT_NONE, POWER_BENCH_LIGHT_AMBER, POWER_BENCH_LIGHT_OFF } power_bench_light_t;
 void power_bench_light(power_bench_light_t l);
 
-/* ---- Hibernate (stubs until Task 6 moves them to sys/hibernate.c) ---- */
-typedef enum { POWER_BOOT_NORMAL, POWER_BOOT_HIB_WAKE } power_boot_t;
-bool hibernate_supported(void);             /* false until Task 6 */
-void hibernate_now(void);                   /* logs "hibernate: not built" and returns */
-power_boot_t hibernate_boot_kind(void);     /* POWER_BOOT_NORMAL until Task 6 */
+/* ---- Hibernate: sys/hibernate.h (Task 6) ---- */
+#include "sys/hibernate.h"
 
 /* ---- the keyboard light ---- */
 void power_kbd_light_refresh(void);         /* re-evaluates the light now; Settings calls it after a change */

@@ -44,15 +44,17 @@ static bool ina_read16(uint8_t reg, uint16_t *v)
     return true;
 }
 
+static void ina_config(uint16_t cfg);
+
 void sysinfo_init(void)
 {
     i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
     if (!bus) { ESP_LOGW(TAG, "no I2C bus"); return; }
     i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = INA226_ADDR, .scl_speed_hz = 400000 };
     if (i2c_master_probe(bus, INA226_ADDR, 50) == ESP_OK && i2c_master_bus_add_device(bus, &cfg, &s_ina) == ESP_OK) {
-        /* config: avg 16, 1.1ms conversions, continuous shunt+bus */
-        uint8_t w[3] = { 0x00, 0x45, 0x27 };
-        i2c_wr_rd(s_ina, w, 3, NULL, 0);
+        /* config: avg 16, 1.1ms conversions, continuous shunt+bus (also undoes a probe's slow mode and a
+           Hibernate's power-down) */
+        ina_config(0x4527);
         /* calibration for 5mR shunt: CAL = 0.00512 / (LSB * R); LSB = 1mA -> 1024 */
         uint8_t c[3] = { 0x05, 0x04, 0x00 };
         i2c_wr_rd(s_ina, c, 3, NULL, 0);
@@ -72,13 +74,40 @@ void sysinfo_init(void)
 }
 
 bool sysinfo_ina226_present(void) { return s_ina != NULL; }
+
+static void ina_config(uint16_t cfg)
+{
+    uint8_t w[3] = { 0x00, (uint8_t)(cfg >> 8), (uint8_t)cfg };
+    if (!i2c_wr_rd(s_ina, w, 3, NULL, 0)) ESP_LOGW(TAG, "INA226 config 0x%04x failed", cfg);
+}
+
+void sysinfo_ina226_slow(bool slow) { ina_config(slow ? 0x4E3F : 0x4527); }
+void sysinfo_ina226_power_down(void) { ina_config(0x4520); }
+
+bool sysinfo_ina226_raw(uint16_t *config, uint16_t *bus, int16_t *shunt)
+{
+    i2c_master_bus_handle_t b = bsp_i2c_get_handle();
+    if (!b || i2c_master_probe(b, INA226_ADDR, 50) != ESP_OK) return false;
+    i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = INA226_ADDR, .scl_speed_hz = 400000 };
+    i2c_master_dev_handle_t d = NULL;
+    if (i2c_master_bus_add_device(b, &cfg, &d) != ESP_OK) return false;
+    uint8_t r[2], reg;
+    bool ok = true;
+    reg = 0x00; ok = ok && i2c_wr_rd(d, &reg, 1, r, 2); *config = (uint16_t)(r[0] << 8 | r[1]);
+    reg = 0x02; ok = ok && i2c_wr_rd(d, &reg, 1, r, 2); *bus = (uint16_t)(r[0] << 8 | r[1]);
+    reg = 0x01; ok = ok && i2c_wr_rd(d, &reg, 1, r, 2); *shunt = (int16_t)(r[0] << 8 | r[1]);
+    i2c_master_bus_rm_device(d);
+    return ok;
+}
 bool sysinfo_rtc_present(void) { return s_rtc != NULL; }
 
 int sysinfo_charge_pin(void)
 {
     esp_io_expander_handle_t ex2 = bsp_io_expander1_init();
     uint32_t lv = 0;
-    if (!ex2 || esp_io_expander_get_level(ex2, IO_EXPANDER_PIN_NUM_4, &lv) != ESP_OK) return -1;
+    /* CHG_STAT (the IP2326's LED output) is expander 2 pin 6 on the Tab5 schematic; pin 4, which the fork
+       read, is PWROFF_PULSE and reads 0 whatever the supply (Task 6 notes) */
+    if (!ex2 || esp_io_expander_get_level(ex2, IO_EXPANDER_PIN_NUM_6, &lv) != ESP_OK) return -1;
     return lv ? 1 : 0;
 }
 
@@ -97,7 +126,7 @@ void sysinfo_poll(void)
     s_batt_us = now;
     s_pwr.percent = vitals_batt_update(&s_batt, s_pwr.bus_v, s_pwr.current_a, dt);
     s_pwr.valid = true;
-    /* Charge status from IO expander 2 pin 4 (input, active low) when available. */
+    /* Charge status from IO expander 2 pin 6 (CHG_STAT) when available. */
     int pin = sysinfo_charge_pin();
     s_last_pin = pin;
     if (pin >= 0) s_charge_stat_valid = true;

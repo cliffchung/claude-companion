@@ -61,6 +61,22 @@ class MathTests(unittest.TestCase):
     def test_estimate_skips_tags_missing_from_summary(self):
         self.assertAlmostEqual(pr.estimate_hours(1000, {0: 0.5, 9: 0.5}, {0: {"avg_mw": 500}}), 4.0)
 
+    def test_bench_row_probe_steps_print_dash_for_mwh(self):
+        r = {"name": "floor", "seconds": 10, "avg_mw": 15, "min_mw": 11, "max_mw": 19, "avg_ma": 2,
+             "mwh_x1000": 1, "status": "usb"}
+        line = pr.format_bench_row(r)
+        self.assertEqual(line.split()[6], "-")
+        for name in ("hibernate", "hibernate-light"):
+            r["name"] = name
+            self.assertEqual(pr.format_bench_row(r).split()[6], "-")
+        r["name"] = "active"
+        r["mwh_x1000"] = 2500
+        self.assertEqual(pr.format_bench_row(r).split()[6], "2.50")
+
+    def test_probe_rows_stay_out_of_the_awake_estimate(self):
+        rows = [{"name": "active", "avg_mw": 3000, "status": "ok"}, {"name": "floor", "avg_mw": 15, "status": "ok"}]
+        self.assertEqual(list(pr.bench_mix_rows(rows)), [0])
+
     def test_estimate_hours(self):
         summary = {0: {"avg_mw": 3000}, 2: {"avg_mw": 1000}}
         self.assertAlmostEqual(pr.estimate_hours(14800, {0: 0.1, 2: 0.9}, summary), 12.33, places=2)

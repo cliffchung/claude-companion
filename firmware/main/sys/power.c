@@ -64,7 +64,7 @@ static uint32_t s_ids_gen;
 
 /* power task only */
 static bool s_dark;                 /* panel off, LVGL paused, keyboard quiet */
-static bool s_hib_blocked;          /* Hibernate returned (not built): don't retry until a wake */
+static bool s_hib_blocked;          /* hibernate_now() returned (it failed): don't retry until a wake */
 static pr_idset_t *s_armed;         /* needs-you ids already known when the screen went off */
 static pr_idset_t *s_poll_ids;      /* poll task scratch */
 static pr_idset_t *s_step_ids;      /* power task scratch */
@@ -634,7 +634,19 @@ static void internal_wake(power_wake_t why)
     do_wake();
 }
 
-/* Shows the notice for 3 s, then hibernate_now(). Input or a hold during the 3 s cancels it. */
+/* hibernate_now() on a task of its own: NVS writes, the expander I2C and esp_deep_sleep_start() were
+   not sized for the power task's 4 KB (about 2 KB free). Gives s_hib_done only if it failed. */
+static SemaphoreHandle_t s_hib_done;
+static void hib_task(void *arg)
+{
+    (void)arg;
+    hibernate_now(0, POWER_BOOT_HIB_WAKE);   /* doesn't return when it works */
+    xSemaphoreGive(s_hib_done);
+    vTaskDelete(NULL);
+}
+
+/* Shows the notice for 3 s, then hibernate_now(), which doesn't come back. Input or a hold during the
+   3 s cancels it; if hibernate_now() fails, the device goes back to Off and Hibernate waits for a wake. */
 static void run_hibernate(power_state_t back_to)
 {
     shield_and_state(PS_HIBERNATE);
@@ -651,7 +663,11 @@ static void run_hibernate(power_state_t back_to)
         cancel = s_wake_pending;
     }
     if (!cancel) {
-        hibernate_now();   /* returns only while Hibernate isn't built */
+        apply_light(true);   /* the Deep-idle rule: off unless something needs you */
+        if (!s_hib_done) s_hib_done = xSemaphoreCreateBinary();
+        if (s_hib_done && xTaskCreate(hib_task, "hib", 6144, NULL, 4, NULL) == pdPASS)
+            xSemaphoreTake(s_hib_done, portMAX_DELAY);   /* back here only if it failed */
+        ESP_LOGE(TAG, "hibernate failed: back to off");
         cancel = s_wake_pending;
     }
     dlock(__LINE__);
@@ -898,17 +914,6 @@ void power_wakes_print(void)
         printf("%.1f %s swallowed=%u\n", (now - r->at_ms) / 1000.0, power_wake_name((power_wake_t)r->why), r->swallowed);
     }
 }
-
-/* ---- Hibernate stubs (Task 6) -------------------------------------------- */
-
-bool hibernate_supported(void) { return false; }
-
-void hibernate_now(void)
-{
-    ESP_LOGW(TAG, "hibernate: not built");
-}
-
-power_boot_t hibernate_boot_kind(void) { return POWER_BOOT_NORMAL; }
 
 /* ---- init ---------------------------------------------------------------- */
 

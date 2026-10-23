@@ -32,7 +32,8 @@ static int usage(void)
            "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe] | "
            "power go active|dim|off|deep-idle|hibernate | power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate <n> | "
            "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch | "
-           "power touch | power wakes\n");
+           "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s>] | power boot | "
+           "power rails | power rail speaker|camera|usb|ext5v on|off | power imu [suspend]\n");
     return 1;
 }
 
@@ -54,8 +55,11 @@ static int cmd_go(const char *name)
     };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
         if (strcmp(name, k[i].n)) continue;
-        if (k[i].s == PS_HIBERNATE && !hibernate_supported())
-            printf("hibernate: not built (the notice shows for 3 s, then the device goes back to off)\n");
+        if (k[i].s == PS_HIBERNATE && !hibernate_test_wake_s()) {
+            /* without a timed wake it is a power-off that only the side button undoes: nobody at the Mac can */
+            printf("hibernate: run `power hib test-wake <s>` first (else only the side button wakes it)\n");
+            return 1;
+        }
         power_go(k[i].s);
         printf("power: go %s\n", k[i].n);
         return 0;
@@ -65,6 +69,8 @@ static int cmd_go(const char *name)
 
 static int cmd_power(int argc, char **argv)
 {
+    int h = argc >= 2 ? hibernate_console(argc, argv) : -1;   /* hib, boot, rails, rail, imu */
+    if (h >= 0) return h;
     if (argc == 1) {
         power_info_t p = sysinfo_power();
         char pct[8] = "-", holds[48];
@@ -218,7 +224,7 @@ void power_console_init(void)
         .command = "power",
         .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort | "
                 "light [test bind|user|reprobe] | go <state> | set <name> <n> | set defaults | settings | "
-                "sim battery <pct|off> | sim idle <s> | sim touch | touch | wakes",
+                "sim battery <pct|off> | sim idle <s> | sim touch | touch | wakes | hib ... | boot | rails | rail <n> on|off | imu",
         .func = cmd_power,
     };
     debug_console_register(&cmd);

@@ -324,6 +324,13 @@ static bool kb_probe(void)
     kb_write(REG_INT_CFG, s_layout ? 0x01 : 0x02);
     s_mode_dirty = false;
     kb_write(REG_EVENT_NUM, 0);     /* clear FIFO */
+    static bool s_boot_read;   /* Task 6: what the A164 kept through a deep sleep, before we write anything */
+    if (!s_boot_read) {
+        s_boot_read = true;
+        uint8_t lb = 0, lm = 0, rgb[4] = { 0 };
+        if (kb_read(REG_BRIGHTNESS, &lb, 1) && kb_read(REG_RGB_MODE, &lm, 1) && kb_read(REG_RGB_BASE, rgb, 4))
+            ESP_LOGI(TAG, "light at boot: mode=%u bright=%u rgb=%02x%02x%02x", lm, lb, rgb[1], rgb[2], rgb[3]);
+    }
     keyboard_led_lock();   /* the colour we ask for is the colour that lands */
     uint8_t m, br, r, g, b;
     if (s_led_src) s_led_src(&m, &br, &r, &g, &b);

@@ -15,6 +15,7 @@ void power_log_accept_charging(bool on);   /* default off: charging samples stay
 void power_log_enable(bool on);
 void power_log_dump(void);                 /* @@PLOG <n>, "t_s,mv,ma,mw,tag,flags" lines, @@END */
 void power_log_clear(void);
+void power_log_save(void);                 /* the per-tag sums to NVS now (before Hibernate) */
 void power_log_status(void);               /* sample count and per-tag summaries */
 void power_log_resets(void);               /* table of reset reasons and counts */
 void power_log_resets_clear(void);
