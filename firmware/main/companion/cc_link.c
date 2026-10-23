@@ -806,7 +806,8 @@ static bool watch_unasked_end(const char *what)
 static void watch_start(int interval)
 {
     char claude[64], cmd[1024];
-    cc_watch_params_t p = { interval > 120 ? 120 : interval, WATCH_HEARTBEAT_S, WATCH_QUIET_S, WATCH_LIFE_S };
+    if (interval > 120) interval = 120;   /* cc_cmd_watch's range; s_w_interval keeps the same I */
+    cc_watch_params_t p = { interval, WATCH_HEARTBEAT_S, WATCH_QUIET_S, WATCH_LIFE_S };
     if (!cc_cmd_watch(cc_settings_claude_path(claude, sizeof(claude)), &p, cmd, sizeof(cmd))) {
         watch_fallback("bad watch command");
         return;
@@ -979,6 +980,7 @@ static void watch_service(void)
    when the watch is not wanted or in fallback, so the caller polls instead. */
 static bool watch_step(int interval)
 {
+    if (interval > 120) interval = 120;   /* the loop's range; compared with s_w_interval below */
     if (s_watch_reset) {
         s_watch_reset = false;
         s_w_fallback_until_us = 0;

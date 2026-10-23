@@ -100,7 +100,7 @@ static void test_cmd_rejects(void)
 }
 
 /* verified against this Mac's /bin/sh (bash 3.2) by firmware/tools/test_watch_loop.py */
-#define WATCH_EXACT "exec /bin/sh -c 'stty -echo 2>/dev/null; C=~/.local/bin/claude; I=3; H=60; T=60; L=1800; echo \"@@CC-WATCH 1\"; b() { echo \"@@CC-BYE $1\" & sleep 0.5; kill 0; }; { while :; do j=$SECONDS; if read -r -t \"$T\" x; then :; elif [ $((SECONDS-j)) -lt \"$T\" ]; then b eof; else b quiet; fi; done; } <&0 & p=; s=0; while [ \"$SECONDS\" -lt \"$L\" ]; do o=$(\"$C\" agents --json --all </dev/null 2>&1); r=$?; if [ \"$o\" != \"$p\" ]; then echo \"@@CC-BEGIN $r\"; printf \"%s\\n\" \"$o\"; echo \"@@CC-END\"; p=$o; s=$SECONDS; elif [ $((SECONDS-s)) -ge \"$H\" ]; then echo \"@@CC-HB $SECONDS\"; s=$SECONDS; fi; sleep \"$I\"; done; b life'"
+#define WATCH_EXACT "exec /bin/sh -c 'stty -echo 2>/dev/null; C=~/.local/bin/claude; I=3; H=60; T=60; L=1800; echo \"@@CC-WATCH 1\"; b() { echo \"@@CC-BYE $1\" & sleep 0.5; kill -- -$$ 2>/dev/null || kill $$; exit; }; { while :; do j=$SECONDS; if read -r -t \"$T\" x; then :; elif [ $((SECONDS-j)) -lt \"$T\" ]; then b eof; else b quiet; fi; done; } <&0 & p=; s=0; while [ \"$SECONDS\" -lt \"$L\" ]; do o=$(\"$C\" agents --json --all </dev/null 2>&1); r=$?; if [ \"$o\" != \"$p\" ]; then echo \"@@CC-BEGIN $r\"; printf \"%s\\n\" \"$o\"; echo \"@@CC-END\"; p=$o; s=$SECONDS; elif [ $((SECONDS-s)) -ge \"$H\" ]; then echo \"@@CC-HB $SECONDS\"; s=$SECONDS; fi; sleep \"$I\"; done; b life'"
 
 static void test_cmd_watch_exact(void)
 {

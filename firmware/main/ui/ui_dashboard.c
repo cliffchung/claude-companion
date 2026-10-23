@@ -937,7 +937,7 @@ static void scr_delete_cb(lv_event_t *e)
     s_logs_lbl = s_ta = NULL;
     memset(s_cards, 0, sizeof(s_cards));
     memset(s_ages, 0, sizeof(s_ages));
-    if (!s_session_open) cc_poll_set_rate(30);   /* not on screen: refresh slowly */
+    /* PT11: the rate stays 3 s on every other screen (Active/Dim); Off sets its floor */
 }
 
 lv_obj_t *ui_dashboard_create(void *arg)

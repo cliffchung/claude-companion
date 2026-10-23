@@ -107,14 +107,16 @@ bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap)
 /* Fixed loop text (ruling P28). A background reader takes the keepalives: `read -t T` that
    times out means no byte for T seconds (quiet); one that returns early is EOF (bash 3.2's
    `read -t` returns 1 on both). It then prints BYE in the background and, half a second later,
-   kills the whole process group (`kill 0`: the pty session sshd made for this channel). So the
+   kills its own process group (`kill -- -$$`: under sshd's pty session $$ leads it). If the
+   shell leads no group (run outside sshd), that fails and only the loop's shell is killed
+   (`kill $$`), never the caller's group; `exit` ends the reader. So the
    loop exits even while a write is blocked because the Tab5 vanished and sshd stopped draining
    the pty. The main loop runs `agents` every I s (`</dev/null` keeps claude from eating
    keepalives), and `stty -echo` stops the pty echoing them back. No ' may appear inside: the
    whole loop is one single-quoted sh -c argument. */
 static const char WATCH_FMT[] =
     "exec /bin/sh -c 'stty -echo 2>/dev/null; C=%s; I=%d; H=%d; T=%d; L=%d; echo \"@@CC-WATCH 1\"; "
-    "b() { echo \"@@CC-BYE $1\" & sleep 0.5; kill 0; }; "
+    "b() { echo \"@@CC-BYE $1\" & sleep 0.5; kill -- -$$ 2>/dev/null || kill $$; exit; }; "
     "{ while :; do j=$SECONDS; if read -r -t \"$T\" x; then :; "
     "elif [ $((SECONDS-j)) -lt \"$T\" ]; then b eof; else b quiet; fi; done; } <&0 & "
     "p=; s=0; while [ \"$SECONDS\" -lt \"$L\" ]; do "

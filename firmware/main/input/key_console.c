@@ -80,14 +80,17 @@ static int cmd_key(int argc, char **argv)
 }
 
 /* `ui refresh` rebuilds the current screen over itself; `ui home` goes home the way a swipe
- * right at the bottom of the stack does. Both run on the LVGL task. */
+ * right at the bottom of the stack does; `ui settings` opens Settings as its footer button
+ * does (it has no key). All run on the LVGL task. */
 static void ui_refresh_async(void *arg) { (void)arg; ui_nav_refresh(); }
 static void ui_home_async(void *arg) { (void)arg; ui_nav_home(); }
+static void ui_settings_async(void *arg) { (void)arg; ui_nav_push(ui_settings_create, NULL); }
 static int cmd_ui(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "refresh") == 0) { ui_async(ui_refresh_async, NULL); printf("ui: refresh\n"); return 0; }
     if (argc == 2 && strcmp(argv[1], "home") == 0) { ui_async(ui_home_async, NULL); printf("ui: home\n"); return 0; }
-    printf("usage: ui refresh | ui home\n");
+    if (argc == 2 && strcmp(argv[1], "settings") == 0) { ui_async(ui_settings_async, NULL); printf("ui: settings\n"); return 0; }
+    printf("usage: ui refresh | ui home | ui settings\n");
     return 1;
 }
 
@@ -95,7 +98,7 @@ void key_console_init(void)
 {
     const esp_console_cmd_t ui_cmd = {
         .command = "ui",
-        .help = "ui refresh: rebuild the current screen; ui home: go to the dashboard",
+        .help = "ui refresh: rebuild the current screen; ui home: go to the dashboard; ui settings: open Settings",
         .hint = NULL,
         .func = cmd_ui,
     };

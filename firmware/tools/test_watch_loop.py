@@ -257,6 +257,52 @@ class WatchLoopTest(unittest.TestCase):
         self.assertEqual(['@@CC-BEGIN 0'], self.begins())
         self.assertIn('[7]', self.lines)
 
+    def test_blocked_output_plus_stdin_eof(self):
+        """Output blocked (the pty is never read) and stdin EOF; T=60, so only EOF can end it."""
+        d = self.fake('[' + 'a' * 300000 + ']')
+        self.start(self.command(str(d / 'claude'), 1, 60, 60, 600))
+        time.sleep(1.5)
+        self.assertTrue(pgrep(self.dir), 'the loop is not running')
+        os.write(self.fd, b'\x04')
+        end = time.time() + 4
+        left = pgrep(self.dir)
+        while time.time() < end and left:
+            time.sleep(0.1)
+            left = pgrep(self.dir)
+        self.assertEqual([], left, 'the loop survived EOF with its output blocked')
+
+    def test_not_group_leader_spares_the_caller(self):
+        """Run without a new session or pty, inside a scratch process group that also holds a
+        sentinel: the loop's self-kill must not reach the sentinel (only sshd makes the loop a
+        group leader)."""
+        d = self.fake()
+        cmd = self.command(str(d / 'claude'), 1, 60, 60, 600)
+        sentinel = os.path.join(self.dir, 'naptime')
+        os.symlink('/bin/sleep', sentinel)
+        env = dict(os.environ, CMD=cmd, SENT=sentinel)
+        # stdin is /dev/null, so the reader sees EOF at once and the loop kills itself
+        p = subprocess.Popen(['/bin/sh', '-c', '"$SENT" 30 & /bin/zsh -c "$CMD" </dev/null; wait'],
+                             env=env, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            end = time.time() + 2
+            while time.time() < end and not pgrep(str(d / 'claude')):
+                time.sleep(0.02)
+            end = time.time() + 3
+            loop = pgrep(str(d / 'claude'))
+            while time.time() < end and loop:
+                time.sleep(0.1)
+                loop = pgrep(str(d / 'claude'))
+            self.assertEqual([], loop, 'the loop did not exit on EOF')
+            time.sleep(0.5)   # a stray kill would have landed by now
+            self.assertTrue(pgrep(sentinel), "the loop's self-kill reached the caller's group")
+        finally:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            p.wait()
+
 
 if __name__ == '__main__':
     unittest.main()

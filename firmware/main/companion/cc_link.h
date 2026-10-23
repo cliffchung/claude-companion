@@ -59,8 +59,8 @@ esp_err_t cc_link_paste(const char *id, const char *text, char *err, size_t err_
    ESP_OK, or ESP_ERR_NOT_FOUND with err "no such session" / "session has stopped" /
    "not a background session"; ESP_ERR_INVALID_STATE when not connected. */
 esp_err_t cc_link_check_live(const char *id, char *err, size_t err_cap);
-/* Seconds between refreshes: 3 while the dashboard is visible, 30 when dimmed, 15 while a
-   session is open full-screen, 0 = paused. With the watch running it is the loop's I. */
+/* Seconds between refreshes: 3 (Active or Dim, any screen), 15 while a session is open
+   full-screen, 0 = paused. With the watch running it is the loop's I. */
 void cc_poll_set_rate(int seconds);
 /* The effective interval is floor > 0 ? floor : rate (Task 5 sets 15 in Off, else 0). */
 void cc_poll_set_floor(int seconds);
