@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -28,11 +29,11 @@
 
 static const char *TAG = "cc_link";
 
-#define POLL_CAP        32
-#define JSON_CAP        (32 * 1024)
+#define POLL_CAP        128            /* parse keeps active sessions first, so none fall off */
+#define JSON_CAP        (256 * 1024)   /* `--all` keeps every finished session: room to grow */
 #define SCREEN_CAP      (16 * 1024)
 #define POLL_TIMEOUT_MS 15000
-#define PASTE_BUDGET_MS 12000
+#define PASTE_BUDGET_MS 15000
 #define MAX_SUBS        4
 #define DEFAULT_CLAUDE  "~/.local/bin/claude"
 
@@ -47,6 +48,7 @@ typedef struct {
     int *exit_status;
     char *err; size_t err_cap;
     const char *payload; size_t payload_len;   /* paste bytes (ends with CR) */
+    bool keep_tail;             /* exec: on overflow keep the newest bytes, not the first */
     int64_t deadline_us;
     esp_err_t result;
     SemaphoreHandle_t done;
@@ -66,7 +68,8 @@ static int s_list_n = -1;
 static struct { cc_sessions_cb_t cb; void *ctx; } s_subs[MAX_SUBS];
 static char *s_json;                   /* poll buffer (PSRAM) */
 static char *s_screen;                 /* paste screen buffer (PSRAM) */
-static cc_session_t s_parse[POLL_CAP]; /* task only: the newest parse */
+static cc_session_t *s_parse;          /* task only: the newest parse (PSRAM) */
+static char s_hostkey_bad[128];        /* host whose key didn't match its pin; "" = none */
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 
@@ -89,14 +92,22 @@ static void set_state(link_state_t st)
 
 /* ---------- settings ---------- */
 
-const char *cc_settings_claude_path(void)
+const char *cc_settings_claude_path(char *out, size_t cap)
 {
-    return cc_path_valid(g_settings.claude_path) ? g_settings.claude_path : DEFAULT_CLAUDE;
+    if (!out || !cap) return "";
+    lock();
+    strlcpy(out, cc_path_valid(g_settings.claude_path) ? g_settings.claude_path : DEFAULT_CLAUDE, cap);
+    unlock();
+    return out;
 }
 
-const char *cc_settings_server_name(void)
+const char *cc_settings_server_name(char *out, size_t cap)
 {
-    return g_settings.companion_server;
+    if (!out || !cap) return "";
+    lock();
+    strlcpy(out, g_settings.companion_server, cap);
+    unlock();
+    return out;
 }
 
 static int server_index(const char *name)
@@ -146,28 +157,28 @@ bool cc_link_connected(void)
     return s_state == LS_CONNECTED;
 }
 
-const char *cc_link_status_text(void)
+const char *cc_link_status_text(char *b, size_t cap)
 {
-    static char bufs[4][96];
-    static int next;
+    if (!b || !cap) return "";
     lock();
-    char *b = bufs[next];
-    next = (next + 1) % 4;
     switch (s_state) {
     case LS_NO_MAC:
-        strlcpy(b, "no Mac set up", sizeof(bufs[0]));
+        strlcpy(b, "no Mac set up", cap);
         break;
     case LS_CONNECTING:
-        snprintf(b, sizeof(bufs[0]), "connecting to %s", s_shown);
+        snprintf(b, cap, "connecting to %s", s_shown);
         break;
     case LS_WAITING: {
         int64_t left = s_retry_at_us - now_us();
         int sec = left > 0 ? (int)((left + 999999) / 1000000) : 0;
-        snprintf(b, sizeof(bufs[0]), "connecting to %s (retry in %ds)", s_shown, sec);
+        if (s_hostkey_bad[0])
+            snprintf(b, cap, "host key changed for %s (retry in %ds)", s_hostkey_bad, sec);
+        else
+            snprintf(b, cap, "connecting to %s (retry in %ds)", s_shown, sec);
         break;
     }
     case LS_CONNECTED:
-        snprintf(b, sizeof(bufs[0]), "connected %s", s_shown);
+        snprintf(b, cap, "connected %s", s_shown);
         break;
     }
     unlock();
@@ -251,6 +262,11 @@ static bool connect_once(const char *name)
         if (!ssh_known_host_trust(s, host, port)) kh = KH_ERROR;
         else kh = KH_OK;
     }
+    if (kh == KH_CHANGED) {
+        lock();
+        strlcpy(s_hostkey_bad, host, sizeof(s_hostkey_bad));
+        unlock();
+    }
     if (kh != KH_OK) {
         ESP_LOGE(TAG, "host key %s for %s:%d (%s); not connecting",
                  kh == KH_CHANGED ? "CHANGED" : "unreadable", host, port, fp);
@@ -276,6 +292,9 @@ static bool connect_once(const char *name)
     }
     s_sess = s;
     s_drop = false;
+    lock();
+    s_hostkey_bad[0] = 0;
+    unlock();
     ESP_LOGI(TAG, "connected to %s (%s:%d)", name, host, port);
     return true;
 }
@@ -352,7 +371,18 @@ static esp_err_t do_exec(req_t *r)
         if (n > 0) {
             size_t k = (size_t)n;
             if (r->out && r->cap > 1) {
-                if (olen + k > r->cap - 1) { k = r->cap - 1 - olen; truncated = true; }
+                size_t room = r->cap - 1;
+                if (k > room) { memmove(tmp, tmp + (k - room), room); k = room; truncated = true; }
+                if (olen + k > room) {
+                    truncated = true;
+                    if (r->keep_tail) {
+                        size_t drop = olen + k - room;
+                        memmove(r->out, r->out + drop, olen - drop);
+                        olen -= drop;
+                    } else {
+                        k = room - olen;
+                    }
+                }
                 memcpy(r->out + olen, tmp, k);
                 olen += k;
                 r->out[olen] = 0;
@@ -430,21 +460,28 @@ static void last_line(char *plain, char *out, size_t cap)
     strlcpy(out, p, cap);
 }
 
-static int refresh(void);
+static int refresh(int64_t deadline_us);
 
+static bool late(const req_t *r)
+{
+    return now_us() > r->deadline_us;
+}
+
+/* Every phase checks the request's deadline: nothing is typed once it has passed, and
+   typing that is cut short ends with Ctrl+Z only (the next paste's Ctrl+U clears the draft). */
 static esp_err_t do_paste(req_t *r)
 {
     if (r->err && r->err_cap) r->err[0] = 0;
     /* `claude attach` wakes a stopped session, so check it is still live right now,
        not as of the last poll. */
-    int n = refresh();
+    int n = refresh(r->deadline_us);
     if (n < 0) {
-        strlcpy(r->err, "could not check the session", r->err_cap);
-        return ESP_FAIL;
+        strlcpy(r->err, late(r) ? "timed out" : "could not check the session", r->err_cap);
+        return late(r) ? ESP_ERR_TIMEOUT : ESP_FAIL;
     }
     const cc_session_t *hit = NULL;
     for (int i = 0; i < n; i++) {
-        if (strcmp(s_parse[i].id, r->id) == 0) { hit = &s_parse[i]; break; }
+        if (s_parse[i].id[0] && strcmp(s_parse[i].id, r->id) == 0) { hit = &s_parse[i]; break; }
     }
     if (!hit) {
         strlcpy(r->err, "no such session", r->err_cap);
@@ -455,6 +492,7 @@ static esp_err_t do_paste(req_t *r)
         strlcpy(r->err, hit->background ? "session has stopped" : "not a background session", r->err_cap);
         return ESP_ERR_NOT_FOUND;
     }
+    if (late(r)) { strlcpy(r->err, "timed out", r->err_cap); return ESP_ERR_TIMEOUT; }
     ssh_channel ch = open_channel();
     if (!ch) return ESP_ERR_INVALID_STATE;
     if (ssh_channel_request_pty_size(ch, "xterm-256color", 120, 40) != SSH_OK ||
@@ -476,24 +514,28 @@ static esp_err_t do_paste(req_t *r)
         close_channel(ch);
         return ESP_FAIL;
     }
-    /* 2. a permission dialog takes CR as "yes": type nothing, detach */
-    if (cc_screen_is_permission_prompt(s_screen)) {
-        size_t n = strlen(s_screen);
-        ESP_LOGD(TAG, "permission screen tail: %s", s_screen + (n > 300 ? n - 300 : 0));
+    /* 2. a permission dialog takes CR as "yes": type nothing, detach. Same when late. */
+    bool dialog = cc_screen_is_permission_prompt(s_screen);
+    if (dialog || late(r)) {
+        if (dialog) {
+            size_t sn = strlen(s_screen);
+            ESP_LOGD(TAG, "permission screen tail: %s", s_screen + (sn > 300 ? sn - 300 : 0));
+        }
         send_bytes(ch, "\x1a", 1);
         len = 0;
         pump(ch, &len, 1000, 0);
         close_channel(ch);
-        strlcpy(r->err, "needs approval \xe2\x80\x94 open the session", r->err_cap);
-        return ESP_ERR_NOT_ALLOWED;
+        strlcpy(r->err, dialog ? "needs approval \xe2\x80\x94 open the session" : "timed out", r->err_cap);
+        return dialog ? ESP_ERR_NOT_ALLOWED : ESP_ERR_TIMEOUT;
     }
     len = 0;
     /* 3. clear any draft, 4. bracketed paste, then CR on its own */
-    bool ok = send_bytes(ch, "\x15\x15\x15\x15", 4) && pump(ch, &len, 200, 0) &&
-              send_bytes(ch, r->payload, r->payload_len - 1) && pump(ch, &len, 150, 0) &&
-              send_bytes(ch, r->payload + r->payload_len - 1, 1);
+    bool ok = send_bytes(ch, "\x15\x15\x15\x15", 4) && pump(ch, &len, 200, 0);
+    bool cut = false;
+    if (ok && !(cut = late(r))) ok = send_bytes(ch, r->payload, r->payload_len - 1) && pump(ch, &len, 150, 0);
+    if (ok && !cut && !(cut = late(r))) ok = send_bytes(ch, r->payload + r->payload_len - 1, 1);
     /* 5. let it submit, 6. detach with Ctrl+Z (never ← or a bare ESC) */
-    if (ok) pump(ch, &len, 1000, 0);
+    if (ok && !cut) pump(ch, &len, 1000, 0);
     send_bytes(ch, "\x1a", 1);
     pump(ch, &len, 1000, 0);
     close_channel(ch);
@@ -501,6 +543,10 @@ static esp_err_t do_paste(req_t *r)
         strlcpy(r->err, "link lost while typing", r->err_cap);
         s_drop = true;
         return ESP_FAIL;
+    }
+    if (cut) {
+        strlcpy(r->err, "timed out while typing", r->err_cap);
+        return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
 }
@@ -514,15 +560,21 @@ static void handle(req_t *r)
 
 /* Runs `claude agents --json --all`, parses it into s_parse and publishes it.
    Returns the count, or -1 on failure. */
-static int refresh(void)
+static int refresh(int64_t deadline_us)
 {
-    char cmd[128];
-    if (!cc_cmd_agents(cc_settings_claude_path(), cmd, sizeof(cmd))) return -1;
+    char cmd[128], claude[64];
+    if (!cc_cmd_agents(cc_settings_claude_path(claude, sizeof(claude)), cmd, sizeof(cmd))) return -1;
     int status = -1;
     char err[160];
+    int64_t poll_deadline = now_us() + (int64_t)POLL_TIMEOUT_MS * 1000;
     req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = s_json, .cap = JSON_CAP, .exit_status = &status,
-                .err = err, .err_cap = sizeof(err), .deadline_us = now_us() + (int64_t)POLL_TIMEOUT_MS * 1000 };
+                .err = err, .err_cap = sizeof(err),
+                .deadline_us = deadline_us < poll_deadline ? deadline_us : poll_deadline };
     esp_err_t e = do_exec(&r);
+    if (e == ESP_ERR_INVALID_SIZE) {
+        ESP_LOGE(TAG, "poll: agents output is over %d KB; session list not updated", JSON_CAP / 1024);
+        return -1;
+    }
     if (e != ESP_OK || status != 0) {
         ESP_LOGW(TAG, "poll failed: %s, exit %d: %s", esp_err_to_name(e), status, err);
         return -1;
@@ -546,7 +598,7 @@ static int refresh(void)
 
 static void do_poll(void)
 {
-    refresh();
+    refresh(INT64_MAX);
 }
 
 static void link_task(void *arg)
@@ -561,6 +613,7 @@ static void link_task(void *arg)
             attempt = 0;
             lock();
             s_list_n = -1;
+            s_hostkey_bad[0] = 0;
             unlock();
         }
         if (s_reset_backoff) { s_reset_backoff = false; attempt = 0; }
@@ -656,13 +709,25 @@ esp_err_t cc_link_exec(const char *cmd, char *out, size_t cap, int *exit_status,
     return submit(&r);
 }
 
+esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *exit_status,
+                            char *err, size_t err_cap, int timeout_ms)
+{
+    if (out && cap) out[0] = 0;
+    if (err && err_cap) err[0] = 0;
+    if (!cmd || timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+    req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = out, .cap = cap, .exit_status = exit_status,
+                .err = err, .err_cap = err_cap, .keep_tail = true,
+                .deadline_us = now_us() + (int64_t)timeout_ms * 1000 };
+    return submit(&r);
+}
+
 esp_err_t cc_link_paste(const char *id, const char *text, char *err, size_t err_cap)
 {
     char local_err[8];
     if (!err || !err_cap) { err = local_err; err_cap = sizeof(local_err); }
     err[0] = 0;
-    char cmd[128];
-    if (!cc_cmd_attach(cc_settings_claude_path(), id, cmd, sizeof(cmd))) {
+    char cmd[128], claude[64];
+    if (!cc_cmd_attach(cc_settings_claude_path(claude, sizeof(claude)), id, cmd, sizeof(cmd))) {
         strlcpy(err, "bad session id", err_cap);
         return ESP_ERR_INVALID_ARG;
     }
@@ -724,9 +789,10 @@ esp_err_t cc_link_start(void)
     s_lock = xSemaphoreCreateMutex();
     s_queue = xQueueCreate(8, sizeof(req_t *));
     s_list = heap_caps_calloc(POLL_CAP, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
+    s_parse = heap_caps_calloc(POLL_CAP, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
     s_json = heap_caps_malloc(JSON_CAP, MALLOC_CAP_SPIRAM);
     s_screen = heap_caps_malloc(SCREEN_CAP, MALLOC_CAP_SPIRAM);
-    if (!s_lock || !s_queue || !s_list || !s_json || !s_screen) return ESP_ERR_NO_MEM;
+    if (!s_lock || !s_queue || !s_list || !s_parse || !s_json || !s_screen) return ESP_ERR_NO_MEM;
     libssh_esp32_init();   /* ssh_init is reference counted */
     if (xTaskCreatePinnedToCore(link_task, "cc_link", 24576, NULL, 4, &s_task, 1) != pdPASS)
         return ESP_ERR_NO_MEM;

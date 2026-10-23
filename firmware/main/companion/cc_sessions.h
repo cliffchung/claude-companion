@@ -6,9 +6,9 @@
 typedef enum { CC_NEEDS_YOU, CC_WORKING, CC_IDLE, CC_DONE, CC_ENDED } cc_state_t;
 
 typedef struct {
-    char id[16];            /* short id: attach / logs */
-    char session_id[40];    /* UUID: -p --resume */
-    char name[96];
+    char id[16];            /* short id: attach / logs; "" unless background */
+    char session_id[40];    /* UUID: -p --resume; "" unless background */
+    char name[96];          /* display key: "name", else the repo */
     char repo[64];          /* basename of cwd, trailing slash ignored */
     cc_state_t state;
     bool background;        /* kind == "background": can be answered and opened */
@@ -21,7 +21,8 @@ typedef struct {
    State comes from "state" if present, else "status", else idle:
      blocked / waiting -> NEEDS_YOU;  working / busy -> WORKING;  idle -> IDLE;
      done -> DONE;  failed / stopped -> ENDED;  anything else -> IDLE.
-   Entries whose id or sessionId fails validation are skipped.
+   Background entries whose id or sessionId fails validation are skipped; other kinds
+   (interactive) are kept with empty ids and background = false.
    Order: NEEDS_YOU, WORKING, IDLE, DONE, ENDED; newest startedAt first within each state. */
 int cc_sessions_parse(const char *json, cc_session_t *out, int cap);
 /* Compacts in place: every active session plus the newest max_finished DONE/ENDED; keeps order. */

@@ -82,18 +82,23 @@ int cc_sessions_parse(const char *json, cc_session_t *out, int cap)
         if (!cJSON_IsObject(e)) continue;
         const char *id = jstr(e, "id");
         const char *sid = jstr(e, "sessionId");
-        if (!cc_id_valid(id) || !cc_session_id_valid(sid)) continue;
+        const char *kind = jstr(e, "kind");
+        bool bg = kind && !strcmp(kind, "background");
+        /* Background entries are actionable and need valid ids. Others (interactive: 2.1.309
+           gives them no "id") are listed for display only, with both ids left empty. */
+        if (bg && (!cc_id_valid(id) || !cc_session_id_valid(sid))) continue;
         cc_session_t *s = &all[n++];
-        copy_trunc(s->id, sizeof(s->id), id);
-        copy_trunc(s->session_id, sizeof(s->session_id), sid);
-        const char *name = jstr(e, "name");
-        copy_trunc(s->name, sizeof(s->name), name ? name : "");
+        if (bg) {
+            copy_trunc(s->id, sizeof(s->id), id);
+            copy_trunc(s->session_id, sizeof(s->session_id), sid);
+        }
         const char *cwd = jstr(e, "cwd");
         basename_of(cwd ? cwd : "", s->repo, sizeof(s->repo));
+        const char *name = jstr(e, "name");
+        copy_trunc(s->name, sizeof(s->name), (name && name[0]) ? name : s->repo);
         const char *state = jstr(e, "state");
         s->state = map_state(state ? state : jstr(e, "status"));
-        const char *kind = jstr(e, "kind");
-        s->background = kind && !strcmp(kind, "background");
+        s->background = bg;
         const char *wf = jstr(e, "waitingFor");
         s->needs_permission = wf && !strcmp(wf, "permission prompt");
         const cJSON *st = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "startedAt");

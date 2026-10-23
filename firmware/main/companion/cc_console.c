@@ -12,7 +12,7 @@
 /* Console commands for the companion link: companion, sessions, reply, logs, wifi.
  * Everything that reaches the Mac goes through cc_link and a cc_cmd_* builder. */
 
-#define SNAP_CAP 32
+#define SNAP_CAP 128
 #define LOGS_CAP (16 * 1024)
 
 static const char *state_name(cc_state_t s)
@@ -59,11 +59,13 @@ static int cmd_companion(int argc, char **argv)
             printf("companion: rejected: only [A-Za-z0-9_./~-], 1-63 chars\n");
             return 1;
         }
-        printf("companion: claude-path %s\n", cc_settings_claude_path());
+        char path[64];
+        printf("companion: claude-path %s\n", cc_settings_claude_path(path, sizeof(path)));
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "status") == 0) {
-        printf("%s\n", cc_link_status_text());
+        char st[CC_STATUS_MAX];
+        printf("%s\n", cc_link_status_text(st, sizeof(st)));
         return 0;
     }
     printf("usage: companion host <server name> | companion claude-path <path> | companion status\n");
@@ -84,12 +86,13 @@ static int cmd_sessions(int argc, char **argv)
     int n;
     cc_session_t *s = snapshot(&n);
     if (n < 0) {
-        printf("no session list yet (%s)\n", cc_link_status_text());
+        char st[CC_STATUS_MAX];
+        printf("no session list yet (%s)\n", cc_link_status_text(st, sizeof(st)));
         free(s);
         return 1;
     }
     for (int i = 0; i < n; i++)
-        printf("%s %s %s %s\n", state_name(s[i].state), s[i].id, s[i].repo, s[i].name);
+        printf("%s %s %s %s\n", state_name(s[i].state), s[i].id[0] ? s[i].id : "-", s[i].repo, s[i].name);
     if (n == 0) printf("no sessions\n");
     free(s);
     return 0;
@@ -98,6 +101,8 @@ static int cmd_sessions(int argc, char **argv)
 static int cmd_reply(int argc, char **argv)
 {
     if (argc < 3) { printf("usage: reply <id> <text...>\n"); return 1; }
+    /* only background sessions have ids; interactive ones ("-") can't be answered */
+    if (!cc_id_valid(argv[1]) && !cc_session_id_valid(argv[1])) { printf("no such session\n"); return 1; }
     int n;
     cc_session_t *s = snapshot(&n);
     const cc_session_t *hit = NULL;
@@ -118,7 +123,7 @@ static int cmd_reply(int argc, char **argv)
         free(text);
         if (e == ESP_OK) { printf("sent\n"); rc = 0; }
         else if (e == ESP_ERR_NOT_FOUND && strcmp(err, "no such session") == 0) printf("no such session\n");
-        else if (e == ESP_ERR_INVALID_STATE) printf("error: %s\n", cc_link_status_text());
+        else if (e == ESP_ERR_INVALID_STATE) { char st[CC_STATUS_MAX]; printf("error: %s\n", cc_link_status_text(st, sizeof(st))); }
         else printf("error: %s\n", err[0] ? err : esp_err_to_name(e));
     }
     free(s);
@@ -128,22 +133,29 @@ static int cmd_reply(int argc, char **argv)
 static int cmd_logs(int argc, char **argv)
 {
     if (argc != 2) { printf("usage: logs <id>\n"); return 1; }
-    char cmd[160];
-    if (!cc_cmd_logs(cc_settings_claude_path(), argv[1], cmd, sizeof(cmd))) {
-        printf("error: bad session id\n");
+    char cmd[160], path[64];
+    if (!cc_cmd_logs(cc_settings_claude_path(path, sizeof(path)), argv[1], cmd, sizeof(cmd))) {
+        printf("error: bad session id (interactive sessions have none)\n");
         return 1;
     }
     char *out = heap_caps_malloc(LOGS_CAP, MALLOC_CAP_SPIRAM);
     if (!out) return 1;
     char err[160];
     int status = -1;
-    esp_err_t e = cc_link_exec(cmd, out, LOGS_CAP, &status, err, sizeof(err), 10000);
+    esp_err_t e = cc_link_exec_tail(cmd, out, LOGS_CAP, &status, err, sizeof(err), 10000);
     int rc = 1;
     if (e == ESP_ERR_INVALID_STATE) {
-        printf("error: %s\n", cc_link_status_text());
+        char st[CC_STATUS_MAX];
+        printf("error: %s\n", cc_link_status_text(st, sizeof(st)));
     } else if (e != ESP_OK && e != ESP_ERR_INVALID_SIZE) {
         printf("error: %s\n", esp_err_to_name(e));
     } else {
+        char *start = out;
+        if (e == ESP_ERR_INVALID_SIZE) {
+            /* only the tail was kept: don't start inside a UTF-8 character */
+            while ((*start & 0xC0) == 0x80) start++;
+        }
+        memmove(out, start, strlen(start) + 1);
         cc_strip_ansi(out);
         printf("%s%s", out, (out[0] && out[strlen(out) - 1] != '\n') ? "\n" : "");
         if (err[0]) printf("error: %s\n", err);

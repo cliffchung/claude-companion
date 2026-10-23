@@ -194,9 +194,42 @@ static bool has_ci(const char *s, const char *needle, bool word)
     return false;
 }
 
+#define SEL_GLYPH "\xe2\x9d\xaf"   /* the TUI's selection / input marker */
+#define RULE_GLYPH "\xe2\x94\x80"  /* frame rule */
+
+static const char *skip_blank(const char *p)
+{
+    for (;;) {
+        if (*p == ' ') p++;
+        else if ((unsigned char)p[0] == 0xc2 && (unsigned char)p[1] == 0xa0) p += 2;   /* NBSP */
+        else return p;
+    }
+}
+
+static bool is_option(const char *p)   /* "<digit>." */
+{
+    return p[0] >= '1' && p[0] <= '9' && p[1] == '.';
+}
+
 bool cc_screen_is_permission_prompt(const char *plain)
 {
     if (!plain) return false;
-    return has_ci(plain, "do you want to", false) || has_ci(plain, "1. yes", false) ||
-           has_ci(plain, "don't ask again", false) || has_ci(plain, "allow", true);
+    /* Only the bottom of the screen counts: the last selected option ("❯ 2.") must come
+       after the last empty input line ("❯ " then a rule or line end). */
+    const char *sel = NULL, *empty = NULL;
+    for (const char *p = strstr(plain, SEL_GLYPH); p; p = strstr(p + 3, SEL_GLYPH)) {
+        const char *q = skip_blank(p + 3);
+        if (is_option(q)) sel = p;
+        else if (!*q || *q == '\n' || *q == '\r' || strncmp(q, RULE_GLYPH, 3) == 0) empty = p;
+    }
+    if (!sel || (empty && empty > sel)) return false;
+    /* Dialog structure: at least two numbered options around the selection... */
+    const char *from = sel - plain > 400 ? sel - 400 : plain;
+    int options = 0;
+    for (const char *p = from; *p; p++) {
+        if (is_option(p) && (p == plain || p[-1] == ' ' || p[-1] == '\n' || (unsigned char)p[-1] == 0xaf))
+            options++;
+    }
+    /* ...and an esc / cancel hint after it. */
+    return options >= 2 && (has_ci(sel, "esc", true) || has_ci(sel, "cancel", true));
 }

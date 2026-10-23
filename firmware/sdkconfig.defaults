@@ -77,6 +77,11 @@ CONFIG_MBEDTLS_CMAC_C=y
 CONFIG_MBEDTLS_CHACHA20_C=y
 CONFIG_MBEDTLS_POLY1305_C=y
 CONFIG_MBEDTLS_CHACHAPOLY_C=y
+# libssh's global CTR-DRBG is shared by the terminal's and the companion link's sessions on
+# different tasks: mbedtls must lock it.
+CONFIG_MBEDTLS_THREADING_C=y
+# CONFIG_MBEDTLS_THREADING_ALT is not set
+CONFIG_MBEDTLS_THREADING_PTHREAD=y
 CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=y
 
 # ---- FATFS (TF card, CJK long file names) ----

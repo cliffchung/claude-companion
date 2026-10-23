@@ -165,30 +165,62 @@ static void test_paste_build_rejects(void)
     TEST_ASSERT_EQUAL_UINT(0, cc_paste_build("blue", o, 0));
 }
 
-/* Synthetic screens, ANSI already stripped: a Bash permission dialog and a plain input prompt. */
+/* Synthetic screens, ANSI already stripped. "\xe2\x9d\xaf" is the TUI's selection/input glyph,
+   "\xe2\x94\x80" a frame rule. A dialog ends the screen with a numbered option list plus an esc hint;
+   an input prompt ends with an empty "\xe2\x9d\xaf " line inside the input box. */
+#define SEL "\xe2\x9d\xaf"
+#define RULE "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
 static const char PERM_SCREEN[] =
     "Bash command\n\n  curl -sI https://example.com\n  Fetch headers\n\n"
-    "Do you want to proceed?\n\xe2\x9d\xaf 1. Yes\n  2. Yes, and don't ask again for curl commands\n"
+    "Do you want to proceed?\n" SEL " 1. Yes\n  2. Yes, and don't ask again for curl commands\n"
     "  3. No, and tell Claude what to do differently (esc)\n";
+/* the same dialog the way the stripped attach stream really looks: no newlines, moved selection */
+static const char PERM_SCREEN_FLAT[] =
+    RULE " Edit file a.c " RULE "Do you want to make this edit to a.c?  1. Yes" SEL " 2. Yes, allow all edits"
+    "  3. No  Esc to cancel \xc2\xb7 Tab to amend";
 static const char INPUT_SCREEN[] =
-    "\xe2\x8f\xba What's your favorite color?\n\n"
-    "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n\xe2\x9d\xaf \n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n"
-    "  ? for shortcuts\n";
+    "\xe2\x8f\xba What's your favorite color?\n\n" RULE "\n" SEL " \n" RULE "\n  ? for shortcuts\n";
+/* history that looks like a dialog, then the input box */
+static const char INPUT_AFTER_QUESTION[] =
+    SEL " Reply with exactly this line and nothing else: Do you want to proceed? 1. Yes"
+    "\xe2\x8f\xba Do you want to proceed? 1. Yes  allow: GET, HEAD  (esc)" RULE " companion-test-guard " RULE
+    SEL " " RULE RULE "\xe2\x8f\xb5\xe2\x8f\xb5 auto mode on (shift+tab to cycle)";
+/* an answered dialog redrawn earlier in the stream, then the input box */
+static const char INPUT_AFTER_DIALOG[] =
+    "Do you want to proceed?\n" SEL " 1. Yes\n  2. No (esc)\n" "\xe2\x8f\xba Done.\n" RULE "\n" SEL " \n" RULE "\n";
+
+/* Real attach output (2.1.309, ANSI intact, cwd anonymized) of a session waiting for input
+   whose last reply was "Do you want to proceed? 1. Yes 2. No (esc)". */
+static void test_screen_real_input_after_question(void)
+{
+    FILE *f = fopen(FIXTURE_DIR "/screen_input_after_question.bin", "rb");
+    TEST_ASSERT_NOT_NULL(f);
+    static char buf[65536];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    cc_strip_ansi(buf);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "Do you want to proceed?"));
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(buf));
+}
 
 static void test_screen_permission_prompt(void)
 {
     TEST_ASSERT_TRUE(cc_screen_is_permission_prompt(PERM_SCREEN));
-    TEST_ASSERT_TRUE(cc_screen_is_permission_prompt("DO YOU WANT TO make this edit to a.c?"));
-    TEST_ASSERT_TRUE(cc_screen_is_permission_prompt("Allow this tool?"));
+    TEST_ASSERT_TRUE(cc_screen_is_permission_prompt(PERM_SCREEN_FLAT));
 }
 
 static void test_screen_input_prompt_is_not_permission(void)
 {
     TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(INPUT_SCREEN));
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(INPUT_AFTER_QUESTION));
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(INPUT_AFTER_DIALOG));
     TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(""));
     TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(NULL));
-    /* "allow" only as a word: "allowed" or "shallow" don't count */
-    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt("that is allowed in shallow water"));
+    /* words alone are not a dialog */
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt("Do you want to proceed? Allow? 1. Yes 2. No"));
+    /* a numbered list without an esc/cancel hint is not a dialog */
+    TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(SEL " 1. Apples\n  2. Pears\n"));
 }
 
 int main(void)
@@ -207,5 +239,6 @@ int main(void)
     RUN_TEST(test_paste_build_rejects);
     RUN_TEST(test_screen_permission_prompt);
     RUN_TEST(test_screen_input_prompt_is_not_permission);
+    RUN_TEST(test_screen_real_input_after_question);
     return UNITY_END();
 }

@@ -17,8 +17,9 @@ size_t cc_strip_ansi(char *s);
    early or inject keys. Returns the byte count (without the NUL), or 0 for empty text
    (also after sanitizing) or when it doesn't fit cap. */
 size_t cc_paste_build(const char *text, char *out, size_t cap);
-/* True when ANSI-stripped TUI output shows a permission dialog (case-insensitive:
-   "do you want to", "1. yes", "don't ask again", or the word "allow"). A CR there would
-   confirm the dialog's default option, so quick answers must not be typed. */
+/* True when ANSI-stripped TUI output ends in a permission dialog: the last selected numbered
+   option ("❯ 1.") comes after the last empty input line ("❯ " + rule or line end), with at
+   least two numbered options and an esc/cancel hint. History text doesn't count. A CR there
+   would confirm the dialog's default option, so quick answers must not be typed. */
 bool cc_screen_is_permission_prompt(const char *plain);
 /* Every builder returns false for an invalid path, id or sid, empty text, or output that doesn't fit cap. */

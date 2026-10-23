@@ -15,15 +15,20 @@ extern "C" {
    reconnects with backoff 1, 2, 4, 8, 16, 30 s. */
 esp_err_t cc_link_start(void);
 bool cc_link_connected(void);
-/* "connected <host>" | "connecting to <host>" (attempt running) |
-   "connecting to <host> (retry in Ns)" | "no Mac set up".
-   The pointer stays valid until 4 more calls (rotating buffers). */
-const char *cc_link_status_text(void);
+#define CC_STATUS_MAX 160
+/* Writes the status into buf and returns buf (safe from any task):
+   "connected <host>" | "connecting to <host>" (attempt running) |
+   "connecting to <host> (retry in Ns)" | "host key changed for <host> (retry in Ns)" |
+   "no Mac set up". */
+const char *cc_link_status_text(char *buf, size_t cap);
 /* One exec channel on the shared session; out holds stdout and err the first line of stderr,
    both NUL-terminated. Returns ESP_ERR_INVALID_STATE when not connected, ESP_ERR_TIMEOUT on
    timeout, ESP_ERR_INVALID_SIZE when stdout didn't fit (out holds the start). */
 esp_err_t cc_link_exec(const char *cmd, char *out, size_t cap, int *exit_status,
                        char *err, size_t err_cap, int timeout_ms);
+/* Same, but when stdout doesn't fit, out keeps its newest bytes (ESP_ERR_INVALID_SIZE). */
+esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *exit_status,
+                            char *err, size_t err_cap, int timeout_ms);
 /* Types text into a running background session: refreshes the session list first (attach
    would wake a stopped session) and returns ESP_ERR_NOT_FOUND with err "no such session",
    "session has stopped" or "not a background session"; then pty exec `<claude> attach <id>`,
@@ -41,9 +46,10 @@ int cc_poll_snapshot(cc_session_t *out, int cap);
 void cc_link_on_wifi(bool connected);
 
 /* Settings */
-const char *cc_settings_claude_path(void);   /* default "~/.local/bin/claude" */
+/* Copy the setting into out (under the lock) and return out. */
+const char *cc_settings_claude_path(char *out, size_t cap);   /* default "~/.local/bin/claude" */
 int cc_settings_server(void);                /* index in the fork's server list, or -1 */
-const char *cc_settings_server_name(void);   /* the configured name, "" when none */
+const char *cc_settings_server_name(char *out, size_t cap);   /* the configured name, "" when none */
 /* Store a new server name / Claude path and reconnect (server) as needed. */
 void cc_link_set_server(const char *name);
 bool cc_link_set_claude_path(const char *path);   /* false unless cc_path_valid */

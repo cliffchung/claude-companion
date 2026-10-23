@@ -31,6 +31,14 @@ static const cc_session_t *find(const cc_session_t *s, int n, const char *id)
     return NULL;
 }
 
+static const cc_session_t *find_name(const cc_session_t *s, int n, const char *name)
+{
+    for (int i = 0; i < n; i++) {
+        if (!strcmp(s[i].name, name)) return &s[i];
+    }
+    return NULL;
+}
+
 static void test_parse_synthetic_order(void)
 {
     char *j = slurp("agents_synthetic.json");
@@ -38,8 +46,10 @@ static void test_parse_synthetic_order(void)
     int n = cc_sessions_parse(j, s, 16);
     free(j);
     TEST_ASSERT_EQUAL(5, n);
-    const char *want[] = { "aaaaaaa2", "aaaaaaa3", "aaaaaaa4", "aaaaaaa6", "aaaaaaa1" };
+    /* the interactive entry (real 2.1.309 shape: no "id") has an empty id */
+    const char *want[] = { "aaaaaaa2", "aaaaaaa3", "", "aaaaaaa6", "aaaaaaa1" };
     for (int i = 0; i < 5; i++) TEST_ASSERT_EQUAL_STRING(want[i], s[i].id);
+    TEST_ASSERT_EQUAL_STRING("desk session", s[2].name);
 }
 
 static void test_parse_flags(void)
@@ -51,13 +61,30 @@ static void test_parse_flags(void)
     for (int i = 0; i < n; i++) {
         TEST_ASSERT_EQUAL(!strcmp(s[i].id, "aaaaaaa3"), s[i].needs_permission);
     }
-    TEST_ASSERT_FALSE(find(s, n, "aaaaaaa4")->background);
+    /* interactive: kept, never actionable, no ids even though the entry has a sessionId */
+    const cc_session_t *desk = find_name(s, n, "desk session");
+    TEST_ASSERT_NOT_NULL(desk);
+    TEST_ASSERT_FALSE(desk->background);
+    TEST_ASSERT_EQUAL_STRING("", desk->id);
+    TEST_ASSERT_EQUAL_STRING("", desk->session_id);
+    TEST_ASSERT_EQUAL_STRING("delta", desk->repo);
+    TEST_ASSERT_TRUE(desk->live);
     TEST_ASSERT_TRUE(find(s, n, "aaaaaaa2")->background);
     TEST_ASSERT_EQUAL_STRING("gamma", find(s, n, "aaaaaaa3")->repo);
     TEST_ASSERT_EQUAL_STRING("needs input", find(s, n, "aaaaaaa2")->name);
     TEST_ASSERT_EQUAL_STRING("22222222-2222-4222-8222-222222222222", find(s, n, "aaaaaaa2")->session_id);
     TEST_ASSERT_EQUAL_INT64(3000, find(s, n, "aaaaaaa2")->started_ms);
-    TEST_ASSERT_EQUAL(CC_WORKING, find(s, n, "aaaaaaa4")->state);
+    TEST_ASSERT_EQUAL(CC_WORKING, desk->state);
+    /* an unnamed interactive entry is shown by its repo; junk ids don't matter for it */
+    const char *j2 = "[{\"pid\":1,\"cwd\":\"/Users/me/code/zeta/\",\"kind\":\"interactive\",\"startedAt\":1,"
+                     "\"sessionId\":\"not-a-uuid\",\"name\":\"\",\"status\":\"idle\"},"
+                     "{\"pid\":2,\"cwd\":\"/Users/me/code/eta\",\"kind\":\"interactive\",\"startedAt\":2,\"status\":\"idle\"}]";
+    cc_session_t t[4];
+    int m = cc_sessions_parse(j2, t, 4);
+    TEST_ASSERT_EQUAL(2, m);
+    TEST_ASSERT_NOT_NULL(find_name(t, m, "zeta"));
+    TEST_ASSERT_NOT_NULL(find_name(t, m, "eta"));
+    TEST_ASSERT_EQUAL_STRING("", find_name(t, m, "zeta")->session_id);
 }
 
 static void test_parse_unknown_state_is_idle(void)

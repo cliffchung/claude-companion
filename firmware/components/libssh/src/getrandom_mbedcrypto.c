@@ -28,16 +28,29 @@
 
 mbedtls_ctr_drbg_context ssh_mbedtls_ctr_drbg;
 
+/* Tab5 port: the DRBG is shared by sessions on different tasks. mbedtls_ctr_drbg_random()
+ * takes the context's own mutex (MBEDTLS_THREADING_C); the strong path flips the
+ * prediction-resistance flag, so it holds that same mutex across flip, draw and flip back
+ * and draws with mbedtls_ctr_drbg_random_with_add(), which does not lock. */
+#if !defined(MBEDTLS_THREADING_C)
+#error "libssh on the Tab5 needs CONFIG_MBEDTLS_THREADING_C: its DRBG is shared across tasks"
+#endif
+#include <mbedtls/threading.h>
+
 int
 ssh_mbedtls_random(void *where, int len, int strong)
 {
     int rc = 0;
     if (strong) {
+        if (mbedtls_mutex_lock(&ssh_mbedtls_ctr_drbg.MBEDTLS_PRIVATE(mutex)) != 0) {
+            return 0;
+        }
         mbedtls_ctr_drbg_set_prediction_resistance(&ssh_mbedtls_ctr_drbg,
                                                    MBEDTLS_CTR_DRBG_PR_ON);
-        rc = mbedtls_ctr_drbg_random(&ssh_mbedtls_ctr_drbg, where, len);
+        rc = mbedtls_ctr_drbg_random_with_add(&ssh_mbedtls_ctr_drbg, where, len, NULL, 0);
         mbedtls_ctr_drbg_set_prediction_resistance(&ssh_mbedtls_ctr_drbg,
                                                    MBEDTLS_CTR_DRBG_PR_OFF);
+        mbedtls_mutex_unlock(&ssh_mbedtls_ctr_drbg.MBEDTLS_PRIVATE(mutex));
     } else {
         rc = mbedtls_ctr_drbg_random(&ssh_mbedtls_ctr_drbg, where, len);
     }
