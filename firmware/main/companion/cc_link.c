@@ -278,7 +278,7 @@ static bool connect_once(const char *name)
     const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
     if (!sv) {
         ESP_LOGW(TAG, "no server named '%s' in the server list", name);
-        snprintf(why, sizeof(why), "no server named '%s' in the server list", name);
+        snprintf(why, sizeof(why), "no server named '%s' in Servers", name);
         set_fail(CC_LINK_FAIL_NO_ENTRY, why);
         return false;
     }

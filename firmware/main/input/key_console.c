@@ -57,6 +57,15 @@ static int cmd_key(int argc, char **argv)
         printf("key: ctrl+%s\n", argv[2]);
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "ctrl") == 0) {   /* ctrl + a named key, e.g. ctrl tab */
+        for (size_t i = 0; i < sizeof(s_names) / sizeof(s_names[0]); i++) {
+            if (strcmp(argv[2], s_names[i].name) != 0) continue;
+            key_event_t ev = { .type = KEY_EV_SPECIAL, .key = s_names[i].key, .mods = MOD_CTRL };
+            if (!keyboard_post(&ev)) { printf("key: queue full\n"); return 1; }
+            printf("key: ctrl+%s\n", argv[2]);
+            return 0;
+        }
+    }
     if (argc == 2) {
         for (size_t i = 0; i < sizeof(s_names) / sizeof(s_names[0]); i++) {
             if (strcmp(argv[1], s_names[i].name) != 0) continue;
@@ -66,7 +75,7 @@ static int cmd_key(int argc, char **argv)
             return 0;
         }
     }
-    printf("usage: key up|down|left|right|enter|esc|tab|backspace | key ctrl <a-z> | key text <string>\n");
+    printf("usage: key up|down|left|right|enter|esc|tab|backspace | key ctrl <a-z>|<key> | key text <string>\n");
     return 1;
 }
 

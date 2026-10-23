@@ -22,8 +22,7 @@ bool cc_link_connected(void);
    "connected <host>; session list not updating (N polls failed)" |
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
    "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
-   is "host key changed for <ip>; not connecting", "no server named '<name>' in the server
-   list" or "<name> refused the device key". */
+   is "host key changed for <ip>; not connecting", "no server named '<name>' in Servers" or "<name> refused the device key". */
 const char *cc_link_status_text(char *buf, size_t cap);
 /* Why the link is down when it isn't reachability (the status text has the words). */
 typedef enum {

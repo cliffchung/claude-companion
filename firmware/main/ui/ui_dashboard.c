@@ -815,7 +815,7 @@ static void update_status(void)
         char st[CC_STATUS_MAX];
         cc_link_status_text(st, sizeof(st));
         if (st[0] >= 'a' && st[0] <= 'z') st[0] = (char)(st[0] - 'a' + 'A');
-        snprintf(line, sizeof(line), "Can't connect to %s. %s.", name, st);
+        snprintf(line, sizeof(line), "%s.", st);
         color = dot = C_RED;
         s_down_since_ms = 0;
     } else if (!up) {
