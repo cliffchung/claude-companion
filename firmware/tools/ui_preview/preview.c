@@ -85,8 +85,9 @@ power_info_t sysinfo_power(void)
     p.src = env_int("PREVIEW_CHG", 0) ? PWR_USB_CHARGING : PWR_BATTERY;
     return p;
 }
-void keyboard_set_sink(const key_sink_t *sink) { (void)sink; }
-void keyboard_clear_sink(void *user) { (void)user; }
+static key_sink_t preview_sink; static bool preview_have_sink;   /* dashboard-keys drives dash_key */
+void keyboard_set_sink(const key_sink_t *sink) { if (sink) { preview_sink = *sink; preview_have_sink = true; } else preview_have_sink = false; }
+void keyboard_clear_sink(void *user) { if (preview_have_sink && preview_sink.user == user) preview_have_sink = false; }
 void ui_terminal_open_command(int i, const char *c, void (*cb)(void *), void *ctx) { (void)i; (void)c; if (cb) cb(ctx); }
 /* companion link: the dashboard reads the synthetic agents fixture */
 static cc_session_t s_preview_sessions[16];
@@ -537,6 +538,39 @@ int main(int argc,char **argv) {
         lv_obj_t *s=lv_screen_active();
         lv_obj_update_layout(s); lv_refr_now(d);
         return snapshot(s,"/tmp/claude-dashboard.ppm");
+    }
+    if (argc>1 && !strcmp(argv[1],"dashboard-keys")) {
+        /* The Ctrl+K shortcuts overlay over the dashboard, opened through the dashboard's own sink. */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
+        ui_nav_home(); step(d,400);
+        assert(ui_nav_is_top(ui_dashboard_create) && preview_have_sink);
+        key_event_t k = { .type = KEY_EV_CHAR, .cp = 'k', .mods = MOD_CTRL };
+        assert(preview_sink.key(&k, preview_sink.user));
+        assert(ui_dashboard_keys_overlay_shown());
+        step(d,400);
+        lv_obj_t *s=lv_screen_active();
+        lv_obj_update_layout(s); lv_refr_now(d);
+        int r = snapshot(s,"/tmp/claude-dashboard-keys.ppm");
+        /* Ctrl+Tab is not taken by buttons mode while the overlay is up; the sink closes it */
+        key_event_t ct = { .type = KEY_EV_SPECIAL, .key = SK_TAB, .mods = MOD_CTRL };
+        assert(!ui_keyboard_route(&ct, true) && !ui_keyboard_owns_input());
+        key_event_t z = { .type = KEY_EV_CHAR, .cp = 'z' };
+        assert(preview_sink.key(&z, preview_sink.user));
+        assert(!ui_dashboard_keys_overlay_shown());
+        step(d,100);
+        assert(ui_nav_is_top(ui_dashboard_create));
+        /* Ctrl+P and Ctrl+M navigate (Settings, More); Esc comes back */
+        key_event_t p = { .type = KEY_EV_CHAR, .cp = 'p', .mods = MOD_CTRL };
+        assert(preview_sink.key(&p, preview_sink.user)); step(d,400);
+        assert(ui_nav_is_top(ui_settings_create));
+        ui_nav_back(); step(d,400);
+        key_event_t m = { .type = KEY_EV_CHAR, .cp = 'm', .mods = MOD_CTRL };
+        assert(preview_have_sink && preview_sink.key(&m, preview_sink.user)); step(d,400);
+        assert(ui_nav_is_top(ui_home_create));
+        puts("Dashboard hotkeys: Ctrl+K overlay, any key closes it, Ctrl+P settings, Ctrl+M more passed.");
+        return r;
     }
     ui_screen_create_fn create= argc>1 && !strcmp(argv[1],"settings") ? ui_settings_create :
                  argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create :

@@ -64,7 +64,8 @@ lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_c
 lv_obj_t *ui_section_title(lv_obj_t *parent, const char *text);
 lv_obj_t *ui_list_item(lv_obj_t *parent, const char *icon, const char *title, const char *subtitle, lv_event_cb_t cb, void *user_data);
 
-void ui_toast(const char *text);
+void ui_toast(const char *text);                  /* ui_toast_ms(text, 2200) */
+void ui_toast_ms(const char *text, uint32_t ms);
 void ui_toastf(const char *fmt, ...);
 typedef void (*ui_confirm_cb_t)(bool yes, void *user_data);
 void ui_confirm(const char *title, const char *text, ui_confirm_cb_t cb, void *user_data);
@@ -106,10 +107,13 @@ lv_obj_t *ui_terminal_create(void *arg);         /* arg: server index */
 /* The SSH Terminal refuses the companion's Mac (no login shell there) with this toast. */
 #define TERM_COMPANION_REFUSED "Open sessions from the dashboard"
 /* Full-screen terminal running one command on a pty exec channel (never a login shell).
-   Ctrl+Q leaves without sending anything; on_close runs once when the terminal closes. */
+   Ctrl+] (or Ctrl+Q) leaves without sending anything; on_close runs once when the terminal closes. */
 void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx);
 bool ui_terminal_is_top(void);                   /* either terminal is the current screen */
 lv_obj_t *ui_dashboard_create(void *arg);        /* home: the Mac's Claude sessions */
+/* The dashboard's Ctrl+K shortcuts overlay (any key or a touch closes it). For the preview. */
+void ui_dashboard_keys_overlay(bool show);
+bool ui_dashboard_keys_overlay_shown(void);     /* up on the current dashboard */
 lv_obj_t *ui_files_create(void *arg);            /* arg: const char *path or NULL */
 lv_obj_t *ui_image_create(void *arg);            /* arg: const char *path */
 lv_obj_t *ui_text_create(void *arg);

@@ -11,7 +11,22 @@
 static const struct { const char *name; special_key_t key; } s_names[] = {
     { "up", SK_UP }, { "down", SK_DOWN }, { "left", SK_LEFT }, { "right", SK_RIGHT },
     { "enter", SK_ENTER }, { "esc", SK_ESC }, { "tab", SK_TAB }, { "backspace", SK_BACKSPACE },
+    { "pgup", SK_PGUP }, { "pgdn", SK_PGDN }, { "home", SK_HOME }, { "end", SK_END },
 };
+
+/* Posts a named special key with mods; false if the name is unknown. */
+static bool post_named(const char *name, uint8_t mods, const char *prefix, int *rc)
+{
+    for (size_t i = 0; i < sizeof(s_names) / sizeof(s_names[0]); i++) {
+        if (strcmp(name, s_names[i].name) != 0) continue;
+        key_event_t ev = { .type = KEY_EV_SPECIAL, .key = s_names[i].key, .mods = mods };
+        if (!keyboard_post(&ev)) { printf("key: queue full\n"); *rc = 1; return true; }
+        printf("key: %s%s\n", prefix, name);
+        *rc = 0;
+        return true;
+    }
+    return false;
+}
 
 static bool post_char(uint32_t cp)
 {
@@ -50,38 +65,31 @@ static int cmd_key(int argc, char **argv)
         printf("key: typed %d chars\n", sent);
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "log") == 0 && (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0)) {
+        keyboard_set_log(strcmp(argv[2], "on") == 0);
+        printf("key: log %s\n", argv[2]);
+        return 0;
+    }
+    /* ctrl + any one printable ASCII character, as given (key ctrl ], key ctrl p) */
     if (argc == 3 && strcmp(argv[1], "ctrl") == 0 && strlen(argv[2]) == 1 &&
-        argv[2][0] >= 'a' && argv[2][0] <= 'z') {
+        argv[2][0] >= 0x20 && argv[2][0] <= 0x7e) {
         key_event_t ev = { .type = KEY_EV_CHAR, .cp = (uint32_t)argv[2][0], .mods = MOD_CTRL };
         if (!keyboard_post(&ev)) { printf("key: queue full\n"); return 1; }
         printf("key: ctrl+%s\n", argv[2]);
         return 0;
     }
-    if (argc == 3 && strcmp(argv[1], "ctrl") == 0) {   /* ctrl + a named key, e.g. ctrl tab */
-        for (size_t i = 0; i < sizeof(s_names) / sizeof(s_names[0]); i++) {
-            if (strcmp(argv[2], s_names[i].name) != 0) continue;
-            key_event_t ev = { .type = KEY_EV_SPECIAL, .key = s_names[i].key, .mods = MOD_CTRL };
-            if (!keyboard_post(&ev)) { printf("key: queue full\n"); return 1; }
-            printf("key: ctrl+%s\n", argv[2]);
-            return 0;
-        }
-    }
-    if (argc == 2) {
-        for (size_t i = 0; i < sizeof(s_names) / sizeof(s_names[0]); i++) {
-            if (strcmp(argv[1], s_names[i].name) != 0) continue;
-            key_event_t ev = { .type = KEY_EV_SPECIAL, .key = s_names[i].key };
-            if (!keyboard_post(&ev)) { printf("key: queue full\n"); return 1; }
-            printf("key: %s\n", argv[1]);
-            return 0;
-        }
-    }
-    printf("usage: key up|down|left|right|enter|esc|tab|backspace | key ctrl <a-z>|<key> | key text <string>\n");
+    int rc;
+    if (argc == 3 && strcmp(argv[1], "ctrl") == 0 && post_named(argv[2], MOD_CTRL, "ctrl+", &rc)) return rc;
+    if (argc == 3 && strcmp(argv[1], "shift") == 0 && post_named(argv[2], MOD_SHIFT, "shift+", &rc)) return rc;
+    if (argc == 2 && post_named(argv[1], 0, "", &rc)) return rc;
+    printf("usage: key <name> | key ctrl <char>|<name> | key shift <name> | key text <string> | key log on|off\n"
+           "  names: up down left right enter esc tab backspace pgup pgdn home end\n");
     return 1;
 }
 
 /* `ui refresh` rebuilds the current screen over itself; `ui home` goes home the way a swipe
  * right at the bottom of the stack does; `ui settings` opens Settings as its footer button
- * does (it has no key). All run on the LVGL task. */
+ * does (or Ctrl+P on the dashboard). All run on the LVGL task. */
 static void ui_refresh_async(void *arg) { (void)arg; ui_nav_refresh(); }
 static void ui_home_async(void *arg) { (void)arg; ui_nav_home(); }
 static void ui_settings_async(void *arg) { (void)arg; ui_nav_push(ui_settings_create, NULL); }
@@ -105,7 +113,7 @@ void key_console_init(void)
     debug_console_register(&ui_cmd);
     const esp_console_cmd_t cmd = {
         .command = "key",
-        .help = "Inject a key as if typed on the keyboard: up|down|left|right|enter|esc|tab|backspace, ctrl <a-z>, or text <string>",
+        .help = "Inject a key as if typed on the keyboard: <name>, ctrl <char>|<name>, shift <name>, text <string>; log on|off prints every decoded key",
         .hint = NULL,
         .func = cmd_key,
     };

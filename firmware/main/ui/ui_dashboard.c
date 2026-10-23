@@ -20,6 +20,7 @@
 #include "settings/settings.h"
 #include "sys/power.h"
 #include "input/keyboard.h"
+#include "ui/hotkeys.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #ifndef UI_PREVIEW
@@ -720,9 +721,102 @@ static void draft_add(const char *utf8)
     draft_changed();
 }
 
+/* ------------------------------------------------------------------ Ctrl+K overlay */
+
+/* The shortcuts list: a panel over an 80 % backdrop on the dashboard screen. Any key closes
+   it and is eaten (dash_key; ui_keyboard_route sends even Ctrl+Tab here while it is up), and
+   so does a touch. It lives on the screen it was opened on and clears s_keys_ov itself. */
+static lv_obj_t *s_keys_ov;
+
+static void keys_ov_deleted(lv_event_t *e)
+{
+    if (lv_event_get_target_obj(e) == s_keys_ov) s_keys_ov = NULL;
+}
+
+static void keys_ov_clicked(lv_event_t *e)
+{
+    (void)e;
+    ui_dashboard_keys_overlay(false);
+}
+
+bool ui_dashboard_keys_overlay_shown(void)
+{
+    return s_keys_ov != NULL && s_scr != NULL && lv_obj_get_screen(s_keys_ov) == s_scr;
+}
+
+void ui_dashboard_keys_overlay(bool show)
+{
+    if (!show) {
+        if (s_keys_ov) {
+            lv_obj_t *o = s_keys_ov;
+            s_keys_ov = NULL;
+            lv_obj_delete(o);   /* LVGL 9 marks a target deleted in its own click event */
+        }
+        return;
+    }
+    if (s_keys_ov || !s_scr) return;
+    lv_obj_t *o = box(s_scr);
+    lv_obj_set_size(o, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(o, HEX(C_BG), 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_80, 0);
+    lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE | UI_KEYBOARD_SKIP);
+    lv_obj_add_event_cb(o, keys_ov_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(o, keys_ov_deleted, LV_EVENT_DELETE, NULL);
+
+    lv_obj_t *p = box(o);
+    lv_obj_set_size(p, LV_PCT(92), LV_SIZE_CONTENT);
+    lv_obj_set_style_max_width(p, 900, 0);
+    lv_obj_center(p);
+    lv_obj_set_style_bg_color(p, HEX(C_PANEL), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(p, 1, 0);
+    lv_obj_set_style_border_color(p, HEX(C_LINE), 0);
+    lv_obj_set_style_radius(p, 14, 0);
+    lv_obj_set_style_pad_hor(p, 32, 0);
+    lv_obj_set_style_pad_ver(p, 24, 0);
+    lv_obj_set_style_pad_row(p, 8, 0);
+    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(p, LV_OBJ_FLAG_CLICKABLE);   /* a touch anywhere reaches the backdrop */
+    lv_obj_add_flag(p, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_t *t = text(p, "Keyboard shortcuts", FONT_BODY, C_FG);
+    lv_obj_set_style_pad_bottom(t, 8, 0);
+    for (int i = 0; hk_overlay_lines[i]; i++) {
+        /* "<keys>  <what it does>": the keys in muted, the rest in fg */
+        const char *line = hk_overlay_lines[i];
+        const char *gap = strstr(line, "  ");
+        char keys[64];
+        size_t kn = gap ? (size_t)(gap - line) : 0;
+        if (kn >= sizeof(keys)) kn = sizeof(keys) - 1;
+        memcpy(keys, line, kn);
+        keys[kn] = 0;
+        lv_obj_t *r = row(p, 16);
+        lv_obj_t *k = text(r, keys, FONT_SMALL, C_MUTED);
+        lv_obj_set_width(k, LV_PCT(46));
+        lv_label_set_long_mode(k, LV_LABEL_LONG_WRAP);
+        lv_obj_t *dsc = text(r, gap ? gap + 2 : line, FONT_SMALL, C_FG);
+        lv_obj_set_flex_grow(dsc, 1);
+        lv_label_set_long_mode(dsc, LV_LABEL_LONG_WRAP);
+    }
+    lv_obj_t *h = text(p, "Any key or a touch closes this", FONT_SMALL, C_MUTED);
+    lv_obj_set_style_pad_top(h, 8, 0);
+    s_keys_ov = o;
+}
+
 static bool dash_key(const key_event_t *ev, void *user)
 {
     (void)user;
+    if (s_keys_ov) { ui_dashboard_keys_overlay(false); return true; }   /* any key closes it, eaten */
+    /* Local shortcuts first: they work with no cards on screen and never reach s_draft
+       (which stays as it was, for Esc back from Settings or More). */
+    switch (hk_dashboard(ev)) {
+    case HK_D_OPEN:     if (s_shown_live) open_selected(); return true;
+    case HK_D_SETTINGS: ui_nav_push(ui_settings_create, NULL); return true;
+    case HK_D_MORE:     ui_nav_push(ui_home_create, NULL); return true;
+    case HK_D_KEYS:     ui_dashboard_keys_overlay(true); return true;
+    case HK_D_LOCAL:    return true;
+    case HK_D_NONE:     break;
+    }
     if (!s_shown_live) return true;   /* no cards on screen: nothing to act on */
     const cc_session_t *s = selected();
     if (ev->type == KEY_EV_SPECIAL) {
@@ -750,10 +844,7 @@ static bool dash_key(const key_event_t *ev, void *user)
         }
         return true;
     }
-    if (ev->mods & (MOD_CTRL | MOD_META)) {
-        if (ev->cp == 'o' || ev->cp == 'O') open_selected();
-        return true;
-    }
+    if (ev->mods & (MOD_CTRL | MOD_META)) return true;   /* hk_dashboard took every such character */
     if (field_visible(s)) {
         char b[5] = {0};
         uint32_t c = ev->cp;
@@ -1049,8 +1140,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_flex_flow(f, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(f, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(f, 12, 0);
-    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 Ctrl+O open \xc2\xb7 Ctrl+Q leave \xc2\xb7 Ctrl+Tab buttons",
-                          FONT_SMALL, C_MUTED);
+    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 " HK_DASH_HINT, FONT_SMALL, C_MUTED);
     lv_obj_set_flex_grow(keys, 1);
     lv_label_set_long_mode(keys, LV_LABEL_LONG_DOT);
     lv_obj_set_height(keys, lv_font_get_line_height(FONT_SMALL));

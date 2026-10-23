@@ -472,6 +472,41 @@ void keyboard_usb_hid_report(const uint8_t *rep, int len)
     memcpy(s_usb_prev, rep + 2, 6);
 }
 
+/* ------------------------------------------------------- key log */
+static bool s_key_log;
+
+void keyboard_set_log(bool on) { s_key_log = on; }
+
+static const char *sk_name(special_key_t k)
+{
+    static const char *const names[] = {
+        "none", "enter", "esc", "backspace", "tab", "up", "down", "left", "right",
+        "home", "end", "pgup", "pgdn", "insert", "delete",
+        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+        "ime-toggle", "kana-mode", "ime-ascii", "ime-kana",
+    };
+    return (unsigned)k < sizeof(names) / sizeof(names[0]) ? names[k] : "?";
+}
+
+/* key: type=<char|special> cp=<'c' or hex> key=<name> mods=<ctrl,shift,...> */
+static void key_log(const key_event_t *ev, bool swallowed)
+{
+    char cp[16], mods[32] = "";
+    if (ev->type == KEY_EV_CHAR && ev->cp >= 0x20 && ev->cp <= 0x7e) snprintf(cp, sizeof(cp), "'%c'", (char)ev->cp);
+    else snprintf(cp, sizeof(cp), "0x%lx", (unsigned long)ev->cp);
+    static const struct { uint8_t bit; const char *name; } m[] = {
+        { MOD_CTRL, "ctrl" }, { MOD_SHIFT, "shift" }, { MOD_ALT, "alt" }, { MOD_META, "meta" },
+    };
+    for (size_t i = 0; i < sizeof(m) / sizeof(m[0]); i++) {
+        if (!(ev->mods & m[i].bit)) continue;
+        if (mods[0]) strlcat(mods, ",", sizeof(mods));
+        strlcat(mods, m[i].name, sizeof(mods));
+    }
+    printf("key: type=%s cp=%s key=%s mods=%s%s\n", ev->type == KEY_EV_CHAR ? "char" : "special", cp,
+           ev->type == KEY_EV_SPECIAL ? sk_name(ev->key) : "none", mods[0] ? mods : "none",
+           swallowed ? " (wake key, swallowed)" : "");
+}
+
 /* ------------------------------------------------------- LVGL bridge */
 static void drain_timer_cb(lv_timer_t *t)
 {
@@ -479,7 +514,9 @@ static void drain_timer_cb(lv_timer_t *t)
     key_event_t ke;
     int n = 0;
     while (n++ < 16 && xQueueReceive(s_q, &ke, 0) == pdTRUE) {
-        if (!power_take_key()) continue;   /* the waking key (and its repeats) never reach the UI */
+        bool take = power_take_key();
+        if (s_key_log) key_log(&ke, !take);
+        if (!take) continue;   /* the waking key (and its repeats) never reach the UI */
         lv_display_trigger_activity(NULL);
         keyboard_dispatch(&ke);
     }

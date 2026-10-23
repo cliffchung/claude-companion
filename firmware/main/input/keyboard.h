@@ -64,6 +64,10 @@ void keyboard_led_unlock(void);
 void keyboard_set_led_source(void (*get)(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b));
 /* The values keyboard_set_led wrote last (zeros before the first write). */
 void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b);
+/* Debug (`key log on|off`, Task 10): while on, the drain prints every event it takes off the
+   queue, real presses and console keys alike. Off at boot. Prints typed characters: not while
+   entering a password. */
+void keyboard_set_log(bool on);
 void keyboard_mark_absent(void);   /* debug: the keyboard task probes again, as on a hot-plug */
 void keyboard_usb_hid_report(const uint8_t *report, int len); /* called by USB HID glue */
 /* Off: the keyboard task stops its 20 ms poll and waits on the GPIO50 INT (1 s safety poll),

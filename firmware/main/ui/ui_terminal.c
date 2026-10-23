@@ -6,6 +6,7 @@
 #include "term/vt.h"
 #include "term/term_view.h"
 #include "term/term_keys.h"
+#include "ui/hotkeys.h"
 #include "input/keyboard.h"
 #include "settings/settings.h"
 #include "companion/cc_cmd.h"
@@ -28,8 +29,8 @@ static const char *TAG = "term_ui";
 #define TAIL_CAP 2048
 
 /* Command mode (ui_terminal_open_command): one remote command on a pty, full screen.
- * Ctrl+Q is taken here and never sent; leaving, or the command ending, returns to the
- * screen below with a toast. */
+ * Ctrl+] (and the old Ctrl+Q) is taken here and never sent (hotkeys.c); leaving, or the
+ * command ending, returns to the screen below with a toast. */
 typedef struct {
     char cmd[256];
     void (*on_close)(void *ctx);
@@ -170,13 +171,14 @@ static bool term_key(const key_event_t *ev, void *user)
     key_event_t e = *ev;
     if (c->ctrl_on) e.mods |= MOD_CTRL;
     if (c->alt_on) e.mods |= MOD_ALT;
-    if (c->cmd_mode && e.type == KEY_EV_CHAR && (e.mods & MOD_CTRL) && (e.cp == 'q' || e.cp == 'Q')) {
+    hk_term_t hk = hk_takeover(&e, c->cmd_mode);
+    if (hk == HK_T_LEAVE) {
         c->ctrl_on = c->alt_on = false;
         cmd_close(c, "Session still running on your Mac");
         return true;   /* never sent */
     }
-    if (ev->type == KEY_EV_SPECIAL && (ev->key == SK_PGUP || ev->key == SK_PGDN) && (ev->mods & MOD_SHIFT)) {
-        vt_scroll_view(c->vt, ev->key == SK_PGUP ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
+    if (hk == HK_T_SCROLL_UP || hk == HK_T_SCROLL_DOWN) {
+        vt_scroll_view(c->vt, hk == HK_T_SCROLL_UP ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
         lv_obj_invalidate(term_view_obj(c->tv));
         return true;
     }
@@ -395,6 +397,7 @@ static void pump_cb(lv_timer_t *t)
     if (sd && c->cmd_mode) {
         if (st == SSH_ST_CONNECTED) {
             ssh_active(c, true);
+            ui_toast_ms(HK_TAKEOVER_TOAST, HK_TAKEOVER_TOAST_MS);
             ESP_LOGI(TAG, "command session: connected %lld ms after open",
                      (long long)((esp_timer_get_time() - c->t_open_us) / 1000));
         } else if (st == SSH_ST_CLOSED || st == SSH_ST_ERROR) {
@@ -517,7 +520,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
 
     char banner[200];
     if (c->cmd_mode)
-        snprintf(banner, sizeof(banner), "\x1b[36mOpening the session on %s ...\x1b[0m\r\n\x1b[90mCtrl+Q returns to the dashboard; the session keeps running.\x1b[0m\r\n", s->name);
+        snprintf(banner, sizeof(banner), "\x1b[36mOpening the session on %s ...\x1b[0m\r\n\x1b[90mCtrl+] returns to the dashboard; the session keeps running.\x1b[0m\r\n", s->name);
     else
         snprintf(banner, sizeof(banner), "\x1b[36m%s %s@%s:%d ...\x1b[0m\r\n\x1b[90m%s\x1b[0m\r\n", tr(STR_CONNECTING), s->user, s->host, s->port, tr(STR_TERM_HINT));
     vt_feed(c->vt, (const uint8_t *)banner, strlen(banner));

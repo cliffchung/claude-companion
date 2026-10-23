@@ -364,9 +364,11 @@ lv_obj_t *ui_list_item(lv_obj_t *parent, const char *icon, const char *title, co
 
 /* ------------------------------------------------------------- toast */
 static lv_obj_t *s_toast = NULL;
+static lv_timer_t *s_toast_timer = NULL;   /* one timer: an older toast's must not cut a newer one short */
 static void toast_del_cb(lv_timer_t *t)
 {
     if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
+    if (s_toast_timer == t) s_toast_timer = NULL;
     lv_timer_delete(t);
 }
 /* ---------------------------------------------------- sleep notice */
@@ -406,7 +408,13 @@ void ui_sleep_notice(bool show)
 
 void ui_toast(const char *text)
 {
-    ESP_LOGI(TAG, "toast: %s", text);   /* screenshots don't include the top layer */
+    ui_toast_ms(text, 2200);
+}
+
+void ui_toast_ms(const char *text, uint32_t ms)
+{
+    ESP_LOGI(TAG, "toast: %s", text);
+    if (s_toast_timer) { lv_timer_delete(s_toast_timer); s_toast_timer = NULL; }
     if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
     lv_obj_t *layer = lv_layer_top();
     s_toast = lv_obj_create(layer);
@@ -425,7 +433,7 @@ void ui_toast(const char *text)
     lv_obj_set_style_text_color(l, UI_TEXT, 0);
     lv_obj_set_style_text_font(l, FONT_BODY, 0);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -40);
-    lv_timer_create(toast_del_cb, 2200, NULL);
+    s_toast_timer = lv_timer_create(toast_del_cb, ms, NULL);
 }
 void ui_toastf(const char *fmt, ...)
 {
@@ -695,6 +703,8 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
     lv_display_trigger_activity(NULL);
     lv_obj_t *modal = keyboard_modal();
     if (!terminal) s_keyboard_terminal_ui = false;
+    /* The dashboard's Ctrl+K overlay: every key, Ctrl+Tab included, goes to its sink, which closes it. */
+    if (terminal && !modal && ui_dashboard_keys_overlay_shown()) { s_keyboard_terminal_ui = false; return false; }
     if (terminal && !modal && ev->type == KEY_EV_SPECIAL && ev->key == SK_TAB && (ev->mods & MOD_CTRL)) {
         s_keyboard_terminal_ui = !s_keyboard_terminal_ui;
         keyboard_focus_set(NULL);
