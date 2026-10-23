@@ -72,7 +72,7 @@ void ui_nav_back(void)
 void ui_nav_home(void)
 {
     s_depth = 1;
-    s_stack[0].create = ui_home_create;
+    s_stack[0].create = ui_dashboard_create;   /* the sessions dashboard is home */
     s_stack[0].arg = NULL;
     nav_show_top(LV_SCR_LOAD_ANIM_FADE_IN);
 }

@@ -46,6 +46,9 @@ bool keyboard_usb_present(void);    /* USB HID keyboard */
 bool keyboard_any_present(void);
 uint8_t keyboard_fw_version(void);
 void keyboard_set_sink(const key_sink_t *sink);   /* NULL -> default LVGL sink */
+/* Drops the sink only if it is still the one installed with this user pointer: a screen
+   being deleted must not take away the sink its replacement just installed. */
+void keyboard_clear_sink(void *user);
 void keyboard_inject(const key_event_t *ev);      /* from soft keyboard / tests (LVGL task) */
 void keyboard_dispatch(const key_event_t *ev);    /* UI/sink routing (LVGL task) */
 bool keyboard_post(const key_event_t *ev);        /* queue an event as if the A164 sent it (any task) */

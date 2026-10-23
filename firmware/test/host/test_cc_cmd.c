@@ -107,6 +107,39 @@ static void test_strip_ansi(void)
 }
 
 
+static void test_log_tail_cursor_moves(void)
+{
+    /* cursor-forward becomes spaces; cursor positioning starts a new line */
+    char s[] = "Hello!\x1b[1CI'm\x1b[3Chere\x1b[2;1Hnext\x1b[Cline";
+    int n = cc_log_tail(s, 6);
+    TEST_ASSERT_EQUAL_INT(2, n);
+    TEST_ASSERT_EQUAL_STRING("Hello! I'm   here\nnext line", s);
+    /* real `claude logs`: words placed with cursor-to-column */
+    char t[] = "\x1b[H\r\x1b[2C\x1b[8BWhat's\x1b[10Gyour\x1b[15Gfavorite\x1b[24Gcolor?\x1b[50;1H";
+    TEST_ASSERT_EQUAL_INT(1, cc_log_tail(t, 6));
+    TEST_ASSERT_EQUAL_STRING("What's your favorite color?", t);
+}
+
+static void test_log_tail_drops_rules_and_blanks(void)
+{
+    char s[] = "\x1b[38;5;1mred\x1b[0m\r\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\r\n   \r\n"
+               "\xc2\xa0\xe2\x95\xad\xe2\x94\x80\r\n  \xe2\x9c\xbb thinking  \r\x1b]0;t\x07" "done";
+    int n = cc_log_tail(s, 6);
+    TEST_ASSERT_EQUAL_INT(3, n);
+    TEST_ASSERT_EQUAL_STRING("red\n\xe2\x9c\xbb thinking\ndone", s);
+}
+
+static void test_log_tail_keeps_last(void)
+{
+    char s[] = "1\n2\n3\n4\n5\n6\n7\n8\n";
+    TEST_ASSERT_EQUAL_INT(6, cc_log_tail(s, 6));
+    TEST_ASSERT_EQUAL_STRING("3\n4\n5\n6\n7\n8", s);
+    char e[] = "";
+    TEST_ASSERT_EQUAL_INT(0, cc_log_tail(e, 6));
+    TEST_ASSERT_EQUAL_STRING("", e);
+    TEST_ASSERT_EQUAL_INT(0, cc_log_tail(NULL, 6));
+}
+
 #define PS "\x1b[200~"
 #define PE "\x1b[201~"
 
@@ -260,6 +293,9 @@ int main(void)
     RUN_TEST(test_cmd_exact);
     RUN_TEST(test_cmd_rejects);
     RUN_TEST(test_strip_ansi);
+    RUN_TEST(test_log_tail_cursor_moves);
+    RUN_TEST(test_log_tail_drops_rules_and_blanks);
+    RUN_TEST(test_log_tail_keeps_last);
     RUN_TEST(test_paste_build_exact);
     RUN_TEST(test_paste_build_strips_esc);
     RUN_TEST(test_paste_build_controls);

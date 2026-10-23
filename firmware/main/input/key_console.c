@@ -49,6 +49,13 @@ static int cmd_key(int argc, char **argv)
         printf("key: typed %d chars\n", sent);
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "ctrl") == 0 && strlen(argv[2]) == 1 &&
+        argv[2][0] >= 'a' && argv[2][0] <= 'z') {
+        key_event_t ev = { .type = KEY_EV_CHAR, .cp = (uint32_t)argv[2][0], .mods = MOD_CTRL };
+        if (!keyboard_post(&ev)) { printf("key: queue full\n"); return 1; }
+        printf("key: ctrl+%s\n", argv[2]);
+        return 0;
+    }
     if (argc == 2) {
         for (size_t i = 0; i < sizeof(s_names) / sizeof(s_names[0]); i++) {
             if (strcmp(argv[1], s_names[i].name) != 0) continue;
@@ -58,7 +65,7 @@ static int cmd_key(int argc, char **argv)
             return 0;
         }
     }
-    printf("usage: key up|down|left|right|enter|esc|tab|backspace | key text <string>\n");
+    printf("usage: key up|down|left|right|enter|esc|tab|backspace | key ctrl <a-z> | key text <string>\n");
     return 1;
 }
 
@@ -66,7 +73,7 @@ void key_console_init(void)
 {
     const esp_console_cmd_t cmd = {
         .command = "key",
-        .help = "Inject a key as if typed on the keyboard: up|down|left|right|enter|esc|tab|backspace, or text <string>",
+        .help = "Inject a key as if typed on the keyboard: up|down|left|right|enter|esc|tab|backspace, ctrl <a-z>, or text <string>",
         .hint = NULL,
         .func = cmd_key,
     };

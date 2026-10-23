@@ -39,7 +39,7 @@ static const char *TAG = "cc_link";
 #define DEFAULT_CLAUDE  "~/.local/bin/claude"
 
 typedef enum { LS_NO_MAC, LS_CONNECTING, LS_WAITING, LS_CONNECTED } link_state_t;
-typedef enum { REQ_EXEC, REQ_PASTE } req_type_t;
+typedef enum { REQ_EXEC, REQ_PASTE, REQ_CHECK } req_type_t;
 
 typedef struct {
     req_type_t type;
@@ -500,6 +500,7 @@ static esp_err_t do_paste(req_t *r)
         return ESP_ERR_NOT_FOUND;
     }
     if (late(r)) { strlcpy(r->err, "timed out", r->err_cap); return ESP_ERR_TIMEOUT; }
+    if (r->type == REQ_CHECK) return ESP_OK;
     ssh_channel ch = open_channel();
     if (!ch) return ESP_ERR_INVALID_STATE;
     if (ssh_channel_request_pty_size(ch, "xterm-256color", 120, 40) != SSH_OK ||
@@ -524,7 +525,8 @@ static esp_err_t do_paste(req_t *r)
     /* 2. fail closed: type only when the bottom of the screen is the empty input line.
        Anything else (a permission dialog takes CR as "yes", a spinner, a draft, a screen we
        don't know) means type nothing and detach. The dialog matcher is a second opinion. */
-    bool dialog = !cc_screen_input_ready(s_screen) || cc_screen_is_permission_prompt(s_screen);
+    bool approval = cc_screen_is_permission_prompt(s_screen);
+    bool dialog = approval || !cc_screen_input_ready(s_screen);
     if (dialog || late(r)) {
         if (dialog) {
             size_t sn = strlen(s_screen);
@@ -534,8 +536,14 @@ static esp_err_t do_paste(req_t *r)
         len = 0;
         pump(ch, &len, 1000, 0);
         close_channel(ch);
-        strlcpy(r->err, dialog ? "needs approval \xe2\x80\x94 open the session" : "timed out", r->err_cap);
-        return dialog ? ESP_ERR_NOT_ALLOWED : ESP_ERR_TIMEOUT;
+        if (!dialog) {
+            strlcpy(r->err, "timed out", r->err_cap);
+            return ESP_ERR_TIMEOUT;
+        }
+        /* a permission dialog, or another screen (a draft, queued messages) */
+        strlcpy(r->err, approval ? "needs approval \xe2\x80\x94 open the session"
+                                 : "not at the input prompt \xe2\x80\x94 open the session", r->err_cap);
+        return approval ? CC_PASTE_NEEDS_APPROVAL : CC_PASTE_NOT_READY;
     }
     len = 0;
     /* 3. clear any draft, 4. bracketed paste, then CR on its own */
@@ -564,7 +572,7 @@ static void handle(req_t *r)
 {
     if (!s_sess || s_drop) { answer(r, ESP_ERR_INVALID_STATE); return; }
     if (now_us() > r->deadline_us) { answer(r, ESP_ERR_TIMEOUT); return; }
-    answer(r, r->type == REQ_EXEC ? do_exec(r) : do_paste(r));
+    answer(r, r->type == REQ_EXEC ? do_exec(r) : do_paste(r));   /* paste and check */
 }
 
 /* Runs `claude agents --json --all`, parses it into s_parse and publishes it.
@@ -763,6 +771,20 @@ esp_err_t cc_link_paste(const char *id, const char *text, char *err, size_t err_
     esp_err_t e = submit(&r);
     free(payload);
     return e;
+}
+
+esp_err_t cc_link_check_live(const char *id, char *err, size_t err_cap)
+{
+    char local_err[8];
+    if (!err || !err_cap) { err = local_err; err_cap = sizeof(local_err); }
+    err[0] = 0;
+    if (!cc_id_valid(id)) {
+        strlcpy(err, "bad session id", err_cap);
+        return ESP_ERR_INVALID_ARG;
+    }
+    req_t r = { .type = REQ_CHECK, .id = id, .err = err, .err_cap = err_cap,
+                .deadline_us = now_us() + (int64_t)POLL_TIMEOUT_MS * 1000 };
+    return submit(&r);
 }
 
 void cc_poll_set_rate(int seconds)

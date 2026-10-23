@@ -52,8 +52,9 @@ lv_obj_t *ui_home_create(void *arg)
 {
     (void)arg;
     lv_obj_t *scr = ui_screen_base();
-    lv_obj_t *bar = ui_topbar(scr, tr(STR_APP_TITLE), false);
-    lv_obj_t *title = lv_obj_get_child(bar, 0);
+    /* "More": the fork's tools, one level below the sessions dashboard. */
+    lv_obj_t *bar = ui_topbar(scr, "More", true);
+    lv_obj_t *title = lv_obj_get_child(bar, 1);   /* after the back button */
     if (lv_display_get_horizontal_resolution(NULL) < 1000)
         lv_obj_set_style_text_font(title, FONT_BODY, 0);
     lv_obj_add_flag(title, LV_OBJ_FLAG_CLICKABLE);

@@ -248,6 +248,11 @@ void keyboard_set_sink(const key_sink_t *sink)
     else s_have_sink = false;
 }
 
+void keyboard_clear_sink(void *user)
+{
+    if (s_have_sink && s_sink.user == user) s_have_sink = false;
+}
+
 static void sink_text(const char *utf8)
 {
     if (s_have_sink && !ui_keyboard_owns_input()) { if (s_sink.text) s_sink.text(utf8, s_sink.user); }

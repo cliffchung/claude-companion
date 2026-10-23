@@ -32,9 +32,18 @@ esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *exit_st
 /* Types text into a running background session: refreshes the session list first (attach
    would wake a stopped session) and returns ESP_ERR_NOT_FOUND with err "no such session",
    "session has stopped" or "not a background session"; then pty exec `<claude> attach <id>`,
-   wait for quiet, Ctrl+U x4, bracketed paste, CR, Ctrl+Z. Refuses (ESP_ERR_NOT_ALLOWED, err
-   "needs approval — open the session") when the screen shows a permission dialog. */
+   wait for quiet, Ctrl+U x4, bracketed paste, CR, Ctrl+Z. Types nothing unless the screen
+   ends in the empty input prompt: CC_PASTE_NEEDS_APPROVAL (err "needs approval — open the
+   session") for a permission dialog, CC_PASTE_NOT_READY for any other screen. */
 esp_err_t cc_link_paste(const char *id, const char *text, char *err, size_t err_cap);
+/* The two refusals of cc_link_paste, where nothing was typed: */
+#define CC_PASTE_NEEDS_APPROVAL ESP_ERR_NOT_ALLOWED      /* the screen ends in a permission dialog */
+#define CC_PASTE_NOT_READY      ESP_ERR_INVALID_RESPONSE /* not the empty input prompt (a draft, queued messages ...) */
+/* Refreshes the session list and checks that id is a running background session, the way
+   cc_link_paste does before it attaches (`claude attach` would wake a stopped session).
+   ESP_OK, or ESP_ERR_NOT_FOUND with err "no such session" / "session has stopped" /
+   "not a background session"; ESP_ERR_INVALID_STATE when not connected. */
+esp_err_t cc_link_check_live(const char *id, char *err, size_t err_cap);
 /* Seconds between refreshes: 3 while the dashboard is visible, 30 when dimmed, 0 = paused. */
 void cc_poll_set_rate(int seconds);
 typedef void (*cc_sessions_cb_t)(const cc_session_t *s, int n, void *ctx);

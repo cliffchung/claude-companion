@@ -125,6 +125,11 @@ void ui_motion_attach(lv_obj_t *screen)
     lv_obj_add_event_cb(screen, screen_deleted, LV_EVENT_DELETE, NULL);
 }
 
+void ui_motion_plain(lv_obj_t *screen)
+{
+    lv_obj_remove_event_cb(screen, screen_draw);
+}
+
 void ui_motion_start(lv_obj_t *screen, lv_obj_t *region, bool reverse)
 {
     stop_sweep();

@@ -7,6 +7,7 @@
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
 #include "storage/sd.h"
+#include "companion/cc_link.h"
 #include "bsp/m5stack_tab5.h"
 #include "esp_system.h"
 #include <stdio.h>
@@ -134,6 +135,45 @@ static void about_cb(lv_event_t *e) { (void)e; char b[400]; snprintf(b, sizeof(b
 static void ota_url_cb(const char *v, void *ud) { (void)ud; if (v) { strlcpy(g_settings.ota_url, v, sizeof(g_settings.ota_url)); settings_save(); ui_nav_refresh(); } }
 static void ota_url_row_cb(lv_event_t *e) { (void)e; ui_prompt(tr(STR_OTA_URL), "https://", g_settings.ota_url, false, ota_url_cb, NULL); }
 
+/* Companion: which of the SSH servers is the Mac, and where `claude` lives on it. */
+static char s_server_names[SERVER_MAX + 1][48];
+static const char *s_server_ptrs[SERVER_MAX + 1];
+static void companion_mac_menu_cb(int i, void *ud)
+{
+    (void)ud;
+    int n = server_store_count();
+    if (i < 0 || i > n) return;
+    cc_link_set_server(i < n ? s_server_names[i] : "");
+    ui_nav_refresh();
+}
+static void companion_mac_cb(lv_event_t *e)
+{
+    (void)e;
+    int n = server_store_count();
+    if (n > SERVER_MAX) n = SERVER_MAX;
+    for (int i = 0; i < n; i++) {
+        const server_t *s = server_store_get(i);
+        strlcpy(s_server_names[i], s ? s->name : "?", sizeof(s_server_names[i]));
+        s_server_ptrs[i] = s_server_names[i];
+    }
+    strlcpy(s_server_names[n], "None", sizeof(s_server_names[n]));
+    s_server_ptrs[n] = s_server_names[n];
+    ui_menu("Mac", s_server_ptrs, n + 1, companion_mac_menu_cb, NULL);
+}
+static void companion_path_prompt_cb(const char *v, void *ud)
+{
+    (void)ud;
+    if (!v) return;
+    if (!cc_link_set_claude_path(v)) { ui_toast("Use only letters, digits and _ . / ~ - (1 to 63 characters)"); return; }
+    ui_nav_refresh();
+}
+static void companion_path_cb(lv_event_t *e)
+{
+    (void)e;
+    char cur[64];
+    ui_prompt("Claude path", "~/.local/bin/claude", cc_settings_claude_path(cur, sizeof(cur)), false, companion_path_prompt_cb, NULL);
+}
+
 static lv_obj_t *slider_row(lv_obj_t *parent, const char *label, int min, int max, int val, lv_event_cb_t cb)
 {
     lv_obj_t *card = ui_card(parent);
@@ -236,6 +276,12 @@ lv_obj_t *ui_settings_create(void *arg)
     ui_setting_row(c, tr(STR_SET_NTP), buf, ntp_cb, NULL);
     ui_label(c, tr(STR_SET_UTC_NOTE), FONT_SMALL, UI_MUTED);
     ui_setting_row(c, tr(STR_OTA_URL), g_settings.ota_url, ota_url_row_cb, NULL);
+    ui_section_title(c, "Companion");
+    char mac[48], cpath[64];
+    cc_settings_server_name(mac, sizeof(mac));
+    ui_setting_row(c, "Mac", mac[0] ? mac : "Not set", companion_mac_cb, NULL);
+    ui_setting_row(c, "Claude path", cc_settings_claude_path(cpath, sizeof(cpath)), companion_path_cb, NULL);
+    ui_label(c, "The Mac is one of your SSH servers. The Tab5 lists its Claude Code sessions and runs claude from this path.", FONT_SMALL, UI_MUTED);
 
     c = settings_panel(deck, 1);
     slider_row(c, tr(STR_SET_BRIGHTNESS), 5, 100, g_settings.brightness, bright_cb);

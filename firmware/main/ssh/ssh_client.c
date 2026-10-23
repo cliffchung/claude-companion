@@ -28,6 +28,7 @@ struct ssh_client {
     volatile bool stop;
     volatile int new_cols, new_rows; volatile bool resize_pending;
     ssh_state_t state;
+    volatile int exit_status;
     char err[160];
     TaskHandle_t task;
 };
@@ -195,7 +196,10 @@ static void ssh_task(void *arg)
     c->channel = ssh_channel_new(c->session);
     if (!c->channel || ssh_channel_open_session(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Failed to create SSH channel"); goto done; }
     ssh_channel_request_pty_size(c->channel, "xterm-256color", c->p.cols, c->p.rows);
-    if (ssh_channel_request_shell(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Shell request failed"); goto done; }
+    if (c->p.cmd[0]) {
+        /* An explicit command on a pty: never a login shell (it would start the user's tmux). */
+        if (ssh_channel_request_exec(c->channel, c->p.cmd) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Command request failed"); goto done; }
+    } else if (ssh_channel_request_shell(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Shell request failed"); goto done; }
     set_state(c, SSH_ST_CONNECTED, NULL);
     ssh_set_blocking(c->session, 0);
 
@@ -231,7 +235,14 @@ static void ssh_task(void *arg)
         }
     }
     free(buf);
-    set_state(c, SSH_ST_CLOSED, c->stop ? NULL : "Server closed this connection");
+    if (c->p.cmd[0] && !c->stop) {
+        /* the exit-status message can trail the EOF a little */
+        ssh_set_blocking(c->session, 1);
+        uint32_t code = 0; char *sig = NULL; int core = 0;
+        if (ssh_channel_get_exit_state(c->channel, &code, &sig, &core) == SSH_OK) c->exit_status = (int)code;
+        ssh_string_free_char(sig);
+    }
+    set_state(c, SSH_ST_CLOSED, c->stop || c->p.cmd[0] ? NULL : "Server closed this connection");
 done:
     if (c->channel) { ssh_channel_send_eof(c->channel); ssh_channel_close(c->channel); ssh_channel_free(c->channel); }
     if (c->session) { ssh_disconnect(c->session); ssh_free(c->session); }
@@ -254,6 +265,7 @@ ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh
     if (c->p.rows <= 0) c->p.rows = 24;
     c->tx = xRingbufferCreate(8192, RINGBUF_TYPE_BYTEBUF);
     c->state = SSH_ST_IDLE;
+    c->exit_status = -1;
     if (xTaskCreatePinnedToCore(ssh_task, "ssh", 24576, c, 5, &c->task, 1) != pdPASS) {
         vRingbufferDelete(c->tx); free(c); return NULL;
     }
@@ -282,3 +294,4 @@ void ssh_client_stop(ssh_client_t *c)
 
 ssh_state_t ssh_client_state(ssh_client_t *c) { return c ? c->state : SSH_ST_IDLE; }
 const char *ssh_client_error(ssh_client_t *c) { return c ? c->err : ""; }
+int ssh_client_exit_status(ssh_client_t *c) { return c ? c->exit_status : -1; }

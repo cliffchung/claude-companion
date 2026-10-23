@@ -8,7 +8,9 @@
 #include "term/term_keys.h"
 #include "input/keyboard.h"
 #include "settings/settings.h"
+#include "companion/cc_cmd.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -20,6 +22,17 @@ static const char *TAG = "term_ui";
 #define EDGE 28
 #define CTRL_W 120
 #define STATUS_H 44
+#define TAIL_CAP 2048
+
+/* Command mode (ui_terminal_open_command): one remote command on a pty, full screen.
+ * Ctrl+Q is taken here and never sent; leaving, or the command ending, returns to the
+ * screen below with a toast. */
+typedef struct {
+    char cmd[256];
+    void (*on_close)(void *ctx);
+    void *ctx;
+} term_cmd_t;
+static term_cmd_t s_pending_cmd;
 
 typedef struct {
     lv_obj_t *scr, *status, *status_lbl, *ctrl, *kbd, *hint, *close_btn;
@@ -36,6 +49,11 @@ typedef struct {
     /* host key prompt */
     SemaphoreHandle_t hk_sem; volatile int hk_answer; char hk_fp[120]; bool hk_changed;
     bool closing;
+    /* command mode */
+    bool cmd_mode, cmd_done, got_data;
+    void (*on_close)(void *ctx); void *close_ctx;
+    char *tail; size_t tail_len;    /* newest output, for the error line */
+    int64_t t_open_us;
 } term_ctx_t;
 
 static term_ctx_t *s_ctx = NULL;
@@ -52,6 +70,18 @@ static void on_data(const uint8_t *d, size_t n, void *user)
         else { c->rx = realloc(c->rx, nc); c->rx_cap = nc; }
     }
     if (c->rx_len + n <= c->rx_cap) { memcpy(c->rx + c->rx_len, d, n); c->rx_len += n; }
+    if (c->tail) {
+        size_t k = n > TAIL_CAP - 1 ? TAIL_CAP - 1 : n;
+        const uint8_t *src = d + (n - k);
+        if (c->tail_len + k > TAIL_CAP - 1) {
+            size_t drop = c->tail_len + k - (TAIL_CAP - 1);
+            memmove(c->tail, c->tail + drop, c->tail_len - drop);
+            c->tail_len -= drop;
+        }
+        memcpy(c->tail + c->tail_len, src, k);
+        c->tail_len += k;
+        c->tail[c->tail_len] = 0;
+    }
     xSemaphoreGive(c->lock);
 }
 static void on_state(ssh_state_t st, const char *msg, void *user)
@@ -89,6 +119,37 @@ static void vt_title_cb(const char *title, void *user)
     if (!c->closing && c->status_lbl) lv_label_set_text(c->status_lbl, title);
 }
 
+/* -------------------------------------------------------- command mode */
+/* Leaves the command session: back to the screen below, then the toast and the owner's
+ * callback. c may be freed by the navigation, so nothing touches it afterwards. */
+static void cmd_close(term_ctx_t *c, const char *toast)
+{
+    if (c->cmd_done) return;
+    c->cmd_done = true;
+    void (*cb)(void *) = c->on_close;
+    void *ctx = c->close_ctx;
+    c->on_close = NULL;
+    char msg[200];
+    strlcpy(msg, toast ? toast : "", sizeof(msg));
+    ui_nav_back();
+    if (msg[0]) ui_toast(msg);
+    if (cb) cb(ctx);
+}
+
+/* The last readable line the command printed (a pty merges stderr into stdout). */
+static void cmd_error_line(term_ctx_t *c, char *out, size_t cap)
+{
+    out[0] = 0;
+    xSemaphoreTake(c->lock, portMAX_DELAY);
+    char *t = c->tail ? strndup(c->tail, c->tail_len) : NULL;
+    xSemaphoreGive(c->lock);
+    if (!t) return;
+    char *start = t;
+    while ((*start & 0xC0) == 0x80) start++;   /* don't begin inside a UTF-8 character */
+    if (cc_log_tail(start, 1) > 0) strlcpy(out, start, cap);
+    free(t);
+}
+
 /* -------------------------------------------------------- key sink */
 static void term_send_text(const char *utf8, void *user)
 {
@@ -107,6 +168,11 @@ static bool term_key(const key_event_t *ev, void *user)
     key_event_t e = *ev;
     if (c->ctrl_on) e.mods |= MOD_CTRL;
     if (c->alt_on) e.mods |= MOD_ALT;
+    if (c->cmd_mode && e.type == KEY_EV_CHAR && (e.mods & MOD_CTRL) && (e.cp == 'q' || e.cp == 'Q')) {
+        c->ctrl_on = c->alt_on = false;
+        cmd_close(c, "Session still running on your Mac");
+        return true;   /* never sent */
+    }
     if (ev->type == KEY_EV_SPECIAL && (ev->key == SK_PGUP || ev->key == SK_PGDN) && (ev->mods & MOD_SHIFT)) {
         vt_scroll_view(c->vt, ev->key == SK_PGUP ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
         lv_obj_invalidate(term_view_obj(c->tv));
@@ -212,7 +278,12 @@ static lv_obj_t *build_ctrl(term_ctx_t *c)
 
 /* -------------------------------------------------------- status bar */
 static void close_confirm_cb(bool yes, void *ud) { (void)ud; if (yes) ui_nav_back(); }
-static void close_cb(lv_event_t *e) { (void)e; ui_confirm(tr(STR_DISCONNECT), tr(STR_TERM_CLOSE_Q), close_confirm_cb, NULL); }
+static void close_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_ctx && s_ctx->cmd_mode) { cmd_close(s_ctx, "Session still running on your Mac"); return; }
+    ui_confirm(tr(STR_DISCONNECT), tr(STR_TERM_CLOSE_Q), close_confirm_cb, NULL);
+}
 
 /* The terminal keeps the horizontal axis to itself: a stray swipe must not walk
  * out of a live session, and dragging already scrolls the scrollback. The
@@ -223,7 +294,10 @@ static void term_menu_cb(int item, void *ud)
 {
     term_ctx_t *c = ud;
     switch (item) {
-    case 0: ui_confirm(tr(STR_DISCONNECT), tr(STR_TERM_CLOSE_Q), close_confirm_cb, NULL); break;
+    case 0:
+        if (c->cmd_mode) cmd_close(c, "Session still running on your Mac");
+        else ui_confirm(tr(STR_DISCONNECT), tr(STR_TERM_CLOSE_Q), close_confirm_cb, NULL);
+        break;
     case 1: vt_reset(c->vt); term_view_refresh(c->tv); break;
     case 2: vt_scroll_view_reset(c->vt); term_view_refresh(c->tv); break;
     }
@@ -308,7 +382,37 @@ static void pump_cb(lv_timer_t *t)
     bool sd = c->state_dirty; ssh_state_t st = c->pending_state; char msg[160]; strlcpy(msg, c->state_msg, sizeof(msg));
     c->state_dirty = false;
     xSemaphoreGive(c->lock);
-    if (buf) { vt_feed(c->vt, buf, n); free(buf); term_view_refresh(c->tv); }
+    if (buf) {
+        if (c->cmd_mode && !c->got_data) {
+            c->got_data = true;
+            ESP_LOGI(TAG, "command session: first output %lld ms after open",
+                     (long long)((esp_timer_get_time() - c->t_open_us) / 1000));
+        }
+        vt_feed(c->vt, buf, n); free(buf); term_view_refresh(c->tv);
+    }
+    if (sd && c->cmd_mode) {
+        if (st == SSH_ST_CONNECTED) {
+            g_ssh_session_active = true;
+            ESP_LOGI(TAG, "command session: connected %lld ms after open",
+                     (long long)((esp_timer_get_time() - c->t_open_us) / 1000));
+        } else if (st == SSH_ST_CLOSED || st == SSH_ST_ERROR) {
+            g_ssh_session_active = false;
+            char line[200];
+            int code = ssh_client_exit_status(c->ssh);
+            if (st == SSH_ST_ERROR) {
+                snprintf(line, sizeof(line), "%s %s", tr(STR_SSH_CONN_FAILED), msg);
+            } else if (code == 0) {
+                strlcpy(line, "Session closed", sizeof(line));
+            } else {
+                cmd_error_line(c, line, sizeof(line));
+                if (!line[0]) snprintf(line, sizeof(line), "The session ended (status %d)", code);
+            }
+            ESP_LOGI(TAG, "command session ended: state %d, exit %d: %s", (int)st, code, line);
+            cmd_close(c, line);
+            return;   /* c may be gone */
+        }
+        sd = false;
+    }
     if (sd) {
         const char *txt = NULL; char tmp[200];
         switch (st) {
@@ -338,27 +442,37 @@ static void scr_delete_cb(lv_event_t *e)
 {
     term_ctx_t *c = lv_event_get_user_data(e);
     c->closing = true;
-    keyboard_set_sink(NULL);
+    keyboard_clear_sink(c);
+    /* left some other way (e.g. navigation home): still tell the owner */
+    if (c->cmd_mode && !c->cmd_done && c->on_close) { c->cmd_done = true; c->on_close(c->close_ctx); }
     if (c->timer) lv_timer_delete(c->timer);
     if (c->ssh) { ssh_client_stop(c->ssh); c->ssh = NULL; }
     g_ssh_session_active = false;
     /* term view frees itself with the object; vt after */
     vt_destroy(c->vt);
     free(c->rx);
+    free(c->tail);
     vSemaphoreDelete(c->lock);
     vSemaphoreDelete(c->hk_sem);
     if (s_ctx == c) s_ctx = NULL;
     free(c);
 }
 
-lv_obj_t *ui_terminal_create(void *arg)
+static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
 {
-    int idx = (int)(intptr_t)arg;
     const server_t *s = server_store_get(idx);
     if (!s) return ui_servers_create(NULL);
     term_ctx_t *c = calloc(1, sizeof(*c));
     s_ctx = c;
     c->server_idx = idx;
+    if (cmd) {
+        c->cmd_mode = true;
+        c->on_close = cmd->on_close;
+        c->close_ctx = cmd->ctx;
+        c->tail = malloc(TAIL_CAP);
+        if (c->tail) c->tail[0] = 0;
+        c->t_open_us = esp_timer_get_time();
+    }
     c->lock = xSemaphoreCreateMutex();
     c->hk_sem = xSemaphoreCreateBinary();
     c->rx_cap = 16384; c->rx = malloc(c->rx_cap);
@@ -382,7 +496,7 @@ lv_obj_t *ui_terminal_create(void *arg)
     lv_obj_add_event_cb(term_view_obj(c->tv), term_long_cb, LV_EVENT_LONG_PRESSED, c);
     c->status = build_status(c);
     c->ctrl = build_ctrl(c);
-    c->status_shown = true;
+    c->status_shown = !c->cmd_mode;   /* command mode: one session, full screen */
     c->ctrl_shown = false;
     hotzone(c->scr, 0); hotzone(c->scr, 1); hotzone(c->scr, 2);
     layout(c);
@@ -390,7 +504,10 @@ lv_obj_t *ui_terminal_create(void *arg)
     vt_resize(c->vt, cols, rows);
 
     char banner[200];
-    snprintf(banner, sizeof(banner), "\x1b[36m%s %s@%s:%d ...\x1b[0m\r\n\x1b[90m%s\x1b[0m\r\n", tr(STR_CONNECTING), s->user, s->host, s->port, tr(STR_TERM_HINT));
+    if (c->cmd_mode)
+        snprintf(banner, sizeof(banner), "\x1b[36mOpening the session on %s ...\x1b[0m\r\n\x1b[90mCtrl+Q returns to the dashboard; the session keeps running.\x1b[0m\r\n", s->name);
+    else
+        snprintf(banner, sizeof(banner), "\x1b[36m%s %s@%s:%d ...\x1b[0m\r\n\x1b[90m%s\x1b[0m\r\n", tr(STR_CONNECTING), s->user, s->host, s->port, tr(STR_TERM_HINT));
     vt_feed(c->vt, (const uint8_t *)banner, strlen(banner));
 
     key_sink_t sink = { .key = term_key, .text = term_send_text, .user = c };
@@ -401,8 +518,33 @@ lv_obj_t *ui_terminal_create(void *arg)
     strlcpy(p.user, s->user, sizeof(p.user)); strlcpy(p.pass, s->pass, sizeof(p.pass));
     strlcpy(p.keypath, s->keypath, sizeof(p.keypath)); p.use_key = s->use_key;
     p.cols = cols; p.rows = rows;
+    if (cmd) strlcpy(p.cmd, cmd->cmd, sizeof(p.cmd));
+    ESP_LOGI(TAG, "terminal %dx%d%s", cols, rows, cmd ? " (command mode)" : "");
     c->ssh = ssh_client_start(&p, on_data, on_state, on_hostkey, c);
     c->timer = lv_timer_create(pump_cb, 16, c);
     if (!keyboard_any_present()) { /* show soft keyboard by default on touch-only devices */ }
     return c->scr;
+}
+
+lv_obj_t *ui_terminal_create(void *arg)
+{
+    return term_create((int)(intptr_t)arg, NULL);
+}
+
+static lv_obj_t *ui_terminal_cmd_create(void *arg)
+{
+    return term_create((int)(intptr_t)arg, &s_pending_cmd);
+}
+
+void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx)
+{
+    if (!cmd || !cmd[0] || strlen(cmd) >= sizeof(s_pending_cmd.cmd) || !server_store_get(server_idx)) {
+        ui_toast("Can't open the session");
+        if (on_close) on_close(ctx);
+        return;
+    }
+    strlcpy(s_pending_cmd.cmd, cmd, sizeof(s_pending_cmd.cmd));
+    s_pending_cmd.on_close = on_close;
+    s_pending_cmd.ctx = ctx;
+    ui_nav_push(ui_terminal_cmd_create, (void *)(intptr_t)server_idx);
 }

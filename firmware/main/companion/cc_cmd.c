@@ -141,6 +141,106 @@ size_t cc_strip_ansi(char *s)
     return w;
 }
 
+/* Box drawing (U+2500-257F) and block elements (U+2580-259F): E2 94..96 xx. */
+static size_t rule_char(const char *p)
+{
+    const unsigned char *u = (const unsigned char *)p;
+    if (u[0] == 0xe2 && u[1] >= 0x94 && u[1] <= 0x96 && u[2] >= 0x80 && u[2] <= 0xbf) return 3;
+    if (u[0] == 0xc2 && u[1] == 0xa0) return 2;   /* NBSP */
+    if (u[0] == ' ') return 1;
+    return 0;
+}
+
+static bool blank_line(const char *p, size_t n)
+{
+    size_t i = 0;
+    while (i < n) {
+        size_t k = rule_char(p + i);
+        if (!k) return false;
+        i += k;
+    }
+    return true;
+}
+
+int cc_log_tail(char *s, int max_lines)
+{
+    if (!s) return 0;
+    /* 1. escapes: cursor-forward -> spaces (never more than the sequence's own bytes, so
+       the text can't grow), cursor-to-column -> one space, cursor positioning -> new
+       line, everything else dropped */
+    size_t r = 0, w = 0;
+    while (s[r]) {
+        unsigned char c = (unsigned char)s[r];
+        if (c == 0x1b) {
+            size_t start = r++;
+            if (s[r] == '[') {
+                r++;
+                int num = 0;
+                bool has = false;
+                while (s[r] && ((unsigned char)s[r] < 0x40 || (unsigned char)s[r] > 0x7e)) {
+                    if (s[r] >= '0' && s[r] <= '9' && num < 1000) { num = num * 10 + (s[r] - '0'); has = true; }
+                    r++;
+                }
+                char fin = s[r];
+                if (fin) r++;
+                if (fin == 'C') {
+                    size_t sp = has ? (size_t)num : 1;
+                    if (sp < 1) sp = 1;
+                    if (sp > r - start) sp = r - start;
+                    while (sp--) s[w++] = ' ';
+                } else if (fin == 'G') {
+                    s[w++] = ' ';   /* cursor to a column: the TUI's way of spacing words */
+                } else if (fin == 'H' || fin == 'f' || fin == 'B' || fin == 'E' || fin == 'd') {
+                    s[w++] = '\n';
+                }
+            } else if (s[r] == ']') {
+                r++;
+                while (s[r] && s[r] != 0x07 && !(s[r] == 0x1b && s[r + 1] == '\\')) r++;
+                if (s[r] == 0x07) r++;
+                else if (s[r] == 0x1b) r += 2;
+            } else if (s[r]) {
+                r++;
+            }
+            continue;
+        }
+        if (c == '\t') { s[w++] = ' '; r++; continue; }
+        if ((c < 0x20 && c != '\r' && c != '\n') || c == 0x7f) { r++; continue; }
+        s[w++] = s[r++];
+    }
+    s[w] = 0;
+    /* 2. split on \r and \n, trim, drop blank and rule-only lines; compact to the front */
+    size_t len = w, out = 0;
+    int kept = 0;
+    r = 0;
+    while (r < len) {
+        size_t a = r;
+        while (r < len && s[r] != '\r' && s[r] != '\n') r++;
+        size_t b = r;
+        if (r < len) r++;
+        size_t k;
+        while (a < b && (k = rule_char(s + a)) != 0 && k != 3) a += k;   /* leading blanks */
+        while (b > a && s[b - 1] == ' ') b--;
+        while (b >= a + 2 && (unsigned char)s[b - 2] == 0xc2 && (unsigned char)s[b - 1] == 0xa0) b -= 2;
+        if (b == a || blank_line(s + a, b - a)) continue;
+        memmove(s + out, s + a, b - a);
+        out += b - a;
+        s[out++] = '\n';
+        kept++;
+    }
+    if (out) out--;   /* no trailing newline */
+    s[out] = 0;
+    /* 3. keep the last max_lines */
+    if (max_lines < 0) max_lines = 0;
+    if (kept > max_lines) {
+        int skip = kept - max_lines;
+        size_t p = 0;
+        while (skip && p < out) { if (s[p++] == '\n') skip--; }
+        memmove(s, s + p, out - p + 1);
+        kept = max_lines;
+    }
+    return kept;
+}
+
 size_t cc_paste_build(const char *text, char *out, size_t cap)
 {
     static const char start[] = "\x1b[200~";

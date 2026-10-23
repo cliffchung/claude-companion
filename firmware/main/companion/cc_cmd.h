@@ -12,6 +12,12 @@ bool cc_cmd_reply(const char *claude, const char *sid, const char *text, char *o
 bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap);
 /* Removes CSI and OSC escape sequences in place; returns the new length. */
 size_t cc_strip_ansi(char *s);
+/* Turns raw TUI output (`claude logs`) into its last max_lines readable lines, in place:
+   cursor-forward and cursor-to-column become spaces, cursor positioning starts a new line,
+   other escapes go,
+   lines are split on \r and \n and trimmed, and lines of only blanks or box drawing are
+   dropped. The kept lines are joined with \n. Returns how many were kept. */
+int cc_log_tail(char *s, int max_lines);
 /* Bracketed paste for a TUI input box: ESC[200~ + text + ESC[201~ + CR, NUL-terminated.
    Drops ESC, DEL and every C0 control byte except '\n' from text, so it can't end the paste
    early or inject keys. Returns the byte count (without the NUL), or 0 for empty text

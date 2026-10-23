@@ -10,12 +10,16 @@
 #include "input/keyboard.h"
 #include "sys/sysinfo.h"
 #include "net/wifi_mgr.h"
-#include "ime/ime.h"
+#include "companion/cc_link.h"
+#include "companion/cc_sessions.h"
 #include "servers/server_store.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+/* The UI is English only now; the old language switches are no-ops. */
+#define i18n_set_lang(l) ((void)(l))
 app_settings_t g_settings;
 void settings_save(void) {}
 void settings_reset_defaults(void) { ui_theme_set_preset(0); }
@@ -42,9 +46,6 @@ bool keyboard_usb_present(void) { return false; }
 static void *focused_textarea;
 void keyboard_lvgl_focus(void *p) { focused_textarea = p; }
 void *keyboard_lvgl_focused(void) { return focused_textarea; }
-void ime_commit_preedit(void) {}
-void ime_reset(void) {}
-bool ime_is_composing(void) { return false; }
 void keyboard_set_layout(uint8_t layout) { (void)layout; }
 void keyboard_set_led(uint8_t a,uint8_t b,uint8_t c,uint8_t d,uint8_t e) {}
 ts_state_t tailscale_state(void) { return TS_CONNECTED; }
@@ -55,15 +56,55 @@ ap_state_t audio_player_state(void) { return AP_STOPPED; }
 void softkbd_attach_textarea(lv_obj_t *a,lv_obj_t *b) {}
 void esp_restart(void) {}
 void bsp_display_brightness_set(int v) {}
-ime_src_t ime_get_source(void) { return IME_SRC_JA; }
-ime_ja_mode_t ime_get_ja_mode(void) { return IME_JA_HIRA; }
-void ime_set_source(ime_src_t v) {}
-void ime_set_ja_mode(ime_ja_mode_t v) {}
-bool ime_load_sd_dict(const char *s) { return false; }
-const char *ime_dict_info(void) { return "SKK"; }
 bool server_store_set_on_sd(bool on) { return true; }
 void server_store_reload(void) {}
 int server_store_count(void) { return 3; }
+static server_t s_preview_server = { .name = "Mac", .host = "mac", .port = 22, .user = "me", .use_key = true };
+const server_t *server_store_get(int i) { return i >= 0 && i < 3 ? &s_preview_server : NULL; }
+power_info_t sysinfo_power(void) { power_info_t p = { .percent = 98, .src = PWR_USB_CHARGING, .valid = true }; return p; }
+void keyboard_set_sink(const key_sink_t *sink) { (void)sink; }
+void keyboard_clear_sink(void *user) { (void)user; }
+void ui_terminal_open_command(int i, const char *c, void (*cb)(void *), void *ctx) { (void)i; (void)c; if (cb) cb(ctx); }
+/* companion link: the dashboard reads the synthetic agents fixture */
+static cc_session_t s_preview_sessions[16];
+static int s_preview_n = -1;
+static void preview_sessions_load(void) {
+    FILE *f = fopen(FIXTURE_DIR "/agents_synthetic.json", "rb");
+    assert(f);
+    static char json[8192]; size_t n = fread(json, 1, sizeof(json) - 1, f); json[n] = 0; fclose(f);
+    s_preview_n = cc_sessions_parse(json, s_preview_sessions, 16);
+    assert(s_preview_n > 0);
+    /* ages: started a few minutes before the preview clock */
+    int64_t now = (int64_t)time(NULL) * 1000;
+    for (int i = 0; i < s_preview_n; i++) {
+        s_preview_sessions[i].started_ms = now - (int64_t)(i + 1) * 7 * 60000;
+        /* the fixture has no pids: treat the unfinished ones as running */
+        if (s_preview_sessions[i].state != CC_DONE && s_preview_sessions[i].state != CC_ENDED) s_preview_sessions[i].live = true;
+    }
+}
+int cc_poll_snapshot(cc_session_t *out, int cap) {
+    int n = s_preview_n < cap ? s_preview_n : cap;
+    if (n > 0) memcpy(out, s_preview_sessions, sizeof(cc_session_t) * n);
+    return n;
+}
+void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { (void)cb; (void)ctx; }
+void cc_poll_set_rate(int s) { (void)s; }
+bool cc_link_connected(void) { return true; }
+const char *cc_link_status_text(char *b, size_t cap) { snprintf(b, cap, "connected Mac"); return b; }
+const char *cc_settings_claude_path(char *o, size_t cap) { snprintf(o, cap, "~/.local/bin/claude"); return o; }
+const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "Mac"); return o; }
+int cc_settings_server(void) { return 0; }
+void cc_link_set_server(const char *n) { (void)n; }
+bool cc_link_set_claude_path(const char *p) { (void)p; return true; }
+esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, char *err, size_t ecap, int ms) {
+    (void)cmd; (void)ms; if (ecap) err[0] = 0; if (st) *st = 0;
+    snprintf(out, cap, "\x1b[1m\xe2\x8f\xba\x1b[0m Read\x1b[1C3\x1b[1Cfiles\r\n  \xe2\x8e\xbf  src/main.c\r\n"
+             "\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\r\n\xe2\x8f\xba Which colour should the theme use?\r\n"
+             "  1. Amber   2. Green\r\n\xe2\x9c\xbb Waiting for your answer\r\n\xe2\x9d\xaf\xc2\xa0\r\n");
+    return ESP_OK;
+}
+esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; if (cap) err[0] = 0; return ESP_OK; }
+esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; if (cap) err[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
 SCREEN(ui_servers_create) SCREEN(ui_files_create) SCREEN(ui_music_create)
 SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create) SCREEN(ui_webfm_create)
@@ -209,8 +250,8 @@ static void keyboard_check(void) {
     press_key(SK_ENTER,0,false); assert(lv_obj_has_state(toggle,LV_STATE_CHECKED));
     press_key(SK_ENTER,0,false); assert(!lv_obj_has_state(toggle,LV_STATE_CHECKED));
     /* Exercise the real home tiles, especially the second row without quick actions. */
-    for (unsigned tile=0; tile<11; tile++) {
-        ui_nav_home();
+    for (unsigned tile=0; tile<9; tile++) {
+        ui_nav_home(); ui_nav_push(ui_home_create,NULL);
         lv_obj_t *home=lv_screen_active();
         lv_obj_t *tiles=lv_obj_get_child(home,1);
         lv_obj_t *target=lv_obj_get_child(tiles,tile);
@@ -457,6 +498,35 @@ int main(int argc,char **argv) {
     if (argc>1 && !strcmp(argv[1],"terminal")) { terminal_spacing_check(); return 0; }
     if (argc>1 && !strcmp(argv[1],"keyboard")) { keyboard_check(); return 0; }
     if (argc>1 && !strcmp(argv[1],"motion")) { motion_check(d); return 0; }
+    if (argc>1 && !strcmp(argv[1],"glyphs")) {
+        /* Which of Claude Code's interface symbols the terminal font draws. */
+        static const struct { uint32_t cp; const char *name; } g[] = {
+            {0x2500,"box \xe2\x94\x80"},{0x256D,"box \xe2\x95\xad"},{0x273B,"\xe2\x9c\xbb"},{0x23FA,"\xe2\x8f\xba"},
+            {0x23BF,"\xe2\x8e\xbf"},{0x2713,"\xe2\x9c\x93"},{0x25CF,"\xe2\x97\x8f"},{0x276F,"\xe2\x9d\xaf"},
+            {0x2026,"\xe2\x80\xa6"},{0x00B7,"\xc2\xb7"},{0x2014,"\xe2\x80\x94"},{0x2192,"\xe2\x86\x92"},
+            {0x2722,"\xe2\x9c\xa2"},{0x2733,"\xe2\x9c\xb3"},{0x2736,"\xe2\x9c\xb6"},{0x273D,"\xe2\x9c\xbd"},{0x00B7,"spinner dot"} };
+        const lv_font_t *fonts[] = { &g_term_font, FONT_BODY, FONT_SMALL };
+        const char *fn[] = { "terminal", "body", "small" };
+        for (unsigned f=0; f<3; f++) for (unsigned i=0;i<sizeof(g)/sizeof(g[0]);i++) {
+            lv_font_glyph_dsc_t dsc;
+            bool ok = lv_font_get_glyph_dsc(fonts[f],&dsc,g[i].cp,0) && !dsc.is_placeholder;
+            printf("%-8s U+%04X %-12s %s\n", fn[f], (unsigned)g[i].cp, g[i].name, ok ? "yes" : "MISSING");
+        }
+        return 0;
+    }
+    if (argc>1 && !strcmp(argv[1],"dashboard")) {
+        /* The live dashboard against the synthetic fixture; the second card is selected. */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        ui_nav_home(); step(d,400);
+        assert(ui_nav_is_top(ui_dashboard_create));
+        key_event_t down={.type=KEY_EV_SPECIAL,.key=SK_DOWN};
+        (void)down;
+        step(d,400);
+        lv_obj_t *s=lv_screen_active();
+        lv_obj_update_layout(s); lv_refr_now(d);
+        return snapshot(s,"/tmp/claude-dashboard.ppm");
+    }
     ui_screen_create_fn create= argc>1 && !strcmp(argv[1],"settings") ? ui_settings_create :
                  argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create :
                  argc>1 && !strcmp(argv[1],"camera") ? ui_camera_create : ui_home_create;
@@ -492,8 +562,9 @@ int main(int argc,char **argv) {
     lv_obj_update_layout(s); lv_refr_now(d);
     if (create == ui_home_create) {
         lv_obj_t *content = lv_obj_get_child(s, 1);
-        assert(lv_obj_get_child_count(content) == 11);
-        for (unsigned i = 0; i < 11; i++) {
+        unsigned tiles = lv_obj_get_child_count(content);
+        assert(tiles >= 9);
+        for (unsigned i = 0; i < tiles; i++) {
             lv_area_t a; lv_obj_get_coords(lv_obj_get_child(content, i), &a);
             assert(a.x1 >= 0 && a.x2 < w && a.y1 >= UI_TOPBAR_H && a.y2 < h);
         }

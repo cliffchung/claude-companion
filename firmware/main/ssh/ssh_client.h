@@ -17,6 +17,7 @@ typedef struct {
     char keypath[160];
     bool use_key;
     int cols, rows;
+    char cmd[256];      /* "" = login shell; otherwise a pty exec of this command */
 } ssh_params_t;
 
 typedef struct ssh_client ssh_client_t;
@@ -33,6 +34,8 @@ void ssh_client_resize(ssh_client_t *c, int cols, int rows);
 void ssh_client_stop(ssh_client_t *c);        /* async; object freed by the task */
 ssh_state_t ssh_client_state(ssh_client_t *c);
 const char *ssh_client_error(ssh_client_t *c);
+/* Command mode: the remote exit status once the state is CLOSED, or -1 if unknown. */
+int ssh_client_exit_status(ssh_client_t *c);
 /* known hosts (NVS "kh"): key = hash of host:port, value = SHA256 of the server key */
 void ssh_known_hosts_clear(void);
 typedef enum { KH_OK, KH_UNKNOWN, KH_CHANGED, KH_ERROR } kh_result_t;
