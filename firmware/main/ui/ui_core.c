@@ -370,6 +370,7 @@ static void toast_del_cb(lv_timer_t *t)
 }
 void ui_toast(const char *text)
 {
+    ESP_LOGI(TAG, "toast: %s", text);   /* screenshots don't include the top layer */
     if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
     lv_obj_t *layer = lv_layer_top();
     s_toast = lv_obj_create(layer);

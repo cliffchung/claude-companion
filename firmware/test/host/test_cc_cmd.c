@@ -129,11 +129,19 @@ static void test_log_tail_drops_rules_and_blanks(void)
     TEST_ASSERT_EQUAL_STRING("red\n\xe2\x9c\xbb thinking\ndone", s);
 }
 
+static void test_log_tail_drops_spinner_fragments(void)
+{
+    /* spinner redraws leave lines of single letters behind */
+    char s[] = "\xc2\xb7 c b\r\ns m\r\n\xe2\x9c\xbb 57\r\nWhat's your favorite color?\r\n\xe2\x9d\xaf\r\n1. Amber\r\n";
+    TEST_ASSERT_EQUAL_INT(2, cc_log_tail(s, 6));
+    TEST_ASSERT_EQUAL_STRING("What's your favorite color?\n1. Amber", s);
+}
+
 static void test_log_tail_keeps_last(void)
 {
-    char s[] = "1\n2\n3\n4\n5\n6\n7\n8\n";
+    char s[] = "l01\nl02\nl03\nl04\nl05\nl06\nl07\nl08\n";
     TEST_ASSERT_EQUAL_INT(6, cc_log_tail(s, 6));
-    TEST_ASSERT_EQUAL_STRING("3\n4\n5\n6\n7\n8", s);
+    TEST_ASSERT_EQUAL_STRING("l03\nl04\nl05\nl06\nl07\nl08", s);
     char e[] = "";
     TEST_ASSERT_EQUAL_INT(0, cc_log_tail(e, 6));
     TEST_ASSERT_EQUAL_STRING("", e);
@@ -295,6 +303,7 @@ int main(void)
     RUN_TEST(test_strip_ansi);
     RUN_TEST(test_log_tail_cursor_moves);
     RUN_TEST(test_log_tail_drops_rules_and_blanks);
+    RUN_TEST(test_log_tail_drops_spinner_fragments);
     RUN_TEST(test_log_tail_keeps_last);
     RUN_TEST(test_paste_build_exact);
     RUN_TEST(test_paste_build_strips_esc);

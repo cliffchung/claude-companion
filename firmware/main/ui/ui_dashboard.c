@@ -208,7 +208,17 @@ static void init_once(void)
     s_items = heap_caps_calloc(MAX_CARDS, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
     s_logs_buf = heap_caps_calloc(1, LOGS_CAP, MALLOC_CAP_SPIRAM);
     worker_start();
+}
+
+/* The dashboard can be built before cc_link_start (it is the first screen), and
+   cc_poll_subscribe does nothing until then, so subscribe once the link is up. */
+static void subscribe_when_ready(void)
+{
+    static bool subscribed;
+    if (subscribed || !cc_link_connected()) return;
     cc_poll_subscribe(poll_cb, NULL);
+    subscribed = true;
+    s_poll_gen++;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -664,12 +674,13 @@ static void draft_add(const char *utf8)
 static void dash_text(const char *utf8, void *user)
 {
     (void)user;
-    if (field_visible(selected())) draft_add(utf8);
+    if (s_shown_live && field_visible(selected())) draft_add(utf8);
 }
 
 static bool dash_key(const key_event_t *ev, void *user)
 {
     (void)user;
+    if (!s_shown_live) return true;   /* no cards on screen: nothing to act on */
     const cc_session_t *s = selected();
     if (ev->type == KEY_EV_SPECIAL) {
         switch (ev->key) {
@@ -816,6 +827,7 @@ static void update_vitals(void)
 static void tick_cb(lv_timer_t *t)
 {
     (void)t;
+    subscribe_when_ready();
     load_snapshot();
     apply_action_result();
     if (!s_scr) return;   /* opening a session replaced the screen */

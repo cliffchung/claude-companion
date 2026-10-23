@@ -11,6 +11,7 @@
 #include "companion/cc_cmd.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -521,6 +522,10 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
     if (cmd) strlcpy(p.cmd, cmd->cmd, sizeof(p.cmd));
     ESP_LOGI(TAG, "terminal %dx%d%s", cols, rows, cmd ? " (command mode)" : "");
     c->ssh = ssh_client_start(&p, on_data, on_state, on_hostkey, c);
+    if (!c->ssh) {
+        ESP_LOGE(TAG, "SSH task did not start (internal free %u)", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        on_state(SSH_ST_ERROR, "could not start the SSH task", c);
+    }
     c->timer = lv_timer_create(pump_cb, 16, c);
     if (!keyboard_any_present()) { /* show soft keyboard by default on touch-only devices */ }
     return c->scr;

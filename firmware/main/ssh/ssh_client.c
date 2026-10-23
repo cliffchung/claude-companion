@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
@@ -31,6 +32,7 @@ struct ssh_client {
     volatile int exit_status;
     char err[160];
     TaskHandle_t task;
+    bool ext_stack;     /* created WithCaps (stack in PSRAM) */
 };
 
 static void set_state(ssh_client_t *c, ssh_state_t st, const char *msg)
@@ -172,6 +174,7 @@ static void ssh_task(void *arg)
             if (!tailscale_prepare_peer(c->p.host, 60000)) ESP_LOGW(TAG, "tunnel to %s not confirmed, trying anyway", c->p.host);
         }
     }
+    ESP_LOGI(TAG, "connecting to %s:%d", c->p.host, c->p.port);
     ssh_options_set(c->session, SSH_OPTIONS_HOST, c->p.host);
     ssh_options_set(c->session, SSH_OPTIONS_PORT, &c->p.port);
     ssh_options_set(c->session, SSH_OPTIONS_USER, c->p.user);
@@ -187,6 +190,7 @@ static void ssh_task(void *arg)
         set_state(c, SSH_ST_ERROR, m); goto done;
     }
     if (c->stop) goto done;
+    ESP_LOGI(TAG, "connected; checking host key");
     if (verify_host(c) != 0) { set_state(c, SSH_ST_ERROR, "Host key rejected"); goto done; }
     set_state(c, SSH_ST_AUTH, NULL);
     if (authenticate(c) != 0) {
@@ -249,8 +253,10 @@ done:
     /* wait for owner to release */
     while (!c->stop) vTaskDelay(pdMS_TO_TICKS(50));
     vRingbufferDelete(c->tx);
+    bool ext = c->ext_stack;
     free(c);
-    vTaskDelete(NULL);
+    if (ext) vTaskDeleteWithCaps(NULL);
+    else vTaskDelete(NULL);
 }
 
 ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh_state_cb_t state_cb,
@@ -266,8 +272,16 @@ ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh
     c->tx = xRingbufferCreate(8192, RINGBUF_TYPE_BYTEBUF);
     c->state = SSH_ST_IDLE;
     c->exit_status = -1;
+    /* Internal RAM is tight with the companion link's own SSH task running, and it is
+       fragmented: fall back to a PSRAM stack (allowed by SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY). */
     if (xTaskCreatePinnedToCore(ssh_task, "ssh", 24576, c, 5, &c->task, 1) != pdPASS) {
-        vRingbufferDelete(c->tx); free(c); return NULL;
+        c->ext_stack = true;
+        if (xTaskCreatePinnedToCoreWithCaps(ssh_task, "ssh", 24576, c, 5, &c->task, 1,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            ESP_LOGE(TAG, "no memory for the SSH task");
+            vRingbufferDelete(c->tx); free(c); return NULL;
+        }
+        ESP_LOGI(TAG, "SSH task stack in PSRAM");
     }
     return c;
 }

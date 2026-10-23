@@ -162,6 +162,21 @@ static bool blank_line(const char *p, size_t n)
     return true;
 }
 
+/* True when the line has a word of 3+ characters; spinner redraws leave lines of
+   scattered single letters ("s m", "* 57") that say nothing. */
+static bool has_word(const char *p, size_t n)
+{
+    int run = 0;
+    for (size_t i = 0; i < n;) {
+        size_t k = rule_char(p + i);
+        if (k == 1 || k == 2) { run = 0; i += k; continue; }   /* space, NBSP */
+        if (++run >= 3) return true;
+        i++;
+        while (i < n && ((unsigned char)p[i] & 0xC0) == 0x80) i++;
+    }
+    return false;
+}
+
 int cc_log_tail(char *s, int max_lines)
 {
     if (!s) return 0;
@@ -221,7 +236,7 @@ int cc_log_tail(char *s, int max_lines)
         while (a < b && (k = rule_char(s + a)) != 0 && k != 3) a += k;   /* leading blanks */
         while (b > a && s[b - 1] == ' ') b--;
         while (b >= a + 2 && (unsigned char)s[b - 2] == 0xc2 && (unsigned char)s[b - 1] == 0xa0) b -= 2;
-        if (b == a || blank_line(s + a, b - a)) continue;
+        if (b == a || blank_line(s + a, b - a) || !has_word(s + a, b - a)) continue;
         memmove(s + out, s + a, b - a);
         out += b - a;
         s[out++] = '\n';
