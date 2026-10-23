@@ -99,6 +99,21 @@ static void test_probe_verdicts(void)
     TEST_ASSERT_EQUAL(HIB_PROBE_OK, hib_probe_verdict(3, false, 6));
 }
 
+/* found on hardware: a power-on by the side button after a PWROFF power-off arrives as an HP watchdog reset
+   (hw reason 7), like a deep-sleep wake, not as ESP_RST_POWERON */
+static void test_wdt_reset_after_power_off_is_button(void)
+{
+    hib_wake_in_t in = in0();
+    in.was_poweroff = true;
+    in.reset_deepsleep_or_wdt = true;
+    in.rtc_flags = 0x10;     /* the 60 s timer fired 2 h earlier */
+    in.wake_after_s = 60;
+    in.asleep_s = 7735;
+    TEST_ASSERT_EQUAL(HIB_CAUSE_BUTTON, hib_cause(&in));
+    in.asleep_s = 61;        /* had the RTC switched it on, it would be in the window */
+    TEST_ASSERT_EQUAL(HIB_CAUSE_RTC, hib_cause(&in));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -110,6 +125,7 @@ int main(void)
     RUN_TEST(test_stale_rtc_flag_on_power_on_is_button);
     RUN_TEST(test_short_timer_window_has_a_floor);
     RUN_TEST(test_poweron_is_button);
+    RUN_TEST(test_wdt_reset_after_power_off_is_button);
     RUN_TEST(test_probe_verdicts);
     return UNITY_END();
 }

@@ -145,7 +145,7 @@ the build before P60, which printed `sources=timer supported=no`).
 | `power hib test light 60` | back after ~63 s; the A164 held amber 30 % |
 | `power hib test off 60` (power-off + RX8130 60 s timer) | **the board powered off with USB in** (`E BOD: Brownout detector was triggered`, USB gone); the RX8130 timer (`ext=0x12 ctrl0=0x10 count=60: armed`) **did not switch it back on** within 120 s; still off at the time of writing; it needs the side button |
 | `power hib test rtc` | the same path as `off`: not repeated |
-| side button | Task 10 (a press; the device is waiting for one now) |
+| side button | **wakes it from power-off** (user-reported, 2026-10-23): the user's press brought it back at ~15:41, 2 h 9 min after the 13:32 power-off; the RX8130 timer never did. The power-on arrives as an HP watchdog reset (reason 7), like a deep-sleep wake (P70) |
 
 - **Deep sleep wakes on the timer through a watchdog reset.** Every deep-sleep wake arrives as `ESP_RST_WDT`
   (hw reason 7, HP system reset from the HP watchdog) with no wakeup cause, about 0.5 s after the timer. The cause is
@@ -186,11 +186,35 @@ Each first screenshot showed `Waking: reconnecting to Mac` and no cards. `to_liv
 
 A normal boot after a flash reaches live in 45.6–45.9 s. The spec's 50–130 s holds at the low end.
 
-### Steps 10–11: not run
+### Steps 10–11 (run after the press, on the branch HEAD 414703e plus the P70 fix)
 
-The device powered off in Step 7 and needs a side-button press (it was still off when this was written). The bench's
-`hibernate-light`, `floor` and `hibernate` rows, the probe's USB plumbing and the long-idle rule (Step 11) are built
-and unrun on hardware.
+- **Step 10, `power bench start fast`** (15 steps with Tasks 8 and 9). The rows: `hibernate-light`, `floor` and
+  `hibernate`, 3 probe cycles each, all `usb`, with `-` for mWh. `hibernate` shows 69 s in `seconds`
+  (boot-to-live 68.8 s). `hibernate-light` ended in a normal boot, and the bench went on at step 13 (`floor`) by
+  itself; `floor` chained into `hibernate` from the early boot.
+  - Each probe sample read 7580 mV, 0.5 mA (one shunt LSB: on USB the pack carries ~0), at boot+20 ms.
+  - The final boot browned out once (on USB) and went live on the retry.
+- **Step 11** (`power hib test-wake 30`, `power sim battery 8`, `power set off 20`): Active → Dim → Off → the
+  notice → Hibernate. It deep-slept on the test-wake timer, came back after 33 s with `boot: kind=hib-wake
+  cause=timer`, and the sim battery was gone. A second run logged `hib: battery low: hibernating with no
+  check-in` (Task 8's ladder) and `down from task hib, stack free 4176 B`.
+- **Stack high-water marks:**
+
+  | Task | Stack | Free at the lowest |
+  |---|---|---|
+  | `hib` (the ladder's hibernate) | 6144 B | 4176 B |
+  | `bench` | 6144 B | 3820–3916 B |
+  | `bench_boot` | 4096 B | 2212 B |
+  | main, probe boots | 16 KB | 14 744 B |
+  | Task 8's check-in job | 6144 B | 3780 B |
+
+- **The keyboard light on HEAD:** after `power hib test light 30`, the next boot again read
+  `mode=1 bright=30 rgb=f4b545`.
+- **Brownouts:**
+  - Since the HEAD flash, there have been 5 brownout resets on USB, each about 8 s into a boot, right after
+    Wi-Fi's start event: two right after the flash, one at the end of the bench, and two after a Step 11 wake.
+    Every boot got live on a later try.
+  - On the Task 6 builds there was 1 in about 12 boots.
 
 ### Step 12: the Hibernate default
 
