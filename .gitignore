@@ -21,3 +21,6 @@ node_modules/
 
 # local factory flash backups (16MB, device-specific)
 firmware/backups/
+
+# python bytecode
+__pycache__/
