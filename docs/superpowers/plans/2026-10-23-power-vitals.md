@@ -35,7 +35,7 @@
 - New pure modules (`sys/power_rules.c`, `sys/vitals.c`, `sys/plog.c`, `companion/cc_watch.c`, `ui/hotkeys.c`) include no ESP-IDF headers and also build in `firmware/test/host`.
 - **This Tab5 is board v2: LCD ST7123, touch ST7123, no GT911** (Ruling P1). Controller ruling PT1: v2 has no touch INT wake, so touch wake in Off and deeper comes from polling the touch controller at about 10 Hz from the power task while LVGL is paused. The GT911 INT path is v1-only code.
 - Match Clientre5's C style: 4-space indent, function brace on its own line, `static const char *TAG`, `s_` statics, `/* */` comments.
-- Every gated feature (light sleep, Radio off, the light's Off cap) is built behind its setting with the default off before Task 10. Nothing waits on the measurement. The exception is the spec's Priority: Deep idle (60 min) and Hibernate (2 h) are on by default, and Hibernate's default stays on only if Task 6 finds a wake path that needs nothing more than the side button (Amendment A4). A second exception (PT16): the Hibernate check-in is on by default at 60 min; Task 10 revises the number from the measured energy.
+- Every gated feature (light sleep, Radio off, the light's Off cap) is built behind its setting with the default off before Task 10. Nothing waits on the measurement. The exception is the spec's Priority: Deep idle (60 min) and Hibernate (2 h) are on by default, and Hibernate's default stays on only if Task 6 finds a wake path that needs nothing more than the side button (Amendment A4). A second exception (PT16): the Hibernate check-in is on by default at 15 min (PT18: user set 15 min, 2026-10-23); Task 10 measures its energy and reports it, and does not change the number.
 - Record each judgment call as a ruling in `docs/superpowers/notes/2026-10-23-plan2-rulings.md`, in Plan 1's format (`Ruling Pn: … — why — cost if wrong`).
 - **Never hibernate the device without a timer backstop while the user isn't there.** Nothing on the Mac can wake a sleeping P4. Every agent-run hibernate arms a timer wake (`power hib test …`, `power hib test-wake`, or the persistent `power hib backstop` from Task 8 when a test spans several cold boots; PT15 moved it from Task 7).
 
@@ -46,7 +46,7 @@
 3. **No battery fitted, or the INA226 not found** → the bar shows no percentage (never a red 0%), and Radio off, Deep idle and Hibernate never engage, because "on battery" is false; an unknown percentage never counts as ≤ 10%. With the INA226 present and no pack, the bus voltage is below 5.5 V and counts as no battery. Covered by Task 2 `test_battery_unknown_not_low` and `test_no_pack_is_unknown`, and Task 5 `test_radio_off_needs_battery` and `test_long_idle_needs_battery`.
 4. **Radio off and Deep idle with check-ins up to 30 min apart** → the amber keyboard light is not dropped between check-ins by the 5-minute staleness rule; the age limit follows the period actually scheduled (`checkin_min`, or Deep idle's 15 and 30 min). Covered by Task 3 `test_light_age_limit_follows_checkin` and Task 8 `test_deep_idle_backoff`.
 5. **A wake from Hibernate (a cold boot) shows cards as live** before the first fresh result → the dashboard shows `Waking: reconnecting to Mac` and no cards until `cc_poll_generation()` first moves. Covered by Task 5 `test_cards_view_after_hibernate` and the Task 6 Step 9 screenshot taken straight after a wake boot. (The amber-like saved colour that used to be item 5 stays covered by Task 3 `test_amber_like_colours`.)
-6. **The default Hibernate check-in drains the battery** (PT16; each check-in is a cold boot plus a Tailscale connect, about 2.5 W for ~90 s, ~60 mWh, ~1.5 Wh/day at 60 min) → a needs-you check-in keeps the light and re-hibernates, a no-needs-you check-in goes straight back to Hibernate, and the period is user-settable (15 min–12 h or Off). Covered by Task 8 `test_checkin_needs_you_keeps_light` and `test_checkin_nothing_rehibernates` and the Task 10 Step 6b check-in energy measurement. (The old item 6, a false IMU wake in a bag, is void: PT15 dropped IMU wake.)
+6. **The default Hibernate check-in drains the battery** (PT16; each check-in is a cold boot plus a Tailscale connect, about 2.5 W for ~90 s, ~60 mWh; at 15 min, 96 a day, ~5.8 Wh/day, roughly 40% of a ~15 Wh pack; estimate, Task 10 measures it) → a needs-you check-in keeps the light and re-hibernates, a no-needs-you check-in goes straight back to Hibernate, and the period is user-settable (15 min–12 h or Off). Covered by Task 8 `test_checkin_needs_you_keeps_light` and `test_checkin_nothing_rehibernates` and the Task 10 Step 6b check-in energy measurement. (The old item 6, a false IMU wake in a bag, is void: PT15 dropped IMU wake.)
 
 ---
 
@@ -193,7 +193,7 @@ git commit -m "feat(power): power console, on-device power log and bench, reset-
   - It also clamps `pw_dim_s` to 10–600 and `pw_off_s` to `pw_dim_s + 10`–3600.
   - It clamps `pw_deep_idle_min` to 0 or 15–720, `pw_hibernate_h` to 0 or 1–48, and `pw_hibernate_checkin_h` to 0 or 1–24 (a value in the gap goes to the nearest end of the range).
   - Still a single bump to `CFG_VERSION 18` for every field above.
-  - PT16 note: `pw_hibernate_checkin_h` (hours, uint8) cannot hold the new 15 min–12 h range, so it becomes reserved and unused; Task 8 appends `uint16_t pw_hibernate_checkin_min` (default 60) with `CFG_VERSION 19`.
+  - PT16 note: `pw_hibernate_checkin_h` (hours, uint8) cannot hold the new 15 min–12 h range, so it becomes reserved and unused; Task 8 appends `uint16_t pw_hibernate_checkin_min` (default 15) with `CFG_VERSION 19`.
 - Produces, in `vitals.h`:
 
 ```c
@@ -1085,8 +1085,8 @@ int pr_hib_checkin_clamp_min(int min);   /* 0 stays 0 (Off); 1..14 → 15; 721..
   - With `pw_radio_off` off (the default until Task 10), Deep idle leaves the link on the long poll at I = 15 s, as in Off. There are no check-ins, so nothing backs off.
   - A check-in that finds a new needs-you does a needs-you wake, as in Radio off. The light rule is the Deep-idle one (amber at 30%) only until that wake lands in Dim.
   - Bench step `deep-idle` (180 s): `power_go(PS_DEEP_IDLE)` with the radio parked and no check-in due inside the step, so it measures the floor (with the Task 6 teardown and 40 MHz clock if they were kept).
-- Hibernate check-in (PT16: **on by default, every 60 min**; setting `pw_hibernate_checkin_min`, 0 = Off, otherwise 15–720):
-  - Setting storage: Task 2's `pw_hibernate_checkin_h` is uint8 hours and cannot hold 15–720 min, so it becomes reserved and unused (like `utc_offset_min`). Append `uint16_t pw_hibernate_checkin_min; /* spec hibernate_checkin: 60; 0 = off; clamped by pr_hib_checkin_clamp_min to 0 or 15–720 */` after it. `CFG_VERSION` becomes 19; when migrating from 18 or older, `settings_init` sets it to 60 (`if (old_version <= 18)`, as `plan2_defaults` does for v17), so an existing device gets the default. Task 10 bumps to 20 to set any revised default once.
+- Hibernate check-in (PT16: **on by default, every 15 min** (PT18: user set 15 min, 2026-10-23); setting `pw_hibernate_checkin_min`, 0 = Off, otherwise 15–720):
+  - Setting storage: Task 2's `pw_hibernate_checkin_h` is uint8 hours and cannot hold 15–720 min, so it becomes reserved and unused (like `utc_offset_min`). Append `uint16_t pw_hibernate_checkin_min; /* spec hibernate_checkin: 15; 0 = off; clamped by pr_hib_checkin_clamp_min to 0 or 15–720 */` after it. `CFG_VERSION` becomes 19; when migrating from 18 or older, `settings_init` sets it to 15 (`if (old_version <= 18)`, as `plan2_defaults` does for v17), so an existing device gets the default. Task 10 does not change the default (PT18).
   - Unless it is Off, `hibernate_now` arms a wake after `pw_hibernate_checkin_min` minutes with `next = POWER_BOOT_HIB_CHECKIN`. The wake comes from the timer, or the RX8130 alarm when Task 6 chose power-off with the RTC as a source. The battery ≤ 10% trigger still hibernates with no check-in armed (`wake_after_s` 0) so a nearly flat battery isn't drained further.
   - On a check-in boot, `app_main` keeps the screen dark (brightness 0, panel off, power state Off from the start) and runs:
     1. Wi-Fi up;
@@ -1101,7 +1101,7 @@ int pr_hib_checkin_clamp_min(int min);   /* 0 stays 0 (Off); 1..14 → 15; 721..
   - A key or touch during a check-in boot is an ordinary wake to Active, and the check-in is abandoned. (PT15: no lift wake.)
   - The persistent backstop: `power hib backstop <s> <n>` arms an extra timer wake after s seconds on each of the next n hibernates (RTC memory), so tests that span several cold boots can't strand the device. It was Task 7's; PT15 moved it here.
   - Each check-in goes into `power checkins` with path `hib-handshake`, `hib-rebind` or `hib-failed`, its ms and its mWh (summed from 1 Hz samples during the boot, tag `0x85`). `power checkins` keeps its last 8 entries in NVS (ns `power`, key `chk`) so they survive the hibernate.
-- Settings → Power: Radio off (switch, default off), Radio off after (min) 5–240, Check in every (min) 1–60, **Hibernate check-in every (min): Off, 15–720, default 60** (PT16).
+- Settings → Power: Radio off (switch, default off), Radio off after (min) 5–240, Check in every (min) 1–60, **Hibernate check-in every (min): Off, 15–720, default 15** (PT16, PT18).
 - Console:
   - `power go radio-off`, `power checkin [rebind]` (one check-in now), `power checkins` (last 8: path, ms, mWh);
   - `power set radio-off 0|1`, `power set radio-after <min>`, `power set checkin <min>`, `power set hib-checkin <min>` (0 = Off; RAM only);
@@ -1163,7 +1163,7 @@ Expected: `state=deep-idle`, the radio parked, `period=15`.
 Run: `python3 $T5 "power checkin"`, wait 60 s, then `python3 $T5 "power"` (a forced check-in counts as the first one).
 Expected: `period=30`, and `power light` shows `light: 1 0 0 0 0 (nobody needs you)`.
 
-Start `companion-test-hib` on the Mac (Task 3 prompt) and wait for it to block. Run: `python3 $T5 "power set hib-checkin 60" "power checkin hibernate keep"`. (The default is 60 min, PT16; the forced 60 s wake keeps the test short.) The console drops for about 60 s plus the cold connect. When it is back, run `python3 $T5 "power checkins" "power light" "power boot" "power"`.
+Start `companion-test-hib` on the Mac (Task 3 prompt) and wait for it to block. Run: `python3 $T5 "power set hib-checkin 60" "power checkin hibernate keep"`. (The default is 15 min, PT16, PT18; the forced 60 s wake keeps the test short.) The console drops for about 60 s plus the cold connect. When it is back, run `python3 $T5 "power checkins" "power light" "power boot" "power"`.
 Expected:
 - a `hib-handshake` or `hib-rebind` entry with its ms and mWh;
 - `light: 1 30 f4 b5 45 (needs you: companion-test-hib)`;
@@ -1379,13 +1379,13 @@ This is the only task that needs the user. Tasks 1–9b are done and flashed, an
 - Create: `docs/superpowers/notes/2026-10-23-power-measurements.md`
 - Modify: `firmware/tools/power_report.py`, `firmware/tools/test_power_report.py` (`ladder_mwh` and `--ladder`)
 - Modify: `firmware/main/sys/sysinfo.c` (only if Step 4 shows the charge pin doesn't track)
-- Modify: `firmware/main/settings/settings.c`, `settings.h` (gated and long-idle defaults from the data, `pw_hibernate_checkin_min` among them; `CFG_VERSION 20`, since Task 8 took 19, with a migration that sets each changed default once)
+- Modify: `firmware/main/settings/settings.c`, `settings.h` (gated and long-idle defaults from the data, not `pw_hibernate_checkin_min`, which stays 15 (PT18); `CFG_VERSION 20`, since Task 8 took 19, with a migration that sets each changed default once)
 - Modify: `firmware/main/ui/hotkeys.c`, `hotkeys.h`, `firmware/test/host/test_hotkeys.c` (only if Step 3 shows Ctrl+] isn't reported)
 - Modify: `docs/superpowers/specs/2026-10-22-claude-tab5-design.md` (Known issues: Mac sleep/wake reconnect, brownout counts; Roadmap row 2 done)
 
 **Interfaces:**
 - Consumes: `power bench`, `power_report.py`, `power wakes`, `power checkins`, `power boot`, `power light test bind`, `key log`, `cc_link_reconnect_log` and `companion kick` from the earlier tasks, plus `pr_radio_off_worth_it` and `power checkin hibernate` (Task 8), and `power rails` and `power hib test light` (Task 6) and `power hib backstop` (Task 8).
-- Produces, in `power_report.py`: `ladder_mwh(mw: dict[str, float], hours: float, *, dim_s=30, off_s=120, radio_off_min: int | None = 20, checkin_min=5, deep_idle_min: int | None = 60, hibernate_h: int | None = 2, checkin_mwh=0.0, hib_checkin_min: int | None = 60, hib_checkin_mwh=0.0) -> dict`. It returns `{"mwh", "by_state", "checkins"}` for `hours` of idle after the last input.
+- Produces, in `power_report.py`: `ladder_mwh(mw: dict[str, float], hours: float, *, dim_s=30, off_s=120, radio_off_min: int | None = 20, checkin_min=5, deep_idle_min: int | None = 60, hibernate_h: int | None = 2, checkin_mwh=0.0, hib_checkin_min: int | None = 15, hib_checkin_mwh=0.0) -> dict`. It returns `{"mwh", "by_state", "checkins"}` for `hours` of idle after the last input.
   - `mw` has the keys `active`, `dim`, `off`, `radio_off`, `deep_idle` and `hibernate`. `None` turns a tier off.
   - The timeline follows `pr_next_state`:
     - Active until `dim_s`;
@@ -1397,14 +1397,14 @@ This is the only task that needs the user. Tasks 1–9b are done and flashed, an
   - Check-ins:
     - one every `checkin_min` in Radio off;
     - in Deep idle, only when Radio off is on, at `max(checkin_min, 15)` and then every `max(checkin_min, 30)` min (`pr_checkin_period_min`);
-    - every `hib_checkin_min` in Hibernate (PT16: default 60; `None` = Off), each costing `hib_checkin_mwh`.
+    - every `hib_checkin_min` in Hibernate (PT16: default 15, PT18; `None` = Off), each costing `hib_checkin_mwh`.
   - The CLI's `--ladder 8,10` prints, for each number of hours, the mWh and the share of `--capacity-mwh` it uses, each with `(estimate)`.
 
 - [ ] **Step 1: Write the failing `ladder_mwh` tests** in `test_power_report.py`, then implement it until they pass
   - `test_ladder_default_8h`: mw {active 3000, dim 2000, off 1000, radio_off 300, deep_idle 200, hibernate 5}, 8 h, defaults → 828.33 mWh (±0.1): 25 + 50 + 333.33 + 190 + 200 + 30.
   - `test_ladder_checkins`: the same with `checkin_mwh=2` → 9 check-ins (7 in Radio off, 2 in Deep idle at +15 and +45 min), 846.33 mWh.
   - `test_ladder_no_radio_off`: `radio_off_min=None`, `checkin_mwh=2` → 0 check-ins, 1 271.67 mWh (Off runs to 60 min).
-  - `test_ladder_hib_checkin` (PT16): the default case (8 h, `hibernate_h` 2) with `hib_checkin_mwh=60` → 5 Hibernate check-ins (at 3, 4, 5, 6 and 7 h; one landing exactly at the end is not counted), 1 128.33 mWh; `hib_checkin_min=None` → 828.33 mWh; `hib_checkin_min=120` → 2 check-ins (at 4 and 6 h), 948.33 mWh.
+  - `test_ladder_hib_checkin` (PT16): the default case (8 h, `hibernate_h` 2) with `hib_checkin_mwh=60` → 23 Hibernate check-ins (every 15 min from 2 h 15 min to 7 h 45 min; the one landing exactly at 8 h is not counted), 2 208.33 mWh (828.33 + 23 × 60); `hib_checkin_min=None` → 828.33 mWh; `hib_checkin_min=120` → 2 check-ins (at 4 and 6 h), 948.33 mWh.
   - `test_ladder_no_hibernate_10h`: `hibernate_h=None`, 10 h → 2 398.33 mWh (Deep idle to the end).
 
 Run the Python tests.
@@ -1491,7 +1491,7 @@ The reconnect time is link-up minus the Mac wake. If it is over 30 s, run the sl
     - otherwise 1 h if `(deep-idle − hibernate) mW × 1 h > 3 × E_boot`, where E_boot is the `hibernate` row's boot-to-live seconds × the `active` step's mW (an estimate), because the spec's Priority leans to battery after an hour;
     - otherwise keep 2 h.
   - **Deep idle after (`pw_deep_idle_min`):** stays 60. The Priority keeps the first hour responsive. Record the measured saving against the step it replaces (`radio-off` if Radio off ships on, else Off).
-  - **Hibernate check-in (`pw_hibernate_checkin_min`, PT16):** E_day = E_chk(none) × (1440 / period) from Step 6b. Stays 60 min if E_day at 60 min is at most 10% of the battery capacity (about 1.5 Wh/day from the ruling's estimate); otherwise the smallest of 90, 120, 180, 240, 360 or 720 min that brings E_day under 10%, and record the number (the user can still turn it Off). Record both check-in energies and the time.
+  - **Hibernate check-in (`pw_hibernate_checkin_min`, PT16):** E_day = E_chk(none) × (1440 / period) from Step 6b. Stays 15 min: the user chose it explicitly (PT18), so Task 10 does not lengthen it. Record E_day at 15 min (estimate: ~5.8 Wh/day, 96 check-ins of ~60 mWh, roughly 40% of a ~15 Wh pack) and the projected hours of Hibernate per charge, record both check-in energies and the time, and report them to the user.
   - Bump `CFG_VERSION` to 20 (Task 8 took 19) so the device picks up each changed default once.
   - Build, flash and spot-check with `power settings`.
 
@@ -1636,5 +1636,6 @@ These come from the spec's new section "IMU-driven deep sleep (the user, 2026-10
 The user said: "I'd probably be ok with no auto detection wake up and just be forced to press the button. We still should have some periodic wake up though to notify when I need input and set the notification light."
 
 - A23 (PT15): all IMU wake work is dropped. Task 7 is removed (stub in place); Task 6's `imu.c` is the chip ID plus `imu_suspend` by raw I²C, with no `bmi270` component, no INT probe, self-test, any-motion or data-ready, and no `HIB_SRC_IMU`. Rail cutting, `floor` and the BMI270 suspend in Hibernate stay. The notice stays "Sleeping to save battery. Press the side button to wake." Task 5's `still_ms`/`still_hibernate_ms` hook stays in the built code, inert at 0, and `PW_LIFT` stays unused; Task 8 or 9 may delete both as cleanup. Settings `pw_wake_lift` (Task 2, built) stays in the struct and does nothing. Motion wake can come back later as its own task (Tasks 5, 6, 7, 8, 10).
-- A24 (PT16): the Hibernate check-in is on by default at 60 min (setting 15 min–12 h or Off), stored in a new uint16 `pw_hibernate_checkin_min` (the old uint8 hours field is reserved), `CFG_VERSION 19` in Task 8. On a needs-you it lights the keyboard amber at 30% and re-hibernates with the keyboard rail kept if Task 6 Step 4c shows the rail survives deep sleep with the light held, else stays in Deep idle until input or a later poll shows nothing needs you. No needs-you goes straight back to Hibernate. Pure rule `pr_hib_checkin_next` with `test_checkin_needs_you_keeps_light` and `test_checkin_nothing_rehibernates`. Cost: ~60 mWh per check-in, ~1.5 Wh/day at 60 min, against the Priority; Task 10 measures it and may lengthen the default (Tasks 2, 6, 8, 10).
+- A24 (PT16): the Hibernate check-in is on by default at 15 min (PT18: user set 15 min, 2026-10-23) (setting 15 min–12 h or Off), stored in a new uint16 `pw_hibernate_checkin_min` (the old uint8 hours field is reserved), `CFG_VERSION 19` in Task 8. On a needs-you it lights the keyboard amber at 30% and re-hibernates with the keyboard rail kept if Task 6 Step 4c shows the rail survives deep sleep with the light held, else stays in Deep idle until input or a later poll shows nothing needs you. No needs-you goes straight back to Hibernate. Pure rule `pr_hib_checkin_next` with `test_checkin_needs_you_keeps_light` and `test_checkin_nothing_rehibernates`. Cost: ~60 mWh per check-in, ~5.8 Wh/day at 15 min (estimate), against the Priority; Task 10 measures it and may lengthen the default (Tasks 2, 6, 8, 10). Superseded by A26.
 - A25: Task 10 loses the pick-up, bag-walk and stillness-tuning steps; it gains Step 6b (the check-in on battery, both branches' energies) and a Step 8 rule for the check-in default. The optional bench step `hibernate-light` (Task 6) measures what holding the amber light through Hibernate costs. `power hib backstop` moved from Task 7 to Task 8.
+- A26 (PT18): the Hibernate check-in default is 15 min at the user's request (2026-10-23), replacing 60; the v18→19 migration sets 15. The cost is about 5.8 Wh/day (estimate: 96 check-ins of ~60 mWh, roughly 40% of a ~15 Wh pack). Task 10 records E_day and the projected Hibernate hours per charge and reports them to the user rather than changing the default (Tasks 2, 8, 10).

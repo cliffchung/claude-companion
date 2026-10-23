@@ -288,16 +288,17 @@ states follow Radio off.
 - **After wake.** The device cold-boots straight to the dashboard. It shows "Waking: reconnecting
   to Mac" until the link is live, measured at 50–130 s today. The cards come back from the first
   poll; nothing stale is shown as live.
-- **Needs-you during Hibernate: a periodic check-in, on by default (PT16).** It runs every 60 min
-  by default (setting: 15 min to 12 h, or Off). A check-in cold-boots, connects and polls, then:
+- **Needs-you during Hibernate: a periodic check-in, on by default (PT16).** It runs every 15 min
+  by default (PT18: user set 15 min, 2026-10-23) (setting: 15 min to 12 h, or Off). A check-in cold-boots, connects and polls, then:
   - **Something needs you:** it lights the keyboard amber (at most 30%). If Task 6 Step 4c shows the
     keyboard rail survives deep sleep with the light held, it goes back to Hibernate with that rail
     kept. Otherwise it stays in Deep idle (radio parked, light amber) until input, or until a later
     poll shows nothing needs you, and then hibernates again.
   - **Nothing needs you:** straight back to Hibernate.
   - Cost: each check-in is a cold boot plus a Tailscale connect, about 2.5 W for ~90 s, roughly
-    60 mWh, so ~1.5 Wh/day at 60 min. That leans against the max-battery priority, so the bench
-    (Task 10) measures it and may revise the default.
+    60 mWh. At 15 min that is 96 a day, about 5.8 Wh/day (estimate; Task 10 measures it), roughly 40%
+    of a ~15 Wh pack per day. That leans against the max-battery priority, so the bench (Task 10)
+    measures it and reports it to the user; the user chose 15 min, so it is not lengthened automatically.
 - **Why Hibernate exists.** With the display off, the P4 plus the C6 still draw on the order of
   hundreds of mW, while deep sleep or power-off draws close to nothing. For a night, the difference
   is most of the battery. The bench gives the real numbers, and the defaults (60 min and 2 h) are
@@ -441,7 +442,7 @@ the first thing to do after it.
 - Wake when a session needs you;
 - Keyboard light shows needs-you;
 - Radio off after (min) and check-in every (min);
-- Deep idle after (min), Hibernate after (h), Hibernate check-in every (min, default 60; 15 min-12 h or Off) (PT16);
+- Deep idle after (min), Hibernate after (h), Hibernate check-in every (min, default 15; 15 min-12 h or Off) (PT16, PT18);
 - (PT15: "Wake on lift", "Hibernate when still for" and "Wake on pick-up (IMU)" rows removed.)
 - Sleep on USB power;
 - Time zone (a short list of POSIX rules, with US Pacific as default);
