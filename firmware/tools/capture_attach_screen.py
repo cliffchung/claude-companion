@@ -14,6 +14,7 @@ import os
 import pty
 import re
 import select
+import signal
 import struct
 import sys
 import termios
@@ -57,36 +58,56 @@ def read_until_quiet(fd, quiet_s=QUIET_S, max_s=MAX_S, clock=time.monotonic):
         last = clock()
 
 
-def capture(short_id):
+EXEC_FAILED = 127
+
+
+def _reap(pid, wait_s=3.0):
+    """Wait up to wait_s for the child to exit; SIGKILL it otherwise, or at once if it
+    stopped (a Ctrl+Z that reached the line discipline as SIGTSTP). Returns its wait status."""
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(pid, os.WNOHANG | os.WUNTRACED)
+        if done and os.WIFSTOPPED(status):
+            break
+        if done:
+            return status
+        time.sleep(0.1)
+    os.kill(pid, signal.SIGKILL)   # also ends a stopped process
+    _, status = os.waitpid(pid, 0)
+    return status
+
+
+def capture(short_id, claude=CLAUDE):
+    """Returns (bytes drawn before the detach, the child's wait status)."""
     pid, fd = pty.fork()
     if pid == 0:
-        env = dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS))
-        os.execve(CLAUDE, [CLAUDE, "attach", short_id], env)
+        try:
+            env = dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS))
+            os.execve(claude, [claude, "attach", short_id], env)
+        except BaseException:
+            pass
+        os._exit(EXEC_FAILED)   # never fall through into the parent's code
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     data = read_until_quiet(fd)
     try:
-        os.write(fd, CTRL_Z)
+        os.write(fd, CTRL_Z)   # the only byte ever sent
         read_until_quiet(fd, quiet_s=0.5, max_s=2.0)   # drain the detach; not saved
     except OSError:
         pass
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        done, _ = os.waitpid(pid, os.WNOHANG)
-        if done:
-            break
-        time.sleep(0.1)
-    else:
-        os.kill(pid, 15)
-        os.waitpid(pid, 0)
+    status = _reap(pid)
     os.close(fd)
-    return data
+    return data, status
 
 
 def main(argv):
     if len(argv) != 3 or not ID_RE.match(argv[1]):
         sys.stderr.write("usage: capture_attach_screen.py <short-id> <out.bin>\n")
         return 2
-    data = anonymize(capture(argv[1]), os.environ.get("HOME", ""))
+    raw, status = capture(argv[1])
+    if os.WIFEXITED(status) and os.WEXITSTATUS(status) == EXEC_FAILED:
+        sys.stderr.write(f"could not run {CLAUDE}\n")
+        return 1
+    data = anonymize(raw, os.environ.get("HOME", ""))
     with open(argv[2], "wb") as f:
         f.write(data)
     print(f"{len(data)} bytes -> {argv[2]}")

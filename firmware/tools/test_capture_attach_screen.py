@@ -1,5 +1,9 @@
 import os
+import shutil
+import signal
 import sys
+import tempfile
+import textwrap
 import time
 import unittest
 
@@ -47,8 +51,54 @@ class CaptureTests(unittest.TestCase):
             os.close(r)
             os.close(w)
 
-    def test_detach_is_ctrl_z_only(self):
-        self.assertEqual(cap.CTRL_Z, b"\x1a")
+    def _fake_claude(self, body):
+        """A stand-in for `claude attach`: draws a banner, takes the tty raw (as attach does),
+        records every byte it receives into $CAP_OUT, then runs body."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "claude")
+        with open(path, "w") as f:
+            f.write(f"#!{sys.executable}\n" + textwrap.dedent("""\
+                import os, select, signal, sys, time, tty
+                sys.stdout.write("fake attach: Do you want to proceed?\\r\\n"); sys.stdout.flush()
+                tty.setraw(0)
+                got = b""
+                end = time.monotonic() + 4
+                while time.monotonic() < end and b"\\x1a" not in got:
+                    r, _, _ = select.select([0], [], [], 0.1)
+                    if r:
+                        got += os.read(0, 64)
+                time.sleep(0.3)   # anything sent after the detach is recorded too
+                r, _, _ = select.select([0], [], [], 0)
+                if r:
+                    got += os.read(0, 64)
+                open(os.environ["CAP_OUT"], "wb").write(got)
+                """) + textwrap.dedent(body))
+        os.chmod(path, 0o755)
+        out = os.path.join(d, "received")
+        os.environ["CAP_OUT"] = out
+        self.addCleanup(os.environ.pop, "CAP_OUT", None)
+        return path, out
+
+    def test_detach_sends_only_ctrl_z(self):
+        claude, out = self._fake_claude("sys.exit(0)\n")
+        data, status = cap.capture("abc123", claude=claude)
+        self.assertIn(b"Do you want to proceed?", data)
+        with open(out, "rb") as f:
+            self.assertEqual(f.read(), b"\x1a")
+        self.assertTrue(os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0)
+
+    def test_stopped_child_does_not_hang(self):
+        claude, _ = self._fake_claude("os.kill(os.getpid(), signal.SIGSTOP)\ntime.sleep(60)\n")
+        t0 = time.monotonic()
+        data, status = cap.capture("abc123", claude=claude)
+        self.assertLess(time.monotonic() - t0, 5.0)
+        self.assertTrue(os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL)
+
+    def test_failed_exec_exits_127(self):
+        data, status = cap.capture("abc123", claude="/nonexistent/claude")
+        self.assertTrue(os.WIFEXITED(status))
+        self.assertEqual(os.WEXITSTATUS(status), cap.EXEC_FAILED)
 
     def test_rejects_bad_ids(self):
         self.assertEqual(cap.main(["x", "a;rm", "/dev/null"]), 2)

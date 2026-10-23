@@ -54,7 +54,7 @@ Decisions made while executing `docs/superpowers/plans/2026-10-22-session-contro
 - Task 5: minor (deferred): blob check is char-class only, locale-dependent; HOME empty → /.ssh; test uses hard-coded scratch path and weak reject assertions
 - Task 4b: minor (deferred): device_key_get explicit_bzero(buf,len) after INVALID_LENGTH could use an updated len > allocation (needs concurrent write)
 - Task 6: minor (deferred): subscriber callback calling cc_link_paste re-enters refresh() and clobbers s_parse — document "exec only from callbacks"
-- Task 6: minor (deferred): host-key pin keyed on resolved IP vs terminal's p.host; NVS read error treated as UNKNOWN → re-pin — the first half was a misreading: the terminal's `ssh_client` resolves MagicDNS before its check too, so both pin the same address (Plan 2 P76); the forget action clears both forms. The NVS read error half stays open.
+- Task 6: minor (deferred): host-key pin keyed on resolved IP vs terminal's p.host; NVS read error treated as UNKNOWN → re-pin — the first half was a misreading: the terminal's `ssh_client` resolves MagicDNS before its check too, so both pin the same address (Plan 2 P76); the forget action clears both forms. The NVS read error half is done in Plan 2 Task 9 fix round 1 (P80): a read error is `KH_PIN_ERROR`, which fails the connect and never re-pins.
 - Task 6: minor (deferred): do_poll trivial wrapper; cc_console_init declared in cc_link.h; UTF-8 C1 controls pass cc_paste_build
 - Task 6: minor (deferred): logs tail can start inside a CSI sequence → stray params survive strip (cosmetic)
 - Task 6: minor (deferred, final-review triage): gate checks only the last `❯` line; a ❯-less dialog drawn after an empty input box, a selected ❯ followed by blanks, or a trailing bare ❯ would pass — harden by refusing when the tail after that line has options or an esc hint, or when ❯ ends the buffer
@@ -71,4 +71,4 @@ Decisions made while executing `docs/superpowers/plans/2026-10-22-session-contro
 - Check reconnect lag after Mac sleep/wake within the keypair lifetime (stale peer-up shortcut).
 - Two brownout resets seen on USB power during Task 7.
 - Split ui_dashboard.c (R22).
-- Before the repo goes public (R25): scrub SSID/IP/username from notes/img screenshots and the spec Environment section; consider NVS encryption for the device key.
+- Before the repo goes public (R25): scrub SSID/IP/username from notes/img screenshots and the spec Environment section; consider NVS encryption for the device key. Also (Plan 2 Task 9 review M2, M6): put `companion hostkey corrupt` and `ssh_known_host_set_debug` behind a `CONFIG_COMPANION_DEBUG_CMDS` Kconfig (default y for development, n for release images); scrub the `Claude Max` plan label and the `~/workspace/claude-companion-plan2` path from `firmware/test/host/fixtures/screen_permission_dialog.bin` (keep the dialog bytes the test asserts on).

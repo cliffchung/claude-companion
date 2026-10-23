@@ -310,7 +310,12 @@ static void test_screen_real_permission_dialog(void)
     size_t n = fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
     buf[n] = 0;
+    TEST_ASSERT_GREATER_THAN(4000, n);   /* the whole capture, not a truncated one */
     cc_strip_ansi(buf);
+    /* the real renderer drops unstyled spaces: this is the dialog's question and its options */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "Doyouwanttoproceed?"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "4. No"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "Esc to cancel"));
     TEST_ASSERT_FALSE(cc_screen_input_ready(buf));
     TEST_ASSERT_TRUE(cc_screen_is_permission_prompt(buf));
 }

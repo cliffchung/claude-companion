@@ -67,6 +67,8 @@ static int cmd_companion(int argc, char **argv)
         char st[CC_STATUS_MAX];
         printf("%s\n", cc_link_status_text(st, sizeof(st)));
         printf("%s\n", cc_watch_status_text(st, sizeof(st)));
+        char fp[80];
+        printf("host key: %s\n", cc_link_pinned_fingerprint(fp, sizeof(fp)) ? fp : "none pinned");
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "watch") == 0) {

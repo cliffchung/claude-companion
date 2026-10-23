@@ -58,6 +58,35 @@ void ssh_known_hosts_clear(void)
     if (nvs_open("kh", NVS_READWRITE, &h) == ESP_OK) { nvs_erase_all(h); nvs_commit(h); nvs_close(h); }
 }
 
+/* Reads the pin for key: found (out and len set; free it), none, or a read error. */
+static kh_pin_t kh_read(const char *key, void **out, size_t *len)
+{
+    *out = NULL; *len = 0;
+    nvs_handle_t h;
+    esp_err_t e = nvs_open("kh", NVS_READONLY, &h);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return KH_PIN_NONE;   /* no pin was ever written */
+    if (e != ESP_OK) { ESP_LOGE(TAG, "host key pins: nvs_open %s", esp_err_to_name(e)); return KH_PIN_READ_FAILED; }
+    size_t n = 0;
+    e = nvs_get_blob(h, key, NULL, &n);
+    kh_pin_t r = KH_PIN_READ_FAILED;
+    if (e == ESP_ERR_NVS_NOT_FOUND) r = KH_PIN_NONE;
+    else if (e == ESP_OK && n > 0 && n <= 64) {
+        void *b = malloc(n);
+        if (b && nvs_get_blob(h, key, b, &n) == ESP_OK) { *out = b; *len = n; r = KH_PIN_FOUND; }
+        else free(b);
+    }
+    nvs_close(h);
+    if (r == KH_PIN_READ_FAILED) ESP_LOGE(TAG, "host key pin %s unreadable (%s, %u bytes)", key, esp_err_to_name(e), (unsigned)n);
+    return r;
+}
+
+static void fp_format(const unsigned char *hash, size_t hlen, char *fp_out, size_t fp_cap)
+{
+    char *fp = ssh_get_fingerprint_hash(SSH_PUBLICKEY_HASH_SHA256, (unsigned char *)hash, hlen);
+    strlcpy(fp_out, fp ? fp : "?", fp_cap);
+    ssh_string_free_char(fp);
+}
+
 kh_result_t ssh_known_host_check(ssh_session session, const char *host, int port, char *fp_out, size_t fp_cap)
 {
     if (fp_out && fp_cap) fp_out[0] = 0;
@@ -67,18 +96,26 @@ kh_result_t ssh_known_host_check(ssh_session session, const char *host, int port
     int rc = ssh_get_publickey_hash(srv_key, SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
     ssh_key_free(srv_key);
     if (rc != 0) return KH_ERROR;
-    if (fp_out && fp_cap) {
-        char *fp = ssh_get_fingerprint_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
-        strlcpy(fp_out, fp ? fp : "?", fp_cap);
-        ssh_string_free_char(fp);
-    }
+    if (fp_out && fp_cap) fp_format(hash, hlen, fp_out, fp_cap);
     char key[16]; kh_key(host, port, key);
     void *stored = NULL; size_t slen = 0;
-    bool known = nvs_get_blob_alloc("kh", key, &stored, &slen);
-    bool changed = known && (slen != hlen || memcmp(stored, hash, hlen) != 0);
+    kh_pin_t pin = kh_read(key, &stored, &slen);
+    kh_result_t r = kh_classify(pin, stored, slen, hash, hlen);
     free(stored);
     ssh_clean_pubkey_hash(&hash);
-    return !known ? KH_UNKNOWN : changed ? KH_CHANGED : KH_OK;
+    return r;
+}
+
+bool ssh_known_host_fingerprint(const char *host, int port, char *fp_out, size_t fp_cap)
+{
+    if (fp_out && fp_cap) fp_out[0] = 0;
+    if (!host || !host[0] || !fp_out || !fp_cap) return false;
+    char key[16]; kh_key(host, port, key);
+    void *stored = NULL; size_t slen = 0;
+    if (kh_read(key, &stored, &slen) != KH_PIN_FOUND) return false;
+    fp_format(stored, slen, fp_out, fp_cap);
+    free(stored);
+    return true;
 }
 
 bool ssh_known_host_trust(ssh_session session, const char *host, int port)
@@ -124,10 +161,13 @@ static int verify_host(ssh_client_t *c)
     char fp[80];
     kh_result_t r = ssh_known_host_check(c->session, c->p.host, c->p.port, fp, sizeof(fp));
     if (r == KH_OK) return 0;
-    if (r == KH_ERROR) return -1;
+    if (r == KH_PIN_ERROR) { ESP_LOGE(TAG, "host key pin for %s:%d unreadable; not connecting", c->p.host, c->p.port); return -2; }
+    if (!kh_needs_answer(r)) return -1;
     set_state(c, SSH_ST_HOSTKEY, fp);
-    bool trust = c->hostkey_cb ? c->hostkey_cb(c->p.host, c->p.port, fp, r == KH_CHANGED, c->user) : true;
-    if (trust && ssh_known_host_trust(c->session, c->p.host, c->p.port)) return 0;
+    /* read once: ssh_client_stop clears it, and no callback means nobody to ask (reject) */
+    ssh_hostkey_cb_t cb = c->hostkey_cb;
+    bool answer = cb && !c->stop && cb(c->p.host, c->p.port, fp, r == KH_CHANGED, c->user);
+    if (kh_accept(r, cb != NULL, answer) && !c->stop && ssh_known_host_trust(c->session, c->p.host, c->p.port)) return 0;
     return -1;
 }
 
@@ -216,7 +256,8 @@ static void ssh_task(void *arg)
     }
     if (c->stop) goto done;
     ESP_LOGI(TAG, "connected; checking host key");
-    if (verify_host(c) != 0) { set_state(c, SSH_ST_ERROR, "Host key rejected"); goto done; }
+    int hv = verify_host(c);
+    if (hv != 0) { set_state(c, SSH_ST_ERROR, hv == -2 ? "Can't read the saved host key; not connecting" : "Host key rejected"); goto done; }
     set_state(c, SSH_ST_AUTH, NULL);
     if (authenticate(c) != 0) {
         char m[160]; snprintf(m, sizeof(m), "Authentication failed: %s", ssh_get_error(c->session));

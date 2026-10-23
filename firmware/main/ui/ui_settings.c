@@ -298,6 +298,11 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         ui_setting_row(c, "Mac", mac[0] ? mac : "Not set", companion_mac_cb, NULL);
         ui_setting_row(c, "Claude path", cc_settings_claude_path(cpath, sizeof(cpath)), companion_path_cb, NULL);
         ui_setting_row(c, "Forget Mac host key", "", companion_forget_cb, NULL);
+        /* the whole fingerprint, to compare with ssh-keygen -lf on the Mac (a row value truncates) */
+        char pinned[80], line[100];
+        if (cc_link_pinned_fingerprint(pinned, sizeof(pinned))) snprintf(line, sizeof(line), "Pinned key: %s", pinned);
+        else strlcpy(line, "Pinned key: none", sizeof(line));
+        ui_label(c, line, FONT_SMALL, UI_MUTED);
         ui_label(c, "The Mac is one of your SSH servers. The Tab5 lists its Claude Code sessions and runs claude from this path.", FONT_SMALL, UI_MUTED);
         break;
     }

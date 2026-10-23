@@ -141,15 +141,30 @@ static void forget_toast_cb(void *arg)
     ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
 }
 
+/* The success toast comes from forget_poll_cb alone, for a forget done in time and for one
+   that timed out and was done by a later connect, so it shows once either way. */
 static void run_forget(void)
 {
     char fp[80];
     esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
     ESP_LOGI(TAG, "forget host key: %s %s", esp_err_to_name(e), fp);
-    if (e == ESP_OK) snprintf(s_forget_toast, sizeof(s_forget_toast), "New Mac key pinned: %s", fp);
-    else if (e == ESP_ERR_TIMEOUT) strlcpy(s_forget_toast, "Old key forgotten; reconnecting\xe2\x80\xa6", sizeof(s_forget_toast));
+    if (e == ESP_OK) return;
+    if (e == ESP_ERR_TIMEOUT) strlcpy(s_forget_toast, "Old key forgotten; reconnecting\xe2\x80\xa6", sizeof(s_forget_toast));
     else strlcpy(s_forget_toast, "No Mac set up", sizeof(s_forget_toast));
     ui_async(forget_toast_cb, NULL);
+}
+
+/* LVGL task, every 500 ms, on no screen: toasts each forget the link has finished. */
+static void forget_poll_cb(lv_timer_t *t)
+{
+    (void)t;
+    static uint32_t seen;
+    char fp[80];
+    uint32_t n = cc_link_forget_done(fp, sizeof(fp));
+    if (n == seen) return;
+    seen = n;
+    snprintf(s_forget_toast, sizeof(s_forget_toast), "New Mac key pinned: %s", fp);
+    ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
 }
 
 static void run_job(const job_t *j)
@@ -248,6 +263,7 @@ static void init_once(void)
     s_items = heap_caps_calloc(MAX_CARDS, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
     s_logs_buf = heap_caps_calloc(1, LOGS_CAP, MALLOC_CAP_SPIRAM);
     worker_start();
+    lv_timer_create(forget_poll_cb, 500, NULL);   /* lives as long as the app */
 }
 
 /* The dashboard can be built before cc_link_start (it is the first screen), and

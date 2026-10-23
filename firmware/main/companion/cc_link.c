@@ -79,11 +79,13 @@ static volatile int s_floor;           /* cc_poll_set_floor: overrides s_rate wh
 static uint32_t s_gen;                 /* successful results published (blocks, heartbeats, polls) */
 static volatile int s_busy;            /* pastes and live checks in flight */
 /* Forget host key (cc_link_forget_host_key), all under s_lock: */
-static char s_pin_host[128];           /* the address the link pins: the one its last attempt used */
+static char s_pin_host[128];           /* the address the link pins: the one its last attempt used
+                                          for the current server ("" after a server change) */
 static int s_pin_port;
-static char s_conn_fp[80];             /* the server key of the last successful connect */
-static uint32_t s_connects;            /* successful connects */
-static uint32_t s_forget_req, s_forget_ack, s_forget_ack_connects;
+/* Requests made, acked by the task (torn down), and done (a connect after the ack pinned a key).
+   A forget stays pending (done < req) past its caller's timeout, until such a connect. */
+static uint32_t s_forget_req, s_forget_ack, s_forget_done;
+static char s_forget_fp[80];           /* the key that connect pinned */
 static volatile bool s_forget;         /* the task tears down and reconnects now */
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
@@ -202,6 +204,7 @@ void cc_link_set_server(const char *name)
 {
     lock();
     strlcpy(g_settings.companion_server, name ? name : "", sizeof(g_settings.companion_server));
+    s_pin_host[0] = 0;   /* the old Mac's address: a forget must not erase its pin */
     unlock();
     settings_save();
     s_reconfig = true;
@@ -385,10 +388,14 @@ static bool connect_once(const char *name)
     if (kh == KH_CHANGED) {
         snprintf(why, sizeof(why), "host key changed for %s; not connecting", host);
         set_fail(CC_LINK_FAIL_HOSTKEY, why);
-    } else if (kh != KH_OK) set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreadable: retried as unreachable */
+    } else if (kh == KH_PIN_ERROR) {
+        /* never treated as unknown: re-pinning over a pin we can't read could accept any key */
+        snprintf(why, sizeof(why), "can't read the host key pin for %s; not connecting", host);
+        set_fail(CC_LINK_FAIL_HOSTKEY, why);
+    } else if (kh != KH_OK) set_fail(CC_LINK_FAIL_NONE, NULL);   /* server key unreadable: retried as unreachable */
     if (kh != KH_OK) {
         ESP_LOGE(TAG, "host key %s for %s:%d (%s); not connecting",
-                 kh == KH_CHANGED ? "CHANGED" : "unreadable", host, port, fp);
+                 kh == KH_CHANGED ? "CHANGED" : kh == KH_PIN_ERROR ? "pin unreadable" : "unreadable", host, port, fp);
         ssh_disconnect(s);
         ssh_free(s);
         return false;
@@ -415,11 +422,16 @@ static bool connect_once(const char *name)
     s_drop = false;
     set_fail(CC_LINK_FAIL_NONE, NULL);
     lock();
-    strlcpy(s_conn_fp, fp, sizeof(s_conn_fp));
-    s_connects++;
+    /* a pending forget is done by the first connect after the task's teardown */
+    bool forget_done = s_forget_done != s_forget_req && s_forget_ack == s_forget_req;
+    if (forget_done) {
+        s_forget_done = s_forget_req;
+        strlcpy(s_forget_fp, fp, sizeof(s_forget_fp));
+    }
     s_poll_fails = 0;
     s_poll_too_big = false;
     unlock();
+    if (forget_done) ESP_LOGW(TAG, "forget host key: new Mac key pinned: %s", fp);
     s_w_fallback_until_us = 0;   /* a fallback is retried on the next connect */
     memset(s_w_ends, 0, sizeof(s_w_ends));
     ESP_LOGI(TAG, "connected to %s (%s:%d)", name, host, port);
@@ -1039,6 +1051,7 @@ static void link_task(void *arg)
             attempt = 0;
             lock();
             s_list_n = -1;
+            s_pin_host[0] = 0;
             unlock();
             set_fail(CC_LINK_FAIL_NONE, NULL);
         }
@@ -1052,7 +1065,6 @@ static void link_task(void *arg)
             set_fail(CC_LINK_FAIL_NONE, NULL);
             lock();
             s_forget_ack = s_forget_req;
-            s_forget_ack_connects = s_connects;
             unlock();
         }
         if (s_sess && s_drop) {
@@ -1366,16 +1378,39 @@ esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms)
     unlock();
     s_forget = true;
     kick();
+    busy(+1);   /* the power ladder holds while the forget runs */
     int64_t end = now_us() + (int64_t)timeout_ms * 1000;
+    esp_err_t r;
     for (;;) {
         lock();
-        bool done = s_forget_ack >= want && s_connects != s_forget_ack_connects;
-        if (done && fp_out && fp_cap) strlcpy(fp_out, s_conn_fp, fp_cap);
+        bool done = (int32_t)(s_forget_done - want) >= 0;
+        if (done && fp_out && fp_cap) strlcpy(fp_out, s_forget_fp, fp_cap);
         unlock();
-        if (done) return ESP_OK;
-        if (now_us() >= end) return ESP_ERR_TIMEOUT;
+        if (done) { r = ESP_OK; break; }
+        if (now_us() >= end) { r = ESP_ERR_TIMEOUT; break; }   /* stays pending: cc_link_forget_done */
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+    busy(-1);
+    return r;
+}
+
+uint32_t cc_link_forget_done(char *fp_out, size_t fp_cap)
+{
+    lock();
+    uint32_t n = s_forget_done;
+    if (fp_out && fp_cap) strlcpy(fp_out, s_forget_fp, fp_cap);
+    unlock();
+    return n;
+}
+
+bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap)
+{
+    if (fp_out && fp_cap) fp_out[0] = 0;
+    char hosts[3][128]; int ports[3];
+    int n = pin_targets(hosts, ports);
+    for (int i = n - 1; i >= 0; i--)   /* the link's own address first */
+        if (ssh_known_host_fingerprint(hosts[i], ports[i], fp_out, fp_cap)) return true;
+    return false;
 }
 
 esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)

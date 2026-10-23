@@ -139,11 +139,14 @@ esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, cha
 esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; if (cap) err[0] = 0; return ESP_OK; }
 esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; if (cap) err[0] = 0; return ESP_OK; }
 static int s_forget_calls;
+#define PREVIEW_FP "SHA256:Xq3v9yPreviewFingerprintOnly0123456789abcd"
 esp_err_t cc_link_forget_host_key(char *fp, size_t cap, int ms) {
     (void)ms; s_forget_calls++;
-    snprintf(fp, cap, "SHA256:Xq3v9yPreviewFingerprintOnly0123456789abcd");
+    snprintf(fp, cap, PREVIEW_FP);
     return ESP_OK;
 }
+uint32_t cc_link_forget_done(char *fp, size_t cap) { snprintf(fp, cap, PREVIEW_FP); return (uint32_t)s_forget_calls; }
+bool cc_link_pinned_fingerprint(char *fp, size_t cap) { snprintf(fp, cap, "SHA256:OldPreviewKeyOnly9876543210zyxwvutsrqponm"); return true; }
 esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
 SCREEN(ui_servers_create) SCREEN(ui_files_create) SCREEN(ui_music_create)
@@ -195,17 +198,23 @@ static int snapshot_top(lv_obj_t *s, const char *path) {
     }
     fclose(f); lv_draw_buf_destroy(base); lv_draw_buf_destroy(top); return 0;
 }
-/* The first clickable object at or above a label whose text is t, under o. */
-static lv_obj_t *find_clickable(lv_obj_t *o, const char *t) {
-    if (lv_obj_check_type(o,&lv_label_class) && !strcmp(lv_label_get_text(o),t)) {
-        while (o && !lv_obj_has_flag(o,LV_OBJ_FLAG_CLICKABLE)) o=lv_obj_get_parent(o);
-        return o;
+/* The label under o whose text is t (or starts with t when prefix is set). */
+static lv_obj_t *find_label(lv_obj_t *o, const char *t, bool prefix) {
+    if (lv_obj_check_type(o,&lv_label_class)) {
+        const char *x=lv_label_get_text(o);
+        if (prefix ? !strncmp(x,t,strlen(t)) : !strcmp(x,t)) return o;
     }
     for (uint32_t i=0;i<lv_obj_get_child_count(o);i++) {
-        lv_obj_t *r=find_clickable(lv_obj_get_child(o,i),t);
+        lv_obj_t *r=find_label(lv_obj_get_child(o,i),t,prefix);
         if (r) return r;
     }
     return NULL;
+}
+/* The first clickable object at or above that label. */
+static lv_obj_t *find_clickable(lv_obj_t *o, const char *t) {
+    o=find_label(o,t,false);
+    while (o && !lv_obj_has_flag(o,LV_OBJ_FLAG_CLICKABLE)) o=lv_obj_get_parent(o);
+    return o;
 }
 static uint64_t flushed_pixels;
 static unsigned flushes;
@@ -586,13 +595,16 @@ int main(int argc,char **argv) {
         assert(row);
         lv_obj_send_event(row,LV_EVENT_CLICKED,NULL); step(d,400);
         lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
-        assert(find_clickable(lv_layer_top(),"Forget Mac host key?") || lv_obj_get_child_count(lv_layer_top())>0);
+        assert(find_label(s,"Pinned key: SHA256:OldPreviewKey",true));   /* the row shows the pinned key */
+        assert(find_label(lv_layer_top(),"Forget Mac host key?",false));
+        assert(find_label(lv_layer_top(),"Only do this if your Mac's SSH host key changed. The Tab5 will trust the next key it sees.",false));
         int r = snapshot_top(s,"settings-forget.ppm");
         assert(s_forget_calls==0);   /* nothing happens before Yes */
         lv_obj_t *ok=find_clickable(lv_layer_top(),tr(STR_OK));
         assert(ok);
-        lv_obj_send_event(ok,LV_EVENT_CLICKED,NULL); step(d,100); step(d,100);
+        lv_obj_send_event(ok,LV_EVENT_CLICKED,NULL); step(d,100); step(d,600);
         assert(s_forget_calls==1);
+        assert(find_label(lv_layer_top(),"New Mac key pinned: " PREVIEW_FP,false));   /* from the poll */
         lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
         r |= snapshot_top(lv_screen_active(),"settings-forget-toast.ppm");
         puts("Settings forget host key: confirm, one request after OK, toast passed.");

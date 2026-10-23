@@ -24,7 +24,7 @@ target_compile_options(companion PRIVATE -Wall -Wextra)
 
 # Pure modules under main/sys (no ESP-IDF headers). Later tasks add theirs here.
 set(MAIN ${CMAKE_CURRENT_SOURCE_DIR}/../../main)
-add_library(pure STATIC ${MAIN}/sys/plog.c ${MAIN}/sys/vitals.c ${MAIN}/sys/power_rules.c ${MAIN}/sys/hib_rules.c ${MAIN}/ui/hotkeys.c ${MAIN}/input/key_log.c)
+add_library(pure STATIC ${MAIN}/sys/plog.c ${MAIN}/sys/vitals.c ${MAIN}/sys/power_rules.c ${MAIN}/sys/hib_rules.c ${MAIN}/ui/hotkeys.c ${MAIN}/input/key_log.c ${MAIN}/ssh/kh_rules.c)
 target_include_directories(pure PUBLIC ${MAIN} ${MAIN}/sys)
 target_link_libraries(pure PUBLIC companion)
 target_compile_options(pure PRIVATE -Wall -Wextra)
@@ -60,6 +60,10 @@ add_test(NAME test_hotkeys COMMAND test_hotkeys)
 add_executable(test_key_log test_key_log.c)
 target_link_libraries(test_key_log pure unity)
 add_test(NAME test_key_log COMMAND test_key_log)
+
+add_executable(test_kh_rules test_kh_rules.c)
+target_link_libraries(test_kh_rules pure unity)
+add_test(NAME test_kh_rules COMMAND test_kh_rules)
 
 # Prints cc_cmd_watch's output for firmware/tools/test_watch_loop.py (not a test itself).
 add_executable(cc_cmd_print cc_cmd_print.c)

@@ -23,13 +23,13 @@ bool cc_link_connected(void);
    "connected <host>; session list not updating (N polls failed)" |
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
    "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
-   is "host key changed for <ip>; not connecting", "no server named '<name>' in Servers" or "<name> refused the device key". */
+   is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting", "no server named '<name>' in Servers" or "<name> refused the device key". */
 const char *cc_link_status_text(char *buf, size_t cap);
 /* Why the link is down when it isn't reachability (the status text has the words). */
 typedef enum {
     CC_LINK_FAIL_NONE,        /* connected, or unreachable / no Wi-Fi / still trying */
     CC_LINK_FAIL_NO_ENTRY,    /* no server with the configured name */
-    CC_LINK_FAIL_HOSTKEY,     /* the Mac's host key doesn't match its pin */
+    CC_LINK_FAIL_HOSTKEY,     /* the Mac's host key doesn't match its pin, or the pin is unreadable */
     CC_LINK_FAIL_AUTH,        /* the Mac refused the device key */
 } cc_link_fail_t;
 cc_link_fail_t cc_link_failure(void);
@@ -37,10 +37,18 @@ cc_link_fail_t cc_link_failure(void);
    terminal's (the server entry's host string, and its MagicDNS address), then has the link task
    drop the session (the Tab5's own close: never counted toward the watch fallback) and connect
    again at once, pinning the key it meets as new. ESP_OK with fp_out "SHA256:..." when that
-   connect happened within timeout_ms, ESP_ERR_TIMEOUT if not (the pins are cleared either way),
+   connect happened within timeout_ms, ESP_ERR_TIMEOUT if not (the pins are cleared either way,
+   and the forget stays pending: see cc_link_forget_done). It counts as link-busy while it waits.
    ESP_ERR_INVALID_STATE when no Mac is set up. Blocks: never call it from the LVGL task. */
 esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms);
 #define CC_FORGET_TIMEOUT_MS 30000   /* the UI and console wait: a tunnel wait (20 s) plus a connect */
+/* A forget that timed out stays pending until the link's next connect pins a key. This counts
+   the forgets done so far (it only grows) and copies the key the last one pinned; the UI polls
+   it and toasts "New Mac key pinned: SHA256:..." when it grows. Safe from any task. */
+uint32_t cc_link_forget_done(char *fp_out, size_t fp_cap);
+/* The fingerprint now pinned for the Mac ("SHA256:..."), false if none or unreadable. Reads
+   NVS: fine from the LVGL task, but not every frame. */
+bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap);
 /* Debug (`companion hostkey corrupt`): overwrites the link's own pin with a wrong value and
    reconnects, so the changed-key path shows without touching the Mac. host_out gets host:port. */
 esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap);
