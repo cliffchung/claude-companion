@@ -29,7 +29,7 @@ No secrets are recorded here: not the Tailscale auth key, not the Wi-Fi password
 ## Quick answer by attach-paste (R11)
 
 Verified on the Mac with a pty (spike `a local review file (not kept)`). The
-answer reached the session as exactly one user message with the exact text, in every test, and the session kept running.
+answer reached the session as exactly one user message with the exact text, in every test that used the full recipe, and the session kept running.
 
 Recipe, on a pty channel running `~/.local/bin/claude attach <id>` (120x40, `TERM=xterm-256color`):
 
@@ -57,5 +57,23 @@ Task 6 builds this as `cc_paste_build` and `cc_link_paste`. `--bg --resume` is o
 
 ## Open items
 
-- Typing latency and the first-connection time were not measured on the Tab5; they go with the moved checks.
+- The first-connection time and the open-session latency are now measured: see Moved checks (Task 7).
 - The device key comment says `claude-companion@tab5` because the Tailscale device-name setting was empty at key time.
+
+## Moved checks (Task 7)
+
+Run on 2026-10-22 through the dashboard's take-over path (`ui_terminal_open_command`: pty + exec
+`~/.local/bin/claude attach <id>`, never a login shell) with a fresh `companion-test-input`.
+
+| Check | Result | Notes |
+|---|---|---|
+| Colors, box drawing, `✻ ⏺ ⎿ ✓ ●` | PASS (one partial) | 256/true colors, rules and the input box render. `⏺` was missing from every face; Task 7 added it to the terminal's symbol fallback. `●` renders clipped to a half disc (wide glyph in a 12 px cell). |
+| Spinner animates | PASS | Two frames 3 s apart: glyph, colour and elapsed time change. |
+| `blue` + Enter continues the session | PASS | Claude answered "Blue it is." and ran `ls`. |
+| Arrow keys, Esc, Ctrl+C reach Claude | PASS | Up recalls the last prompt; Esc interrupts a working turn; Ctrl+C clears the input. Esc only inside the test session; ← never sent. |
+| Ctrl+Q returns, session keeps running | PASS | Ctrl+Q is handled on the device and never sent. Toast "Session still running on your Mac"; the session keeps its pid; no `claude attach` is left on the Mac. |
+| Columns | PASS: 106 | `term_view_fit` on 1280 px with 12 px cells (status bar hidden in command mode). 22 rows at the 32 px line height setting. |
+| First connection after boot | 50–130 s | Dominated by Tailscale registering after boot. |
+| Open-session latency | about 1.4 s | Live check about 0.3 s, then SSH connect to first output about 1.1 s. Before a fix it was 23 s: `tailscale_prepare_peer` moved the DERP region on every open even though the tunnel was up. |
+| Two places at once | PASS, with a caveat | A Mac pty (120x40) attached while the Tab5 had the session open. Both see the same session and each other's draft. While both are attached the TUI renders at the Mac's size, so the Tab5 view is garbled. It redraws correctly once the Mac detaches (Ctrl+Z, exit 0). |
+

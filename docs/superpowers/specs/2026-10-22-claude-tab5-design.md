@@ -41,7 +41,7 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   |---|---|
   | List sessions and their state | `claude agents --json` (`state: "blocked"` = needs you) |
   | Preview a session | `claude logs <id>` |
-  | Quick answer | attach-paste: `claude attach <id>` in a pty, bracketed paste of the text, Enter, then close (about 1.5 to 3 s; `-p --resume` is refused while the session runs) |
+  | Quick answer | attach-paste: `claude attach <id>` in a pty, bracketed paste of the text, Enter, then close (about 1.3–3.3 s; `-p --resume` is refused while the session runs) |
   | Take over | `claude attach <id>` in a terminal (pty) channel. ← returns to agent view and Ctrl+Z to the shell; the session keeps running. |
   | Stop | `claude stop <id>` |
 
@@ -74,8 +74,10 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
 - **D5 — Input versus permission prompts.** Claude Code 2.1.309 has no `waitingFor` field, so the
   Tab5 can't tell a permission prompt from an input request. Every blocked background session
   (`state: "blocked"`) gets the answer field, plus **Open** (Ctrl+O) to answer inside the session. The
-  logs preview shows what it's waiting for. Quick answers go in as one bracketed paste, so no
-  stray keystroke can reach a permission dialog. `claude -p --resume` is used only for stopped
+  logs preview shows what it's waiting for. Answers are pasted; Ctrl+U and the final CR go
+  outside the paste, so the device types only when the screen's last `❯` line is the empty input
+  prompt (fail-closed, R19), and otherwise offers Open. A real permission dialog has not been
+  captured on this Mac. `claude -p --resume` is used only for stopped
   sessions. The recipe and timings are in `docs/superpowers/notes/2026-10-22-couch-path-check.md`.
 - **D6 — Fork Clientre5** (MIT, © 2026 Mozgi512), vendored in `firmware/` at upstream `252e07a`.
   - **Keep:** `ssh/` + `components/libssh` (LGPL-2.1; compliant because we publish the full

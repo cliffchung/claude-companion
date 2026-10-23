@@ -418,11 +418,13 @@ static void build_expanded(lv_obj_t *card, const cc_session_t *s)
         text(card, "On your Mac \xe2\x80\x94 run /bg there to take it over here.", FONT_SMALL, C_MUTED);
         return;
     }
+    note_t *n = note_find(key_of(s));
     if (!actionable(s)) {
-        text(card, "Stopped", FONT_SMALL, C_MUTED);
+        /* an action that just failed says why (e.g. "Session has stopped") */
+        if (n && n->kind == NOTE_ERROR) text(card, n->text, FONT_SMALL, C_RED);
+        else text(card, "Stopped", FONT_SMALL, C_MUTED);
         return;
     }
-    note_t *n = note_find(key_of(s));
     if (field_visible(s)) {
         s_ta = lv_textarea_create(card);
         lv_obj_set_width(s_ta, LV_PCT(100));
@@ -763,6 +765,7 @@ static void load_snapshot(void)
         bool keep = false;
         for (int i = 0; i < n; i++)
             if (strcmp(key_of(&s_items[i]), nt->key) == 0) { keep = s_items[i].state == nt->state; break; }
+        if (nt->kind == NOTE_ERROR) keep = true;   /* an error outlives the state change it explains */
         if (!keep || now - nt->at_ms > NOTE_TTL_MS) nt->kind = NOTE_NONE;
     }
     rebuild();
