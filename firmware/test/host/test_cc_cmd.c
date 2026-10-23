@@ -106,6 +106,65 @@ static void test_strip_ansi(void)
     TEST_ASSERT_EQUAL_UINT(strlen(s), n);
 }
 
+
+#define PS "\x1b[200~"
+#define PE "\x1b[201~"
+
+static void test_paste_build_exact(void)
+{
+    char o[64];
+    memset(o, 'x', sizeof(o));
+    size_t n = cc_paste_build("blue", o, sizeof(o));
+    const char want[] = PS "blue" PE "\r";
+    TEST_ASSERT_EQUAL_UINT(sizeof(want) - 1, n);
+    TEST_ASSERT_EQUAL_MEMORY(want, o, n);
+    TEST_ASSERT_EQUAL_UINT8(0, o[n]);
+    /* no Ctrl+U or Ctrl+Z: cc_link sends those separately */
+    TEST_ASSERT_NULL(memchr(o, 0x15, n));
+    TEST_ASSERT_NULL(memchr(o, 0x1a, n));
+}
+
+static void test_paste_build_strips_esc(void)
+{
+    char o[64];
+    size_t n = cc_paste_build("a\x1b[201~b", o, sizeof(o));
+    const char want[] = PS "a[201~b" PE "\r";
+    TEST_ASSERT_EQUAL_UINT(sizeof(want) - 1, n);
+    TEST_ASSERT_EQUAL_MEMORY(want, o, n);
+    /* the only ESCs are the two paste markers */
+    int esc = 0;
+    for (size_t i = 0; i < n; i++) esc += (o[i] == 0x1b);
+    TEST_ASSERT_EQUAL_INT(2, esc);
+}
+
+static void test_paste_build_controls(void)
+{
+    char o[64];
+    size_t n = cc_paste_build("line1\nline2", o, sizeof(o));
+    const char want[] = PS "line1\nline2" PE "\r";
+    TEST_ASSERT_EQUAL_UINT(sizeof(want) - 1, n);
+    TEST_ASSERT_EQUAL_MEMORY(want, o, n);
+    /* CR, TAB, Ctrl+C/U/Z, BEL and DEL never reach the TUI; UTF-8 is kept */
+    n = cc_paste_build("a\r\nb\tc\x03\x15\x1a\x07\x7f\xc3\xbc", o, sizeof(o));
+    const char want2[] = PS "a\nbc\xc3\xbc" PE "\r";
+    TEST_ASSERT_EQUAL_UINT(sizeof(want2) - 1, n);
+    TEST_ASSERT_EQUAL_MEMORY(want2, o, n);
+}
+
+static void test_paste_build_rejects(void)
+{
+    char o[64];
+    TEST_ASSERT_EQUAL_UINT(0, cc_paste_build("", o, sizeof(o)));
+    TEST_ASSERT_EQUAL_UINT(0, cc_paste_build(NULL, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_UINT(0, cc_paste_build("\x1b\x1b\r", o, sizeof(o))); /* empty once sanitized */
+    /* overflow: needs 6 + 4 + 6 + 1 bytes plus the NUL */
+    TEST_ASSERT_EQUAL_UINT(17, cc_paste_build("blue", o, 18));
+    o[0] = 'x';
+    TEST_ASSERT_EQUAL_UINT(0, cc_paste_build("blue", o, 17));
+    TEST_ASSERT_EQUAL_UINT8(0, o[0]);
+    TEST_ASSERT_EQUAL_UINT(0, cc_paste_build("blue", o, 0));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -116,5 +175,9 @@ int main(void)
     RUN_TEST(test_cmd_exact);
     RUN_TEST(test_cmd_rejects);
     RUN_TEST(test_strip_ansi);
+    RUN_TEST(test_paste_build_exact);
+    RUN_TEST(test_paste_build_strips_esc);
+    RUN_TEST(test_paste_build_controls);
+    RUN_TEST(test_paste_build_rejects);
     return UNITY_END();
 }

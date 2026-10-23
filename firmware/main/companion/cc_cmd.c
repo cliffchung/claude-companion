@@ -140,3 +140,31 @@ size_t cc_strip_ansi(char *s)
     s[w] = 0;
     return w;
 }
+
+size_t cc_paste_build(const char *text, char *out, size_t cap)
+{
+    static const char start[] = "\x1b[200~";
+    static const char end[] = "\x1b[201~\r";
+    if (!out || cap == 0) return 0;
+    out[0] = 0;
+    if (!text) return 0;
+    size_t o = sizeof(start) - 1, kept = 0;
+    if (o >= cap) return 0;
+    memcpy(out, start, o);
+    for (const char *p = text; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if ((c < 0x20 && c != '\n') || c == 0x7f) continue;
+        if (o + 1 >= cap) {
+            out[0] = 0;
+            return 0;
+        }
+        out[o++] = (char)c;
+        kept++;
+    }
+    if (kept == 0 || o + sizeof(end) > cap) { /* sizeof(end) counts the NUL */
+        out[0] = 0;
+        return 0;
+    }
+    memcpy(out + o, end, sizeof(end));
+    return o + sizeof(end) - 1;
+}

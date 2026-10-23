@@ -12,4 +12,9 @@ bool cc_cmd_reply(const char *claude, const char *sid, const char *text, char *o
 bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap);
 /* Removes CSI and OSC escape sequences in place; returns the new length. */
 size_t cc_strip_ansi(char *s);
+/* Bracketed paste for a TUI input box: ESC[200~ + text + ESC[201~ + CR, NUL-terminated.
+   Drops ESC, DEL and every C0 control byte except '\n' from text, so it can't end the paste
+   early or inject keys. Returns the byte count (without the NUL), or 0 for empty text
+   (also after sanitizing) or when it doesn't fit cap. */
+size_t cc_paste_build(const char *text, char *out, size_t cap);
 /* Every builder returns false for an invalid path, id or sid, empty text, or output that doesn't fit cap. */
