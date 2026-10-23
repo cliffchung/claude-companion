@@ -1,0 +1,20 @@
+# secrets & runtime
+.config/
+*.token
+token
+
+# firmware build output
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock
+
+# os / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# node (if a contributor adds a JS client)
+node_modules/
