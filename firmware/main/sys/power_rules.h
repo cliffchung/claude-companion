@@ -98,6 +98,12 @@ pr_hc_t pr_hib_checkin_decide(bool low_battery, bool poll_ok, bool needs_you, bo
 typedef enum { PR_SRC_UNKNOWN, PR_SRC_USB, PR_SRC_BATTERY } pr_src_t;
 typedef enum { PR_HG_GO, PR_HG_POWEROFF, PR_HG_GIVE_UP } pr_hg_t;
 pr_hg_t pr_hib_checkin_gate(pr_src_t src, int pct, bool charging);
+/* B1: after the gate gave up on UNKNOWN at armed_at_ms: CANCEL when the source settled or there was input
+   after arming (last_input_ms > armed_at_ms); FIRE (power off, side button wakes) once it has stayed
+   unknown for PR_UNKNOWN_BACKSTOP_MS; else WAIT. */
+#define PR_UNKNOWN_BACKSTOP_MS (30 * 60 * 1000LL)
+typedef enum { PR_UB_WAIT, PR_UB_FIRE, PR_UB_CANCEL } pr_ub_t;
+pr_ub_t pr_unknown_backstop(pr_src_t src, int64_t armed_at_ms, int64_t now_ms, int64_t last_input_ms);
 /* 0 (or less) -> 0 (Off); 1..14 -> 15; 721.. -> 720 */
 int  pr_hib_checkin_clamp_min(int min);
 

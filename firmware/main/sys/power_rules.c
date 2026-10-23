@@ -177,3 +177,9 @@ pr_hg_t pr_hib_checkin_gate(pr_src_t src, int pct, bool charging)
     if (src == PR_SRC_UNKNOWN) return PR_HG_GIVE_UP;
     return pr_battery_low(src == PR_SRC_BATTERY, pct, charging) ? PR_HG_POWEROFF : PR_HG_GO;
 }
+
+pr_ub_t pr_unknown_backstop(pr_src_t src, int64_t armed_at_ms, int64_t now_ms, int64_t last_input_ms)
+{
+    if (src != PR_SRC_UNKNOWN || last_input_ms > armed_at_ms) return PR_UB_CANCEL;
+    return now_ms - armed_at_ms >= PR_UNKNOWN_BACKSTOP_MS ? PR_UB_FIRE : PR_UB_WAIT;
+}

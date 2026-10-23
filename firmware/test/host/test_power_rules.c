@@ -473,6 +473,18 @@ void test_hib_checkin_gate(void)
     TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_USB, 5, true));
 }
 
+void test_unknown_source_backstop(void)
+{
+    /* B1: armed when the check-in gate gave up on UNKNOWN; fires after 30 min still unknown with no input */
+    const int64_t at = 1000000, M = 60000;
+    TEST_ASSERT_EQUAL_INT(PR_UB_WAIT, pr_unknown_backstop(PR_SRC_UNKNOWN, at, at + 29 * M, at - 5));
+    TEST_ASSERT_EQUAL_INT(PR_UB_FIRE, pr_unknown_backstop(PR_SRC_UNKNOWN, at, at + 30 * M, at - 5));
+    TEST_ASSERT_EQUAL_INT(PR_UB_FIRE, pr_unknown_backstop(PR_SRC_UNKNOWN, at, at + 90 * M, at));   /* input at arming counts as before */
+    TEST_ASSERT_EQUAL_INT(PR_UB_CANCEL, pr_unknown_backstop(PR_SRC_UNKNOWN, at, at + 30 * M, at + 1));   /* any input after */
+    TEST_ASSERT_EQUAL_INT(PR_UB_CANCEL, pr_unknown_backstop(PR_SRC_BATTERY, at, at + 30 * M, at - 5)); /* settled */
+    TEST_ASSERT_EQUAL_INT(PR_UB_CANCEL, pr_unknown_backstop(PR_SRC_USB, at, at + 1, at - 5));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -509,5 +521,6 @@ int main(void)
     RUN_TEST(test_battery_low);
     RUN_TEST(test_hib_checkin_low_battery);
     RUN_TEST(test_hib_checkin_gate);
+    RUN_TEST(test_unknown_source_backstop);
     return UNITY_END();
 }

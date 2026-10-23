@@ -50,6 +50,7 @@ static uint32_t s_wake_gen;         /* cc_poll_generation() at the last wake */
 static power_state_t s_woke_from = PS_ACTIVE;
 static bool s_pinned;               /* power_go: the ladder leaves the state alone until a wake */
 static int s_go_req = -1;
+static volatile bool s_off_req;     /* power_hibernate_off: the low-battery power-off, asked for by checkin (B1) */
 static uint32_t s_holds;            /* 1 << power_hold_t */
 static int s_sim_batt = -1;         /* power sim battery */
 typedef struct { int64_t at_ms; uint8_t why; uint16_t swallowed; } wake_rec_t;
@@ -458,6 +459,12 @@ bool power_battery_low(void)
     return pr_battery_low(batt, pct, chg);
 }
 
+void power_hibernate_off(void)
+{
+    s_off_req = true;
+    notify();
+}
+
 void power_unpin(void)
 {
     taskENTER_CRITICAL(&s_mux);
@@ -697,6 +704,7 @@ static void internal_wake(power_wake_t why)
    not sized for the power task's 4 KB (about 2 KB free). Gives s_hib_done only if it failed. */
 static SemaphoreHandle_t s_hib_done;
 static bool s_hib_low;              /* the battery <= 10% trigger: no check-in armed */
+static volatile bool s_force_off;   /* the running run_hibernate is that request */
 static void hib_task(void *arg)
 {
     (void)arg;
@@ -726,7 +734,7 @@ static void run_hibernate(power_state_t back_to)
         apply_light(true);   /* the Deep-idle rule: off unless something needs you */
         pr_in_t in;
         fill_in(&in, now_ms());
-        s_hib_low = pr_battery_low(in.on_battery, in.battery_pct, in.charging);
+        s_hib_low = s_force_off || pr_battery_low(in.on_battery, in.battery_pct, in.charging);
         if (!s_hib_done) s_hib_done = xSemaphoreCreateBinary();
         if (s_hib_done && xTaskCreate(hib_task, "hib", 6144, NULL, 4, NULL) == pdPASS)
             xSemaphoreTake(s_hib_done, portMAX_DELAY);   /* back here only if it failed */
@@ -839,6 +847,12 @@ static void power_task(void *arg)
         s_poll_on = s_dark && !s_poll_paused && display_ctl_board_version() != 1;   /* only this task writes it */
         touch_poll_step();
         handle_go();
+        if (s_off_req) {
+            s_off_req = false;
+            s_force_off = true;
+            run_hibernate(s_state);
+            s_force_off = false;
+        }
         if (s_wake_pending) do_wake();
         needs_you_step();
         /* the time is read after the steps above: a wake just moved last input */

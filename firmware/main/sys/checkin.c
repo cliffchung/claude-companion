@@ -81,6 +81,7 @@ static bool s_watchdog_fired;
 static int s_watchdog_tries, s_hib_tries;
 static volatile bool s_hib_settled; /* the check-in boot has gone down, or reached a state that isn't going down */
 static volatile uint32_t s_job_hwm; /* the last job's stack free (B), for `power checkins` */
+static volatile int64_t s_unk_at_ms;   /* B1: the gate gave up on an UNKNOWN source at this time, 0 = not armed */
 static bool s_hold_down;            /* the hold is over: JOB_DOWN until it starts */
 static int s_down_tries; /* the check-in boot reached a state that isn't "going down" (hold, debug, gave up) */
 
@@ -371,6 +372,7 @@ static void job_hib(void)
     }
     if (gate == PR_HG_GIVE_UP) {
         record(P_HIB_FAILED, (uint32_t)now_ms(), false);
+        s_unk_at_ms = now_ms();   /* B1: still unknown in 30 min with no input: power off */
         give_up("the power source never settled");
         return;
     }
@@ -510,6 +512,19 @@ void checkin_step(power_state_t st, int64_t now)
     if (s_quiet && !s_hib_settled && !s_watchdog_fired && now > HIB_WATCHDOG_MS) {
         if (xTaskCreate(hib_watchdog_task, "ck_wd", JOB_STACK, NULL, 4, NULL) == pdPASS) s_watchdog_fired = true;
         else if (++s_watchdog_tries >= JOB_RETRIES) { s_watchdog_fired = true; give_up("no memory for the watchdog"); }
+    }
+    /* B1: a source that never settled (an INA226 lost after the wake, say) must not keep the device awake on
+       an unknown battery until it is empty: after 30 min still unknown and untouched, power off */
+    if (s_unk_at_ms) {
+        pr_ub_t ub = pr_unknown_backstop(power_source(NULL, NULL), s_unk_at_ms, now, now - power_idle_ms());
+        if (ub == PR_UB_FIRE) {
+            ESP_LOGW("hib", "hib: power source unknown 30 min, powering off");
+            s_unk_at_ms = 0;
+            power_hibernate_off();
+        } else if (ub == PR_UB_CANCEL) {
+            ESP_LOGI(TAG, "unknown-source backstop: cancelled (%s)", power_source(NULL, NULL) != PR_SRC_UNKNOWN ? "source settled" : "input");
+            s_unk_at_ms = 0;
+        }
     }
     if (s_running) return;
     if (s_hib_pending) {

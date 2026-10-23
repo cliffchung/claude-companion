@@ -78,6 +78,9 @@ pr_src_t power_source(int *pct, bool *charging);
 /* Ends a pin (power_go) without a wake: the ladder decides again, its 10% trigger included. A check-in
    path that couldn't hibernate calls it, so nothing is left pinned awake with no ladder (I1). */
 void power_unpin(void);
+/* B1: the 3 s Hibernate notice, then a power-off with no check-in armed (the side button wakes it), whatever
+   the battery reads; input during the notice cancels it. Any task: the power task does it. */
+void power_hibernate_off(void);
 /* The four Task 8 settings as in force: a console test value (RAM only, P93) or the saved setting. */
 typedef enum { PCFG_RADIO_OFF, PCFG_RADIO_AFTER, PCFG_CHECKIN, PCFG_HIB_CHECKIN, PCFG_N } power_cfg_t;
 int  power_cfg(power_cfg_t c);
