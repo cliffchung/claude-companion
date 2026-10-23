@@ -1,6 +1,8 @@
 #include "power_log.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <math.h>
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
@@ -27,6 +29,8 @@ static plog_sample_t *s_buf;
 static plog_ring_t s_ring;
 static plog_sum_t s_sum[SLOT_COUNT];
 static bool s_on;
+static bool s_dumping;       /* pushes pause while a dump runs, so row indices don't shift */
+static bool s_accept_chg;    /* the fast bench runs on USB: let charging samples into the sums */
 static uint32_t s_last_save_t;
 static SemaphoreHandle_t s_mu;
 
@@ -110,29 +114,38 @@ void power_log_sample(uint8_t tag)
     if (!s_on) return;
     power_info_t p = sysinfo_power();
     if (!p.valid) return;
-    int pin = sysinfo_charge_pin();
+    int pin = sysinfo_charge_pin_last();   /* sysinfo_poll just read it */
+    uint16_t mv = (uint16_t)lroundf(p.bus_v * 1000.0f);
+    int16_t ma = (int16_t)lroundf(p.current_a * 1000.0f);
+    bool charging = ma < 0 || pin == 0;
     plog_sample_t x = {
         .t_s = sysinfo_uptime_s(),
-        .mv = (uint16_t)(p.bus_v * 1000.0f),
-        .ma = (int16_t)(p.current_a * 1000.0f),
-        .mw = (uint16_t)(p.power_w * 1000.0f),
+        .mv = mv,
+        .ma = ma,
+        .mw = plog_mw(mv, ma),
         .tag = tag,
-        .flags = (uint8_t)((pin == 0 ? 1 : 0) | (pin >= 0 ? 2 : 0)),
+        .flags = (uint8_t)((pin == 0 ? PLOG_F_PIN_LOW : 0) | (pin >= 0 ? PLOG_F_PIN_OK : 0) |
+                           (charging ? PLOG_F_CHARGING : 0)),
     };
     lock();
     if (s_on) {
-        plog_push(&s_ring, &x);
+        if (!s_dumping) plog_push(&s_ring, &x);
         int slot = slot_of(tag);
-        if (slot >= 0) plog_sum_add(&s_sum[slot], &x);
+        /* charge power isn't consumption: keep charging samples out of the battery summaries */
+        if (slot >= 0 && (!charging || s_accept_chg)) plog_sum_add(&s_sum[slot], &x);
         if (x.t_s - s_last_save_t >= SAVE_EVERY_S) { s_last_save_t = x.t_s; save_sums(); }
     }
     unlock();
 }
 
+void power_log_accept_charging(bool on) { s_accept_chg = on; }
+
 void power_log_dump(void)
 {
     lock();
+    if (s_dumping) { unlock(); printf("power log: a dump is already running\n"); return; }
     uint32_t n = s_buf ? s_ring.count : 0;
+    s_dumping = true;
     unlock();
     printf("@@PLOG %lu\n", (unsigned long)n);
     for (uint32_t i = 0; i < n; i++) {
@@ -140,16 +153,20 @@ void power_log_dump(void)
         lock();
         bool ok = plog_get(&s_ring, i, &x);
         unlock();
-        if (!ok) break;
+        if (!ok) break;   /* cannot happen: pushes and clear are held off */
         printf("%lu,%u,%d,%u,%u,%u\n", (unsigned long)x.t_s, x.mv, x.ma, x.mw, x.tag, x.flags);
         if ((i & 0xFF) == 0xFF) vTaskDelay(1);   /* let the console task and the idle poll run */
     }
     printf("@@END\n");
+    lock();
+    s_dumping = false;
+    unlock();
 }
 
 void power_log_clear(void)
 {
     lock();
+    if (s_dumping) { unlock(); printf("power log: not cleared, a dump is running\n"); return; }
     if (s_buf) plog_init(&s_ring, s_buf, PLOG_CAP);
     memset(s_sum, 0, sizeof(s_sum));
     nvs_erase_key_ns(NVS_NS, "sum");

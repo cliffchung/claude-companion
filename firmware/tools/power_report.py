@@ -4,6 +4,7 @@
 usage: power_report.py --port PORT (--log | --bench) [--capacity-mwh N]
 """
 import argparse
+import re
 import sys
 import time
 
@@ -11,8 +12,19 @@ BENCH_FIELDS = ("name", "seconds", "avg_mw", "min_mw", "max_mw", "avg_ma", "mwh_
 DUMP_FIELDS = ("t_s", "mv", "ma", "mw", "tag", "flags")
 
 
-def _block(lines, marker):
-    """Rows between '@@<marker> <n>' and '@@END', ignoring every other line."""
+DUMP_ROW = re.compile(r"^-?\d+(,-?\d+){5}$")
+BENCH_ROW = re.compile(r"^[^,]+(,-?\d+){6},.+$")
+F_CHARGING = 4
+
+
+def is_charging(s):
+    """A sample taken while charging (current flowing in, or the charge pin low) is not battery use."""
+    return s["ma"] < 0 or bool(s["flags"] & F_CHARGING)
+
+
+def _block(lines, marker, row_re):
+    """Rows between '@@<marker> <n>' and '@@END'. Lines outside the block, and log lines that
+    interleave inside it, are skipped; the row count is still enforced."""
     head = "@@" + marker + " "
     rows, count, open_ = [], None, False
     for raw in lines:
@@ -29,13 +41,14 @@ def _block(lines, marker):
             if len(rows) != count:
                 raise ValueError("@@%s said %d rows, got %d" % (marker, count, len(rows)))
             return rows
-        rows.append(line)
+        if row_re.match(line):
+            rows.append(line)
     raise ValueError("missing @@END" if open_ else "no @@%s block" % marker)
 
 
 def parse_dump(lines):
     out = []
-    for row in _block(lines, "PLOG"):
+    for row in _block(lines, "PLOG", DUMP_ROW):
         parts = row.split(",")
         if len(parts) != len(DUMP_FIELDS):
             raise ValueError("bad PLOG row: %r" % row)
@@ -45,7 +58,7 @@ def parse_dump(lines):
 
 def parse_bench(lines):
     out = []
-    for row in _block(lines, "BENCH"):
+    for row in _block(lines, "BENCH", BENCH_ROW):
         parts = row.split(",", len(BENCH_FIELDS) - 1)
         if len(parts) != len(BENCH_FIELDS):
             raise ValueError("bad BENCH row: %r" % row)
@@ -59,23 +72,21 @@ def parse_bench(lines):
 def summarize(samples):
     acc = {}
     for s in samples:
-        a = acc.setdefault(s["tag"], {"n": 0, "mw": 0, "ma": 0, "first": s["t_s"], "last": s["t_s"]})
+        a = acc.setdefault(s["tag"], {"n": 0, "mw": 0, "ma": 0})
         a["n"] += 1
         a["mw"] += s["mw"]
         a["ma"] += s["ma"]
-        a["first"] = min(a["first"], s["t_s"])
-        a["last"] = max(a["last"], s["t_s"])
     out = {}
     for tag, a in acc.items():
         avg_mw = a["mw"] / a["n"]
         out[tag] = {"n": a["n"], "avg_mw": avg_mw, "avg_ma": a["ma"] / a["n"],
-                    "mwh": avg_mw * (a["last"] - a["first"] + 1) / 3600.0}
+                    "mwh": a["mw"] / 3600.0}   # 1 Hz: n samples = n seconds
     return out
 
 
 def estimate_hours(capacity_mwh, mix, summary):
     """Battery life for a usage mix {tag: fraction of time}, from each tag's average power."""
-    mw = sum(frac * summary[tag]["avg_mw"] for tag, frac in mix.items())
+    mw = sum(frac * summary[tag]["avg_mw"] for tag, frac in mix.items() if tag in summary)
     return capacity_mwh / mw if mw > 0 else float("inf")
 
 
@@ -103,13 +114,17 @@ def main(argv=None):
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--log", action="store_true")
     g.add_argument("--bench", action="store_true")
+    ap.add_argument("--include-charging", action="store_true", help="keep charging samples in --log")
     ap.add_argument("--capacity-mwh", type=float, default=14800)
     a = ap.parse_args(argv)
     try:
         if a.log:
             samples = parse_dump(_read_block(a.port, "power log dump", "PLOG"))
+            total = len(samples)
+            if not a.include_charging:
+                samples = [s for s in samples if not is_charging(s)]
             summ = summarize(samples)
-            print("%d samples" % len(samples))
+            print("%d samples (%d charging samples left out)" % (total, total - len(samples)))
             print("tag     n   avg_mw  avg_ma     mWh")
             for tag in sorted(summ):
                 r = summ[tag]

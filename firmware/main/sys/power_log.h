@@ -11,6 +11,7 @@ extern "C" {
 void power_log_boot(void);                 /* logs "reset reason: <name>", counts it in NVS; call right after settings_init() */
 void power_log_sample(uint8_t tag);        /* called each second by the idle task while logging is on */
 bool power_log_on(void);
+void power_log_accept_charging(bool on);   /* default off: charging samples stay out of the summaries */
 void power_log_enable(bool on);
 void power_log_dump(void);                 /* @@PLOG <n>, "t_s,mv,ma,mw,tag,flags" lines, @@END */
 void power_log_clear(void);

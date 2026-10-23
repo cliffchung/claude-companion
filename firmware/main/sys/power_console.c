@@ -1,6 +1,7 @@
 #include "power_console.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "esp_console.h"
 #include "sys/debug_console.h"
 #include "sys/sysinfo.h"
@@ -30,8 +31,15 @@ static int cmd_power(int argc, char **argv)
     if (argc == 1) {
         power_info_t p = sysinfo_power();
         /* state, idle and holds belong to the power state machine (Task 5) */
-        printf("power: %.2f V %d mA %.2f W %d%% charging=%s src=%s chg_pin=%d state=- idle=- holds=-\n",
-               p.bus_v, (int)(p.current_a * 1000.0f), p.power_w, p.percent,
+        char pct[8] = "-";
+        if (p.percent >= 0) snprintf(pct, sizeof(pct), "%d%%", p.percent);
+        if (!p.valid) {
+            printf("power: - V - mA - W %s charging=- src=%s chg_pin=%d state=- idle=- holds=-\n", pct,
+                   src_name(p.src), sysinfo_charge_pin());
+            return 0;
+        }
+        printf("power: %.2f V %d mA %.2f W %s charging=%s src=%s chg_pin=%d state=- idle=- holds=-\n",
+               p.bus_v, (int)lroundf(p.current_a * 1000.0f), p.bus_v * fabsf(p.current_a), pct,
                p.src == PWR_USB_CHARGING ? "yes" : "no", src_name(p.src), sysinfo_charge_pin());
         return 0;
     }

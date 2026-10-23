@@ -48,6 +48,18 @@ uint32_t plog_sum_avg_mw(const plog_sum_t *s)
 uint32_t plog_sum_mwh_x1000(const plog_sum_t *s)
 {
     if (!s->n) return 0;
-    uint64_t secs = (uint64_t)(s->last_t - s->first_t) + 1;
-    return (uint32_t)((uint64_t)plog_sum_avg_mw(s) * secs * 10 / 36);
+    return (uint32_t)((uint64_t)plog_sum_avg_mw(s) * s->n * 10 / 36);
+}
+
+uint16_t plog_mw(uint16_t mv, int16_t ma)
+{
+    uint32_t a = ma < 0 ? (uint32_t)(-(int32_t)ma) : (uint32_t)ma;
+    uint32_t mw = ((uint32_t)mv * a + 500) / 1000;
+    return mw > 0xFFFF ? 0xFFFF : (uint16_t)mw;
+}
+
+plog_step_verdict_t plog_step_verdict(const plog_sum_t *s, bool usb_seen)
+{
+    if (usb_seen) return PLOG_STEP_USB;
+    return s->n ? PLOG_STEP_OK : PLOG_STEP_NO_SAMPLES;
 }

@@ -15,6 +15,16 @@ class ParseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pr.parse_dump(["@@PLOG 3", "1,2,3,4,0,2", "2,2,3,4,0,2", "@@END"])
 
+    def test_parse_dump_skips_interleaved_log_lines(self):
+        lines = ["@@PLOG 2", "10,7400,-412,3140,0,2", "I (5) wifi: scan done", "11,7390,-400,3100,0,3", "@@END"]
+        self.assertEqual(len(pr.parse_dump(lines)), 2)
+        with self.assertRaises(ValueError):   # a skipped line can't hide a missing row
+            pr.parse_dump(["@@PLOG 2", "10,7400,-412,3140,0,2", "I (5) wifi: scan done", "@@END"])
+
+    def test_parse_bench_skips_interleaved_log_lines(self):
+        rows = pr.parse_bench(["@@BENCH 1", "I (9) x: noise, with, commas", "settle,60,1,1,1,1,1,usb", "@@END"])
+        self.assertEqual(rows[0]["status"], "usb")
+
     def test_parse_dump_missing_end(self):
         with self.assertRaises(ValueError):
             pr.parse_dump(["@@PLOG 1", "1,2,3,4,0,2"])
@@ -42,6 +52,14 @@ class MathTests(unittest.TestCase):
         self.assertEqual(out[0]["avg_ma"], 200)
         self.assertEqual(out[2]["avg_mw"], 500)
         self.assertEqual(out[0]["mwh"], 2000 * 2 / 3600)
+
+    def test_charging_samples_are_flagged(self):
+        self.assertTrue(pr.is_charging(dict(ma=-5, flags=2)))
+        self.assertTrue(pr.is_charging(dict(ma=5, flags=7)))
+        self.assertFalse(pr.is_charging(dict(ma=5, flags=2)))
+
+    def test_estimate_skips_tags_missing_from_summary(self):
+        self.assertAlmostEqual(pr.estimate_hours(1000, {0: 0.5, 9: 0.5}, {0: {"avg_mw": 500}}), 4.0)
 
     def test_estimate_hours(self):
         summary = {0: {"avg_mw": 3000}, 2: {"avg_mw": 1000}}

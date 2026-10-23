@@ -21,6 +21,7 @@ static const char *TAG = "sysinfo";
 static i2c_master_dev_handle_t s_ina = NULL, s_rtc = NULL;
 static power_info_t s_pwr;
 static bool s_charge_stat_valid = false;
+static int s_last_pin = -1;
 
 static bool i2c_wr_rd(i2c_master_dev_handle_t dev, const uint8_t *w, size_t wl, uint8_t *r, size_t rl)
 {
@@ -84,6 +85,8 @@ int sysinfo_charge_pin(void)
     return lv ? 1 : 0;
 }
 
+int sysinfo_charge_pin_last(void) { return s_last_pin; }
+
 void sysinfo_poll(void)
 {
     if (!s_ina) { s_pwr.valid = false; s_pwr.percent = -1; s_pwr.src = PWR_UNKNOWN; return; }
@@ -96,6 +99,7 @@ void sysinfo_poll(void)
     s_pwr.valid = true;
     /* Charge status from IO expander 2 pin 4 (input, active low) when available. */
     int pin = sysinfo_charge_pin();
+    s_last_pin = pin;
     bool charging = (pin == 0);
     if (pin >= 0) s_charge_stat_valid = true;
     if (s_pwr.current_a < -0.05f || charging) s_pwr.src = PWR_USB_CHARGING;
