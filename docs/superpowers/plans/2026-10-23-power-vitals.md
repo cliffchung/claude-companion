@@ -41,9 +41,9 @@
 
 1. **A held key or key repeat while the device wakes** → nothing reaches the dashboard; the first key after the device is awake works normally. Covered by Task 5 `test_swallow_held_key_repeats` and the Step 6 `key` check.
 2. **The Mac sleeps with the watch loop running** (the loop is suspended, then resumes with a big `$SECONDS` jump and no keepalives) → the loop exits on resume and leaves nothing behind. Covered by Task 4 `test_suspended_loop_exits_on_resume` (SIGSTOP/SIGCONT) and the Task 10 `ps` check after a real Mac sleep.
-3. **No battery fitted, or the INA226 not found** → the bar shows no percentage (never a red 0%), and Radio off never engages, because "on battery" is false. Covered by Task 2 `test_battery_unknown_not_low` and Task 5 `test_radio_off_needs_battery`.
+3. **No battery fitted, or the INA226 not found** → the bar shows no percentage (never a red 0%), and Radio off never engages, because "on battery" is false. With the INA226 present and no pack, the bus voltage is below 5.5 V and counts as no battery. Covered by Task 2 `test_battery_unknown_not_low` and `test_no_pack_is_unknown`, and Task 5 `test_radio_off_needs_battery`.
 4. **Radio off with check-ins up to `checkin_min` apart** → the amber keyboard light is not dropped between check-ins by the 5-minute staleness rule. Covered by Task 3 `test_light_age_limit_follows_checkin`.
-5. **A keyboard colour saved before this plan as gold or orange, or typed as amber hex** → never shows on the keyboard; it is reset to the default blue on load and refused on entry. Covered by Task 3 `test_amber_like_colours` and the Step 7 hex-entry check.
+5. **A keyboard colour saved before this plan as gold or orange** → never shows on the keyboard; it is reset to the default blue on load, and the presets hold no amber-like colour. Covered by Task 3 `test_amber_like_colours` and the Step 7 preset check.
 
 ---
 
@@ -53,12 +53,12 @@
 - Create: `firmware/main/sys/plog.c`, `firmware/main/sys/plog.h` (pure ring and summaries)
 - Create: `firmware/main/sys/power_log.c`, `firmware/main/sys/power_log.h` (sampling, NVS summaries, reset reasons)
 - Create: `firmware/main/sys/power_bench.c`, `firmware/main/sys/power_bench.h`
-- Create: `firmware/main/sys/power_console.c` (the `power` command)
+- Create: `firmware/main/sys/power_console.c`, `firmware/main/sys/power_console.h` (the `power` command; `void power_console_init(void);`)
 - Create: `firmware/tools/power_report.py`, `firmware/tools/test_power_report.py`
 - Create: `firmware/test/host/test_plog.c`
-- Modify: `firmware/test/host/CMakeLists.txt` (add a `pure` library with `../../main/sys/plog.c`, later tasks add their pure files to it; add `test_plog`)
-- Modify: `firmware/main/sys/sysinfo.c`, `sysinfo.h` (expose the raw charge pin)
-- Modify: `firmware/main/app_main.c` (reset reason at boot, staggered rails, the idle task samples the log)
+- Modify: `firmware/test/host/CMakeLists.txt` (add a `pure` library with `../../main/sys/plog.c` and `firmware/main` in its include dirs, so `companion/cc_sessions.h` resolves; later tasks add their pure files to it; add `test_plog`)
+- Modify: `firmware/main/sys/sysinfo.c`, `sysinfo.h` (expose the raw charge pin; `sysinfo_poll` reads it through that function)
+- Modify: `firmware/main/app_main.c` (reset reason at boot, staggered rails, `power_console_init()` beside `cc_console_init()`, the idle task samples the log)
 - Modify: `firmware/sdkconfig.defaults` (brownout)
 
 **Interfaces:**
@@ -66,7 +66,7 @@
 
 ```c
 typedef struct { uint32_t t_s; uint16_t mv; int16_t ma; uint16_t mw; uint8_t tag; uint8_t flags; } plog_sample_t;
-/* tag: power state 0..3 (Task 5), 0x10+n for bench step n; flags bit0 = charge pin low, bit1 = pin read OK */
+/* tag: power state 0..3 (Task 5), 0x10+n for bench step n, 0x80|state for a Radio-off check-in (0x83); flags bit0 = charge pin low, bit1 = pin read OK */
 typedef struct { plog_sample_t *buf; uint32_t cap, head, count; } plog_ring_t;
 void plog_init(plog_ring_t *r, plog_sample_t *buf, uint32_t cap);
 void plog_push(plog_ring_t *r, const plog_sample_t *s);           /* overwrites the oldest when full */
@@ -74,10 +74,10 @@ bool plog_get(const plog_ring_t *r, uint32_t i, plog_sample_t *out); /* i = 0 is
 typedef struct { uint32_t n; int64_t sum_mw, sum_ma; uint16_t min_mw, max_mw; uint32_t first_t, last_t; } plog_sum_t;
 void plog_sum_add(plog_sum_t *s, const plog_sample_t *x);
 uint32_t plog_sum_avg_mw(const plog_sum_t *s);                    /* 0 when empty */
-uint32_t plog_sum_mwh_x1000(const plog_sum_t *s);                 /* avg mW x seconds covered / 3.6 */
+uint32_t plog_sum_mwh_x1000(const plog_sum_t *s);                 /* avg mW x seconds covered / 3.6; seconds covered = last_t - first_t + 1 */
 ```
 
-- Produces, in `power_log.h`: `void power_log_boot(void);` (logs `reset reason: <name>` and adds 1 to that reason's counter in NVS ns `power`, key `rst`); `void power_log_sample(uint8_t tag);` (called each second by the idle task while logging is on); `bool power_log_on(void); void power_log_enable(bool on);` (65 536-sample PSRAM ring, about 18 h; per-tag `plog_sum_t` saved to NVS key `sum` every 60 s while on); `void power_log_dump(void);` (prints `@@PLOG <n>`, then one CSV line `t_s,mv,ma,mw,tag,flags` per sample, then `@@END`); `void power_log_clear(void);`; `void power_log_resets(void);`.
+- Produces, in `power_log.h`: `void power_log_boot(void);` (logs `reset reason: <name>` and adds 1 to that reason's counter in NVS ns `power`, key `rst`); `void power_log_sample(uint8_t tag);` (called each second by the idle task while logging is on); `bool power_log_on(void); void power_log_enable(bool on);` (65 536-sample PSRAM ring, about 18 h; per-tag `plog_sum_t` saved to NVS key `sum` every 60 s while on, with a table that holds every tag in use: 0..3, 0x10+n and 0x80|state); `void power_log_dump(void);` (prints `@@PLOG <n>`, then one CSV line `t_s,mv,ma,mw,tag,flags` per sample, then `@@END`); `void power_log_clear(void);`; `void power_log_resets(void);`.
 - Produces, in `power_bench.h`:
 
 ```c
@@ -100,7 +100,7 @@ void power_bench_report(void);       /* @@BENCH <n>, then "name,seconds,avg_mw,m
 
 - [ ] **Step 1: Write the failing host tests** in `firmware/test/host/test_plog.c`
   - `test_ring_wraps_oldest_first`: cap 4, push t = 1..6 → count 4, `plog_get(0)` is t = 3 and `plog_get(3)` is t = 6, `plog_get(4)` returns false.
-  - `test_sum_avg_and_energy`: three samples of 1000, 2000 and 3000 mW at t = 10, 11, 12 → avg 2000, min 1000, max 3000; `plog_sum_mwh_x1000` = 2000 × 3 s / 3.6 = 1 666 666 (±1).
+  - `test_sum_avg_and_energy`: three samples of 1000, 2000 and 3000 mW at t = 10, 11, 12 → avg 2000, min 1000, max 3000; `plog_sum_mwh_x1000` = 2000 × 3 s / 3.6 = 1 667 (±1).
   - `test_sum_empty`: avg 0, mWh 0.
 
 - [ ] **Step 2: Run them to make sure they fail**
@@ -120,8 +120,8 @@ Expected: FAIL (undefined `plog_*`)
 
 - [ ] **Step 6: Implement the device side**
   - `power_log.c`, `power_bench.c` and `power_console.c`.
-  - `sysinfo_charge_pin`.
-  - In `app_main`, call `power_log_boot()` right after `settings_init()`.
+  - `sysinfo_charge_pin`, which `sysinfo_poll` also calls instead of reading the expander pin inline.
+  - In `app_main`, call `power_log_boot()` right after `settings_init()`, and `power_console_init()` beside `cc_console_init()`.
   - Stagger the rails: wait `vTaskDelay(pdMS_TO_TICKS(50))` between the four `bsp_feature_enable` calls (LCD, touch, Wi-Fi, USB), keeping their order.
   - Add `CONFIG_ESP_BROWNOUT_DET=y` and `CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y` (2.6 V, the P4's highest threshold and its default, now explicit) to `sdkconfig.defaults` with a comment.
   - Delete `firmware/sdkconfig`, then build and flash.
@@ -192,7 +192,7 @@ float vitals_ocv(float bus_v, float current_a, float r_ohm);   /* bus_v + curren
 int   vitals_percent_from_ocv(float pack_v);                   /* 2S curve below, clamped 0..100 */
 typedef struct { float ema_v; bool init; } vitals_batt_t;
 int   vitals_batt_update(vitals_batt_t *b, float bus_v, float current_a, float dt_s);
-/* load-compensate with VITALS_R_INT_OHM (0.15, an estimate), EMA with tau 30 s
+/* bus_v < 5.5 V (no 2S pack sits that low) → -1 without touching the EMA; otherwise load-compensate with VITALS_R_INT_OHM (0.15, an estimate), EMA with tau 30 s
    (alpha = dt / (30 + dt)), first sample seeds the EMA; returns the percent */
 #define VITALS_R_INT_OHM 0.15f
 typedef enum { VB_NONE, VB_NORMAL, VB_LOW } vitals_bat_level_t;
@@ -235,6 +235,7 @@ extern const vitals_tz_t vitals_tz_presets[];       /* NULL-terminated, US Pacif
   - `test_curve_monotonic`: from 6.5 to 8.5 V in 0.01 V steps the percent never falls.
   - `test_load_compensation`: `vitals_ocv(7.40, 1.0, 0.15)` = 7.55; charging `vitals_ocv(8.10, -0.5, 0.15)` = 8.025.
   - `test_ema_tau`: seed at 7.40 V (0 A), then 30 samples at 8.00 V with dt 1 → `ema_v` within 7.40 + 0.6 × 0.63 ± 0.03.
+  - `test_no_pack_is_unknown` (Review Focus 3): `vitals_batt_update` with 0.0 V and with 5.0 V → -1.
   - `test_battery_unknown_not_low` (Review Focus 3): `vitals_bat_level(-1, false)` = `VB_NONE`; `(15, false)` = `VB_LOW`; `(15, true)` = `VB_NORMAL`; `(16, false)` = `VB_NORMAL`.
   - `test_wifi_bars`: (false, -40) → 0; (true, -55) → 4; (true, -56) → 3; (true, -67) → 3; (true, -75) → 2; (true, -90) → 1.
   - `test_tz_valid`: every preset is valid; `""`, `"PST8PDT;rm"`, `"x y"` and a 48-character string are not.
@@ -293,12 +294,13 @@ git commit -m "feat(vitals): POSIX time zone, battery curve with EMA and load co
 - Create: `firmware/main/sys/power_rules.c`, `firmware/main/sys/power_rules.h` (pure; Task 5 extends it)
 - Create: `firmware/main/sys/power.c`, `firmware/main/sys/power.h` (Task 3 creates the module with the light owner only; Task 5 adds the states)
 - Create: `firmware/test/host/test_power_rules.c`
-- Modify: `firmware/main/input/keyboard.c`, `keyboard.h` (the LED source getter; hot-plug)
-- Modify: `firmware/main/ui/ui_settings.c` (drop the gold and orange presets; refuse amber hex; route LED changes through the owner; the "Keyboard light shows needs-you" switch)
+- Modify: `firmware/main/input/keyboard.c`, `keyboard.h` (the LED source getter; hot-plug; record the last values `keyboard_set_led` wrote)
+- Modify: `firmware/main/ui/ui_settings.c` (drop the gold and orange presets; route LED changes through the owner; the "Keyboard light shows needs-you" switch)
 - Modify: `firmware/main/settings/settings.c` (reset an amber-like saved colour)
 - Modify: `firmware/main/sys/power_bench.c` (steps `off-light-amber`, 90 s, and `off-light-off`, 90 s; their `enter` returns false until Task 5 provides Off)
 - Modify: `firmware/main/companion/cc_link.c`, `cc_link.h` (`cc_poll_last_ok_ms`), `firmware/main/sys/power_console.c` (`power light`), `firmware/main/app_main.c` (`power_init`)
-- Modify: `firmware/test/host/CMakeLists.txt`
+- Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls)
+- Modify: `firmware/test/host/CMakeLists.txt` (add `power_rules.c` to the `pure` library, link it to `companion`)
 
 **Interfaces:**
 - Produces, in `power_rules.h`:
@@ -318,15 +320,15 @@ int64_t pr_light_max_age_ms(bool radio_off, int checkin_min);
   - `void power_init(void);` starts the `power` task (stack 4096, priority 3).
   - `void power_kbd_light_refresh(void);` re-evaluates the light now. Settings calls it after a change.
   - `void power_kbd_light_get(pr_led_t *out);` gives the current colour, for hot-plug.
-  - The owner subscribes with `cc_poll_subscribe`. Its callback stores `pr_any_needs_you` and the result time under the module's lock, then notifies the power task; the task calls `keyboard_set_led`.
-- Produces, in `keyboard.h`: `void keyboard_set_led_source(void (*get)(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b));`. `kb_probe` asks the source for the colour instead of reading `g_settings`, so a keyboard plugged in later picks up the current state.
+  - The owner subscribes with `cc_poll_subscribe`. Its callback stores `pr_any_needs_you`, the first needs-you session's name and the result time under the module's lock, then notifies the power task; the task calls `keyboard_set_led`.
+- Produces, in `keyboard.h`: `void keyboard_set_led_source(void (*get)(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b));`. `kb_probe` asks the source for the colour instead of reading `g_settings`, so a keyboard plugged in later picks up the current state. `keyboard.c` also records the last mode, brightness and colour it wrote with `keyboard_set_led`: `void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b);`.
 - Consumes: `cc_poll_subscribe` (Plan 1). It adds `int64_t cc_poll_last_ok_ms(void);` to `cc_link.h`: the `esp_timer` ms of the last successful result, or 0. Task 4 keeps it current for watch blocks too.
 - Console:
-  - `power light` prints the owner's choice as `light: <mode> <bright> <r> <g> <b> (<reason>)`, where the reason is `needs you: <name>`, `nobody needs you`, `setting off` or `result too old`.
+  - `power light` prints the owner's choice as `light: <mode> <bright> <r> <g> <b> (<reason>)`, where the reason is `needs you: <name>`, `nobody needs you`, `setting off` or `result too old`, followed by `kbd: <mode> <bright> <r> <g> <b>`, the values `keyboard_set_led` last wrote.
   - Debug subcommands: `power light test bind` writes mode 0 at brightness 60; `power light test user` restores the owner's choice; `power light test reprobe` marks the keyboard absent so the task re-probes it as on a hot-plug.
 
 - [ ] **Step 1: Write the failing host tests** in `test_power_rules.c`
-  - `test_amber_like_colours` (Review Focus 5): true for 0xF4B545, 0xFFD700 and 0xFF8000; false for 0x0080FF, 0xFFFFFF, 0xFF4040, 0x40FF40, 0xFF40FF, 0x00FFFF and 0x806020 (dark).
+  - `test_amber_like_colours` (Review Focus 5): true for 0xF4B545, 0xFFD700 and 0xFF8000; false for 0x0080FF, 0xFFFFFF, 0xFF4040, 0x40FF40, 0xFF40FF, 0x00FFFF and 0x604818 (dark).
   - `test_light_needs_you_amber`: user {0, 20, 0, 128, 255}, setting on, needs_you, age 1 s → {1, 30, f4, b5, 45}. With user brightness 0 → brightness 30. With user brightness 80 → 80.
   - `test_light_user_when_clear`: needs_you false → exactly the user's struct; setting off → user's.
   - `test_light_stale_result_reverts`: age 300 001 ms, max 300 000 → user's.
@@ -343,9 +345,9 @@ Expected: FAIL
 
 - [ ] **Step 4: Implement the owner, the keyboard source, the settings changes and the migration**
   - The presets become `{ 0x0080FF, 0xFFFFFF, 0xFF4040, 0x40FF40, 0xFF40FF, 0x00FFFF }`.
-  - The colour-entry path refuses an amber-like value with the toast `Amber is reserved for sessions that need you`.
   - `settings_init` replaces an amber-like saved `kbd_led_rgb` with 0x0080FF.
   - In Task 3, `screen_off` is always false.
+  - Add the preview stubs for the new external calls, then build the preview (`firmware/tools/ui_preview/README.md`).
   - `app_main` calls `power_init()` after `cc_link_start()`.
   - Build and flash.
 
@@ -364,20 +366,20 @@ Expected: `light: 1 30 f4 b5 45 (needs you: companion-test-light)` (brightness 3
 Run: `python3 $T5 "reply <its id> green"`, wait for the next poll, then run `python3 $T5 "power light"`.
 Expected: the user's setting, reason `nobody needs you`.
 
-Hot-plug: start a fresh `companion-test-light2` (same prompt), wait for it to block, then run `python3 $T5 "power light test reprobe"`.
-Expected: after the re-probe, `power light` still shows amber.
+Hot-plug: start a fresh `companion-test-light2` (same prompt), wait for it to block, then run `python3 $T5 "power light test bind"`, `python3 $T5 "power light test reprobe"` and `python3 $T5 "power light"`.
+Expected: after the re-probe, the `kbd:` values are amber (`1 30 f4 b5 45`) again, not the user's colour and not the bind probe's.
 
 Stop the test session.
 
 - [ ] **Step 7: Check the colour rules**
 
 Open Settings → the keyboard light colour (navigate with `key`) and take a screenshot.
-Expected: no gold or orange preset. If there is a hex-entry row, entering `F4B545` shows the refusal toast (take a screenshot).
+Expected: no gold or orange preset.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add firmware/main firmware/test/host
+git add firmware/main firmware/test/host firmware/tools/ui_preview docs/superpowers/notes/2026-10-23-plan2-rulings.md
 git commit -m "feat(power): keyboard light owner shows needs-you in amber; drop amber-like presets"
 ```
 
@@ -387,10 +389,12 @@ git commit -m "feat(power): keyboard light owner shows needs-you in amber; drop 
 - Create: `firmware/main/companion/cc_watch.c`, `firmware/main/companion/cc_watch.h` (pure parser)
 - Create: `firmware/test/host/test_cc_watch.c`, `firmware/test/host/cc_cmd_print.c` (prints `cc_cmd_watch` output for the Python test)
 - Create: `firmware/tools/test_watch_loop.py`
+- Modify: `docs/superpowers/specs/2026-10-22-claude-tab5-design.md` (the "Nothing extra runs on the Mac" line)
 - Modify: `firmware/main/companion/cc_cmd.c`, `cc_cmd.h` (`cc_cmd_watch`), `firmware/test/host/test_cc_cmd.c`
 - Modify: `firmware/main/companion/cc_link.c`, `cc_link.h` (watch channel, liveness, fallback, new getters)
 - Modify: `firmware/main/companion/cc_console.c` (`companion watch …`)
 - Modify: `firmware/main/ui/ui_dashboard.c` (take-over sets rate 15 instead of 0)
+- Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls)
 - Modify: `firmware/test/host/CMakeLists.txt` (add `cc_watch.c`, `test_cc_watch` and the `cc_cmd_print` executable)
 
 **Interfaces:**
@@ -415,7 +419,7 @@ exec /bin/sh -c 'stty -echo 2>/dev/null; C=~/.local/bin/claude; I=3; H=60; T=60;
 typedef enum { CC_WATCH_NONE, CC_WATCH_BANNER, CC_WATCH_BLOCK, CC_WATCH_HEARTBEAT,
                CC_WATCH_BYE, CC_WATCH_OVERFLOW } cc_watch_ev_t;
 typedef struct {
-    char *body; size_t cap, len;   /* caller's buffer (the 256 KB poll buffer); NUL-terminated at BLOCK */
+    char *body; size_t cap, len;   /* the watch's own PSRAM buffer of JSON_CAP; NUL-terminated at BLOCK */
     int rc;                        /* BLOCK: the loop's exit status for that run */
     char bye[16];                  /* BYE: "eof" | "quiet" | "life" */
     /* private line state follows */
@@ -428,12 +432,13 @@ cc_watch_ev_t cc_watch_feed(cc_watch_t *w, const char *data, size_t n, size_t *u
    gives OVERFLOW at its END line instead of BLOCK. A body line of any length works. */
 ```
 - Produces, in `cc_link.h`:
-  - `void cc_poll_set_floor(int seconds);` makes the effective interval `max(rate, floor)`. Task 5 sets 15 in Off and 0 otherwise.
+  - `void cc_poll_set_floor(int seconds);` makes the effective interval `floor > 0 ? floor : rate`. Task 5 sets 15 in Off and 0 otherwise.
   - `uint32_t cc_poll_generation(void);` counts successful results, from blocks or polls.
   - `int64_t cc_poll_last_ok_ms(void);` (from Task 3) also covers blocks.
   - `bool cc_link_busy(void);` is true while a paste or live check is in flight, as a power hold.
   - `void cc_link_watch_enable(bool on);` and `const char *cc_watch_status_text(char *buf, size_t cap);` write `watch: on I=3s, last block 4s ago, heartbeat 12s ago`, `watch: starting`, `watch: fallback (<why>), polling every 3s` or `watch: off`.
 - Link-task behaviour, which replaces the timed `refresh()` while connected:
+  0. The watch owns a separate PSRAM body buffer of `JSON_CAP` for `cc_watch_t`, so the `refresh()` calls of `do_paste`, `cc_link_check_live` and the fallback never overwrite a half-read block. Parsing into `s_parse` on the link task stays as it is.
   1. Open a pty channel (`ssh_channel_request_pty_size(ch, "xterm-256color", 200, 50)`), exec `cc_cmd_watch`, and write `"\n"` at once and then every `CC_WATCH_KEEPALIVE_S`.
   2. Between queued requests, read without blocking into `cc_watch_feed`.
   3. A BLOCK with rc 0 is parsed with `cc_sessions_parse` and published exactly like `refresh_once` does today. Factor out `publish(n)`.
@@ -445,7 +450,7 @@ cc_watch_ev_t cc_watch_feed(cc_watch_t *w, const char *data, size_t n, size_t *u
   9. **Fallback** to Plan 1's `refresh()` at the effective interval, logging `watch: falling back to polling: <why>`, when:
      - the pty or exec request fails;
      - no BANNER arrives within 10 s;
-     - three channel ends without `BYE life` happen within 5 min.
+     - three channel ends the Tab5 didn't ask for happen within 5 min (EOF, `BYE eof`, `BYE quiet` or a read error). `BYE life` and the Tab5's own closes (an interval change, Off and wake, `companion watch off`, `cc_link_park`, the host-key forget) don't count.
      The watch is retried after 10 min or on the next connect.
   10. Quick answers and live checks keep their own exec channels on the same session, and `do_paste` keeps its own fresh `refresh()`.
 - Take-over: `open_now` calls `cc_poll_set_rate(15)` instead of `0`, so blocks keep feeding the keyboard light. `session_closed_cb` sets 3 again. The dashboard is deleted while the terminal is open, so nothing redraws.
@@ -474,7 +479,7 @@ cc_watch_ev_t cc_watch_feed(cc_watch_t *w, const char *data, size_t n, size_t *u
   - `test_change_detection`: I 1, H 3, keepalive each second → one BLOCK; rewriting `state.json` → a second BLOCK within 2 s; then a HB within H + 1 s and no repeated BLOCK.
   - `test_quiet_exit`: T 3 with no keepalive → `@@CC-BYE quiet` and exit within T + I + 1 s.
   - `test_keepalive_keeps_running`: T 3 with a keepalive every second for 8 s → still running.
-  - `test_max_lifetime`: L 4 with keepalives → `@@CC-BYE life` within L + I + 1 s.
+  - `test_max_lifetime`: L 5 with keepalives → `@@CC-BYE life` within L + I + 1 = 7 s.
   - `test_hangup_kills_children`: slow fake, close the pty master after 1.5 s → the shell and the fake `claude` are both gone within 2 s.
   - `test_suspended_loop_exits_on_resume` (Review Focus 2): T 3, keepalives every second; then SIGSTOP the process group for 6 s while writing nothing (a sleeping Mac gets no keepalives), then SIGCONT → exits with `quiet` within I + 1 s of resuming.
   - `test_tilde_path`: claude path `~/bin/claude`, with `HOME` set to a temp dir holding `bin/claude` → a BLOCK arrives.
@@ -482,13 +487,13 @@ cc_watch_ev_t cc_watch_feed(cc_watch_t *w, const char *data, size_t n, size_t *u
 - [ ] **Step 3: Run them to make sure they fail**
 
 Run the host test command, then the Python tests.
-Expected: FAIL (`cc_cmd_watch` and `cc_watch_*` undefined; `cc_cmd_print` missing)
+Expected: the C tests FAIL (`cc_cmd_watch` and `cc_watch_*` undefined), and the loop tests report skipped (`cc_cmd_print` missing).
 
-- [ ] **Step 4: Implement `cc_cmd_watch`, `cc_watch.c` and `cc_cmd_print.c`**, then run both suites until they pass
+- [ ] **Step 4: Implement `cc_cmd_watch`, `cc_watch.c` and `cc_cmd_print.c`**, then run both suites until they pass. The loop tests must run and pass, not skip.
 
 - [ ] **Step 5: Implement the link side, the console and the take-over rate**, then build and flash
 
-The console gets `companion watch on|off|status`, plus `companion watch test-fallback`: a debug subcommand that sets the next start's banner timeout to 1 ms.
+The console gets `companion watch on|off|status`, plus `companion watch test-fallback`: a debug subcommand that sets the next start's banner timeout to 1 ms. Add the preview stubs for the new calls and build the preview (`firmware/tools/ui_preview/README.md`).
 
 - [ ] **Step 6: Check the watch on hardware**
 
@@ -497,7 +502,7 @@ On the Mac, start `companion-test-watch` with the Task 3 prompt.
 Run: `python3 $T5 "companion watch status"`
 Expected: `watch: on I=3s, …`
 
-Run on the Mac: `ps -axo pid,etime,command | grep -c '[@]@CC-WATCH'`
+Run on the Mac (this is the "Mac `ps` count"; it counts only top-level loops, not the `$(…)` fork that shares the argv): `ps -axo pid,ppid,command | awk '/[@]@CC-WATCH/{p[$1]=$2} END{n=0;for(i in p)if(!(p[i] in p))n++;print n}'`
 Expected: `1`
 
 Run: `python3 $T5 "reply <companion-test-watch id> blue"` and time how long until `sessions` no longer shows it as `NEEDS_YOU`.
@@ -515,6 +520,8 @@ For each case, run the Mac `ps` count from Step 6 every 5 s and record how long 
 
 Record the three times in the rulings file.
 
+Amend the main spec's line "Nothing extra runs on the Mac: no daemon, no helper, …" to add: "the watch loop runs only inside the companion's exec channel and exits on its own (Plan 2)".
+
 - [ ] **Step 8: Check the fallback and the take-over rate**
 
 Run: `python3 $T5 "companion watch test-fallback" "companion watch off" "companion watch on"`. Wait 15 s, then run `companion watch status` and `sessions`.
@@ -529,7 +536,7 @@ Stop `companion-test-watch`.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add firmware/main/companion firmware/main/ui/ui_dashboard.c firmware/test/host firmware/tools/test_watch_loop.py
+git add firmware/main/companion firmware/main/ui/ui_dashboard.c firmware/test/host firmware/tools/test_watch_loop.py firmware/tools/ui_preview docs/superpowers/specs/2026-10-22-claude-tab5-design.md docs/superpowers/notes/2026-10-23-plan2-rulings.md
 git commit -m "feat(companion): long-poll watch channel with keepalive, liveness and fallback"
 ```
 
@@ -539,8 +546,9 @@ git commit -m "feat(companion): long-poll watch channel with keepalive, liveness
 - Create: `firmware/main/sys/display_ctl.c`, `firmware/main/sys/display_ctl.h`
 - Modify: `firmware/main/sys/power_rules.c`, `power_rules.h`, `firmware/test/host/test_power_rules.c`
 - Modify: `firmware/main/sys/power.c`, `power.h` (states, holds, wake, shield, needs-you wake)
-- Modify: `firmware/main/input/keyboard.c`, `keyboard.h` (quiet mode on GPIO50 INT; the swallow check in the drain)
-- Modify: `firmware/main/app_main.c` (touch INT after the display starts; `idle_poll` period from power)
+- Modify: `firmware/main/input/keyboard.c`, `keyboard.h` (quiet mode on GPIO50 INT; the swallow check in the drain; `keyboard_post` and `keyboard_usb_hid_report` wake)
+- Modify: `firmware/main/sys/screenshot.c` (use `display_ctl_touch()` each time, no cached handle)
+- Modify: `firmware/main/app_main.c` (touch INT after the display starts; `idle_poll` period from power; remove the `ui_screensaver_arm()` declaration and call)
 - Modify: `firmware/main/ui/ui_dashboard.c` (stale cards after a wake, the take-over hold), `firmware/main/ui/ui_terminal.c` (the SSH hold), `firmware/main/ui/ui_settings.c` (the Power section), `firmware/main/ui/ui_core.c`, `ui_home.c`, `ui_music.c`, `ui.h`
 - Delete: `firmware/main/ui/ui_screensaver.c`, its entry in `firmware/tools/ui_preview/CMakeLists.txt` and the preview's `standby` case. Settings and Home drop their screensaver rows and tile.
 - Modify: `firmware/main/idf_component.yml` (`espressif/esp_lvgl_port: "==2.8.0~1"`; display_ctl depends on its private layout)
@@ -562,9 +570,9 @@ power_state_t pr_next_state(const pr_in_t *in);
 /* held → ACTIVE; on USB with !sleep_on_usb → ACTIVE; idle >= off_s → OFF, or RADIO_OFF when
    already OFF/RADIO_OFF, on_battery, radio_off_enabled and now - off_since >= radio_off_min min;
    idle >= dim_s → DIM; else ACTIVE. RADIO_OFF without on_battery → OFF. */
-#define PR_SWALLOW_MS 400
+#define PR_SWALLOW_MS 600       /* longer than the A164's 500 ms auto-repeat delay (keyboard.c:365) */
 bool pr_swallow(power_state_t state_at_input, int64_t now_ms, int64_t woke_at_ms, int64_t last_swallowed_ms);
-/* true when state_at_input != ACTIVE, or now - woke_at < 400, or now - last_swallowed < 400 */
+/* true when state_at_input != ACTIVE, or now - woke_at < PR_SWALLOW_MS, or now - last_swallowed < PR_SWALLOW_MS */
 #define PR_IDS_MAX 32
 typedef struct { char ids[PR_IDS_MAX][16]; int n; } pr_idset_t;
 void pr_needs_you_ids(const cc_session_t *s, int n, pr_idset_t *out);   /* background, live, NEEDS_YOU */
@@ -575,7 +583,8 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - `esp_lcd_panel_handle_t display_ctl_panel(void);`
   - `esp_lcd_touch_handle_t display_ctl_touch(void);`
   - `esp_err_t display_ctl_panel_on(bool on);`, which is `esp_lcd_panel_disp_on_off`.
-  - `void display_ctl_touch_int_init(void (*isr)(void *));`. On board version 1 (GT911, from Task 1), it reconfigures GPIO23 as an input with pull-up, as generative-tab5 `prov_device.c:313` does. On other versions it keeps the driver's pin setup. Either way it adds a NEGEDGE ISR.
+  - `void display_ctl_touch_int_init(void (*isr)(void *));`. On board version 1 (GT911, from Task 1), it reconfigures GPIO23 as an input with pull-up, as generative-tab5 `prov_device.c:313` does, and adds a NEGEDGE ISR. On other versions the driver owns GPIO23 and its own ISR, so it adds none and logs `touch wake: not supported on board vN`.
+  - `screenshot.c` calls `display_ctl_touch()` each time it needs the handle, and caches nothing.
 - Produces, in `power.h`:
   - `power_state_t power_state(void);` and `uint32_t power_wake_seq(void);` (bumped on every wake).
   - `typedef enum { PW_KEY, PW_TOUCH, PW_LIFT, PW_NEEDS_YOU, PW_CONSOLE } power_wake_t;` and `power_wake_t power_wake_reason(void);`.
@@ -583,8 +592,9 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - `void power_wake(power_wake_t why);` and `void power_wake_from_isr(power_wake_t why);`. Any of these wakes resets idle.
   - `typedef enum { POWER_HOLD_TAKEOVER, POWER_HOLD_SSH } power_hold_t;` and `void power_hold(power_hold_t h, bool on);`. `POWER_HOLD_SSH` counts only while `g_settings.ss_disable_in_ssh`. `cc_link_busy()` is polled as the third hold.
   - `int power_poll_period_ms(void);` is 1000, or 10 000 in Off and Radio off while logging is off.
-- Produces, in `keyboard.h`: `void keyboard_set_quiet(bool quiet);`. The drain timer calls `power_take_key()` before `keyboard_dispatch` and drops the event when it returns false.
   - `void power_go(power_state_t s);` is used by the console and the bench.
+  - The keyboard light calls `pr_kbd_light` with `screen_off = (state >= PS_OFF) && on_battery`.
+- Produces, in `keyboard.h`: `void keyboard_set_quiet(bool quiet);`. The drain timer calls `power_take_key()` before `keyboard_dispatch` and drops the event when it returns false. After queuing, `keyboard_post` (the `key` console command) and `keyboard_usb_hid_report` call `power_wake(PW_KEY)` when `power_state()` is Off or Radio off, because the stopped LVGL timer no longer drains them; the drain then swallows the event as usual.
 - Off entry, under `bsp_display_lock`:
   1. `display_ctl_panel_on(false)`;
   2. `bsp_display_brightness_set(0)`;
@@ -592,18 +602,18 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   4. `keyboard_set_quiet(true)`: the task waits on a GPIO50 NEGEDGE semaphore with a 1 s safety poll, clears `REG_INT_STA` after reading, and calls `power_wake(PW_KEY)` when it reads an event;
   5. `cc_poll_set_floor(15)`;
   6. arm the needs-you set with `pr_needs_you_ids` of the current snapshot.
-  - Touch stays awake: never `bsp_display_enter_sleep` or `bsp_touch_enter_sleep`, except in the bench step `off-touch-asleep`. That step calls `esp_lcd_touch_enter_sleep(display_ctl_touch())`, then `exit_sleep` afterwards, and logs `touch after exit_sleep: ok|dead` from the next INT within 30 s of a `power sim touch`.
-- Wake, in this order:
-  1. `lvgl_port_resume()`;
-  2. panel on;
-  3. `bsp_display_brightness_set(g_settings.brightness)` (or `pr_dim_brightness` for a needs-you wake);
-  4. `lv_display_trigger_activity(NULL)`;
-  5. set `woke_at`, so `pr_swallow` drops the waking input;
+  - Touch stays awake: never `bsp_display_enter_sleep` or `bsp_touch_enter_sleep`, except in the bench step `off-touch-asleep`. That step calls `esp_lcd_touch_enter_sleep(display_ctl_touch())`, then `exit_sleep` afterwards, and logs `touch after exit_sleep: ok|dead` from an I²C read of the controller (`esp_lcd_touch_read_data` == ESP_OK).
+- Wake, in this order (the state stays non-Active until the last step, so the drain keeps swallowing):
+  1. set `woke_at`, so `pr_swallow` drops the waking input;
+  2. `lvgl_port_resume()`;
+  3. panel on;
+  4. `bsp_display_brightness_set(g_settings.brightness)` (or `pr_dim_brightness` for a needs-you wake);
+  5. `lv_display_trigger_activity(NULL)`;
   6. `power_wake_seq++`;
   7. `cc_poll_set_floor(0)`;
   8. `keyboard_set_quiet(false)`.
   - A needs-you wake sets `last_input_ms = now - dim_s * 1000`, so the ladder lands in Dim. If the screen isn't the dashboard, it calls `ui_nav_home()`. It fires only when `g_settings.pw_wake_needs_you` is set and `pr_needs_you_new(armed, now)` is true, and it then adds the new ids to `armed`.
-- Wake shield: entering Dim creates a full-screen transparent clickable object on `lv_layer_top()`. A press on it wakes the device. It is deleted on the release that follows the wake, or 400 ms after the wake when no press is down. A touch on a dimmed screen therefore never reaches a card.
+- Wake shield: entering any non-Active state creates a full-screen transparent clickable object on `lv_layer_top()` if none exists. A press on it wakes the device. It is deleted on the release that follows the wake, or `PR_SWALLOW_MS` after the wake when no press is down. A touch on a dimmed screen therefore never reaches a card.
 - Stale cards: when `power_wake_seq()` changes and the reason isn't `PW_NEEDS_YOU`, the dashboard draws the card list at `LV_OPA_50` and shows the muted summary `Updating…` until `cc_poll_generation()` moves past its value at the wake.
 - Holds: `open_now` sets `power_hold(POWER_HOLD_TAKEOVER, true)` and `session_closed_cb` clears it. `ui_terminal.c` sets `POWER_HOLD_SSH` wherever it sets `g_ssh_session_active`.
 - Settings → Power, a new category, has these rows:
@@ -617,8 +627,8 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - Tasks 7 and 8 add their rows here.
 - Console:
   - `power go <active|dim|off>`;
-  - `power sim touch` (calls the touch wake path as the ISR would);
-  - `power set <dim|off|sleep-usb|needs-wake> <n>`;
+  - `power sim touch` sends a synthetic press and release at the centre of the selected card through a virtual LVGL pointer, so the shield has to eat it;
+  - `power set <dim|off|sleep-usb|needs-wake> <n>` applies the same clamps as Settings (dim 10–600, off from dim + 10 to 3600);
   - `power set defaults` restores every Plan 2 power setting to its Task 2 default;
   - `power` now prints `state`, `idle` and `holds`;
   - `power wakes` prints the last 8 wakes as `<seconds ago> <reason> swallowed=<n>`.
@@ -628,8 +638,8 @@ int  pr_dim_brightness(int brightness);   /* max(5, brightness * 20 / 100) */
   - `test_held_stays_active`: idle 500 s, held → ACTIVE. Also from DIM.
   - `test_usb_without_sleep`: on_battery false, sleep_on_usb false, idle 500 s → ACTIVE. With sleep_on_usb true → OFF.
   - `test_radio_off_needs_battery` (Review Focus 3): state OFF, off_since 21 min ago, radio_off_enabled, on_battery false → OFF; on_battery true → RADIO_OFF; radio_off_enabled false → OFF; and RADIO_OFF with on_battery false → OFF.
-  - `test_swallow_rules`: DIM → true; OFF → true; ACTIVE 100 ms after a wake → true; ACTIVE 401 ms after a wake with no swallow since → false.
-  - `test_swallow_held_key_repeats` (Review Focus 1): a wake at t = 0, then keys every 60 ms from t = 500 to 1500 (auto-repeat), each swallowed one feeding `last_swallowed` → all swallowed; then a key at t = 2000 → not swallowed.
+  - `test_swallow_rules`: DIM → true; OFF → true; ACTIVE 100 ms after a wake → true; ACTIVE 601 ms after a wake with no swallow since → false.
+  - `test_swallow_held_key_repeats` (Review Focus 1): a wake at t = 0, then keys every 60 ms from t = 500 to 1500 (auto-repeat), each swallowed one feeding `last_swallowed` → all swallowed; then a key at t = 2200 → not swallowed.
   - `test_needs_you_new`: armed {a}, now {a} → false; now {a, b} → true; armed {a, b}, now {b} → false; armed {}, now {} → false.
   - `test_dim_brightness`: 80 → 16; 10 → 5; 100 → 20.
 
@@ -642,11 +652,11 @@ Expected: FAIL
 
 - [ ] **Step 4: Implement `display_ctl`, the power states, the quiet keyboard, the shield, stale cards, holds and the Settings → Power section, and remove the screensaver**
 
-Keep the `ss_*` fields in `app_settings_t`, marked reserved, so old blobs load. `ui_keyboard_route` and the gesture callback lose their screensaver branches. Build, flash, and also build the preview (no `standby` case).
+Keep the `ss_*` fields in `app_settings_t`, marked reserved, so old blobs load. `ui_keyboard_route` and the gesture callback lose their screensaver branches, and `app_main.c` loses its `ui_screensaver_arm()` declaration and call. Build, flash, and also build the preview (no `standby` case).
 
 - [ ] **Step 5: Check the ladder with short timings**
 
-Run: `python3 $T5 "power set dim 5" "power set off 15"`. Then run `python3 $T5 "power"` at 3 s, 8 s and 20 s.
+Run: `python3 $T5 "power set dim 10" "power set off 20"`. Then run `python3 $T5 "power"` at 5 s, 15 s and 25 s.
 Expected: `state=active`, then `state=dim`, then `state=off`. At `state=off`, `screenshot` still works (it is an LVGL snapshot).
 
 - [ ] **Step 6: Check key wake and swallow**
@@ -674,7 +684,7 @@ Expected: `holds=takeover` and `state=active`. Ctrl+Q.
 - [ ] **Step 8: Check touch wake through the shield**
 
 Run: `python3 $T5 "power go dim" "power sim touch" "power wakes"`.
-Expected: `touch swallowed=1`; no card action. The real-finger check is Task 10 Step 3.
+Expected: `touch swallowed=1`, and no card action: the selected card didn't open and nothing was sent. The real-finger check is Task 10 Step 3.
 
 - [ ] **Step 9: Restore and commit**
 
@@ -691,6 +701,8 @@ git commit -m "feat(power): Active/Dim/Off ladder with swallowed wake input, nee
 - Modify: `firmware/main/sys/display_ctl.c`, `display_ctl.h` (teardown and re-create)
 - Create: `firmware/sdkconfig.spike` (`CONFIG_PM_ENABLE=y`, `CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`, `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y`, `CONFIG_CC_LIGHT_SLEEP_SPIKE=y`)
 - Create: `firmware/main/Kconfig.projbuild` (`CONFIG_CC_LIGHT_SLEEP_SPIKE`, default n)
+- Modify: `firmware/.gitignore` (add `build-spike/`)
+- Modify: `firmware/main/ui/ui_settings.c` (the "Light sleep (experimental)" row)
 - Modify: `firmware/main/sys/power.c`, `power_bench.c` (step `light-sleep`, 120 s, only when the spike is compiled in and `pw_light_sleep` is set), `power_console.c`
 - Create: `docs/superpowers/notes/2026-10-23-light-sleep-spike.md`
 
@@ -699,7 +711,8 @@ git commit -m "feat(power): Active/Dim/Off ladder with swallowed wake input, nee
   - Teardown, under the LVGL lock: `lvgl_port_remove_touch`, `lvgl_port_remove_disp`, `bsp_display_delete()` (panel, IO, DSI bus, PHY LDO, backlight PWM) and `esp_lcd_touch_del`.
   - Re-create: `bsp_display_new_with_handles` with the board's lane rate, then `lvgl_port_add_disp_dsi` with the app's Plan 1 config, then `bsp_touch_new` + `lvgl_port_add_touch`, then `ui_nav_refresh()`.
   - On board version 3 (ST7121, from Task 1) use 965 Mbps (`BSP_LCD_ST712X_MIPI_DSI_LANE_BITRATE_MBPS`); otherwise use the BSP default.
-  - With `pw_light_sleep` set, on battery only, Off calls teardown and configures `esp_pm_configure({.max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = true})` plus `gpio_wakeup_enable(GPIO50, GPIO_INTR_LOW_LEVEL)`, `gpio_wakeup_enable(GPIO23, GPIO_INTR_LOW_LEVEL)` and `esp_sleep_enable_gpio_wakeup()`. Before every sleep it clears the A164's `REG_INT_STA`. Wake re-creates the display.
+  - With `pw_light_sleep` set, on battery only, Off calls teardown and configures `esp_pm_configure({.max_freq_mhz = 360, .min_freq_mhz = 40, .light_sleep_enable = true})` plus `gpio_wakeup_enable(GPIO50, GPIO_INTR_LOW_LEVEL)`, `gpio_wakeup_enable(GPIO23, GPIO_INTR_LOW_LEVEL)` and `esp_sleep_enable_gpio_wakeup()`. Before every sleep it clears the A164's `REG_INT_STA`. Wake re-creates the display, then calls `display_ctl_touch_int_init` again (`bsp_touch_new` sets GPIO23 back to output-low on board v1).
+- `screenshot.c` already asks `display_ctl_touch()` each time, so it never holds a dangling handle.
 - Console: `power spike recreate <n>` runs n teardown/re-create cycles and prints the internal and PSRAM free heap after each one and the slowest wake-to-picture time (the first flush after re-create).
 
 - [ ] **Step 1: Build the spike** with `idf.py -B build-spike -D SDKCONFIG=build-spike/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.spike" build`, then flash it with `idf.py -B build-spike -p /dev/cu.usbmodem211201 flash`
@@ -731,7 +744,7 @@ Revert the spike code and delete `sdkconfig.spike` and `Kconfig.projbuild`. Leav
 
 - [ ] **Step 5: Write the notes**
 
-Write `docs/superpowers/notes/2026-10-23-light-sleep-spike.md`: what was tried, each check's result with numbers, the decision, and why. In the failed case, say that Off ships as panel off + quiet tasks + modem power save + the long poll + the Radio-off tier.
+Write `docs/superpowers/notes/2026-10-23-light-sleep-spike.md`: what was tried, each check's result with numbers, the decision, and why. Also record that `lvgl_port_remove_disp` deletes every screen of the display (the nav stack, the layer-top shield and toasts), and that `ui_nav_refresh()` rebuilds only the top screen. In the failed case, say that Off ships as panel off + quiet tasks + modem power save + the long poll + the Radio-off tier.
 
 - [ ] **Step 6: Commit**
 
@@ -746,7 +759,7 @@ git commit -m "spike(power): display teardown with light sleep: <kept behind a s
 - Create: `firmware/main/sys/lift_detect.c`, `firmware/main/sys/lift_detect.h` (pure)
 - Create: `firmware/main/sys/lift.c`, `firmware/main/sys/lift.h` (BMI270 poller)
 - Create: `firmware/test/host/test_lift_detect.c`
-- Modify: `firmware/main/idf_component.yml` (`espressif/bmi270: "==1.1.0"`), `firmware/main/sys/power.c`, `firmware/main/ui/ui_settings.c` (Wake on lift), `firmware/main/sys/power_console.c`, `firmware/test/host/CMakeLists.txt`
+- Modify: `firmware/main/idf_component.yml` (`espressif/bmi270: "==1.1.0"`; this rewrites `firmware/dependencies.lock`), `firmware/main/sys/power.c`, `firmware/main/ui/ui_settings.c` (Wake on lift), `firmware/main/sys/power_console.c`, `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls), `firmware/test/host/CMakeLists.txt`
 
 **Interfaces:**
 - Produces, in `lift_detect.h`:
@@ -762,7 +775,7 @@ lift_ev_t lift_feed(lift_detect_t *d, float x, float y, float z);
    LIFT_HOLD_SAMPLES more in a row over the threshold → WAKE; a sample under it ends the
    candidate (SLOW); while SLOW the baseline follows with alpha 0.1 */
 ```
-- Produces, in `lift.h`: `void lift_init(void);` creates the BMI270 at `BMI270_I2C_ADDRESS_L` (0x68) on `bsp_i2c_get_handle()` and the `lift` task, which waits on a notification. `void lift_arm(bool on);` is called by power when entering Dim, Off or Radio off with `pw_wake_lift` set, and on wake. While armed, the task runs `bmi270_start` (accelerometer 25 Hz, ±2 g, power-optimized), reads with `bmi270_get_acce_data` at the interval `lift_feed` asks for, and calls `power_wake(PW_LIFT)` on WAKE. While disarmed it calls `bmi270_stop`.
+- Produces, in `lift.h`: `void lift_init(void);` creates the BMI270 at `BMI270_I2C_ADDRESS_L` (0x68) on `bsp_i2c_get_handle()` and the `lift` task, which waits on a notification. `void lift_arm(bool on);` is called by power when entering Dim, Off or Radio off with `pw_wake_lift` set, and on wake. While armed, the task runs `bmi270_start` (accelerometer 25 Hz, ±2 g, then `bmi270_set_acce_filter_perf(h, BMI270_POWER_OPTIMIZED)`, because `bmi270_config_t` has no power-mode field), reads with `bmi270_get_acce_data` at the interval `lift_feed` asks for, and calls `power_wake(PW_LIFT)` on WAKE. While disarmed it calls `bmi270_stop`.
 - Console: `power sim lift` calls `power_wake(PW_LIFT)`; `power lift` prints the last sample, the baseline and armed yes/no.
 
 - [ ] **Step 1: Write the failing host tests** in `test_lift_detect.c`
@@ -778,13 +791,13 @@ Expected: FAIL
 
 - [ ] **Step 3: Implement `lift_detect.c`** and run the tests until they pass
 
-- [ ] **Step 4: Implement `lift.c`, the power hooks and the setting row**, then build and flash
+- [ ] **Step 4: Implement `lift.c`, the power hooks and the setting row**, add the preview stubs, build the preview, then build and flash
 
 Expected: the boot log shows the BMI270 found at 0x68 (chip id 0x24).
 
 - [ ] **Step 5: Check on hardware without moving the device**
 
-Run: `python3 $T5 "power set off 15"`. Wait for `state=off`, then run `python3 $T5 "power lift"`.
+Run: `python3 $T5 "power set dim 10" "power set off 20"`. Wait for `state=off`, then run `python3 $T5 "power lift"`.
 Expected: armed yes, with z near ±1 g.
 
 Run: `python3 $T5 "power sim lift" "power wakes"`.
@@ -798,7 +811,7 @@ Run `power set defaults`.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add firmware/main firmware/test/host
+git add firmware/main firmware/test/host firmware/tools/ui_preview firmware/dependencies.lock
 git commit -m "feat(power): wake on lift by polling the BMI270 in Dim and Off"
 ```
 
@@ -809,6 +822,7 @@ git commit -m "feat(power): wake on lift by polling the BMI270 in Dim and Off"
 - Modify: `firmware/main/net/tailscale.c`, `tailscale.h`
 - Modify: `firmware/main/companion/cc_link.c`, `cc_link.h`
 - Modify: `firmware/main/sys/power.c`, `power_rules.c`, `power_rules.h`, `firmware/test/host/test_power_rules.c`
+- Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls)
 - Modify: `firmware/main/app_main.c` (`wifi_global_cb`), `firmware/main/ui/ui_settings.c` (Radio-off rows), `firmware/main/ui/ui_dashboard.c` (`Reconnecting…`), `firmware/main/sys/power_bench.c` (steps `radio-off` 180 s, `checkin-handshake` and `checkin-rebind`, each up to 120 s), `firmware/main/sys/power_console.c`
 
 **Interfaces:**
@@ -827,7 +841,7 @@ git commit -m "feat(power): wake on lift by polling the BMI270 in Dim and Off"
   - `typedef enum { TS_CHECKIN_HANDSHAKE, TS_CHECKIN_REBIND, TS_CHECKIN_FAILED } ts_checkin_t;` and `ts_checkin_t tailscale_checkin(const char *ip, bool force_rebind, uint32_t *ms_out);`. It kicks `ml_wg_mgr_trigger_handshake` + `ml_wg_mgr_send_cmm` and waits up to 8 s for `ml_wg_mgr_peer_is_up`. Only when that fails (or `force_rebind` is set) does it call `microlink_rebind`, wait up to 60 s for `ML_EVT_COORD_REGISTERED | ML_EVT_DERP_CONNECTED`, and handshake again.
   - `void tailscale_kick_peer(const char *ip);` kicks a handshake without waiting.
 - Produces, in `cc_link.h`:
-  - `void cc_link_park(bool parked);`. Parked closes the session and doesn't reconnect.
+  - `void cc_link_park(bool parked);`. Parked closes the session and doesn't reconnect. This close is the Tab5's own, so it doesn't count toward the watch fallback.
   - `esp_err_t cc_link_poll_now(int timeout_ms);` runs one plain `refresh()` now, as a queued request.
   - The stale-peer fix: after a failed `ssh_connect` to a tailnet IP, call `tailscale_kick_peer(ip)` before the next retry. Console `companion kick on|off` (RAM only, default on) lets Task 10 measure with and without it.
   - `const char *cc_link_reconnect_log(char *buf, size_t cap);` prints the last 8 link down/up events with wall-clock time, for the Mac sleep measurement.
@@ -839,10 +853,10 @@ git commit -m "feat(power): wake on lift by polling the BMI270 in Dim and Off"
     3. `tailscale_checkin(mac_ip, false, &ms)`;
     4. `cc_link_park(false)` and wait up to 15 s for connected;
     5. `cc_link_poll_now(15000)`;
-    6. a new needs-you does a needs-you wake (Dim) and stays up; otherwise run `cc_link_park(true)` + `wifi_mgr_park()` again.
-  - Each check-in's path, total ms and mWh go into the power log and `power checkins`.
+    6. a new needs-you does a needs-you wake (Dim) and stays up; otherwise run `cc_link_park(true)` + `wifi_mgr_park()` again, then `tailscale_set_fast_resume(false)`.
+  - Each check-in's path, total ms and mWh go into the power log and `power checkins`. The path `handshake` is recorded only after step 4's SSH connect succeeds, because a stale keypair can report the peer as up.
   - A key, touch or lift during Radio off wakes to Active: unpark at once, then reconnect, while the dashboard shows the muted `Reconnecting to <host>…` with stale cards until the first fresh result.
-  - Input wake from Radio off uses the same steps 1–5 (handshake first, so the target is about 10 s), then stays up.
+  - Input wake from Radio off uses the same steps 1–5 (handshake first, so the target is about 10 s), then stays up. When that reconnect finishes it calls `tailscale_set_fast_resume(false)`, so a later real Wi-Fi drop still rebinds.
   - The keyboard light uses `pr_light_max_age_ms(true, pw_checkin_min)` while in Radio off.
   - Off entry also calls `wifi_mgr_set_ps_max(true)`, and every wake calls `wifi_mgr_set_ps_max(false)`.
 - Settings → Power: Radio off (switch, default off), Radio off after (min) 5–240, Check in every (min) 1–60.
@@ -854,7 +868,7 @@ git commit -m "feat(power): wake on lift by polling the BMI270 in Dim and Off"
 
 - [ ] **Step 1: Write the failing host tests** (in `test_power_rules.c`)
   - `test_backoff`: attempts 0..7 → 1, 2, 4, 8, 16, 30, 30, 30; attempt 1000 → 30.
-  - `test_radio_off_rule`: a = 300, b = 60, c = 2.0 mWh, 5 min, 12 s → true (the saving is 20 mWh per period; the average falls from 300 to 84 mW); c = 25 mWh → false; check-in 31 s → false; a = 100, b = 90 → false (under 20%).
+  - `test_radio_off_rule`: a = 300, b = 60, c = 2.0 mWh, 5 min, 12 s → true (the saving is 20 mWh per period; the average falls from 300 to 84 mW); c = 25 mWh → false; check-in 31 s → false; a = 100, b = 90, c = 0.1 mWh → false (the saving, 0.83 mWh, passes the first condition; the average falls only 8.8%, under 20%).
 
 - [ ] **Step 2: Run them to make sure they fail**
 
@@ -863,7 +877,7 @@ Expected: FAIL
 
 - [ ] **Step 3: Implement the rules** and run the tests until they pass
 
-- [ ] **Step 4: Implement wifi_mgr, Tailscale, cc_link and power**, then build and flash
+- [ ] **Step 4: Implement wifi_mgr, Tailscale, cc_link and power**, add the preview stubs, build the preview, then build and flash
 
 - [ ] **Step 5: Check background reconnect**
 
@@ -896,7 +910,7 @@ Stop the session, then run `power set defaults`.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add firmware/main firmware/test/host
+git add firmware/main firmware/test/host firmware/tools/ui_preview docs/superpowers/notes/2026-10-23-plan2-rulings.md
 git commit -m "feat(net): Wi-Fi reconnect task with backoff, parked state, Radio-off tier with handshake-first check-ins"
 ```
 
@@ -906,6 +920,7 @@ git commit -m "feat(net): Wi-Fi reconnect task with backoff, parked state, Radio
 - Modify: `firmware/main/ssh/ssh_client.c`, `ssh_client.h` (forget one pin)
 - Modify: `firmware/main/companion/cc_link.c`, `cc_link.h`, `cc_console.c`
 - Modify: `firmware/main/ui/ui_settings.c` (Companion → Forget Mac host key)
+- Modify: `firmware/tools/ui_preview/preview.c`, `firmware/tools/ui_preview/CMakeLists.txt` (stubs for the new calls)
 - Create: `firmware/tools/capture_attach_screen.py`
 - Create: `firmware/test/host/fixtures/screen_permission_dialog.bin`
 - Modify: `firmware/test/host/test_cc_cmd.c`
@@ -914,13 +929,13 @@ git commit -m "feat(net): Wi-Fi reconnect task with backoff, parked state, Radio
 **Interfaces:**
 - Produces, in `ssh_client.h`: `bool ssh_known_host_forget(const char *host, int port);` erases the NVS `kh` entry for host:port and returns true if there was one.
 - Produces, in `cc_link.h`: `esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms);`.
-  - It is a queued request. It forgets the link's pin (the resolved address it connects to) and the terminal's pin (the server entry's host string), tears the session down and reconnects, so the new key is pinned as `KH_UNKNOWN`.
+  - It is a queued request. It forgets the link's pin (the resolved address it connects to) and the terminal's pin (the server entry's host string), tears the session down and reconnects, so the new key is pinned as `KH_UNKNOWN`. The teardown is the Tab5's own close, so it doesn't count toward the watch fallback.
   - It returns `ESP_OK` with the new fingerprint, or `ESP_ERR_TIMEOUT` if no connect happened within `timeout_ms` (the pins are cleared either way).
 - Settings → Companion → "Forget Mac host key" asks with `ui_confirm("Forget Mac host key?", "Only do this if your Mac's SSH host key changed. The Tab5 will trust the next key it sees.")`. After Yes, it calls the request on the dashboard worker and shows the toast `New Mac key pinned: SHA256:…` or `Old key forgotten; reconnecting…`.
 - cc_link minors:
   - `cc_link_failure()` reads `s_state` and `s_fail` under `lock()`;
   - when `ssh_new()` fails, `connect_once` calls `set_fail(CC_LINK_FAIL_NONE, NULL)` before returning, so an old reason doesn't stick.
-- Console `companion hostkey forget` runs the same request. The debug-only `companion hostkey corrupt` overwrites the link's own pin with a wrong value, so the changed-key path can be shown without touching the Mac.
+- Console `companion hostkey forget` runs the same request. The debug-only `companion hostkey corrupt` overwrites the link's own pin with a wrong value (through a debug helper such as `ssh_known_host_set_debug` in `ssh_client.c`), so the changed-key path can be shown without touching the Mac.
 - `capture_attach_screen.py <short-id> <out.bin>`, run on the Mac:
   1. spawns `~/.local/bin/claude attach <id>` under `pty.fork()` at 120×40 with `TERM=xterm-256color`;
   2. reads until quiet for 1.0 s (at most 5 s);
@@ -946,7 +961,7 @@ Expected: the `input_ready` assertion passes (the gate is fail-closed already). 
 
 If the matcher assertion failed, fix `cc_screen_is_permission_prompt` against the real bytes without loosening `cc_screen_input_ready`. Every existing screen test must still pass.
 
-- [ ] **Step 4: Implement the forget action, the console and the minors**, then build and flash
+- [ ] **Step 4: Implement the forget action, the console and the minors**, add the preview stubs, build the preview, then build and flash
 
 - [ ] **Step 5: Check on hardware**
 
@@ -974,6 +989,7 @@ This is the only task that needs the user. Tasks 1–9 are done and flashed, and
 
 **Files:**
 - Create: `docs/superpowers/notes/2026-10-23-power-measurements.md`
+- Modify: `firmware/main/sys/sysinfo.c` (only if Step 4 shows the charge pin doesn't track)
 - Modify: `firmware/main/settings/settings.c`, `settings.h` (gated defaults from the data; `CFG_VERSION 19` with a migration that sets each changed default once)
 - Modify: `docs/superpowers/specs/2026-10-22-claude-tab5-design.md` (Known issues: Mac sleep/wake reconnect, brownout counts; Roadmap row 2 done)
 
@@ -1007,7 +1023,7 @@ Check the charge pin: in the log, `flags` bit 0 should change at the unplug and 
 When the agent resumes after the Mac wakes, run:
 - `pmset -g log | grep -E "Wake from|Entering Sleep" | tail -4` for the wall-clock sleep and wake times;
 - `python3 $T5 "companion reconnect-log"` for the Tab5's link down/up times;
-- the Mac `ps` count from Task 4 (expected `0` or `1`, never more).
+- the Mac `ps` count from Task 4 Step 6 (expected `0` or `1`, never more).
 
 The reconnect time is link-up minus the Mac wake. If it is over 30 s, run the sleep once more with `companion kick off` and compare. Keep whichever is faster as the default, and record both.
 
@@ -1027,6 +1043,7 @@ Write `docs/superpowers/notes/2026-10-23-power-measurements.md`:
 - the keyboard light's cost;
 - both check-in paths;
 - the charge-pin result and what mode 0 shows;
+- the `power` reading with no pack fitted (bus voltage, percent -1), if the user can briefly disconnect it, else "not tested";
 - the Mac sleep/wake reconnect time, with and without the kick;
 - the reset counts before and after;
 - every gated decision with the formula's numbers.
@@ -1038,6 +1055,41 @@ Keep simulated or forced-state (USB) results apart from battery results. Update 
 Stop `companion-test-bench`, then run `power log off`.
 
 ```bash
-git add firmware/main/settings docs/superpowers
+git add firmware/main/settings firmware/main/sys/sysinfo.c docs/superpowers
 git commit -m "docs(power): battery measurements, gated defaults from the data"
 ```
+
+## Pre-flight rulings applied
+
+- F1: `PR_SWALLOW_MS` 600, 601 ms test case, shield timing (Task 5).
+- F2: `keyboard_post` and `keyboard_usb_hid_report` call `power_wake(PW_KEY)` in Off and Radio off (Task 5; Tasks 8 and 10 checks now work).
+- F3: wake shield made on entry to any non-Active state (Task 5).
+- F4: `woke_at` set first in the wake order, state non-Active until the end (Task 5).
+- F5: the watch has its own `JSON_CAP` PSRAM buffer (Task 4).
+- F6: effective interval is `floor > 0 ? floor : rate` (Task 4).
+- F7: the fallback counts only closes the Tab5 didn't ask for (Tasks 4, 8, 9).
+- F8: `test_max_lifetime` uses L = 5 (Task 4).
+- F9: Step 3 expects skipped loop tests, Step 4 requires them to run (Task 4).
+- F10: the Mac `ps` count is the awk top-level count (Tasks 4 and 10).
+- F11: plog energy test expects 1 667, seconds covered = last_t - first_t + 1 (Task 1).
+- F12: dark test colour is 0x604818 (Task 3).
+- F13: the 20% case uses c = 0.1 mWh (Task 8).
+- F14: `bus_v < 5.5` gives -1, new `test_no_pack_is_unknown`, no-pack reading recorded (Tasks 2, 10, Review Focus 3).
+- F15: `power set` applies the clamps; Task 5 uses dim 10 / off 20 at 5, 15, 25 s; Task 7 uses the same (Tasks 5, 7).
+- F16: commit lists and Files fixed: rulings file (Tasks 3, 4, 8), `dependencies.lock` (Task 7), `sysinfo.c` (Task 10), `build-spike/` in `.gitignore` (Task 6), preview stubs and `ui_preview` (Tasks 3, 4, 7, 8, 9).
+- F17: `screenshot.c` calls `display_ctl_touch()` each time (Tasks 5, 6).
+- F18: no touch ISR on boards other than v1, re-init after re-create (Tasks 5, 6).
+- F19: `power sim touch` uses a virtual LVGL pointer; the bench checks the controller by I2C read (Task 5).
+- F20: `keyboard.c` records the last LED values, `power light` prints `kbd:`, the hot-plug check compares them (Task 3).
+- F21: fast resume switched off after each check-in and the input-wake reconnect (Task 8).
+- F22: main spec's "Nothing extra runs on the Mac" line amended (Task 4).
+- F23: `ui_screensaver_arm()` call removed and `power_go` moved to `power.h` (Task 5).
+- F24: `power_console.h` with `power_console_init()`, tag scheme and NVS `sum` table (Task 1).
+- F25: the light callback also copies the first needs-you session's name (Task 3).
+- F26: "handshake" recorded only after the SSH connect succeeds (Task 8).
+- F27: `sysinfo_poll` calls `sysinfo_charge_pin()` (Task 1).
+- F28: `bmi270_set_acce_filter_perf(..., BMI270_POWER_OPTIMIZED)` after start (Task 7).
+- F29: `ui_settings.c` added to Task 6 Files, spike notes record the `lvgl_port_remove_disp` behaviour (Task 6).
+- F30: `screen_off = (state >= PS_OFF) && on_battery` passed to `pr_kbd_light` (Task 5).
+- F31: hex-entry part dropped from Review Focus 5 and Task 3 (Steps 4, 7).
+- F32: `pure` library includes `firmware/main`, Task 3 links it to `companion` (Tasks 1, 3).
