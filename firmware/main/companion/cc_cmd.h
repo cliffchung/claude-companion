@@ -16,7 +16,7 @@ size_t cc_strip_ansi(char *s);
    cursor-forward and cursor-to-column become spaces, cursor positioning starts a new line,
    other escapes go,
    lines are split on \r and \n and trimmed, and lines of only blanks or box drawing are
-   dropped, and so are lines without a word of 3+ characters (spinner leftovers). The kept lines are joined with \n. Returns how many were kept. */
+   dropped, and so are lines without a word (2+ letters or 3+ characters: spinner leftovers). The kept lines are joined with \n. Returns how many were kept. */
 int cc_log_tail(char *s, int max_lines);
 /* Bracketed paste for a TUI input box: ESC[200~ + text + ESC[201~ + CR, NUL-terminated.
    Drops ESC, DEL and every C0 control byte except '\n' from text, so it can't end the paste

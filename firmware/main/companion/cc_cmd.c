@@ -162,15 +162,19 @@ static bool blank_line(const char *p, size_t n)
     return true;
 }
 
-/* True when the line has a word of 3+ characters; spinner redraws leave lines of
-   scattered single letters ("s m", "* 57") that say nothing. */
+/* True when the line has a word: 2+ ASCII letters in a row ("OK", "No") or any 3+
+   characters in a row. Spinner redraws leave lines of scattered single letters and bare
+   counters ("s m", "* 57") that say nothing. */
 static bool has_word(const char *p, size_t n)
 {
-    int run = 0;
+    int run = 0, letters = 0;
     for (size_t i = 0; i < n;) {
         size_t k = rule_char(p + i);
-        if (k == 1 || k == 2) { run = 0; i += k; continue; }   /* space, NBSP */
-        if (++run >= 3) return true;
+        if (k == 1 || k == 2) { run = letters = 0; i += k; continue; }   /* space, NBSP */
+        unsigned char c = (unsigned char)p[i];
+        bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        letters = letter ? letters + 1 : 0;
+        if (++run >= 3 || letters >= 2) return true;
         i++;
         while (i < n && ((unsigned char)p[i] & 0xC0) == 0x80) i++;
     }

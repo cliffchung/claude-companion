@@ -220,7 +220,7 @@ static void bar_stop_cb(lv_event_t *e) { lv_event_stop_bubbling(e); s_user_stopp
 void ui_music_bar_update(void)
 {
     ap_state_t st = audio_player_state();
-    bool show = (st == AP_PLAYING || st == AP_PAUSED) && !ui_nav_is_top(ui_music_create) && !ui_nav_is_top(ui_terminal_create) && !ui_screensaver_active();
+    bool show = (st == AP_PLAYING || st == AP_PAUSED) && !ui_nav_is_top(ui_music_create) && !ui_terminal_is_top() && !ui_screensaver_active();
     if (!show) { if (s_bar) lv_obj_add_flag(s_bar, LV_OBJ_FLAG_HIDDEN); return; }
     if (!s_bar) {
         s_bar = lv_obj_create(lv_layer_top());

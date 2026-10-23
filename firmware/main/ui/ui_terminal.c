@@ -137,7 +137,9 @@ static void cmd_close(term_ctx_t *c, const char *toast)
     if (cb) cb(ctx);
 }
 
-/* The last readable line the command printed (a pty merges stderr into stdout). */
+/* The last readable line the command printed. The brief asks for the first stderr line,
+ * but on a pty stderr and stdout arrive merged on one stream, so the last readable line
+ * is the closest stand-in (ruling R21). */
 static void cmd_error_line(term_ctx_t *c, char *out, size_t cap)
 {
     out[0] = 0;
@@ -536,9 +538,27 @@ lv_obj_t *ui_terminal_create(void *arg)
     return term_create((int)(intptr_t)arg, NULL);
 }
 
+static void back_async(void *arg) { (void)arg; ui_nav_back(); }
+
+/* The nav stack can rebuild its top screen (a refresh, the screensaver). A command
+ * terminal runs its command once: a rebuild must not attach again without the dashboard's
+ * live check, so the pending command is used up here and an empty one goes back. */
 static lv_obj_t *ui_terminal_cmd_create(void *arg)
 {
-    return term_create((int)(intptr_t)arg, &s_pending_cmd);
+    if (!s_pending_cmd.cmd[0]) {
+        lv_async_call(back_async, NULL);
+        return ui_screen_base();
+    }
+    lv_obj_t *scr = term_create((int)(intptr_t)arg, &s_pending_cmd);
+    s_pending_cmd.cmd[0] = 0;
+    s_pending_cmd.on_close = NULL;
+    s_pending_cmd.ctx = NULL;
+    return scr;
+}
+
+bool ui_terminal_is_top(void)
+{
+    return ui_nav_is_top(ui_terminal_create) || ui_nav_is_top(ui_terminal_cmd_create);
 }
 
 void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx)

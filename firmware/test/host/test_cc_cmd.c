@@ -137,6 +137,14 @@ static void test_log_tail_drops_spinner_fragments(void)
     TEST_ASSERT_EQUAL_STRING("What's your favorite color?\n1. Amber", s);
 }
 
+static void test_log_tail_keeps_short_words(void)
+{
+    /* two-letter words are real output; lone letters and bare numbers are spinner leftovers */
+    char s[] = "OK\r\nNo\r\n\xe2\x9c\xbb 57\r\nD c\r\nHi there\r\n";
+    TEST_ASSERT_EQUAL_INT(3, cc_log_tail(s, 6));
+    TEST_ASSERT_EQUAL_STRING("OK\nNo\nHi there", s);
+}
+
 static void test_log_tail_keeps_last(void)
 {
     char s[] = "l01\nl02\nl03\nl04\nl05\nl06\nl07\nl08\n";
@@ -304,6 +312,7 @@ int main(void)
     RUN_TEST(test_log_tail_cursor_moves);
     RUN_TEST(test_log_tail_drops_rules_and_blanks);
     RUN_TEST(test_log_tail_drops_spinner_fragments);
+    RUN_TEST(test_log_tail_keeps_short_words);
     RUN_TEST(test_log_tail_keeps_last);
     RUN_TEST(test_paste_build_exact);
     RUN_TEST(test_paste_build_strips_esc);

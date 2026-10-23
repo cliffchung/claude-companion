@@ -378,7 +378,8 @@ void ui_toast(const char *text)
     lv_obj_set_style_max_width(s_toast, LV_PCT(80), 0);
     lv_obj_set_style_bg_color(s_toast, UI_CARD, 0);
     lv_obj_set_style_bg_opa(s_toast, LV_OPA_90, 0);
-    lv_obj_set_style_border_color(s_toast, UI_ACCENT, 0);
+    /* not the theme accent: on the dashboard amber may only mean "needs you" */
+    lv_obj_set_style_border_color(s_toast, UI_MUTED, 0);
     lv_obj_set_style_border_width(s_toast, 1, 0);
     lv_obj_set_style_radius(s_toast, ui_theme_radius(14), 0);
     lv_obj_set_style_pad_all(s_toast, ui_theme_pad(14), 0);

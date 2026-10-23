@@ -106,6 +106,7 @@ lv_obj_t *ui_terminal_create(void *arg);         /* arg: server index */
 /* Full-screen terminal running one command on a pty exec channel (never a login shell).
    Ctrl+Q leaves without sending anything; on_close runs once when the terminal closes. */
 void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx);
+bool ui_terminal_is_top(void);                   /* either terminal is the current screen */
 lv_obj_t *ui_dashboard_create(void *arg);        /* home: the Mac's Claude sessions */
 lv_obj_t *ui_files_create(void *arg);            /* arg: const char *path or NULL */
 lv_obj_t *ui_image_create(void *arg);            /* arg: const char *path */

@@ -3,6 +3,7 @@
 #include "esp_console.h"
 #include <stdio.h>
 #include <string.h>
+#include "ui/ui.h"
 
 /* `key <name>` and `key text <string>`: inject events into the same queue the
  * A164 keyboard feeds, so the UI cannot tell them apart. */
@@ -69,8 +70,27 @@ static int cmd_key(int argc, char **argv)
     return 1;
 }
 
+/* `ui refresh` rebuilds the current screen over itself; `ui home` goes home the way a swipe
+ * right at the bottom of the stack does. Both run on the LVGL task. */
+static void ui_refresh_async(void *arg) { (void)arg; ui_nav_refresh(); }
+static void ui_home_async(void *arg) { (void)arg; ui_nav_home(); }
+static int cmd_ui(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "refresh") == 0) { ui_async(ui_refresh_async, NULL); printf("ui: refresh\n"); return 0; }
+    if (argc == 2 && strcmp(argv[1], "home") == 0) { ui_async(ui_home_async, NULL); printf("ui: home\n"); return 0; }
+    printf("usage: ui refresh | ui home\n");
+    return 1;
+}
+
 void key_console_init(void)
 {
+    const esp_console_cmd_t ui_cmd = {
+        .command = "ui",
+        .help = "ui refresh: rebuild the current screen; ui home: go to the dashboard",
+        .hint = NULL,
+        .func = cmd_ui,
+    };
+    debug_console_register(&ui_cmd);
     const esp_console_cmd_t cmd = {
         .command = "key",
         .help = "Inject a key as if typed on the keyboard: up|down|left|right|enter|esc|tab|backspace, ctrl <a-z>, or text <string>",

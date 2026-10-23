@@ -515,13 +515,11 @@ int main(int argc,char **argv) {
         return 0;
     }
     if (argc>1 && !strcmp(argv[1],"dashboard")) {
-        /* The live dashboard against the synthetic fixture; the second card is selected. */
+        /* The live dashboard against the synthetic fixture; the first card is selected. */
         i18n_set_lang(LANG_EN);
         preview_sessions_load();
         ui_nav_home(); step(d,400);
         assert(ui_nav_is_top(ui_dashboard_create));
-        key_event_t down={.type=KEY_EV_SPECIAL,.key=SK_DOWN};
-        (void)down;
         step(d,400);
         lv_obj_t *s=lv_screen_active();
         lv_obj_update_layout(s); lv_refr_now(d);

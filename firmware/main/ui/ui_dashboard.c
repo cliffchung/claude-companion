@@ -60,6 +60,7 @@ static const char *TAG = "dash";
 #define FOOTER_H        52
 #define KEY_MAX         96
 #define NOTES_MAX       8
+#define CHECK_MAX_AGE_MS 20000   /* an open check answered later than this is not acted on */
 
 /* ------------------------------------------------------------------ state */
 
@@ -75,12 +76,13 @@ typedef struct {
 typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK } job_type_t;
 typedef struct {
     job_type_t type;
+    unsigned token;        /* which request this is (actions only) */
     char id[16];
     char text[ANSWER_MAX + 1];
 } job_t;
 
 /* Worker results, read by the LVGL timer (guarded by res_lock). */
-static struct { unsigned gen; job_type_t type; char id[16]; esp_err_t err; char msg[160]; } s_act;
+static struct { unsigned gen; unsigned token; job_type_t type; char id[16]; esp_err_t err; char msg[160]; } s_act;
 static struct { unsigned gen; char id[16]; bool ok; char text[LOG_TEXT_CAP]; } s_logs;
 static volatile bool s_logs_pending, s_act_pending;
 static volatile unsigned s_poll_gen;
@@ -100,7 +102,10 @@ static char s_logs_for[16];
 static int64_t s_down_since_ms;            /* link down while it could be up */
 static bool s_session_open;
 static bool s_shown_live;                  /* cards were built for a connected link */
-static int s_sink_tag;
+/* The request in flight: an answer to it is used only by the dashboard visit that asked,
+   and an open check only while it is fresh (it can take up to the poll timeout). */
+static unsigned s_req_token, s_visit, s_req_visit;
+static int64_t s_req_at_ms;
 
 /* Widgets (valid while the screen exists). */
 static lv_obj_t *s_scr, *s_list, *s_summary, *s_bat, *s_wifi, *s_dot, *s_host, *s_clock;
@@ -148,6 +153,7 @@ static void run_job(const job_t *j)
     ESP_LOGI(TAG, "%s %s: %s %s", j->type == JOB_PASTE ? "answer" : "open check", j->id, esp_err_to_name(e), msg);
     res_lock();
     s_act.gen++;
+    s_act.token = j->token;
     s_act.type = j->type;
     strlcpy(s_act.id, j->id, sizeof(s_act.id));
     s_act.err = e;
@@ -188,8 +194,11 @@ static void worker_start(void)
     s_res_mutex = xSemaphoreCreateMutex();
     s_jobs = xQueueCreate(4, sizeof(job_t));
     if (!s_res_mutex || !s_jobs ||
-        xTaskCreatePinnedToCore(worker_task, "dash_work", 6144, NULL, 3, NULL, 1) != pdPASS)
+        xTaskCreatePinnedToCore(worker_task, "dash_work", 6144, NULL, 3, NULL, 1) != pdPASS) {
         ESP_LOGE(TAG, "worker start failed");
+        /* no worker: refuse jobs instead of queueing them forever */
+        if (s_jobs) { vQueueDelete(s_jobs); s_jobs = NULL; }
+    }
 }
 #endif
 
@@ -561,6 +570,9 @@ static void post_action(job_type_t type, const cc_session_t *s, const char *t)
     job_t *j = calloc(1, sizeof(*j));
     if (!j) return;
     j->type = type;
+    j->token = ++s_req_token;
+    s_req_visit = s_visit;
+    s_req_at_ms = mono_ms();
     strlcpy(j->id, s->id, sizeof(j->id));
     if (t) strlcpy(j->text, t, sizeof(j->text));
     s_act_pending = true;
@@ -592,6 +604,12 @@ static void session_closed_cb(void *ctx)
 static void open_now(const cc_session_t *s)
 {
     char claude[64], cmd[192];
+    /* the card as of the latest poll must still be one we may open */
+    if (!actionable(s)) {
+        note_set(s, NOTE_ERROR, "Session has stopped");
+        rebuild();
+        return;
+    }
     int idx = cc_settings_server();
     if (idx < 0 || !cc_cmd_attach(cc_settings_claude_path(claude, sizeof(claude)), s->id, cmd, sizeof(cmd))) {
         note_set(s, NOTE_ERROR, "Can't open: set up your Mac in Settings");
@@ -623,7 +641,7 @@ static void enter_pressed(void)
 static void apply_action_result(void)
 {
     res_lock();
-    unsigned gen = s_act.gen;
+    unsigned gen = s_act.gen, token = s_act.token;
     job_type_t type = s_act.type;
     char id[16], msg[160];
     strlcpy(id, s_act.id, sizeof(id));
@@ -632,11 +650,20 @@ static void apply_action_result(void)
     res_unlock();
     if (gen == s_seen_act) return;
     s_seen_act = gen;
+    if (token != s_req_token) return;   /* an answer to an older request */
     const cc_session_t *s = NULL;
     for (int i = 0; i < s_n; i++)
         if (strcmp(s_items[i].id, id) == 0) { s = &s_items[i]; break; }
     if (!s) return;
     if (type == JOB_CHECK) {
+        /* Open only for the visit that asked, and only while the check is fresh: the user
+           may have left and come back minutes later, and the session may have stopped. */
+        if (s_req_visit != s_visit || mono_ms() - s_req_at_ms > CHECK_MAX_AGE_MS) {
+            ESP_LOGI(TAG, "dropping a stale open check for %s", id);
+            note_clear(key_of(s));
+            rebuild();
+            return;
+        }
         if (err == ESP_OK) { open_now(s); return; }
     } else if (err == ESP_OK) {
         note_set(s, NOTE_SENT, NULL);
@@ -761,7 +788,11 @@ static void load_snapshot(void)
     int64_t now = mono_ms();
     for (int k = 0; k < NOTES_MAX; k++) {
         note_t *nt = &s_notes[k];
-        if (nt->kind == NOTE_NONE || nt->kind == NOTE_BUSY) continue;
+        if (nt->kind == NOTE_NONE) continue;
+        if (nt->kind == NOTE_BUSY) {
+            if (!s_act_pending) nt->kind = NOTE_NONE;   /* its result found no card */
+            continue;
+        }
         bool keep = false;
         for (int i = 0; i < n; i++)
             if (strcmp(key_of(&s_items[i]), nt->key) == 0) { keep = s_items[i].state == nt->state; break; }
@@ -784,10 +815,14 @@ static void update_status(void)
     } else if (!up) {
         /* The clock starts once the network could reach the Mac: Tailscale takes about a
            minute to register after boot, and that isn't the Mac's fault. */
-        bool net = wifi_mgr_is_connected() && (!g_settings.ts_enable || tailscale_state() == TS_CONNECTED);
+        bool wifi = wifi_mgr_is_connected();
+        bool net = wifi && (!g_settings.ts_enable || tailscale_state() == TS_CONNECTED);
         if (!net) s_down_since_ms = 0;
         else if (!s_down_since_ms) s_down_since_ms = now;
-        if (s_down_since_ms && now - s_down_since_ms >= UNREACHABLE_MS) {
+        if (!wifi && !wifi_mgr_is_connecting()) {
+            snprintf(line, sizeof(line), "No Wi-Fi, so the Tab5 can't reach %s.", name);
+            color = dot = C_RED;
+        } else if (s_down_since_ms && now - s_down_since_ms >= UNREACHABLE_MS) {
             snprintf(line, sizeof(line), "Can't reach %s. Is your Mac awake?", name);
             color = dot = C_RED;
         } else {
@@ -834,6 +869,9 @@ static void tick_cb(lv_timer_t *t)
     load_snapshot();
     apply_action_result();
     if (!s_scr) return;   /* opening a session replaced the screen */
+    /* a request whose result matched no card leaves a BUSY note behind */
+    for (int k = 0; !s_act_pending && k < NOTES_MAX; k++)
+        if (s_notes[k].kind == NOTE_BUSY) { s_notes[k].kind = NOTE_NONE; rebuild(); }
     res_lock();
     unsigned lg = s_logs.gen;
     res_unlock();
@@ -846,6 +884,9 @@ static void tick_cb(lv_timer_t *t)
 }
 
 /* ------------------------------------------------------------------ screen */
+
+/* Home has nothing to go back to: a stray swipe must not rebuild it. */
+static void dash_gesture_cb(lv_dir_t dir) { (void)dir; }
 
 static void more_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_home_create, NULL); }
 static void settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }
@@ -870,10 +911,14 @@ static lv_obj_t *footer_button(lv_obj_t *parent, const char *label, lv_event_cb_
     return b;
 }
 
+/* The dashboard can be rebuilt over itself (ui_nav_refresh, ui_nav_home from the
+   dashboard): the new screen is created before the old one is deleted, so the old one's
+   delete must leave the new one's widgets, key sink and poll rate alone. */
 static void scr_delete_cb(lv_event_t *e)
 {
-    (void)e;
-    keyboard_clear_sink(&s_sink_tag);
+    lv_obj_t *scr = lv_event_get_target_obj(e);
+    keyboard_clear_sink(scr);   /* only if it is still this screen's sink */
+    if (scr != s_scr) return;
     s_scr = s_list = s_summary = s_bat = s_wifi = s_dot = s_host = s_clock = NULL;
     s_logs_lbl = s_ta = NULL;
     memset(s_cards, 0, sizeof(s_cards));
@@ -892,6 +937,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_style_bg_color(scr, HEX(C_BG), 0);
     lv_obj_set_style_text_color(scr, HEX(C_FG), 0);
     lv_obj_add_event_cb(scr, scr_delete_cb, LV_EVENT_DELETE, NULL);
+    ui_screen_set_gesture(scr, dash_gesture_cb);
 
     /* vitals */
     lv_obj_t *v = box(scr);
@@ -958,10 +1004,11 @@ lv_obj_t *ui_dashboard_create(void *arg)
     footer_button(f, "Settings", settings_cb);
     footer_button(f, "More", more_cb);
 
-    key_sink_t sink = { .key = dash_key, .text = dash_text, .user = &s_sink_tag };
+    key_sink_t sink = { .key = dash_key, .text = dash_text, .user = scr };   /* per screen */
     keyboard_set_sink(&sink);
     cc_poll_set_rate(3);
 
+    s_visit++;   /* answers to requests from an earlier visit are not acted on */
     s_shown_live = false;
     s_seen_poll = s_poll_gen - 1;   /* load the snapshot now */
     lv_timer_t *t = lv_timer_create(tick_cb, 300, NULL);

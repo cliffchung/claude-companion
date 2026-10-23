@@ -1,4 +1,5 @@
 #include "ssh_client.h"
+#include "sdkconfig.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -241,6 +242,10 @@ static void ssh_task(void *arg)
     free(buf);
     if (c->p.cmd[0] && !c->stop) {
         /* the exit-status message can trail the EOF a little */
+        /* bounded: if the exit-status never comes (link lost at EOF), don't sit on the
+           40 s session timeout before returning to the dashboard */
+        long short_timeout = 2;
+        ssh_options_set(c->session, SSH_OPTIONS_TIMEOUT, &short_timeout);
         ssh_set_blocking(c->session, 1);
         uint32_t code = 0; char *sig = NULL; int core = 0;
         if (ssh_channel_get_exit_state(c->channel, &code, &sig, &core) == SSH_OK) c->exit_status = (int)code;
@@ -273,7 +278,14 @@ ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh
     c->state = SSH_ST_IDLE;
     c->exit_status = -1;
     /* Internal RAM is tight with the companion link's own SSH task running, and it is
-       fragmented: fall back to a PSRAM stack (allowed by SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY). */
+       fragmented: fall back to a PSRAM stack (allowed by SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY).
+       A task on a PSRAM stack must never run with the cache disabled. Flash reads (NVS host
+       pins, the device key) keep the cache on only because code and rodata execute from
+       PSRAM (SPIRAM_XIP_FROM_PSRAM), and pinning a new host key writes flash, which is safe
+       only while no flash mmap is live (the app has none). */
+#if !CONFIG_SPIRAM_XIP_FROM_PSRAM
+#error "the SSH task's PSRAM stack fallback needs CONFIG_SPIRAM_XIP_FROM_PSRAM"
+#endif
     if (xTaskCreatePinnedToCore(ssh_task, "ssh", 24576, c, 5, &c->task, 1) != pdPASS) {
         c->ext_stack = true;
         if (xTaskCreatePinnedToCoreWithCaps(ssh_task, "ssh", 24576, c, 5, &c->task, 1,

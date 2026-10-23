@@ -137,6 +137,12 @@ Known issues:
   channel with an explicit `claude attach <id>`; a non-interactive zsh doesn't read `.zshrc`.
 - Board revision unknown. Upstream tested only board v3; it boots fine on this unit.
 - No microSD card inserted.
+- `tailscale_prepare_peer` returns at once when `ml_wg_mgr_peer_is_up` reports the peer up (Task 7:
+  it used to move the DERP region on every open, about 22 s). "Up" means a WireGuard keypair is
+  still valid, which can be up to about 3 minutes stale. The take-over path is fine, because the
+  live check has just used the tunnel. The generic SSH terminal (More) can now skip the handshake
+  kick on a stale tunnel, and its connect then fails after the 40 s libssh timeout instead of
+  being repaired.
 
 ## Environment
 
