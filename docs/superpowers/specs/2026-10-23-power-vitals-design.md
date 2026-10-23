@@ -309,6 +309,84 @@ states follow Radio off.
 - **Follow-up, not in this plan:** a faster cold connect, by caching MicroLink's coordination
   state. That would make Hibernate cheaper to leave.
 
+### IMU-driven deep sleep (the user, 2026-10-23): where the power actually goes
+
+**The idea.** Keep only the BMI270 awake in its interrupt mode, and use a pick-up to wake everything
+else. That lets the screen, touch, the C6 and the P4 itself go fully off.
+
+**Being critical about the numbers.** These are rough guesses to rank the work. The bench replaces
+them.
+
+| Part | State | Rough draw | What it means |
+|---|---|---|---|
+| Backlight | on | 0.5–1.5 W | already off in Off |
+| P4 | awake at 360 MHz, display pinning max frequency | 100–250 mW | the biggest cost in Off and Deep idle. Only P4 deep sleep or power-off removes it |
+| C6 Wi-Fi | associated, modem power save | 20–80 mW average | Radio off cuts most of it; cutting `WIFI_EN` cuts all of it |
+| Panel | display-off but powered | ~10–50 mW | the `LCD_EN` rail can cut it once the display is torn down |
+| Keyboard (A164 MCU + light) | powered | ~5–50 mW (light on) | it matters in Hibernate |
+| Touch controller | powered, idle | ~1–10 mW | small. Cutting it alone saves little while the P4 is awake |
+| BMI270 any-motion, low-power accel | interrupt mode | ~0.02–0.1 mW | negligible |
+| Board floor: charger, regulators, IO expanders, INA226, RTC | always on | unknown, maybe 2–20 mW | **This sets Hibernate's battery life.** Measure it first |
+
+**What follows from that:**
+
+1. Turning off touch while the P4 stays awake saves little, because touch is about 1% of the Off
+   budget. The value of the IMU is that it can wake the P4 from deep sleep or power-off. Keys and
+   touch can't (GPIO50 and GPIO23 are not LP GPIOs). So a pick-up becomes the natural way out of
+   Hibernate, instead of the side button.
+2. Hibernate cuts every rail it can:
+   - `LCD_EN`, `TOUCH_EN`, `USB_EN`, the speaker and the camera;
+   - **`WIFI_EN`, so the C6 is fully off.** In Hibernate this is safe, because waking is a cold boot
+     that re-initialises SDIO anyway. Radio off still doesn't cut it.
+   - the keyboard's power, if a switch reaches it;
+   - the INA226 goes into power-down mode, except during the bench.
+
+   The floor that's left is what the bench must measure.
+3. **Stillness is a better idle signal than time.** If the device has been still (BMI270
+   no-motion) and has had no input for `still_hibernate_min` (default 30 min, *my call*),
+   Hibernate comes sooner than the 2 h idle limit. A device lying untouched on a table or
+   nightstand is the overnight case.
+4. **Anticipatory wake.** A pick-up in Off or Deep idle starts the radio and the link before the
+   screen is needed, so the dashboard is live sooner.
+
+**What must be found first** (in the spike, Task 6). Each is a yes/no on this board:
+- Are the BMI270's INT1/INT2 wired to a P4 GPIO at all? If so, is it an LP GPIO (0–15, needed to
+  wake deep sleep), or does it go through an IO expander whose own INT reaches the P4?
+  - Probe it: set any-motion with the INT pin driven, move the device (that needs the user, or use
+    the INT test mode), and watch every candidate GPIO plus the expanders' input registers.
+- Does the board have a real power-off with a wake source (a power latch, or an RTC/IMU IRQ into
+  the power circuit)? Power-off beats deep sleep.
+- Which rails the IO expanders can cut, and what the floor is with everything cut.
+
+If the IMU INT doesn't reach an LP GPIO, Hibernate wakes only on the side button, and the IMU's
+role shrinks to the Off/Deep idle lift wake (CPU awake) and the stillness signal. A timer wake to
+poll the IMU is rejected: each one is a cold boot.
+
+**Waking from the IMU.**
+- Use the BMI270's any-motion feature (or Bosch's wrist-wake gesture, if it's in the feature blob)
+  through raw register writes. The espressif/bmi270 1.1.0 driver has no interrupt API. Bosch's
+  feature config is BSD-3; check what the blob already contains.
+- Use a threshold and duration that ignore a bump, such as about 1 s of motion. Tune them on the
+  bench, and say which values were chosen.
+- **False wakes cost a cold boot** (about 2–3 W for 1–2 min of Tailscale connect). In a bag or a car
+  they could drain the battery. Two guards:
+  1. After an IMU wake from Hibernate, the device boots straight to a dim "Waking: reconnecting"
+     screen and starts the radio at once, so real wakes are fast. With no key, touch or continued
+     motion within 20 s, it powers down again.
+  2. A **false-wake cap**: after 3 unconfirmed IMU wakes within an hour, IMU wake turns off until a
+     side-button or key wake. The notes record how often that fired on the bench.
+- While the P4 is awake (Off, Deep idle), the IMU INT can replace the plan's accelerometer polling,
+  saving the I²C traffic and CPU wakeups.
+
+**Touch off in Deep idle.** Once IMU lift wake is proven to work while the P4 is awake, Deep idle
+cuts `TOUCH_EN` and stops the 10 Hz touch poll. Keys and lift still wake it. A tap on a device lying
+flat won't wake it in Deep idle; that is the trade-off, and it's recorded. Off keeps touch, because
+it's cheap relative to the P4 and a tap is the natural gesture in the first minutes.
+
+**Follow-up made more important by this:** faster cold connect, by caching MicroLink's coordination
+state. Every Hibernate exit pays the 50–130 s Tailscale connect. That stays out of this plan; it is
+the first thing to do after it.
+
 ### Measurement (one battery session with the user)
 
 - **Why a session is needed.** The INA226 sits on the battery path. On USB it reads charge
@@ -398,7 +476,8 @@ states follow Radio off.
 - Wake when a session needs you;
 - Keyboard light shows needs-you;
 - Radio off after (min) and check-in every (min);
-- Deep idle after (min), Hibernate after (h), Hibernate check-in every (h, off by default);
+- Deep idle after (min), Hibernate after (h), Hibernate when still for (min), Hibernate check-in every (h, off by default);
+- Wake on pick-up (IMU), with the false-wake cap;
 - Sleep on USB power;
 - Time zone (a short list of POSIX rules, with US Pacific as default);
 - Forget Mac host key (under Companion).
