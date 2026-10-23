@@ -19,10 +19,16 @@ At a glance it shows the vitals you expect from a handheld: battery, charging, W
 and the clock. This serves R4 (keyboard-first), R5 (a beautiful native UI) and R6 (power-efficient,
 sleeps on its own, shows battery %, charging, Wi-Fi and the clock).
 
+## Priority (the user, 2026-10-23)
+
+**Maximum battery life over long idle**, such as overnight or a day out, is the top priority. When a
+default trades battery against responsiveness after more than an hour without input, it leans
+toward battery. The first minutes of idle stay responsive.
+
 ## Goals
 
-1. **Idle ladder.** Active → Dim → Screen off → Radio off (and automatic light sleep only if the
-   spike proves it). Any key, touch or
+1. **Idle ladder.** Active → Dim → Screen off → Radio off → Deep idle → Hibernate (and automatic
+   light sleep only if the spike proves it). Any key, touch or
    lift goes straight back to Active.
 2. **Wake on keyboard, touch and lift.** The first key press that wakes the device is swallowed. It
    wakes the device and does not type or act, so a sleepy keypress can never answer a session.
@@ -77,8 +83,8 @@ They touch the same code (cc_link, reconnect), so they belong here:
 
 ## Non-goals
 
-- Deep sleep. Waking would mean a full reboot, a 50–130 s Tailscale reconnect and a lost link;
-  light sleep or screen-off gives most of the savings.
+- Deep sleep during short idle. Waking means a full reboot and a 50–130 s Tailscale reconnect, so
+  it is used only for long idle (see Long idle).
 - Updating or reflashing the C6, or using esp_hosted's own host power-save protocol. The C6 stays
   untouched, as the main spec says.
 - Camera, voice or the typography pass (Plans 3 and 4).
@@ -259,6 +265,48 @@ They touch the same code (cc_link, reconnect), so they belong here:
     least 20%, with check-ins under 30 s. Otherwise the setting exists, is off by default, and
     the notes say why.
 
+### Long idle: Deep idle and Hibernate (the user's priority)
+
+After an hour without input, responsiveness matters little and battery matters most. Two more
+states follow Radio off.
+
+| State | Enter when (on battery only) | What changes |
+|---|---|---|
+| Deep idle | no input for `deep_idle_min` (default 60) | Check-ins back off: 5 → 15 → 30 min. The keyboard light is off unless something needs you, then at most 30%. The display is torn down and the CPU runs at its lowest frequency, if the spike shows that works. |
+| Hibernate | no input for `hibernate_h` (default 2 h), or battery ≤ 10% | The whole device powers down: a full power-off if the board supports it, else ESP deep sleep. Wi-Fi and the link are dropped. |
+
+- **Waking from Hibernate.** The keyboard INT (GPIO50) and the touch INT (GPIO23) are not LP GPIOs,
+  so neither can wake the P4 from deep sleep. Wake comes from:
+  - the side power or reset button, the expected answer;
+  - an RTC (RX8130) alarm, if its IRQ reaches the power circuit or an LP GPIO;
+  - the IMU INT, only if it reaches an LP GPIO.
+
+  The spike finds which of these exist on this board. The screen tells you before it hibernates:
+  "Sleeping to save battery. Press the side button to wake."
+- **After wake.** The device cold-boots straight to the dashboard. It shows "Waking: reconnecting
+  to Mac" until the link is live, measured at 50–130 s today. The cards come back from the first
+  poll; nothing stale is shown as live.
+- **Needs-you during Hibernate is not signalled** by default *(my call)*. Overnight that is the
+  point.
+  - An optional "Hibernate check-in every N h" uses the RTC or a timer wake to boot, connect, poll,
+    light the keyboard amber on a needs-you, and power down again.
+  - It is off by default. Each check-in is a cold boot plus a Tailscale connect, about 2–3 W for
+    1–2 min, so the bench measures it before any default changes.
+- **Why Hibernate exists.** With the display off, the P4 plus the C6 still draw on the order of
+  hundreds of mW, while deep sleep or power-off draws close to nothing. For a night, the difference
+  is most of the battery. The bench gives the real numbers, and the defaults (60 min and 2 h) are
+  revised from them.
+- **The spike (Task 6) gains a hibernate part.** It:
+  - finds the wake sources above;
+  - measures deep-sleep or power-off current on battery;
+  - measures cold boot to a live dashboard;
+  - checks that NVS, the Tailscale identity and the host-key pins survive.
+
+  If none of the wake paths works without the user pressing reset, Hibernate wakes on reset and
+  the notes say so.
+- **Follow-up, not in this plan:** a faster cold connect, by caching MicroLink's coordination
+  state. That would make Hibernate cheaper to leave.
+
 ### Measurement (one battery session with the user)
 
 - **Why a session is needed.** The INA226 sits on the battery path. On USB it reads charge
@@ -348,9 +396,42 @@ They touch the same code (cc_link, reconnect), so they belong here:
 - Wake when a session needs you;
 - Keyboard light shows needs-you;
 - Radio off after (min) and check-in every (min);
+- Deep idle after (min), Hibernate after (h), Hibernate check-in every (h, off by default);
 - Sleep on USB power;
 - Time zone (a short list of POSIX rules, with US Pacific as default);
 - Forget Mac host key (under Companion).
+
+### Hotkeys for two thumbs (the user, 2026-10-23)
+
+**The problem.** The Tab5 is held in both hands and typed with two thumbs. A shortcut whose
+modifier and key are both on the left half needs a hand to reach across. Ctrl sits bottom-left, and
+Ctrl+Q (leave a session) and Ctrl+Tab (buttons mode) both put the key there too.
+
+**The rule.** Each shortcut pairs the left-hand Ctrl with a key on the right half (Y U I O P,
+H J K L, N M, the arrows, `]`, Enter, Backspace), or is a single key. Inside a take-over, only keys
+Claude Code doesn't use are taken.
+
+| Where | Action | New | Old (kept as an alias) |
+|---|---|---|---|
+| Take-over | Leave the session (it keeps running) | **Ctrl+]** (the telnet/ssh escape key; Claude Code doesn't use it) | Ctrl+Q |
+| Take-over | Scroll back | Shift+▲/▼ *(my call)* | Shift+PgUp/PgDn |
+| Dashboard | Open the selected session | Ctrl+O (unchanged; O is on the right) | |
+| Dashboard | Move between cards | ▲/▼ (right hand, unchanged) | |
+| Dashboard | Send the answer | Enter (unchanged) | |
+| Dashboard | Settings | **Ctrl+P** | Ctrl+Tab buttons mode |
+| Dashboard | More | **Ctrl+M** | Ctrl+Tab buttons mode |
+| Dashboard | Show the shortcuts | **Ctrl+K**: an overlay listing every shortcut; any key closes it | |
+| Settings, More | Back | Esc (unchanged) | |
+
+**Supporting changes:**
+- Ctrl+Tab keeps working everywhere it does today.
+- The dashboard footer hint becomes "Ctrl+O open · Ctrl+P settings · Ctrl+K keys". A take-over
+  shows a toast for 3 s when it opens: "Ctrl+] to leave".
+- Before taking Ctrl+P, Ctrl+M and Ctrl+K on the dashboard, check that they never reach a card's
+  answer field. They are local, like Ctrl+O.
+- Verify on hardware with real presses, in the user's visit, that the A164 reports `]` with Ctrl
+  held as `cp=']'` with `MOD_CTRL`, in both layouts the fork supports. If it doesn't, use Ctrl+P to
+  leave a take-over instead, and say so in the hint.
 
 ## Left to the builder
 
