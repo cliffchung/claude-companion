@@ -69,21 +69,21 @@ static void led_source(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, u
 static void apply_light(bool force)
 {
     pr_led_t l;
+    keyboard_led_lock();   /* choose and write as one step, so a hot-plug probe can't land an older colour */
     power_kbd_light_get(&l);
-    if (s_hold) return;
-    if (!force && s_have_applied && memcmp(&l, &s_applied, sizeof(l)) == 0) return;
-    keyboard_set_led(l.mode, l.bright, l.r, l.g, l.b);
-    s_applied = l;
-    s_have_applied = true;
+    if (!s_hold && (force || !s_have_applied || memcmp(&l, &s_applied, sizeof(l)) != 0)) {
+        /* remembered only after the keyboard took it: an absent keyboard or failed write retries */
+        s_have_applied = keyboard_write_led(l.mode, l.bright, l.r, l.g, l.b);
+        s_applied = l;
+    }
+    keyboard_led_unlock();
 }
 
 void power_kbd_light_refresh(void)
 {
     if (s_task) xTaskNotifyGive(s_task);
     else {   /* before power_init: nothing owns the light yet */
-        pr_led_t l;
-        power_kbd_light_get(&l);
-        keyboard_set_led(l.mode, l.bright, l.r, l.g, l.b);
+        apply_light(true);
     }
 }
 
@@ -117,7 +117,7 @@ static void on_sessions(const cc_session_t *s, int n, void *ctx)
     bool needs = pr_any_needs_you(s, n);
     char name[sizeof(s_needs_name)] = "";
     for (int i = 0; i < n && needs; i++) {
-        if (s[i].background && s[i].live && s[i].state == CC_NEEDS_YOU) {
+        if (cc_session_needs_you(&s[i])) {
             snprintf(name, sizeof(name), "%s", s[i].name);
             break;
         }
@@ -132,6 +132,7 @@ static void on_sessions(const cc_session_t *s, int n, void *ctx)
 static void power_task(void *arg)
 {
     (void)arg;
+    apply_light(true);
     for (;;) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(RECHECK_MS));
         apply_light(false);

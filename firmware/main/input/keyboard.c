@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
 #include "settings/settings.h"
@@ -294,7 +295,8 @@ static bool kb_read(uint8_t reg, uint8_t *buf, size_t n)
 }
 
 static void (*s_led_src)(uint8_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *);
-static volatile uint8_t s_last_led[5];   /* mode, bright, r, g, b of the last keyboard_set_led */
+static uint8_t s_last_led[5];   /* under s_led_lock */
+static SemaphoreHandle_t s_led_lock;   /* recursive: serializes whole LED write sequences */   /* mode, bright, r, g, b of the last keyboard_set_led */
 
 static bool kb_probe(void)
 {
@@ -311,11 +313,13 @@ static bool kb_probe(void)
     kb_write(REG_INT_CFG, s_layout ? 0x01 : 0x02);
     s_mode_dirty = false;
     kb_write(REG_EVENT_NUM, 0);     /* clear FIFO */
+    keyboard_led_lock();   /* the colour we ask for is the colour that lands */
     uint8_t m, br, r, g, b;
     if (s_led_src) s_led_src(&m, &br, &r, &g, &b);
     else { m = g_settings.kbd_led_mode; br = g_settings.kbd_led_bright; r = g_settings.kbd_led_rgb[0];
            g = g_settings.kbd_led_rgb[1]; b = g_settings.kbd_led_rgb[2]; }
-    keyboard_set_led(m, br, r, g, b);
+    keyboard_write_led(m, br, r, g, b);
+    keyboard_led_unlock();
     return true;
 }
 
@@ -376,24 +380,40 @@ static void kb_task(void *arg)
     }
 }
 
-void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
+void keyboard_led_lock(void) { if (s_led_lock) xSemaphoreTakeRecursive(s_led_lock, portMAX_DELAY); }
+void keyboard_led_unlock(void) { if (s_led_lock) xSemaphoreGiveRecursive(s_led_lock); }
+
+/* The three writes and the record of them are one step under the LED lock. The lock is never held
+   while calling anything but I2C; callers that hold it may call the LED source (lock order: LED
+   lock, then the power and cc_link locks; nothing takes the LED lock while holding those). */
+bool keyboard_write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
 {
-    if (!s_present && !s_dev) return;
+    if (!s_present && !s_dev) return false;
+    keyboard_led_lock();
     s_last_led[0] = mode ? 1 : 0; s_last_led[1] = bright > 100 ? 100 : bright;
     s_last_led[2] = r; s_last_led[3] = g; s_last_led[4] = b;
-    kb_write(REG_BRIGHTNESS, bright > 100 ? 100 : bright);
-    kb_write(REG_RGB_MODE, mode ? 1 : 0);
+    bool ok = kb_write(REG_BRIGHTNESS, s_last_led[1]);
+    ok = kb_write(REG_RGB_MODE, mode ? 1 : 0) && ok;
     if (mode) {
         uint8_t w[9] = { REG_RGB_BASE, 0, r, g, b, 0, r, g, b };
-        if (s_dev) i2c_master_transmit(s_dev, w, 9, 50);
+        ok = s_dev && i2c_master_transmit(s_dev, w, 9, 50) == ESP_OK && ok;
     }
+    keyboard_led_unlock();
+    return ok;
+}
+
+void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
+{
+    keyboard_write_led(mode, bright, r, g, b);
 }
 
 void keyboard_set_led_source(void (*get)(uint8_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *)) { s_led_src = get; }
 
 void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b)
 {
+    keyboard_led_lock();
     *mode = s_last_led[0]; *bright = s_last_led[1]; *r = s_last_led[2]; *g = s_last_led[3]; *b = s_last_led[4];
+    keyboard_led_unlock();
 }
 
 void keyboard_mark_absent(void) { s_present = false; s_i2c_held = false; }
@@ -432,6 +452,7 @@ static void drain_timer_cb(lv_timer_t *t)
 void keyboard_init(void)
 {
     s_q = xQueueCreate(64, sizeof(key_event_t));
+    s_led_lock = xSemaphoreCreateRecursiveMutex();
     keyboard_set_layout(g_settings.kbd_layout);
     gpio_config_t io = { .pin_bit_mask = 1ULL << KB_INT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&io);

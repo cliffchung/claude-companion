@@ -56,6 +56,11 @@ void keyboard_set_layout(uint8_t layout);          /* kbd_layout_t */
 void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
 /* Who decides the light: kb_probe asks the source (not g_settings), so a keyboard plugged in
    later picks up the current state. The source runs on the keyboard task. */
+/* Same, but true only if the keyboard took every write (false: absent or an I2C error). */
+bool keyboard_write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
+/* Callers that choose a colour and write it hold this around both (recursive). */
+void keyboard_led_lock(void);
+void keyboard_led_unlock(void);
 void keyboard_set_led_source(void (*get)(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b));
 /* The values keyboard_set_led wrote last (zeros before the first write). */
 void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b);

@@ -18,7 +18,7 @@ bool pr_rgb_amber_like(uint32_t rgb)
 bool pr_any_needs_you(const cc_session_t *s, int n)
 {
     for (int i = 0; i < n; i++)
-        if (s[i].background && s[i].live && s[i].state == CC_NEEDS_YOU) return true;
+        if (cc_session_needs_you(&s[i])) return true;
     return false;
 }
 

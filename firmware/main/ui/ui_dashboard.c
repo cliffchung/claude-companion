@@ -313,8 +313,11 @@ static void clip_lines(const char *in, char *out, size_t cap)
     out[o] = 0;
 }
 
-static const char *pill_text(cc_state_t st)
+/* A blocked session that is not live (or not a background one) is not amber and not "needs you". */
+static const char *pill_text(const cc_session_t *s)
 {
+    cc_state_t st = s->state;
+    if (st == CC_NEEDS_YOU && !cc_session_needs_you(s)) return s->background ? "STOPPED" : "WAITING";
     switch (st) {
     case CC_NEEDS_YOU: return "NEEDS YOU";
     case CC_WORKING:   return "WORKING";
@@ -353,8 +356,10 @@ static lv_obj_t *row(lv_obj_t *parent, int gap)
     return r;
 }
 
-static void pill(lv_obj_t *parent, cc_state_t st)
+static void pill(lv_obj_t *parent, const cc_session_t *sess)
 {
+    cc_state_t st = sess->state;
+    bool amber = cc_session_needs_you(sess);
     lv_obj_t *p = box(parent);
     lv_obj_set_size(p, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_radius(p, LV_RADIUS_CIRCLE, 0);
@@ -365,7 +370,10 @@ static void pill(lv_obj_t *parent, cc_state_t st)
     uint32_t fg, bg, border;
     lv_opa_t bg_opa = LV_OPA_20;
     switch (st) {
-    case CC_NEEDS_YOU: fg = C_BG;    bg = C_AMBER; border = C_AMBER; bg_opa = LV_OPA_COVER; break;
+    case CC_NEEDS_YOU:
+        if (amber) { fg = C_BG; bg = C_AMBER; border = C_AMBER; bg_opa = LV_OPA_COVER; }
+        else { fg = C_MUTED; bg = C_LINE; border = C_LINE; bg_opa = LV_OPA_40; }
+        break;
     case CC_WORKING:   fg = C_GREEN; bg = C_GREEN; border = C_GREEN; break;
     case CC_ENDED:     fg = C_RED;   bg = C_RED;   border = C_RED;   break;
     default:           fg = C_MUTED; bg = C_LINE;  border = C_LINE;  bg_opa = LV_OPA_40; break;
@@ -373,8 +381,8 @@ static void pill(lv_obj_t *parent, cc_state_t st)
     lv_obj_set_style_bg_color(p, HEX(bg), 0);
     lv_obj_set_style_bg_opa(p, bg_opa, 0);
     lv_obj_set_style_border_color(p, HEX(border), 0);
-    lv_obj_set_style_border_opa(p, st == CC_NEEDS_YOU ? LV_OPA_COVER : LV_OPA_50, 0);
-    text(p, pill_text(st), FONT_SMALL, fg);
+    lv_obj_set_style_border_opa(p, amber ? LV_OPA_COVER : LV_OPA_50, 0);
+    text(p, pill_text(sess), FONT_SMALL, fg);
 }
 
 static void select_index(int i);
@@ -484,8 +492,8 @@ static void build_card(int i)
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 14, 0);
     lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, HEX(s->state == CC_NEEDS_YOU ? C_AMBER : C_LINE), 0);
-    lv_obj_set_style_border_opa(card, s->state == CC_NEEDS_YOU ? LV_OPA_60 : LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(card, HEX(cc_session_needs_you(s) ? C_AMBER : C_LINE), 0);
+    lv_obj_set_style_border_opa(card, cc_session_needs_you(s) ? LV_OPA_60 : LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(card, 16, 0);
     lv_obj_set_style_pad_ver(card, 10, 0);
     lv_obj_set_style_pad_row(card, 8, 0);
@@ -517,7 +525,7 @@ static void build_card(int i)
     lv_obj_set_style_min_width(s_ages[i], 48, 0);
     lv_obj_set_style_text_align(s_ages[i], LV_TEXT_ALIGN_RIGHT, 0);
     set_age(s_ages[i], s);
-    pill(h, s->state);
+    pill(h, s);
     if (sel) build_expanded(card, s);
 }
 

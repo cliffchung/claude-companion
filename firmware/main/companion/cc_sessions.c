@@ -137,11 +137,16 @@ int cc_sessions_visible(cc_session_t *s, int n, int max_finished)
     return w;
 }
 
+bool cc_session_needs_you(const cc_session_t *s)
+{
+    return s->background && s->live && s->state == CC_NEEDS_YOU;
+}
+
 size_t cc_summary(const cc_session_t *s, int n, char *out, size_t cap)
 {
     int need = 0, work = 0;
     for (int i = 0; i < n; i++) {
-        if (s[i].state == CC_NEEDS_YOU) need++;
+        if (cc_session_needs_you(&s[i])) need++;
         else if (s[i].state == CC_WORKING) work++;
     }
     int r;

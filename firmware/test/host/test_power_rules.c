@@ -21,6 +21,17 @@ void test_amber_like_colours(void)
     TEST_ASSERT_TRUE(pr_rgb_amber_like(0xF4B545));
     TEST_ASSERT_TRUE(pr_rgb_amber_like(0xFFD700));
     TEST_ASSERT_TRUE(pr_rgb_amber_like(0xFF8000));
+    /* boundaries: hue 24/25/55/56 deg, saturation 0.49/0.5, value 0.49/0.5 */
+    TEST_ASSERT_FALSE(pr_rgb_amber_like(0xFF6100));   /* hue 22.8 */
+    TEST_ASSERT_FALSE(pr_rgb_amber_like(0xFF6A00));   /* hue 24.9 */
+    TEST_ASSERT_TRUE(pr_rgb_amber_like(0xFF6B00));    /* hue 25.2 */
+    TEST_ASSERT_TRUE(pr_rgb_amber_like(0xFFE900));    /* hue 54.8 */
+    TEST_ASSERT_FALSE(pr_rgb_amber_like(0xFFEA00));   /* hue 55.06 */
+    TEST_ASSERT_FALSE(pr_rgb_amber_like(0xFFFF00));   /* hue 60 */
+    TEST_ASSERT_TRUE(pr_rgb_amber_like(0xFEB57F));    /* sat exactly 0.5 (127/254), hue 25.5 */
+    TEST_ASSERT_FALSE(pr_rgb_amber_like(0xFEB580));   /* sat 126/254 = 0.496 */
+    TEST_ASSERT_TRUE(pr_rgb_amber_like(0x805800));    /* value 128/255 >= 0.5 */
+    TEST_ASSERT_FALSE(pr_rgb_amber_like(0x7F5700));   /* value 127/255 < 0.5 */
     uint32_t no[] = { 0x0080FF, 0xFFFFFF, 0xFF4040, 0x40FF40, 0xFF40FF, 0x00FFFF, 0x604818, 0x000000 };
     for (unsigned i = 0; i < sizeof(no) / sizeof(no[0]); i++) TEST_ASSERT_FALSE_MESSAGE(pr_rgb_amber_like(no[i]), "colour");
 }
