@@ -22,4 +22,8 @@ size_t cc_paste_build(const char *text, char *out, size_t cap);
    least two numbered options and an esc/cancel hint. History text doesn't count. A CR there
    would confirm the dialog's default option, so quick answers must not be typed. */
 bool cc_screen_is_permission_prompt(const char *plain);
+/* Fail-closed gate for quick answers: true only when the last "❯" in the ANSI-stripped screen
+   is an empty input line, i.e. only spaces, NBSP or box-drawing follow it up to the next \r,
+   \n or the end. Dialogs, spinners without an input line, drafts and unknown screens: false. */
+bool cc_screen_input_ready(const char *plain);
 /* Every builder returns false for an invalid path, id or sid, empty text, or output that doesn't fit cap. */

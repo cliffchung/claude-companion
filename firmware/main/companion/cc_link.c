@@ -12,6 +12,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "libssh/libssh.h"
+#include "cJSON.h"
 #include "settings/settings.h"
 #include "servers/server_store.h"
 #include "net/tailscale.h"
@@ -73,8 +74,10 @@ static char s_hostkey_bad[128];        /* host whose key didn't match its pin; "
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 
-static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
-static void unlock(void) { xSemaphoreGive(s_lock); }
+/* Before cc_link_start (or if it failed) there is no lock and no link task: getters then
+   read the settings directly and the status is "no Mac set up". */
+static void lock(void) { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
+static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 static int64_t now_us(void) { return esp_timer_get_time(); }
 
 static void kick(void)
@@ -160,6 +163,10 @@ bool cc_link_connected(void)
 const char *cc_link_status_text(char *b, size_t cap)
 {
     if (!b || !cap) return "";
+    if (!s_task) {
+        strlcpy(b, "no Mac set up", cap);
+        return b;
+    }
     lock();
     switch (s_state) {
     case LS_NO_MAC:
@@ -372,7 +379,7 @@ static esp_err_t do_exec(req_t *r)
             size_t k = (size_t)n;
             if (r->out && r->cap > 1) {
                 size_t room = r->cap - 1;
-                if (k > room) { memmove(tmp, tmp + (k - room), room); k = room; truncated = true; }
+                if (r->keep_tail && k > room) { memmove(tmp, tmp + (k - room), room); k = room; truncated = true; }
                 if (olen + k > room) {
                     truncated = true;
                     if (r->keep_tail) {
@@ -514,12 +521,14 @@ static esp_err_t do_paste(req_t *r)
         close_channel(ch);
         return ESP_FAIL;
     }
-    /* 2. a permission dialog takes CR as "yes": type nothing, detach. Same when late. */
-    bool dialog = cc_screen_is_permission_prompt(s_screen);
+    /* 2. fail closed: type only when the bottom of the screen is the empty input line.
+       Anything else (a permission dialog takes CR as "yes", a spinner, a draft, a screen we
+       don't know) means type nothing and detach. The dialog matcher is a second opinion. */
+    bool dialog = !cc_screen_input_ready(s_screen) || cc_screen_is_permission_prompt(s_screen);
     if (dialog || late(r)) {
         if (dialog) {
             size_t sn = strlen(s_screen);
-            ESP_LOGD(TAG, "permission screen tail: %s", s_screen + (sn > 300 ? sn - 300 : 0));
+            ESP_LOGD(TAG, "not an input prompt; screen tail: %s", s_screen + (sn > 300 ? sn - 300 : 0));
         }
         send_bytes(ch, "\x1a", 1);
         len = 0;
@@ -570,6 +579,8 @@ static int refresh(int64_t deadline_us)
     req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = s_json, .cap = JSON_CAP, .exit_status = &status,
                 .err = err, .err_cap = sizeof(err),
                 .deadline_us = deadline_us < poll_deadline ? deadline_us : poll_deadline };
+    static int s_heap_logs;
+    size_t int_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     esp_err_t e = do_exec(&r);
     if (e == ESP_ERR_INVALID_SIZE) {
         ESP_LOGE(TAG, "poll: agents output is over %d KB; session list not updated", JSON_CAP / 1024);
@@ -580,6 +591,13 @@ static int refresh(int64_t deadline_us)
         return -1;
     }
     int n = cc_sessions_parse(s_json, s_parse, POLL_CAP);
+    if (s_heap_logs < 2) {   /* the first two polls: show what a poll costs internal RAM */
+        s_heap_logs++;
+        ESP_LOGI(TAG, "poll: %u bytes JSON, %d sessions; internal free %u -> %u (min ever %u)",
+                 (unsigned)strlen(s_json), n, (unsigned)int_before,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    }
     if (n < 0) {
         ESP_LOGW(TAG, "poll: output is not a JSON array");
         return -1;
@@ -783,6 +801,14 @@ void cc_link_on_wifi(bool connected)
 
 int libssh_esp32_init(void);
 
+/* cJSON nodes for a long `--all` list would otherwise land in internal RAM
+   (SPIRAM_MALLOC_ALWAYSINTERNAL keeps small blocks there). */
+static void *psram_malloc(size_t n)
+{
+    void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+    return p ? p : malloc(n);
+}
+
 esp_err_t cc_link_start(void)
 {
     if (s_task) return ESP_OK;
@@ -793,7 +819,9 @@ esp_err_t cc_link_start(void)
     s_json = heap_caps_malloc(JSON_CAP, MALLOC_CAP_SPIRAM);
     s_screen = heap_caps_malloc(SCREEN_CAP, MALLOC_CAP_SPIRAM);
     if (!s_lock || !s_queue || !s_list || !s_parse || !s_json || !s_screen) return ESP_ERR_NO_MEM;
-    libssh_esp32_init();   /* ssh_init is reference counted */
+    cJSON_Hooks hooks = { .malloc_fn = psram_malloc, .free_fn = heap_caps_free };
+    cJSON_InitHooks(&hooks);
+    libssh_esp32_init();   /* once only */
     if (xTaskCreatePinnedToCore(link_task, "cc_link", 24576, NULL, 4, &s_task, 1) != pdPASS)
         return ESP_ERR_NO_MEM;
     return ESP_OK;

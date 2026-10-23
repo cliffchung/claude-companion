@@ -184,7 +184,7 @@ static const char INPUT_SCREEN[] =
 static const char INPUT_AFTER_QUESTION[] =
     SEL " Reply with exactly this line and nothing else: Do you want to proceed? 1. Yes"
     "\xe2\x8f\xba Do you want to proceed? 1. Yes  allow: GET, HEAD  (esc)" RULE " companion-test-guard " RULE
-    SEL " " RULE RULE "\xe2\x8f\xb5\xe2\x8f\xb5 auto mode on (shift+tab to cycle)";
+    SEL "\xc2\xa0\r" RULE RULE "\r\xe2\x8f\xb5\xe2\x8f\xb5 auto mode on (shift+tab to cycle)";   /* as in the real stream */
 /* an answered dialog redrawn earlier in the stream, then the input box */
 static const char INPUT_AFTER_DIALOG[] =
     "Do you want to proceed?\n" SEL " 1. Yes\n  2. No (esc)\n" "\xe2\x8f\xba Done.\n" RULE "\n" SEL " \n" RULE "\n";
@@ -202,6 +202,33 @@ static void test_screen_real_input_after_question(void)
     cc_strip_ansi(buf);
     TEST_ASSERT_NOT_NULL(strstr(buf, "Do you want to proceed?"));
     TEST_ASSERT_FALSE(cc_screen_is_permission_prompt(buf));
+    TEST_ASSERT_TRUE(cc_screen_input_ready(buf));
+}
+
+/* The real renderer: lines end in \r and unstyled spaces are cursor moves, so they vanish. */
+static const char REAL_DIALOG[] =
+    "\xe2\x8f\xba" "Bashcommand\r curl-sIhttps://example.com\rDoyouwanttoproceed?\r"
+    SEL "1.Yes\r2.Yes,anddon'taskagain\r3.No,andtellClaudewhattododifferently(esc)\rEsctocancel";
+static const char SPINNER[] =
+    "\xe2\x8f\xbaWriting the file\r\xe2\x9c\xbb" "Actualizing\xe2\x80\xa6(3s\xc2\xb7" "esctointerrupt)";
+
+static void test_screen_input_ready(void)
+{
+    /* typing is allowed only when the last selection glyph is an empty input line */
+    TEST_ASSERT_TRUE(cc_screen_input_ready(INPUT_SCREEN));
+    TEST_ASSERT_TRUE(cc_screen_input_ready(INPUT_AFTER_QUESTION));
+    TEST_ASSERT_TRUE(cc_screen_input_ready(INPUT_AFTER_DIALOG));
+    TEST_ASSERT_TRUE(cc_screen_input_ready("x " SEL "\xc2\xa0\r" RULE "\r10k tokens"));
+    /* fail closed: dialogs in any form, spinners, drafts, nothing */
+    TEST_ASSERT_FALSE(cc_screen_input_ready(REAL_DIALOG));
+    TEST_ASSERT_FALSE(cc_screen_input_ready(PERM_SCREEN));
+    TEST_ASSERT_FALSE(cc_screen_input_ready(PERM_SCREEN_FLAT));
+    TEST_ASSERT_FALSE(cc_screen_input_ready(SPINNER));
+    TEST_ASSERT_FALSE(cc_screen_input_ready(SEL " half-typed draft\r"));
+    TEST_ASSERT_FALSE(cc_screen_input_ready(""));
+    TEST_ASSERT_FALSE(cc_screen_input_ready(NULL));
+    /* the dialog matcher (secondary) also knows the real form */
+    TEST_ASSERT_TRUE(cc_screen_is_permission_prompt(REAL_DIALOG));
 }
 
 static void test_screen_permission_prompt(void)
@@ -240,5 +267,6 @@ int main(void)
     RUN_TEST(test_screen_permission_prompt);
     RUN_TEST(test_screen_input_prompt_is_not_permission);
     RUN_TEST(test_screen_real_input_after_question);
+    RUN_TEST(test_screen_input_ready);
     return UNITY_END();
 }

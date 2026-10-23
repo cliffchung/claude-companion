@@ -227,9 +227,25 @@ bool cc_screen_is_permission_prompt(const char *plain)
     const char *from = sel - plain > 400 ? sel - 400 : plain;
     int options = 0;
     for (const char *p = from; *p; p++) {
-        if (is_option(p) && (p == plain || p[-1] == ' ' || p[-1] == '\n' || (unsigned char)p[-1] == 0xaf))
-            options++;
+        /* the real stream drops spaces ("1.Yes2.No"), so any non-digit may precede */
+        if (is_option(p) && (p == plain || p[-1] < '0' || p[-1] > '9')) options++;
     }
-    /* ...and an esc / cancel hint after it. */
-    return options >= 2 && (has_ci(sel, "esc", true) || has_ci(sel, "cancel", true));
+    /* ...and an esc / cancel hint after it (glued to words too: "Esctocancel"). */
+    return options >= 2 && (has_ci(sel, "esc", false) || has_ci(sel, "cancel", false));
+}
+
+bool cc_screen_input_ready(const char *plain)
+{
+    if (!plain) return false;
+    const char *last = NULL;
+    for (const char *p = strstr(plain, SEL_GLYPH); p; p = strstr(p + 3, SEL_GLYPH)) last = p;
+    if (!last) return false;
+    const unsigned char *q = (const unsigned char *)last + 3;
+    while (*q && *q != '\r' && *q != '\n') {
+        if (*q == ' ' || *q == '\t') q++;
+        else if (q[0] == 0xc2 && q[1] == 0xa0) q += 2;                          /* NBSP */
+        else if (q[0] == 0xe2 && (q[1] == 0x94 || q[1] == 0x95) && q[2]) q += 3; /* U+2500-257F */
+        else return false;
+    }
+    return true;
 }
