@@ -25,6 +25,10 @@ static void test_takeover_leave(void)
     e = ch('Q', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, true));
     e = ch(']', 0);        TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, true));
     e = ch('c', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, true));   /* Claude Code gets it */
+    e = sk(SK_LEFT, MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, true));
+    e = sk(SK_LEFT, MOD_CTRL | MOD_SHIFT); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, true));
+    e = sk(SK_LEFT, 0);    TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, true));   /* plain ← goes to the Host */
+    e = sk(SK_RIGHT, MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, true));
 }
 
 static void test_ssh_ctrl_bracket_leaves(void)
@@ -32,6 +36,7 @@ static void test_ssh_ctrl_bracket_leaves(void)
     key_event_t e;
     e = ch(']', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, false));
     e = ch('q', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, false));
+    e = sk(SK_LEFT, MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, false));
 }
 
 static void test_terminal_passes_host_keys(void)
@@ -105,7 +110,7 @@ static void test_ctrl_m_is_not_enter(void)
 static void test_overlay_lists_every_shortcut(void)
 {
     const char *need[] = { "Up / Down", "Enter", "Ctrl+O", "Ctrl+T", "Ctrl+P", "Ctrl+K", "Ctrl+Space",
-                           "Esc", "Ctrl+Q", "Shift+Up / Down" };
+                           "Esc", "Ctrl+\xe2\x86\x90", "Shift+Up / Down" };
     int n = hk_overlay_n;
     TEST_ASSERT_EQUAL(10, n);
     for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++) {

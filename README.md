@@ -300,8 +300,8 @@ YOU, and doesn't light anything.
   row opens the session full screen. This is Claude Code's own screen over an exec'd `claude
   attach <id>`: never a login shell, and no tmux. Every key goes to Claude Code, Esc and Ctrl+C
   included.
-- **Leave a take-over:** **Ctrl+Q**, or **← Leave** on the session bar. (Ctrl+] also works on a USB
-  keyboard; the Tab5 keyboard can't send it.) The session
+- **Leave a take-over:** **Ctrl+←** (Ctrl and the `<` key), or **← Leave** on the session bar. Ctrl+Q
+  also works, and Ctrl+] on a USB keyboard (the Tab5 keyboard can't send it). The session
   keeps running on the Host. The session bar shows for 3 seconds when a session opens; tap the top
   of the screen to bring it back. Its chips send Esc, Tab, ^C, ↑ and ↓, and ⌨ opens the on-screen
   keyboard when no physical keyboard is attached.
@@ -325,11 +325,11 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | Ctrl+K | The shortcuts list |
 | Esc | Clear the answer, or go back |
 | Ctrl+Space | Reserved for voice input; for now it shows "Voice input comes in a later update" |
-| Ctrl+Q | Leave a take-over or SSH session (Ctrl+] too, on a USB keyboard) |
+| Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
 | Shift+↑ / ↓ | Scroll back in a take-over |
 
 In Settings and Terminal, the arrow keys move the focus, Enter chooses and Esc goes back. Inside a
-take-over or SSH session the Tab5 keeps only Ctrl+Q / Ctrl+] and the Shift scroll keys; every
+take-over or SSH session the Tab5 keeps only Ctrl+← / Ctrl+Q / Ctrl+] and the Shift scroll keys; every
 other key goes to the Host.
 
 ---
@@ -460,7 +460,7 @@ plain SSH shell on, over your LAN or tailnet.
   saved key changes, the Tab5 warns: "This host's key changed. That can mean an attack. Continue
   only if you changed it." The host form shows the pinned fingerprint, with **Forget** for a
   machine whose key really changed.
-- **Leaving:** Ctrl+Q or **← Leave** asks "Disconnect from <host>?", because leaving ends the
+- **Leaving:** Ctrl+← or **← Leave** asks "Disconnect from <host>?", because leaving ends the
   session.
 - **The Host is never a Terminal host.** It isn't listed, and the Tab5 refuses to open a shell on
   it: "That's the Host: its sessions are on the Sessions screen." The check is by host key, not

@@ -16,6 +16,9 @@ hk_term_t hk_takeover(const key_event_t *ev, bool takeover)
             return HK_T_LEAVE;
         return HK_T_NONE;
     }
+    /* Ctrl+← (the Tab5 keyboard's "<" key, one hand on each side) is the leave key; Ctrl+Q and Ctrl+] stay.
+       The keyboard's own firmware drops Ctrl on "]", so Ctrl+] works only from a USB keyboard. */
+    if (ev->key == SK_LEFT && (ev->mods & MOD_CTRL)) return HK_T_LEAVE;
     if (!(ev->mods & MOD_SHIFT)) return HK_T_NONE;
     switch (ev->key) {
     case SK_PGUP: return HK_T_SCROLL_UP;
