@@ -72,6 +72,11 @@ ts_state_t tailscale_state(void)
 }
 bool tailscale_start(void) { return true; }
 void tailscale_stop(void) {}
+bool tailscale_enabled(void) { return g_settings.ts_enable != 0; }
+bool tailscale_stopping(void) { return false; }
+void tailscale_set_enabled(bool on) { g_settings.ts_enable = on; }
+const char *tailscale_state_text(void) { return tailscale_state() == TS_CONNECTED ? "Connected" : tailscale_state() == TS_OFF ? "Off" : "Connecting"; }
+const char *tailscale_vpn_ip(void) { return tailscale_state() == TS_CONNECTED ? "100.101.102.103" : ""; }
 void audio_player_toggle(void) {}
 ap_state_t audio_player_state(void) { return AP_STOPPED; }
 void softkbd_attach_textarea(lv_obj_t *a,lv_obj_t *b) {}
@@ -126,6 +131,10 @@ const char *cc_watch_status_text(char *b, size_t cap) { snprintf(b, cap, "watch:
 bool cc_link_connected(void) { return !s_rc_preview; }
 const char *cc_link_status_text(char *b, size_t cap) { snprintf(b, cap, "connected Mac"); return b; }
 cc_link_fail_t cc_link_failure(void) { return CC_LINK_FAIL_NONE; }
+bool cc_link_mac_address(char *o, size_t cap) { snprintf(o, cap, "100.101.102.103"); return true; }
+bool cc_link_mac_path(char *o, size_t cap) { snprintf(o, cap, "lan 192.168.1.50"); return true; }
+bool cc_link_set_lan_fallback(const char *ip) { (void)ip; return true; }
+const char *cc_link_lan_fallback(char *o, size_t cap) { snprintf(o, cap, "192.168.1.50"); return o; }
 int cc_poll_failures(bool *too_big) { if (too_big) *too_big = false; return 0; }
 const char *cc_settings_claude_path(char *o, size_t cap) { snprintf(o, cap, "~/.local/bin/claude"); return o; }
 const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "Mac"); return o; }
@@ -666,6 +675,7 @@ int main(int argc,char **argv) {
     ui_screen_create_fn create= argc>1 && !strcmp(argv[1],"settings") ? ui_settings_create :
                  argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create :
                  argc>1 && !strcmp(argv[1],"camera") ? ui_camera_create : ui_home_create;
+    g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;   /* Settings → Network's switch (PREVIEW_TS=0: off) */
     /* Exercise persisted preset indexes and live theme rebuilds before capture. */
     ui_nav_push(create, NULL);
     lv_tick_inc(200); lv_timer_handler();
@@ -676,7 +686,7 @@ int main(int argc,char **argv) {
     lv_obj_t *s = lv_screen_active();
     if (create == ui_settings_create) {
         /* Real click events, including selection preservation across rebuilds. */
-        for (unsigned i = 0; i < 8; i++) {
+        for (unsigned i = 0; i < 9; i++) {
             lv_obj_t *before = s;
             lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
             lv_obj_send_event(lv_obj_get_child(nav, i), LV_EVENT_CLICKED, NULL);
@@ -684,11 +694,11 @@ int main(int argc,char **argv) {
             s = lv_screen_active();
             assert(s == before); /* tab switch must not rebuild the screen */
             lv_obj_t *deck = lv_obj_get_child(lv_obj_get_child(s, 1), 1);
-            for (unsigned j = 0; j < 8; j++)
+            for (unsigned j = 0; j < 9; j++)
                 assert(lv_obj_has_flag(lv_obj_get_child(deck, j), LV_OBJ_FLAG_HIDDEN) == (j != i));
         }
         unsigned category = argc>5 ? (unsigned)atoi(argv[5]) : 0;
-        assert(category < 8);
+        assert(category < 9);
         lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
         lv_obj_send_event(lv_obj_get_child(nav, category), LV_EVENT_CLICKED, NULL);
         lv_tick_inc(200); lv_timer_handler();

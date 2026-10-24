@@ -66,6 +66,9 @@ extern int proxy_disconnect;
  * @param code one of SSH_SOCKET_CONNECTED_OK or SSH_SOCKET_CONNECTED_ERROR
  * @param user is a pointer to session
  */
+/* Claude Companion (Plan 3 Task 3): called once a TCP connect completes, for boot phase timing */
+void (*ssh_companion_tcp_connected_hook)(void) = NULL;
+
 static void socket_callback_connected(int code, int errno_code, void *user)
 {
 	ssh_session session=(ssh_session)user;
@@ -80,9 +83,10 @@ static void socket_callback_connected(int code, int errno_code, void *user)
 	}
 
 	SSH_LOG(SSH_LOG_TRACE,"Socket connection callback: %d (%d)",code, errno_code);
-	if(code == SSH_SOCKET_CONNECTED_OK)
+	if(code == SSH_SOCKET_CONNECTED_OK) {
 		session->session_state=SSH_SESSION_STATE_SOCKET_CONNECTED;
-	else {
+		if (ssh_companion_tcp_connected_hook) ssh_companion_tcp_connected_hook();
+	} else {
         char err_msg[SSH_ERRNO_MSG_MAX] = {0};
 		session->session_state=SSH_SESSION_STATE_ERROR;
 		ssh_set_error(session,SSH_FATAL,"%s",

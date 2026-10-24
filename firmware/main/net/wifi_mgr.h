@@ -51,10 +51,21 @@ bool wifi_mgr_parked(void);
 const char *wifi_mgr_park_mode(void);       /* "stop" or "disconnect" (the mode the next park uses) */
 /* WIFI_PS_MAX_MODEM (max) or WIFI_PS_MIN_MODEM; applied on the wifi_rc task, so any task may call it. */
 void wifi_mgr_set_ps_max(bool max);
+/* Plan 3 Task 3: WIFI_PS_NONE until released (a check-in boot's few seconds: no beacon-interval waits on
+   DHCP, mDNS and SSH); set_ps_max's wish is kept meanwhile and applied when it is released. */
+void wifi_mgr_ps_hold_none(bool on);
 /* Debug (`wifi test drop`): esp_wifi_disconnect() without the user flag, as a real drop. */
 void wifi_mgr_test_drop(void);
 /* "reconnect: idle" | "reconnect: attempt <n>, next in <s> s" | "parked (<mode>)", for the console */
 void wifi_mgr_reconnect_text(char *buf, size_t cap);
+
+/* ---- Plan 3 Task 3 ---- */
+/* The optional static IPv4 address (Settings > Network > Wi-Fi > Advanced), off by default. Addresses in
+   network byte order (lwIP's ip4_addr_t.addr). Applied from the next join. One address for every network
+   (not per SSID): with it on, another network gets it too and no DHCP. Not in the backup JSON. */
+typedef struct { uint8_t on, pad[3]; uint32_t ip, mask, gw, dns; } wifi_static_ip_t;
+bool wifi_mgr_static_ip_get(wifi_static_ip_t *out);
+bool wifi_mgr_static_ip_set(const wifi_static_ip_t *in);   /* NULL or on = 0 turns it off; false if invalid */
 
 #ifdef __cplusplus
 }

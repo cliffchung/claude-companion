@@ -8,6 +8,7 @@
 #include "settings/settings.h"
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
+#include "net/tailscale.h"
 #include "crypto/secure_store.h"
 #include "mbedtls/base64.h"
 
@@ -78,6 +79,7 @@ static bool apply_json(const char *json, char *err, size_t err_cap)
         if (mbedtls_base64_decode((unsigned char *)&tmp, sizeof(tmp), &n, (const unsigned char *)b64, strlen(b64)) == 0 && n == sizeof(tmp)) {
             g_settings = tmp;
             settings_save();
+            tailscale_set_enabled(g_settings.ts_enable);   /* act on the restored switch (M8) */
         }
     }
     cJSON_Delete(root);

@@ -45,7 +45,7 @@ typedef struct {
     uint8_t  reserved_dict_sd;          /* reserved: formerly a dictionary option */
     char     ota_url[160];
     uint8_t  ssh_bell;
-    uint8_t  ts_enable;
+    uint8_t  ts_enable;          /* the Tailscale switch: sticky (tailscale_set_enabled saves it); v21 turned it off once */
     char     ts_auth_key[160];
     char     ts_device_name[40];
     char     ts_ctrl_host[96];
@@ -86,6 +86,9 @@ typedef struct {
     uint8_t  pw_hibernate_checkin_h; /* reserved (v18): uint8 hours can't hold 15-720 min; see below */
     /* v19 (Task 8, PT16) */
     uint16_t pw_hibernate_checkin_min; /* spec hibernate_checkin: 15; 0 = off; clamped by pr_hib_checkin_clamp_min to 0 or 15-720 */
+    /* v21 (Plan 3 Task 1, local link) */
+    char     mac_lan_ip[16];     /* the Mac's fallback LAN address when its name doesn't resolve; "" = none */
+    char     mac_ts_ip[16];      /* the Mac entry's last tailnet address: its pin carries over to the LAN (L3) */
 } app_settings_t;
 
 #define TZ_DEFAULT "PST8PDT,M3.2.0,M11.1.0"

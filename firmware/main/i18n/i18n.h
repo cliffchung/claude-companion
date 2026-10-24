@@ -165,6 +165,7 @@ X(POWER_NOTE, "WiFi upload draws up to 11W. Use a 5V 2A adapter.") \
 X(SETTINGS, "Settings") \
 X(SET_SYSTEM, "System") \
 X(SET_DISPLAY, "Display") \
+X(SET_NETWORK, "Network") \
 X(SET_POWER, "Power") \
 X(SET_INPUT, "Input") \
 X(SET_BACKUP, "Backup") \

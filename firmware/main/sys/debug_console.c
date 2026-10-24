@@ -1,3 +1,4 @@
+#include "link_down.h"
 #include "debug_console.h"
 #include "screenshot.h"
 #include "esp_log.h"
@@ -15,7 +16,7 @@ static int cmd_screenshot(int argc, char **argv)
 static int cmd_reboot(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    esp_restart();
+    link_down_restart("console reboot");
     return 0;
 }
 

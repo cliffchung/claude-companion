@@ -188,3 +188,10 @@ CONFIG_ML_JSON_BUFFER_SIZE_KB=256
 # cleanly (counted as "brownout" by `power resets`) instead of corrupting flash writes.
 CONFIG_ESP_BROWNOUT_DET=y
 CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y
+# Plan 3 Task 3: DHCP asks for the last lease again (INIT-REBOOT) instead of a full discover
+CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y
+# and binds the ACKed address without lwIP's own ARP probe (about 1 s on every join, every boot). This
+# assumes the router doesn't ACK an address that another device holds; many routers ACK a restored lease
+# without checking, so a device set statically to that address would go unnoticed (L32, review m1).
+CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y

@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "settings_migrate.h"
 #include "ui/ui_theme.h"
 #include "input/keyboard.h"
 #include <string.h>
@@ -13,15 +14,9 @@
 static const char *TAG = "settings";
 #define NS "app"
 #define KEY "cfg"
-#define CFG_VERSION 20
+/* CFG_VERSION, CFG_MAGIC and the blob layout are in settings_migrate.h. */
 
 app_settings_t g_settings;
-
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    app_settings_t s;
-} cfg_blob_t;
 
 void settings_power_defaults(void)
 {
@@ -96,15 +91,9 @@ void settings_init(void)
     settings_reset_defaults();
     void *blob = NULL; size_t len = 0;
     if (nvs_get_blob_alloc(NS, KEY, &blob, &len)) {
-        cfg_blob_t *b = blob;
-        if (len >= sizeof(cfg_blob_t) && b->magic == 0x54414235 && b->version == CFG_VERSION) {
-            g_settings = b->s;
-        } else if (len >= sizeof(uint32_t) * 2 && b->magic == 0x54414235) {
-            /* older layout: copy what fits, keep defaults for the rest */
-            uint32_t old_version = b->version;
-            size_t n = len - 2 * sizeof(uint32_t);
-            if (n > sizeof(app_settings_t)) n = sizeof(app_settings_t);
-            memcpy(&g_settings, &b->s, n);
+        uint32_t old_version = settings_blob_load(&g_settings, blob, len);
+        if (old_version && old_version != CFG_VERSION) {
+            /* older layout: settings_blob_load copied what fits and turned Tailscale off once (v21) */
             /* Previous releases left existing compact values unchanged unless
              * they were exactly 26. Give all old compact settings breathing room;
              * preserve larger spacing and allow subsequent manual adjustments. */
@@ -124,6 +113,7 @@ void settings_init(void)
             /* v20 (PT24) reuses kbd_off_cap's byte (a battery Off cap, default 100 = none) as kbd_dark_light:
                the old value means something else, so an existing device gets the default */
             g_settings.kbd_dark_light = (uint8_t)pr_dark_light_load(old_version, g_settings.kbd_dark_light);
+            if (old_version <= 20) ESP_LOGW(TAG, "settings v%u -> v%d: Tailscale switched off (once)", (unsigned)old_version, CFG_VERSION);
             settings_save();
         }
         free(blob);
@@ -156,7 +146,7 @@ void settings_init(void)
 
 void settings_save(void)
 {
-    cfg_blob_t b = { .magic = 0x54414235, .version = CFG_VERSION, .s = g_settings };
+    cfg_blob_t b = settings_blob_make(&g_settings);
     nvs_set_blob_ns(NS, KEY, &b, sizeof(b));
 }
 

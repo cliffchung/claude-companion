@@ -45,7 +45,6 @@ power_src_t vitals_power_src(int mv, int ma, power_src_t prev);
 #define VITALS_BATT_SAMPLES 10
 typedef struct { power_src_t src; int batt_n; } vitals_src_t;
 power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma);
-
 /* Settings clamps: 0 stays 0 (never); a value in the gap goes to the nearest end of the range. */
 int  vitals_clamp_or_zero(int v, int lo, int hi);
 void vitals_clamp_dim_off(uint16_t *dim_s, uint16_t *off_s);   /* dim 10..600, off dim+10..3600 */

@@ -35,6 +35,8 @@
 #include "media/audio_player.h"
 #include "net/tailscale.h"
 #include "companion/cc_link.h"
+#include "sys/boot_phase.h"
+#include "sys/link_down.h"
 
 static void wifi_global_cb(wifi_ev_t ev, void *user)
 {
@@ -43,7 +45,7 @@ static void wifi_global_cb(wifi_ev_t ev, void *user)
         /* a Radio-off check-in (fast resume): no rebind (it handshakes first) and no SNTP restart every
            few minutes (the RTC keeps the time across a park) */
         bool fast = tailscale_fast_resume();
-        tailscale_on_wifi(true);
+        if (tailscale_enabled()) tailscale_on_wifi(true);   /* the switch is off: MicroLink never starts */
         if (!fast) sysinfo_start_sntp();
         cc_link_on_wifi(true);
     } else if (ev == WIFI_EV_DISCONNECTED) {
@@ -130,6 +132,7 @@ static void idle_task(void *arg)
 
 void app_main(void)
 {
+    boot_phase_init();
     int64_t boot_started = esp_timer_get_time();
     ESP_LOGI(TAG, "Claude Companion starting");
     esp_log_level_set("i2c.master", ESP_LOG_NONE);   /* keyboard/INA226 probes are expected to NACK when absent */
@@ -179,6 +182,7 @@ void app_main(void)
     bsp_display_unlock();
 
     wifi_mgr_set_global_cb(wifi_global_cb, NULL);
+    link_down_init();   /* final review C1: every link-down path closes SSH first */
     wifi_mgr_init();
     usb_mgr_init();
     audio_player_init();
@@ -198,6 +202,7 @@ void app_main(void)
     device_key_console_init();
     cc_console_init();
     power_console_init();
+    if (s_dark_boot && (boot_phase_exp() & BPX_NO_HOSTCACHE)) cc_link_host_cache_enable(false);
     if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
     hibernate_init();        /* boot-to-live after a hibernate */
     power_bench_boot();      /* a probe run that just finished */

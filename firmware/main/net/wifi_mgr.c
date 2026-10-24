@@ -14,6 +14,9 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "sys/power_rules.h"
+#include "sys/boot_phase.h"
+#include "lwip/ip4_addr.h"
+#include "sys/link_guard.h"
 
 static const char *TAG = "wifi";
 #define NS "wifi"
@@ -43,6 +46,13 @@ static bool s_park_disconnect;       /* sticky: the C6 refused stop or start */
 static bool s_parked_by_disconnect;  /* how the current park was done */
 static volatile int s_ps_target = -1;  /* wifi_ps_type_t wanted, -1 = leave the driver's default */
 static volatile int s_ps_applied = -1; /* what the driver has (reset when the radio starts again) */
+static volatile bool s_ps_hold_none;   /* Task 3: no modem sleep during a check-in boot's few seconds */
+static volatile int s_ps_req = -1;     /* the power task's last wish (set_ps_max), applied after a hold */
+
+/* Plan 3 Task 3: when the join started, for the "associated in" log (L30 measured the C6 join) */
+static int64_t s_join_at_ms;
+/* The optional static address (Network > Wi-Fi > Advanced), NVS "wifi"/"sip"; off by default */
+static wifi_static_ip_t s_sip;
 
 static void emit(wifi_ev_t ev) { if (s_gcb) s_gcb(ev, s_gcb_user); if (s_cb) s_cb(ev, s_cb_user); }
 
@@ -59,6 +69,12 @@ static void saved_load(void)
     }
     char *last = NULL;
     if (nvs_get_str_alloc(NS, "last", &last)) { strlcpy(s_last_ssid, last, sizeof(s_last_ssid)); free(last); }
+    memset(&s_sip, 0, sizeof(s_sip));
+    blob = NULL; len = 0;
+    if (nvs_get_blob_alloc(NS, "sip", &blob, &len)) {
+        if (len == sizeof(s_sip)) memcpy(&s_sip, blob, len);
+        free(blob);
+    }
 }
 static void saved_store(void)
 {
@@ -86,7 +102,7 @@ static void saved_put(const char *ssid, const char *pass)
 static void rc_kick(void) { if (s_rc_task) xTaskNotifyGive(s_rc_task); }
 static int64_t ms_now(void) { return esp_timer_get_time() / 1000; }
 
-static void do_connect(const char *ssid, const char *pass)
+static void join_config(const char *ssid, const char *pass)
 {
     wifi_config_t cfg = { 0 };
     strlcpy((char *)cfg.sta.ssid, ssid, sizeof(cfg.sta.ssid));
@@ -95,11 +111,43 @@ static void do_connect(const char *ssid, const char *pass)
     cfg.sta.pmf_cfg.capable = true;
     cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    esp_wifi_set_config(WIFI_IF_STA, &cfg);
+    s_join_at_ms = esp_timer_get_time() / 1000;
+}
+
+static void apply_static_ip(void);
+static void do_connect(const char *ssid, const char *pass)
+{
+    apply_static_ip();
     strlcpy(s_cur_ssid, ssid, sizeof(s_cur_ssid));
     s_connecting = true; s_user_disconnect = false; s_retry = 0;
-    esp_wifi_set_config(WIFI_IF_STA, &cfg);
+    join_config(ssid, pass);
+    boot_phase_mark(BP_JOIN);
     esp_err_t e = esp_wifi_connect();
     if (e != ESP_OK) ESP_LOGW(TAG, "connect: %s", esp_err_to_name(e));
+}
+
+static void apply_static_ip(void)
+{
+    if (!s_netif) return;
+    if (!s_sip.on) {
+        esp_netif_dhcp_status_t st;
+        if (esp_netif_dhcpc_get_status(s_netif, &st) == ESP_OK && st == ESP_NETIF_DHCP_STOPPED) esp_netif_dhcpc_start(s_netif);
+        return;
+    }
+    esp_netif_dhcpc_stop(s_netif);
+    esp_netif_ip_info_t ip = { 0 };
+    ip.ip.addr = s_sip.ip;
+    ip.netmask.addr = s_sip.mask;
+    ip.gw.addr = s_sip.gw;
+    esp_err_t e = esp_netif_set_ip_info(s_netif, &ip);
+    if (s_sip.dns) {
+        esp_netif_dns_info_t d = { 0 };
+        d.ip.type = ESP_IPADDR_TYPE_V4;
+        d.ip.u_addr.ip4.addr = s_sip.dns;
+        esp_netif_set_dns_info(s_netif, ESP_NETIF_DNS_MAIN, &d);
+    }
+    ESP_LOGI(TAG, "static address " IPSTR " (%s)", IP2STR(&ip.ip), esp_err_to_name(e));
 }
 
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -107,6 +155,7 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (base == WIFI_EVENT) {
         switch (id) {
         case WIFI_EVENT_STA_START:
+            boot_phase_mark(BP_WIFI_START);
             s_started = true;
             s_ps_applied = -1;   /* a restarted radio gets the wanted power save again */
             rc_kick();
@@ -120,9 +169,14 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
             s_started = false;
             s_connecting = false;
             break;
-        case WIFI_EVENT_STA_CONNECTED:
+        case WIFI_EVENT_STA_CONNECTED: {
+            boot_phase_mark(BP_ASSOC);
+            wifi_event_sta_connected_t *c = data;
+            if (c) ESP_LOGI(TAG, "associated in %lld ms (ch %u, auth %d)", (long long)(esp_timer_get_time() / 1000 - s_join_at_ms),
+                            c->channel, (int)c->authmode);
             esp_netif_create_ip6_linklocal(s_netif);
             break;
+        }
         case WIFI_EVENT_STA_DISCONNECTED: {
             wifi_event_sta_disconnected_t *d = data;
             bool was = s_connected;
@@ -192,6 +246,7 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
     } else if (base == IP_EVENT) {
         if (id == IP_EVENT_STA_GOT_IP) {
+            boot_phase_mark(BP_IP);
             s_connected = true; s_connecting = false; s_retry = 0;
             if (s_rc_active) ESP_LOGI(TAG, "reconnected after %d background attempt(s)", s_rc_attempt);
             s_rc_active = false; s_rc_attempt = 0; s_auto_connect = false;
@@ -211,7 +266,8 @@ static void rc_apply_ps(void)
     int want = s_ps_target;
     if (want < 0 || want == s_ps_applied || !s_started) return;
     esp_err_t e = esp_wifi_set_ps((wifi_ps_type_t)want);
-    ESP_LOGI(TAG, "power save: %s (%s)", want == WIFI_PS_MAX_MODEM ? "max modem" : "min modem", esp_err_to_name(e));
+    ESP_LOGI(TAG, "power save: %s (%s)", want == WIFI_PS_MAX_MODEM ? "max modem" : want == WIFI_PS_NONE ? "none" : "min modem",
+             esp_err_to_name(e));
     s_ps_applied = want;   /* a refusal isn't retried every wake-up; the next change or start tries again */
 }
 
@@ -337,7 +393,17 @@ const char *wifi_mgr_park_mode(void)
 
 void wifi_mgr_set_ps_max(bool max)
 {
-    s_ps_target = max ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM;
+    s_ps_req = max ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM;
+    if (s_ps_hold_none) return;   /* a check-in holds the radio awake until it goes down or is released */
+    s_ps_target = s_ps_req;
+    rc_kick();
+}
+
+void wifi_mgr_ps_hold_none(bool on)
+{
+    if (s_ps_hold_none == on) return;
+    s_ps_hold_none = on;
+    s_ps_target = on ? WIFI_PS_NONE : s_ps_req;   /* released: whatever the power task asked for meanwhile */
     rc_kick();
 }
 
@@ -367,6 +433,7 @@ void wifi_mgr_init(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t e = esp_wifi_init(&cfg);
     if (e != ESP_OK) { ESP_LOGE(TAG, "esp_wifi_init: %s", esp_err_to_name(e)); return; }
+    boot_phase_mark(BP_HOSTED);
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, on_wifi, NULL);
@@ -420,21 +487,45 @@ int wifi_mgr_channel(void)
     return 0;
 }
 
+/* The deauth, then up to 1 s for its STA_DISCONNECTED (s_connected false), so nothing that reopens after
+   it can start a session on the old association. */
+static void leave_now(void)
+{
+    s_user_disconnect = true;
+    s_rc_active = false;
+    esp_wifi_disconnect();
+    for (int i = 0; i < 100 && s_connected; i++) vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+typedef struct { const char *ssid, *pass; } join_t;
+static void switch_down(void *ctx)
+{
+    const join_t *j = ctx;
+    leave_now();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    do_connect(j->ssid, j->pass);
+}
+
 void wifi_mgr_connect(const char *ssid, const char *pass, bool save)
 {
     if (!s_started) return;
     if (save) saved_put(ssid, pass);
     s_rc_active = false;
-    if (s_connected || s_connecting) { s_user_disconnect = true; esp_wifi_disconnect(); vTaskDelay(pdMS_TO_TICKS(200)); }
-    do_connect(ssid, pass);
+    join_t j = { ssid, pass };
+    if (s_connected || s_connecting) {
+        /* final review C1: a network switch takes the link down: close SSH first, while the old network
+           still carries the close to the Host, then switch and let the link reconnect */
+        lg_around(false, LG_CLOSE_MS, switch_down, &j, true);
+    } else do_connect(ssid, pass);
     s_auto_connect = false;
 }
 
+static void disconnect_down(void *ctx) { (void)ctx; leave_now(); }
+
 void wifi_mgr_disconnect(void)
 {
-    s_user_disconnect = true;
-    s_rc_active = false;
-    esp_wifi_disconnect();
+    /* final review C1: Wi-Fi -> Disconnect, the home toggle, `wifi leave` and hibernate: close SSH first */
+    lg_around(false, LG_CLOSE_MS, disconnect_down, NULL, true);
 }
 
 bool wifi_mgr_scan_start(void)
@@ -507,5 +598,23 @@ bool wifi_mgr_import_json(const char *json)
     if (last) strlcpy(s_last_ssid, last, sizeof(s_last_ssid));
     saved_store();
     cJSON_Delete(root);
+    return true;
+}
+
+/* ---- Plan 3 Task 3: the static address ---- */
+
+
+bool wifi_mgr_static_ip_get(wifi_static_ip_t *out) { if (out) *out = s_sip; return s_sip.on; }
+bool wifi_mgr_static_ip_set(const wifi_static_ip_t *in)
+{
+    wifi_static_ip_t n = { 0 };
+    if (in && in->on) {
+        if (!in->ip || !in->mask || !in->gw) return false;
+        n = *in;
+        n.on = 1;
+    }
+    if (!nvs_set_blob_ns(NS, "sip", &n, sizeof(n))) return false;   /* review m4: not saved, nothing changes */
+    s_sip = n;
+    ESP_LOGI(TAG, "static address: %s (from the next join)", s_sip.on ? "on" : "off");
     return true;
 }

@@ -585,6 +585,10 @@ esp_err_t microlink_stop(microlink_t *ml) {
     return ESP_OK;
 }
 
+/* LOCAL CHANGE (Claude Companion Plan 3, L6/L15; listed in UPSTREAM.md): the free half of
+ * microlink_destroy() is split out as ml_free_instance() for microlink_destroy_finish(). */
+static void ml_free_instance(microlink_t *ml);
+
 void microlink_destroy(microlink_t *ml) {
     if (!ml) return;
 
@@ -596,6 +600,22 @@ void microlink_destroy(microlink_t *ml) {
         ESP_LOGE(TAG, "Destroy skipped: a task still runs on this instance (leaked on purpose)");
         return;
     }
+    ml_free_instance(ml);
+}
+
+/* Claude Companion (Plan 3): the second half of a destroy, for an instance microlink_stop()
+ * already stopped. Frees it only once every task has signed off (a stop that timed out
+ * leaves one running); false while one still runs, and nothing is touched. Never stops
+ * the instance again, so no stale socket fd is shut down twice. */
+bool microlink_destroy_finish(microlink_t *ml) {
+    if (!ml) return true;
+    if (__atomic_load_n(&ml->tasks_alive, __ATOMIC_SEQ_CST) > 0) return false;
+    ml->stop_incomplete = false;
+    ml_free_instance(ml);
+    return true;
+}
+
+static void ml_free_instance(microlink_t *ml) {
     /* Only now is everything the tasks owned quiescent. The DERP TLS state
      * and the long-poll accumulators (two PSRAM buffers of
      * ML_JSON_BUFFER_SIZE) were never released here before: every
