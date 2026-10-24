@@ -255,10 +255,15 @@ static char s_ssh_sent[256]; static size_t s_ssh_sent_n;
 static ssh_client_t *s_ssh_live;
 static const uint8_t k_pv_host_key[32] = { 0xAB, 0xAB, 0xAB, 0xAB, 1, 2, 3, 4 };
 ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data, ssh_state_cb_t state, ssh_hostkey_cb_t hk, void *user) {
-    (void)hk;
     ssh_client_t *c = calloc(1, sizeof(*c));
     c->data = data; c->state = state; c->user = user;
     s_ssh_live = c;
+    /* "newkey-box" (192.168.1.61) has no pin: ssh_task asks through the host-key callback. The preview is one thread
+       and its semaphores never block, so the callback returns before anyone answers (as a cancelled request). */
+    if (!strcmp(p->host, "192.168.1.61") && hk && !hk(p->host, p->port, "PreviewNewKeyOnly0123456789", false, user)) {
+        state(SSH_ST_ERROR, "Host key not trusted", user);
+        return c;
+    }
     if (!p->cmd[0]) {
         s_term_opens++; s_term_idx = -1;
         for (int i = 0; i < server_store_count(); i++) {
@@ -2279,12 +2284,37 @@ static int takeover_case(lv_display_t *d, const char *v) {
     if (ui_terminal_is_top() || s_ssh_sent_n != sent || s_takeover_closed != 1) { printf("check %s: FAIL Ctrl+] didn't leave\n", name); return 1; }
     if (!find_label(lv_layer_top(), "Session still running on the host", false)) { printf("check %s: FAIL no \"still running\" toast\n", name); return 1; }
     if (fast_timers(16)) { printf("check %s: FAIL the 16 ms pump outlived the take-over\n", name); return 1; }
+    /* "← Leave" leaves the same way and sends nothing (review Minor 1) */
+    ui_terminal_open_command(0, "~/.local/bin/claude attach 1a2b3c4d", "companion-test-colour", takeover_closed_cb, NULL);
+    step(d, 20);
+    sent = s_ssh_sent_n;
+    click_label(d, session_bar_of(lv_screen_active()), "\xe2\x86\x90 Leave");
+    if (ui_terminal_is_top() || s_ssh_sent_n != sent || s_takeover_closed != 2) { printf("check %s: FAIL Leave sent %d bytes or didn't leave\n", name, (int)(s_ssh_sent_n - sent)); return 1; }
     printf("%s: bar with Leave and the name, hidden after 3 s; y=20 and y=70 taps show it, y=400 and keys don't; chips send; Ctrl+] leaves\n", name);
     return r;
 }
 
+/* The host-key question outlives a screen that goes before it shows (review Minor 4): no prompt for a dead session,
+   nothing freed touched (run under ASan). */
+static int ssh_hostkey_case(lv_display_t *d) {
+    const char *name = "ssh-hostkey";
+    preview_store_init();
+    server_t nk = { .name = "newkey-box", .host = "192.168.1.61", .port = 22, .user = "pi", .use_key = true, .keypath = "device" };
+    s_preview_servers[s_preview_server_n++] = nk;
+    int idx = s_preview_server_n - 1;
+    ui_nav_home(); step(d, 200);
+    ui_nav_push(ui_hosts_create, NULL); step(d, 200);
+    ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx);   /* the question is queued for the next LVGL cycle */
+    ui_nav_back();                                            /* ... and the screen goes first */
+    step(d, 50); step(d, 50);
+    if (find_label(lv_layer_top(), "Connect", false)) { printf("check %s: FAIL a host-key prompt for a session that is gone\n", name); return 1; }
+    s_preview_server_n--;
+    printf("check %s: ok (the queued question was dropped with its screen)\n", name);
+    return 0;
+}
+
 static int ssh_case(lv_display_t *d, const char *v) {
-    (void)v;
+    if (!strcmp(v, "hostkey")) return ssh_hostkey_case(d);
     const char *name = "ssh";
     s_ssh_autoclose = false;
     preview_store_init();
@@ -2312,12 +2342,32 @@ static int ssh_case(lv_display_t *d, const char *v) {
     pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
     pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 20);
     assert(ui_terminal_is_top() && !find_label(top, "Disconnect from box?", false));
-    /* "← Leave" asks the same; Disconnect leaves */
+    /* "← Leave" asks the same; Disconnect leaves, and neither sends a byte */
+    sent = s_ssh_sent_n;
     click_label(d, bar, "\xe2\x86\x90 Leave");
     assert(find_label(top, "Disconnect from box?", false));
     int stops = s_ssh_stops;
     click_label(d, top, "Disconnect");
     if (ui_terminal_is_top() || !ui_nav_is_top(ui_hosts_create) || s_ssh_stops != stops + 1 || fast_timers(16)) { printf("check %s: FAIL Disconnect didn't leave\n", name); return 1; }
+    if (s_ssh_sent_n != sent) { printf("check %s: FAIL Leave sent %d bytes\n", name, (int)(s_ssh_sent_n - sent)); return 1; }
+    /* the bar's 3 s timer dies with the screen (review Minor 2): leave while it is armed, then step past it */
+    ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx); step(d, 20);
+    if (fast_timers(3000) != 1) { printf("check %s: FAIL %d bar timers armed after the connect (want 1: an earlier screen's outlived it?)\n", name, fast_timers(3000)); return 1; }
+    click_label(d, session_bar_of(lv_screen_active()), "\xe2\x86\x90 Leave");
+    click_label(d, top, "Disconnect");
+    if (fast_timers(3000)) { printf("check %s: FAIL the bar timer outlived its screen\n", name); return 1; }
+    step(d, 3200);
+    /* a confirm raised for one session never acts on a later one (review Minor 3) */
+    ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+    assert(find_label(top, "Disconnect from box?", false));
+    pv_ssh_state(SSH_ST_CLOSED, NULL); step(d, 20);   /* the box ends it under the confirm */
+    assert(ui_nav_is_top(ui_hosts_create) && find_label(top, "Disconnect from box?", false));
+    ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx); step(d, 20);   /* a new session, opened from code */
+    stops = s_ssh_stops;
+    click_label(d, top, "Disconnect");   /* the stale answer */
+    if (!ui_terminal_is_top() || s_ssh_stops != stops) { printf("check %s: FAIL a stale confirm closed a later session\n", name); return 1; }
+    ui_nav_back(); step(d, 20);
     /* from the keyboard: Ctrl+], Tab, Tab, Enter disconnects */
     ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx); step(d, 20);
     pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);

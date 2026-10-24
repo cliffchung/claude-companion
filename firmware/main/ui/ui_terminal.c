@@ -44,6 +44,19 @@ static term_cmd_t s_pending_cmd;
 
 typedef enum { BAR_CONNECTING, BAR_LIVE, BAR_LINK_LOST } bar_state_t;
 
+/* One host-key question (review Minor 4). ssh_task waits on it inside on_hostkey, the UI shows and answers it, and the
+   screen may go first: so it has three references (the waiter, the UI, the screen), changed under s_hk_lock, and the
+   last one frees it. The screen's delete cancels it (answer "no") and never deletes the semaphore under a waiter. */
+typedef struct {
+    SemaphoreHandle_t sem;
+    volatile int answer;        /* 0 none yet, 1 trust, 2 no */
+    volatile bool cancelled;    /* the screen went */
+    char fp[120];
+    bool changed;
+    int refs;
+} hk_req_t;
+static SemaphoreHandle_t s_hk_lock;
+
 typedef struct {
     lv_obj_t *scr, *bar, *bar_dot, *bar_state, *kbd;
     term_view_t *tv;
@@ -60,8 +73,8 @@ typedef struct {
     SemaphoreHandle_t lock;
     uint8_t *rx; size_t rx_len, rx_cap;
     volatile ssh_state_t pending_state; volatile bool state_dirty; char state_msg[160];
-    /* host key prompt */
-    SemaphoreHandle_t hk_sem; volatile int hk_answer; char hk_fp[120]; bool hk_changed;
+    hk_req_t *hk_req;           /* the host-key question this screen holds a reference to, if any */
+    uint32_t gen;               /* this session's number: a confirm raised for it answers only it */
     bool closing;
     /* command mode (the take-over) */
     bool cmd_mode, cmd_done, got_data;
@@ -71,6 +84,7 @@ typedef struct {
 } term_ctx_t;
 
 static term_ctx_t *s_ctx = NULL;
+static uint32_t s_gen;
 bool g_ssh_session_active = false;
 
 /* An SSH session is up: also the power hold (it counts while "Stay awake in Terminal" is on).
@@ -114,22 +128,60 @@ static void on_state(ssh_state_t st, const char *msg, void *user)
     if (msg) strlcpy(c->state_msg, msg, sizeof(c->state_msg)); else c->state_msg[0] = 0;
     xSemaphoreGive(c->lock);
 }
-static void hk_confirm_cb(bool yes, void *ud) { term_ctx_t *c = ud; c->hk_answer = yes ? 1 : 2; xSemaphoreGive(c->hk_sem); }
+static void hk_put(hk_req_t *r)
+{
+    if (!r) return;
+    xSemaphoreTake(s_hk_lock, portMAX_DELAY);
+    int left = --r->refs;
+    xSemaphoreGive(s_hk_lock);
+    if (left) return;
+    vSemaphoreDelete(r->sem);
+    free(r);
+}
+/* Wakes the waiter with an answer; a later answer (the screen went, then the dialog was answered) changes nothing. */
+static void hk_answer(hk_req_t *r, int answer)
+{
+    xSemaphoreTake(s_hk_lock, portMAX_DELAY);
+    bool first = r->answer == 0;
+    if (first) r->answer = answer;
+    xSemaphoreGive(s_hk_lock);
+    if (first) xSemaphoreGive(r->sem);
+}
+static void hk_confirm_cb(bool yes, void *ud) { hk_req_t *r = ud; hk_answer(r, yes ? 1 : 2); hk_put(r); }
 static void hk_show(void *arg)
 {
-    term_ctx_t *c = arg;
+    hk_req_t *r = arg;
+    if (r->cancelled) { hk_put(r); return; }   /* the screen went before the question showed */
     char txt[320];
-    snprintf(txt, sizeof(txt), "%s\n\nSHA256:%s", tr(c->hk_changed ? STR_SSH_HOSTKEY_CHANGED : STR_SSH_HOSTKEY_NEW), c->hk_fp);
-    ui_confirm(tr(STR_CONNECT), txt, hk_confirm_cb, c);
+    snprintf(txt, sizeof(txt), "%s\n\nSHA256:%s", tr(r->changed ? STR_SSH_HOSTKEY_CHANGED : STR_SSH_HOSTKEY_NEW), r->fp);
+    ui_confirm(tr(STR_CONNECT), txt, hk_confirm_cb, r);   /* the UI reference goes with the answer */
 }
+/* On ssh_task: blocks until the question is answered or the screen goes. After the wait it reads only the request. */
 static bool on_hostkey(const char *host, int port, const char *fp, bool changed, void *user)
 {
     term_ctx_t *c = user;
     (void)host; (void)port;
-    strlcpy(c->hk_fp, fp, sizeof(c->hk_fp)); c->hk_changed = changed; c->hk_answer = 0;
-    ui_async(hk_show, c);
-    xSemaphoreTake(c->hk_sem, portMAX_DELAY);
-    return c->hk_answer == 1;
+    hk_req_t *r = calloc(1, sizeof(*r));
+    if (!r) return false;
+    r->sem = xSemaphoreCreateBinary();
+    if (!r->sem) { free(r); return false; }
+    strlcpy(r->fp, fp, sizeof(r->fp)); r->changed = changed;
+    r->refs = 3;   /* the waiter, the UI, the screen */
+    xSemaphoreTake(c->lock, portMAX_DELAY);
+    bool gone = c->closing;
+    hk_req_t *old = NULL;
+    if (!gone) { old = c->hk_req; c->hk_req = r; }
+    xSemaphoreGive(c->lock);
+    if (gone) hk_put(r);   /* no screen to hold its reference */
+    hk_put(old);
+    if (gone || !ui_async(hk_show, r)) {   /* never shown: no UI reference, and no wait */
+        hk_answer(r, 2);
+        hk_put(r);
+    }
+    xSemaphoreTake(r->sem, portMAX_DELAY);
+    bool yes = r->answer == 1;
+    hk_put(r);
+    return yes;
 }
 
 /* -------------------------------------------------------- vt callbacks */
@@ -221,8 +273,8 @@ static bool link_down(const term_ctx_t *c)
 /* The confirm's answer. The session may have ended while it was up (its screen gone): s_ctx says. */
 static void disconnect_cb(bool yes, void *ud)
 {
-    (void)ud;
-    if (yes && s_ctx && !s_ctx->closing) ui_nav_back();
+    uint32_t gen = (uint32_t)(uintptr_t)ud;   /* the session it was raised for: a later one is not answered */
+    if (yes && s_ctx && !s_ctx->closing && s_ctx->gen == gen) ui_nav_back();
 }
 
 /* "← Leave" and Ctrl+]: a take-over closes at once (the session keeps running on the Host); an SSH session
@@ -232,7 +284,7 @@ static void leave(term_ctx_t *c)
     if (c->cmd_mode) { cmd_close(c, tr(STR_TERM_STILL_RUNNING)); return; }
     char q[160];
     snprintf(q, sizeof(q), tr(STR_TERM_DISCONNECT_Q), c->name);
-    ui_confirm_ex(q, NULL, tr(STR_DISCONNECT), false, disconnect_cb, NULL);
+    ui_confirm_ex(q, NULL, tr(STR_DISCONNECT), false, disconnect_cb, (void *)(uintptr_t)c->gen);
 }
 
 /* -------------------------------------------------------- key sink */
@@ -399,8 +451,7 @@ static void pump_cb(lv_timer_t *t)
         if (line[0]) ui_toast(line);
         return;   /* c is gone */
     }
-    bool lost = c->connected && link_down(c);
-    if (lost != c->link_lost) c->link_lost = lost;
+    c->link_lost = c->connected && link_down(c);
     bar_update(c);
 }
 
@@ -415,13 +466,19 @@ static void scr_delete_cb(lv_event_t *e)
     if (c->timer) lv_timer_delete(c->timer);
     if (c->bar_timer) lv_timer_delete(c->bar_timer);   /* armed when the screen died */
     if (c->ssh) { ssh_client_stop(c->ssh); c->ssh = NULL; }
+    /* A host-key question still open: answer "no" so ssh_task wakes, and drop the screen's reference. The
+       semaphore is freed by the last reference, never here under a waiter. */
+    xSemaphoreTake(c->lock, portMAX_DELAY);
+    hk_req_t *r = c->hk_req;
+    c->hk_req = NULL;
+    xSemaphoreGive(c->lock);
+    if (r) { r->cancelled = true; hk_answer(r, 2); hk_put(r); }
     ssh_active(c, false);
     /* term view frees itself with the object; vt after */
     vt_destroy(c->vt);
     free(c->rx);
     free(c->tail);
     vSemaphoreDelete(c->lock);
-    vSemaphoreDelete(c->hk_sem);
     if (s_ctx == c) s_ctx = NULL;
     free(c);
 }
@@ -467,7 +524,8 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
         c->t_open_us = esp_timer_get_time();
     }
     c->lock = xSemaphoreCreateMutex();
-    c->hk_sem = xSemaphoreCreateBinary();
+    if (!s_hk_lock) s_hk_lock = xSemaphoreCreateMutex();   /* the UI task, before any ssh_task */
+    c->gen = ++s_gen;
     c->rx_cap = 16384; c->rx = malloc(c->rx_cap);
     c->scr = ui_screen_base();   /* bg: UI_TK_TERM_BG */
     lv_obj_add_event_cb(c->scr, scr_delete_cb, LV_EVENT_DELETE, c);
@@ -515,7 +573,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
     c->ssh = ssh_client_start(&p, on_data, on_state, on_hostkey, c);
     if (!c->ssh) {
         ESP_LOGE(TAG, "SSH task did not start (internal free %u)", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-        on_state(SSH_ST_ERROR, "could not start the SSH task", c);
+        on_state(SSH_ST_ERROR, tr(STR_TERM_NO_SSH_TASK), c);
     }
     c->timer = lv_timer_create(pump_cb, PUMP_MS, c);   /* deleted in scr_delete_cb (B1) */
     return c->scr;

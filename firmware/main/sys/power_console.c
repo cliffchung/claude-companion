@@ -219,7 +219,17 @@ static int cmd_power(int argc, char **argv)
         return 0;
     } else if (strcmp(argv[1], "sim") == 0 && argc >= 3) {
         int n;
-        if (strcmp(argv[2], "touch") == 0 && argc == 3) { power_sim_touch(-1, -1); return 0; }
+        if (strcmp(argv[2], "touch") == 0 && argc == 3) {
+            /* It presses the selected card: with the screen on that is a real tap (it can open a real session,
+               P4C-4), so only a wake test may use it. */
+            if (power_state() == PS_ACTIVE) {
+                printf("sim touch: refused: the screen is on, and this taps the selected card. Use it from dim or off "
+                       "(a wake test), or give a point: power sim touch <x> <y>\n");
+                return 1;
+            }
+            power_sim_touch(-1, -1);
+            return 0;
+        }
         if (strcmp(argv[2], "touch") == 0 && argc == 5) {   /* at a point: the terminal's top tap zone (Task 10) */
             int x, y;
             if (!parse_int(argv[3], &x) || !parse_int(argv[4], &y) || x < 0 || y < 0) return usage();

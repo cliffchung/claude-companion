@@ -70,6 +70,7 @@ for v in new edit-pin sd-key settings; do run hostform "$v"; done
 run takeover
 for v in idle nokbd; do run takeover "$v"; done
 run ssh
+run ssh hostkey
 run glyphs >/dev/null
 rm -f case.log
 mkdir -p png

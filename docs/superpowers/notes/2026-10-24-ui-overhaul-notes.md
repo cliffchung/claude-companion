@@ -697,7 +697,7 @@ one session (the last two for the `power sim touch x y` verb below).
 | The bar at open | screenshot: ← Leave, companion-test-t10, green dot, Esc Tab ^C ↑ ↓ (no ⌨: keyboard present); hidden by the next screenshot | pass |
 | Top-zone tap | `power sim touch 640 400`: no 3000 ms timer; `power sim touch 640 20`: the 3000 ms one-shot armed and the bar shown (screenshot), the prompt still empty (no byte sent) | pass |
 | Review Focus 2 | `power go off`, `power sim touch 640 20` (in the top zone), `power wakes`: `touch swallowed=1`; state active, the pump still running, no 3000 ms timer (no bar), terminal open with the prompt empty (screenshot) | pass |
-| SSH to a non-Host box: `key ctrl ]` confirm, disconnect | not run (P4C-8): preview `ssh` | PENDING |
+| SSH to a non-Host box: `key ctrl ]` confirm, disconnect | not run (P4C-8): preview `ssh`. On the device: `key ctrl ]`, then `key tab`, `key tab`, `key enter` disconnects; `key enter` alone cancels (T10-8) | PENDING |
 | Boot after flashing | flashes 1 and 2 booted unaided; flash 3 stayed silent until an esptool RTS reset (`esptool.py --after hard_reset read_mac`) | note |
 | `idf.py size` (Task 9 fix round 3 → Task 10) | image 7,251,867 → 7,251,555 B (−312); DIRAM 189,824 → 189,944 B (+120) | |
 
@@ -739,9 +739,41 @@ was sent while Sessions showed (P4C-9); the take-over was opened with `companion
   terminal sets `UI_TK_TERM_LINE_H` at open, and Task 11's migration sets the field to 32.
 - T10-14: `power sim touch [<x> <y>]` (new form) presses at a screen point. Both forms now map the screen point to
   the raw point LVGL rotates (`sim_raw_point`, ROTATION_90): the old form passed the selected card's screen
-  coordinates as raw ones, which only the wake tests used (a wake is swallowed wherever it lands).
+  coordinates as raw ones, which only the wake tests used (a wake is swallowed wherever it lands). So the no-argument form now really presses the selected card, and with the screen on that would open it (a P4C-4
+  hazard); fix round 1 makes the console refuse it unless the screen is dim or off.
 - T10-15: the preview builds the real `ui_terminal.c` and `term_keys.c` over a stub SSH client (FreeRTOS and
   esp_timer stubs). The old terminal stub's P4C-10 gate moved into the stub's start. `sessions tap-resort` needs one
   more step for the stub take-over to end (it ends at once, as the old stub's did, and now toasts "Session closed").
 - T10-16: strings with no users left are deleted: `TERM_MENU`, `TERM_CLEAR`, `TERM_SCROLL_END`, `TERM_HINT` (the
   hot-zone hint) and `TERM_CLOSE_Q`. The terminal's toasts and banners are `STR_TERM_*`, saying "host".
+
+**Task 10 fix round 1** (review: 0 Critical, 0 Important, 10 Minor; T10-8 accepted).
+- M1: preview `takeover` leaves once by "← Leave" and `ssh` checks Leave → Disconnect: zero bytes sent. The mutation
+  "Leave sends 'L'" fails both.
+- M2: preview `ssh` leaves with the bar's 3 s timer armed, asserts no 3000 ms timer is left, then steps 3.2 s. With the
+  delete in `scr_delete_cb` removed it fails ("2 bar timers armed"); clean under ASan.
+- M3: the Disconnect confirm carries its session's number (`c->gen`, from `s_gen`) as `ud`; `disconnect_cb` acts only
+  when `s_ctx` is that session. Preview `ssh`: a confirm left up after the box closed the session does nothing to a
+  session opened later from code (RED before the fix: "a stale confirm closed a later session").
+- M4: the host-key question is a reference-counted `hk_req_t` (waiter, UI, screen; changed under `s_hk_lock`, the
+  last reference frees it). `on_hostkey` reads only the request after its wait; `hk_show` drops a cancelled one
+  without showing it; `scr_delete_cb` cancels (answer "no", gives the semaphore) and never deletes it. A failed
+  `ui_async` answers "no" at once instead of waiting forever. `ssh_client.c` and its gate order are untouched. Preview
+  `ssh hostkey`: a screen that goes before its queued question shows: no prompt, ASan clean (RED before the fix: a
+  prompt for the dead session, and an ASan heap-use-after-free in `hk_show`). The cross-task wait itself can't run in
+  the one-threaded preview (its semaphores never block); left for the device visit.
+  Remaining window (pre-existing, in `ssh_client.c`): `ssh_client_stop` clears the callbacks without waiting, so a
+  callback already past its NULL check can still run after the screen's free.
+- M5: `power sim touch` with no point is refused while the screen is active ("sim touch: refused: the screen is on,
+  and this taps the selected card…"); from dim or off it still presses the selected card. Device: refused on
+  Sessions, nothing tapped.
+- M6: Review Focus 2 re-run on the Leave chip with the bar up: `companion takeover` of `companion-test-t10b`, then
+  `power go off` while it opened, `power sim touch 80 28`, `power wakes`: `touch swallowed=1`; state active,
+  `holds=takeover` (on_close not called), the pump running, the take-over open (screenshot). Heapmin over the
+  take-over 92,071 B.
+- M10 (part): "could not start the SSH task" is `STR_TERM_NO_SSH_TASK` ("Couldn't start the connection. Try again.");
+  the link-lost write is a plain assignment. M7 recorded above (T10-14), M5 in the device table. M8 noted, nothing to
+  do. M9 (local geometry styles in `session_bar`) left for Task 12's copy pass.
+- Device boot: after this flash the P4 stayed silent until an esptool RTS reset again (2 of 4 flashes in Task 10).
+  Final state as found: LAN Host link, `ts off`, `power set defaults`, DHCP, brightness 80, keyboard light
+  `0 0 0080ff 1 5`; test session stopped.

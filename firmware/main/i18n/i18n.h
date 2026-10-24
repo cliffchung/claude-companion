@@ -448,6 +448,7 @@ X(TERM_DISCONNECTED_FROM, "Disconnected from %s") \
 X(TERM_SESSION_CLOSED, "Session closed") \
 X(TERM_SESSION_ENDED, "The session ended (status %d)") \
 X(TERM_CANT_OPEN, "Can't open the session") \
+X(TERM_NO_SSH_TASK, "Couldn't start the connection. Try again.") \
 X(TERM_NOT_VERIFIED, "The Host link isn't verified yet; try again in a moment") \
 X(HF_TITLE_ADD, "Add host") \
 X(HF_TITLE_EDIT, "Edit host") \
