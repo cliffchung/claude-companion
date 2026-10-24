@@ -143,7 +143,7 @@ static void forget_cb(lv_event_t *e)
 {
     if (!s_f) return;
     (void)e;
-    ui_confirm_ex(tr(STR_SET_FORGET_Q), tr(STR_SET_FORGET_BODY), tr(STR_SET_FORGET), true, forget_yes, NULL);
+    ui_confirm_ex(tr(STR_HF_FORGET_Q), tr(STR_HF_FORGET_BODY), tr(STR_SET_FORGET), true, forget_yes, NULL);
 }
 
 static void delete_yes(bool yes, void *ud)

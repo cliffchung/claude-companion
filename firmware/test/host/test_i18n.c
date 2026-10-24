@@ -19,10 +19,14 @@ static void conversions(const char *fmt, char *out, size_t cap)
         if (*p != '%') continue;
         p++;
         if (*p == '%') continue;
-        while (*p && strchr("-+ #0123456789.", *p)) p++;
-        while (*p && strchr("hlzjtL", *p)) p++;
-        out[n++] = (*p && strchr("diouxXeEfFgGcsp", *p)) ? *p : '?';
+        while (*p && strchr("-+ #0", *p)) p++;                    /* flags */
+        while (*p >= '0' && *p <= '9') p++;                       /* width */
+        if (*p == '.') { p++; while (*p >= '0' && *p <= '9') p++; }   /* precision */
+        while (*p && strchr("hlzjtL", *p)) p++;                    /* length */
+        if (*p && strchr("diouxXeEfFgGcsp", *p)) { out[n++] = *p; continue; }
+        out[n++] = '?';
         if (!*p) break;
+        p--;   /* the character that ended it is read again: it may start the next conversion */
     }
     out[n] = 0;
 }
@@ -53,8 +57,11 @@ static const struct { str_id_t id; const char *conv; } k_formats[] = {
     { STR_TERM_SESSION_ENDED, "d" },
     { STR_HF_DELETE_Q, "s" },
 };
-/* plain text with a literal percent sign: shown with "%s", never used as a format */
-static const str_id_t k_plain_percent[] = { STR_SET_DARK_LOWEST, STR_SET_DARK_LOW, STR_SET_DARK_MEDIUM, STR_SES_SLEEPS_AT };
+/* plain text with a literal percent sign: shown with "%s", never used as a format. Each one's conversion list is
+   pinned too ("?" is its lone '%', which starts no conversion), so none can gain a stray "%s" (review M3). */
+static const struct { str_id_t id; const char *conv; } k_plain_percent[] = {
+    { STR_SET_DARK_LOWEST, "?" }, { STR_SET_DARK_LOW, "?" }, { STR_SET_DARK_MEDIUM, "?" }, { STR_SES_SLEEPS_AT, "?" },
+};
 
 static void test_formats_match_their_callers(void)
 {
@@ -65,12 +72,21 @@ static void test_formats_match_their_callers(void)
     }
 }
 
+static void test_plain_percent_entries_have_no_conversion(void)
+{
+    for (size_t i = 0; i < sizeof(k_plain_percent) / sizeof(k_plain_percent[0]); i++) {
+        char c[16];
+        conversions(tr(k_plain_percent[i].id), c, sizeof(c));
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(k_plain_percent[i].conv, c, tr(k_plain_percent[i].id));
+    }
+}
+
 static void test_no_other_entry_has_a_conversion(void)
 {
     for (int id = 0; id < STR_COUNT; id++) {
         bool listed = false;
         for (size_t i = 0; i < sizeof(k_formats) / sizeof(k_formats[0]); i++) listed |= k_formats[i].id == id;
-        for (size_t i = 0; i < sizeof(k_plain_percent) / sizeof(k_plain_percent[0]); i++) listed |= k_plain_percent[i] == id;
+        for (size_t i = 0; i < sizeof(k_plain_percent) / sizeof(k_plain_percent[0]); i++) listed |= k_plain_percent[i].id == id;
         if (listed) continue;
         TEST_ASSERT_NULL_MESSAGE(strchr(tr((str_id_t)id), '%'), tr((str_id_t)id));
     }
@@ -85,6 +101,7 @@ int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_formats_match_their_callers);
+    RUN_TEST(test_plain_percent_entries_have_no_conversion);
     RUN_TEST(test_no_other_entry_has_a_conversion);
     RUN_TEST(test_out_of_range_is_empty);
     return UNITY_END();

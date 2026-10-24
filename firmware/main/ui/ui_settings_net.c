@@ -168,9 +168,11 @@ static void wifi_sheet_cb(int i, void *ud)
     (void)ud;
     char q[96];
     if (i == 0) {
+        ui_nav_push(ui_settings_sub_create, (void *)(intptr_t)UI_NET_SUB_NETWORKS);
+    } else if (i == 1) {
         snprintf(q, sizeof(q), tr(STR_NET_DISCONNECT_Q), s_cur_ssid);
         ui_confirm_ex(q, tr(STR_NET_DISCONNECT_BODY), tr(STR_NET_DISCONNECT), false, disconnect_yes, NULL);
-    } else if (i == 1) {
+    } else if (i == 2) {
         snprintf(q, sizeof(q), tr(STR_NET_FORGET_Q), s_cur_ssid);
         ui_confirm_ex(q, tr(STR_NET_FORGET_BODY), tr(STR_NET_FORGET), true, forget_cur_yes, NULL);
     }
@@ -183,8 +185,10 @@ static void wifi_row_cb(lv_event_t *e)
         return;
     }
     strlcpy(s_cur_ssid, wifi_mgr_ssid(), sizeof(s_cur_ssid));
-    const char *items[2] = { tr(STR_NET_DISCONNECT), tr(STR_NET_FORGET) };
-    ui_action_sheet(s_cur_ssid, items, saved_index(s_cur_ssid) >= 0 ? 2 : 1, 1u << 1, wifi_sheet_cb, NULL);
+    /* the harmless choice first: a bare Enter on the fresh sheet only opens the list (review M6); Disconnect and
+       Forget each ask first */
+    const char *items[3] = { tr(STR_NET_OTHER_NETWORKS), tr(STR_NET_DISCONNECT), tr(STR_NET_FORGET) };
+    ui_action_sheet(s_cur_ssid, items, saved_index(s_cur_ssid) >= 0 ? 3 : 2, 1u << 2, wifi_sheet_cb, NULL);
 }
 
 static void networks_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_sub_create, (void *)(intptr_t)UI_NET_SUB_NETWORKS); }
@@ -362,7 +366,7 @@ static void key_cb(lv_event_t *e)
     ui_action_sheet(tr(STR_NET_TS_AUTH_KEY), items, g_settings.ts_auth_key[0] ? 3 : 2, 1u << 2, key_sheet_cb, NULL);
 }
 
-static const char *device_name(void) { return g_settings.ts_device_name[0] ? g_settings.ts_device_name : "claude-companion"; }
+static const char *device_name(void) { return g_settings.ts_device_name[0] ? g_settings.ts_device_name : tr(STR_NET_TS_NAME_DEFAULT); }
 static void name_prompt_cb(const char *v, void *ud)
 {
     (void)ud;
@@ -379,7 +383,7 @@ static void name_prompt_cb(const char *v, void *ud)
 static void name_cb(lv_event_t *e)
 {
     (void)e;
-    ui_prompt(tr(STR_NET_TS_NAME), tr(STR_NET_TS_NAME_PH), device_name(), false, name_prompt_cb, NULL);
+    ui_prompt(tr(STR_NET_TS_NAME), tr(STR_NET_TS_NAME_DEFAULT), device_name(), false, name_prompt_cb, NULL);
 }
 
 static void ctrl_prompt_cb(const char *v, void *ud)

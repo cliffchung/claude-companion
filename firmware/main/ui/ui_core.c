@@ -494,7 +494,7 @@ static lv_obj_t *sheet_rows(const char *title, const char *const *items, int cou
         lv_obj_set_user_data(r, (void *)(intptr_t)i);
         if (radio) lv_obj_move_to_index(ui_comp_radio_dot(r, i == current), 0);
         else if (i < 32 && (red >> i) & 1u) ui_text_tone(lv_obj_get_child(r, 0), UI_TONE_RED);
-        if (i == current) cur = r;
+        if (i == current) { cur = r; lv_obj_add_flag(r, UI_KEYBOARD_FIRST); }
     }
     if (cur) {
         lv_obj_update_layout(box);
@@ -634,6 +634,7 @@ static void keyboard_focus_set(lv_obj_t *obj)
 
 typedef struct {
     lv_obj_t *first, *last, *previous, *next;
+    lv_obj_t *preferred;   /* the first control flagged UI_KEYBOARD_FIRST */
     lv_obj_t *root;   /* an open dialog's scrim: never a control itself (a tap on it closes a sheet; a key must not) */
     bool found;
 } keyboard_walk_t;
@@ -647,6 +648,7 @@ static void keyboard_walk(lv_obj_t *obj, keyboard_walk_t *walk)
          lv_obj_has_flag(obj, LV_OBJ_FLAG_CHECKABLE));
     if (control && obj != walk->root) {
         if (!walk->first) walk->first = obj;
+        if (!walk->preferred && lv_obj_has_flag(obj, UI_KEYBOARD_FIRST)) walk->preferred = obj;
         if (obj == s_keyboard_focus) { walk->found = true; walk->previous = walk->last; }
         else if (walk->found && !walk->next) walk->next = obj;
         walk->last = obj;
@@ -686,7 +688,8 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
     keyboard_walk_t walk = { .root = modal };
     keyboard_walk(scope, &walk);
     bool had_focus = walk.found;
-    if (!had_focus) keyboard_focus_set(walk.first);
+    lv_obj_t *start = walk.preferred ? walk.preferred : walk.first;   /* where the first key lands */
+    if (!had_focus) keyboard_focus_set(start);
     lv_obj_t *obj = s_keyboard_focus;
     bool textarea = obj && lv_obj_check_type(obj, &lv_textarea_class);
     if (ev->type == KEY_EV_SPECIAL && ev->key == SK_ESC) {
@@ -699,7 +702,7 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
         bool back = ev->mods & MOD_SHIFT;
         keyboard_focus_set(had_focus ? (back ? (walk.previous ? walk.previous : walk.last) :
                                              (walk.next ? walk.next : walk.first)) :
-                                      (back ? walk.last : walk.first));
+                                      (back ? walk.last : start));
         return true;
     }
     if (!obj) return true;
@@ -726,7 +729,8 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
         }
         if (arrow) {
             bool back = ev->key == SK_LEFT || ev->key == SK_UP;
-            keyboard_focus_set(back ? (walk.previous ? walk.previous : walk.last) : (walk.next ? walk.next : walk.first));
+            if (!had_focus) keyboard_focus_set(back ? walk.last : start);
+            else keyboard_focus_set(back ? (walk.previous ? walk.previous : walk.last) : (walk.next ? walk.next : walk.first));
             return true;
         }
         if (ev->key == SK_PGUP || ev->key == SK_PGDN) {

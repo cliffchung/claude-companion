@@ -912,6 +912,9 @@ creds-on-SD and others); 95 new ones carry the Sessions, overlay, pill, boot, sl
   their wording is fixed: "no host set up", "no host entry named '<name>' (Settings › Host)", "Host not found at
   <host> (set its fallback address in Settings › Host)", "… forget the old key in Settings › Host to trust it", and
   "›" for paths, not "→". Console and log text: "host: …" for "mac: …", "New host key pinned", "No host set up".
+  Corrected reason (review M4): moving them needs no API change (`snprintf(why, …, tr(STR_X), name)` works as it
+  is); they stay because they are console and log text first, and the UI shows only a capitalised prefix cut at
+  " (". `TS_HOST_OFF_MESSAGE` (net/ts_host.h) stays a literal for the same reason, accepted as is.
 - T12-3 (carried item 2, checked formats): `ui_sessions_link_down_text` now uses a literal format,
   `"%s %s. %s"` with `STR_LINK_CANT_REACH` ("Can't reach") and `STR_LINK_IS_IT_AWAKE`. Every text this task added uses a
   literal format with tr() pieces. The 24 older format entries (`STR_NET_*`, `STR_TERM_*`, `STR_DIAG_*`,
@@ -954,3 +957,36 @@ creds-on-SD and others); 95 new ones carry the Sessions, overlay, pill, boot, sl
   rewrites: "No host set up" (§9.10), "Please wait…", "USB-C + battery …", "Can't open: set up the host in Settings ›
   Host". The preview's and server_store test's Host entry is named "Desk", not "Mac".
 - `idf.py size`: image 7,251,899 B; DIRAM 190,008 B.
+
+**Task 12 fix round 1 (review Minors, P4C-11).**
+- T12-13 (M2): `literal-outside-tr` also covers `ui_header`, `ui_text`, `ui_title`, `ui_alert`, `ui_confirm`,
+  `ui_empty_state`, `ui_action_sheet`, `ui_sheet_text`, `ui_busy`, `ui_footnote`, `ui_section_header`,
+  `ui_add_row`, `ui_rail_row` and `lv_textarea_set_placeholder_text`. It also catches a macro #defined anywhere under
+  firmware/main as one text literal. Only a `(void *)` cast is exempt, so `(const char *)"…"` is flagged. `mac-word`
+  matches "Macs" and "Mac's" (and still passes "MacBook"). The tree had no new findings.
+- T12-14 (M3): test_i18n pins the four plain-percent entries' conversion lists ("?") too. Its parser reads flags,
+  width, precision and length in order, and rereads the character that ends a bad '%', so "10 %. %s" gives "?s". A
+  mutation run (adding "%s" to `STR_SES_SLEEPS_AT`) fails the test.
+- T12-15 (M5, M7, the Host rule): "Host" is the machine running Claude Code; "host" is any SSH machine, and "host
+  key" stays the SSH term. So: "No Host set up" (UI, console, cc_link "no Host set up", the preview stub),
+  "Set up Host", "Reconnecting to Host…", "Can't load sessions from the Host…", "No sessions on this Host",
+  "Claude path on Host", "The Host is one of your SSH hosts", "The Host isn't listed here: …", "That's the Host: …".
+  Settings › Host's forget confirm says "the Host's key"; the host form has its own `STR_HF_FORGET_Q/BODY` ("this
+  host's key"). This departs from §9.10's literal "No host set up" / "Set up host" and from Task 12's brief, by the
+  controller's Host rule.
+  The take-over failure is "The session didn't open. Couldn't connect: …" (one "Couldn't"). The device name's
+  default and placeholder are one entry, `STR_NET_TS_NAME_DEFAULT`.
+- T12-16 (M6): Enter on a fresh sheet never changes state. The Wi-Fi sheet leads with "Other networks" (it opens the
+  list); Disconnect and Forget follow, each behind a Cancel-first confirm. A picker's first key lands on its current
+  row (`UI_KEYBOARD_FIRST`, set by `sheet_rows`), so a bare Enter re-picks it. The other action sheets already lead
+  with a harmless item (Enter key, From your tailnet / Enter manually, a peer to fill a form, Add as SSH host).
+  The preview asserts that Enter on the fresh Wi-Fi sheet disconnects, forgets and asks nothing.
+- T12-17 (P4C-11 a): an interactive session's meta leads with a muted "on Host" ("on Host · repo · age"; it leads
+  so a narrow row still shows it). The pane line reads "Running in a terminal on the Host. Start sessions with
+  claude --bg to open them here." (wraps; fit-checked in preview `sessions interactive`). Pill and colours are
+  unchanged, and there is no amber.
+- T12-18 (P4C-11 b): `sm_hide_finished_tests` (pure, host-tested) drops DONE and ENDED sessions named
+  `companion-test-*` before the Sessions list keeps its four newest finished. Live test sessions stay visible. The
+  `sessions` console verb reads the last poll, not this list, so it still lists everything. A hidden row is
+  finished, so it can never need you: no needs-you count changes.
+- `idf.py size`: image 7,252,587 B; DIRAM 190,008 B.

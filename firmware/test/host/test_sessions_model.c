@@ -383,6 +383,44 @@ static void test_tail_options(void)
     TEST_ASSERT_EQUAL(0, sm_tail_options("1. A\n2. B\nthen text\n"));
 }
 
+/* P4C-11 (b): finished companion-test-* sessions leave the list; live ones and every other session stay */
+static void test_hide_finished_tests(void)
+{
+    cc_session_t a[6];
+    a[0] = bg("t1", CC_WORKING, true);   snprintf(a[0].name, sizeof(a[0].name), "companion-test-live");
+    a[1] = bg("t2", CC_DONE, false);     snprintf(a[1].name, sizeof(a[1].name), "companion-test-done");
+    a[2] = bg("u1", CC_DONE, false);     /* someone else's finished session */
+    a[3] = bg("t3", CC_ENDED, false);    snprintf(a[3].name, sizeof(a[3].name), "companion-test-ended");
+    a[4] = bg("t4", CC_NEEDS_YOU, true); snprintf(a[4].name, sizeof(a[4].name), "companion-test-ask");
+    a[5] = bg("t5", CC_IDLE, true);      snprintf(a[5].name, sizeof(a[5].name), "companion-tests");   /* no dash: not one */
+    int n = sm_hide_finished_tests(a, 6);
+    TEST_ASSERT_EQUAL(4, n);
+    TEST_ASSERT_EQUAL_STRING("companion-test-live", a[0].name);
+    TEST_ASSERT_EQUAL_STRING("n-u1", a[1].name);
+    TEST_ASSERT_EQUAL_STRING("companion-test-ask", a[2].name);
+    TEST_ASSERT_EQUAL_STRING("companion-tests", a[3].name);
+    TEST_ASSERT_EQUAL(0, sm_hide_finished_tests(a, 0));
+    TEST_ASSERT_EQUAL(0, sm_hide_finished_tests(NULL, 3));
+}
+
+/* P4C-11 (a): an interactive session's row meta says it is on the Host (it can't be opened here) */
+static void test_meta_marks_interactive(void)
+{
+    char m[96];
+    cc_session_t s = bg("a1", CC_WORKING, true);
+    snprintf(s.repo, sizeof(s.repo), "api");
+    sm_meta(&s, "7m", m, sizeof(m));
+    TEST_ASSERT_EQUAL_STRING("api \xc2\xb7 7m", m);
+    sm_meta(&s, "", m, sizeof(m));
+    TEST_ASSERT_EQUAL_STRING("api", m);
+    cc_session_t i = inter("x", 0, CC_WORKING);
+    snprintf(i.repo, sizeof(i.repo), "web");
+    sm_meta(&i, "2h", m, sizeof(m));
+    TEST_ASSERT_EQUAL_STRING("on Host \xc2\xb7 web \xc2\xb7 2h", m);
+    sm_meta(&i, NULL, m, sizeof(m));
+    TEST_ASSERT_EQUAL_STRING("on Host \xc2\xb7 web", m);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -412,5 +450,7 @@ int main(void)
     RUN_TEST(test_wrap_short_buffer_drops_oldest);
     RUN_TEST(test_wrap_crlf);
     RUN_TEST(test_tail_options);
+    RUN_TEST(test_hide_finished_tests);
+    RUN_TEST(test_meta_marks_interactive);
     return UNITY_END();
 }

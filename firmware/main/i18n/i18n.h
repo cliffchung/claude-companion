@@ -26,7 +26,7 @@ X(PLEASE_WAIT, "Please wait\xe2\x80\xa6") \
 X(OFF, "Off") \
 X(NONE, "None") \
 X(UNKNOWN, "Unknown") \
-X(SSH_CONN_FAILED, "Couldn't open the session.") \
+X(SSH_CONN_FAILED, "The session didn't open.") \
 X(SSH_AUTH_FAILED, "Authentication failed:") \
 X(SSH_HOSTKEY_NEW, "New host key. Trust and continue?") \
 X(SSH_HOSTKEY_CHANGED, "This host's key changed. That can mean an attack. Continue only if you changed it.") \
@@ -58,14 +58,14 @@ X(SET_LINK_UP_TS, "connected over Tailscale") \
 X(SET_FALLBACK, "Fallback address") \
 X(SET_FALLBACK_PH, "192.168.1.50") \
 X(SET_FALLBACK_BAD, "Use a home network address like 192.168.1.50, or leave it empty") \
-X(SET_CLAUDE_PATH, "Claude path on host") \
+X(SET_CLAUDE_PATH, "Claude path on Host") \
 X(SET_CLAUDE_PATH_PH, "~/.local/bin/claude") \
 X(SET_CLAUDE_PATH_BAD, "Use only letters, digits and _ . / ~ - (1 to 63 characters)") \
 X(SET_HOST_KEY, "Host key") \
 X(SET_NO_PIN, "No key pinned yet") \
 X(SET_FORGET, "Forget") \
-X(SET_FORGET_Q, "Forget this host's key?") \
-X(SET_FORGET_BODY, "Only do this if the host's SSH key changed. The Tab5 will trust the next key it sees.") \
+X(SET_FORGET_Q, "Forget the Host's key?") \
+X(SET_FORGET_BODY, "Only do this if the Host's SSH key changed. The Tab5 will trust the next key it sees.") \
 X(SET_BUSY, "Busy, try again") \
 X(SET_DEVICE_KEY, "This device's key") \
 X(SET_PUBLIC_KEY, "Public key") \
@@ -73,7 +73,7 @@ X(SET_SHOW, "Show") \
 X(SET_HIDE, "Hide") \
 X(SET_KEY_UNREADABLE, "The device key can't be read") \
 X(SET_DEVICE_KEY_NOTE, "Add this line to ~/.ssh/authorized_keys on each host this Tab5 signs in to.") \
-X(SET_HOST_NOTE, "The host is one of your SSH hosts. The Tab5 lists its Claude Code sessions and runs claude from this path.") \
+X(SET_HOST_NOTE, "The Host is one of your SSH hosts. The Tab5 lists its Claude Code sessions and runs claude from this path.") \
 X(SET_PW_SCREEN, "Screen") \
 X(SET_PW_DIM, "Dim after") \
 X(SET_PW_OFF, "Screen off after") \
@@ -123,7 +123,7 @@ X(SET_RESET, "Reset") \
 X(SET_RESET_BODY, "Power, keyboard light and display brightness go back to their defaults. Wi-Fi networks, the Host and the Terminal hosts, the host-key pins, the Tailscale identity and auth key, and the device key stay. It also keeps the time zone.") \
 X(SET_RESET_NOTE, "Reset settings puts power, the keyboard light and brightness back to their defaults.") \
 X(SET_RESET_DONE, "Settings reset") \
-X(LINK_NO_HOST, "No host set up") \
+X(LINK_NO_HOST, "No Host set up") \
 X(DIAG_CHIP, "Chip: ESP32-P4 rev %d.%d \xc2\xb7 IDF %s\n") \
 X(DIAG_INTERNAL, "Internal: %u KB free, min %u KB, largest %u KB\n") \
 X(DIAG_PSRAM, "PSRAM: %u.%u MB free\n") \
@@ -157,6 +157,7 @@ X(NET_NOT_CONNECTED, "Not connected") \
 X(NET_NETWORKS, "Networks") \
 X(NET_SAVED_N, "%d saved") \
 X(NET_ADVANCED, "Advanced") \
+X(NET_OTHER_NETWORKS, "Other networks") \
 X(NET_DISCONNECT, "Disconnect") \
 X(NET_DISCONNECT_Q, "Disconnect from %s?") \
 X(NET_DISCONNECT_BODY, "The Tab5 stays off Wi-Fi until the next boot, or until you join a network.") \
@@ -228,7 +229,7 @@ X(NET_TS_KEY_CLEAR_BODY, "This device stays on the tailnet. To register it again
 X(NET_TS_KEY_CLEAR_ACTION, "Clear") \
 X(NET_TS_KEY_CLEARED, "Auth key cleared") \
 X(NET_TS_NAME, "Device name") \
-X(NET_TS_NAME_PH, "claude-companion") \
+X(NET_TS_NAME_DEFAULT, "claude-companion") \
 X(NET_TS_NAME_EMPTY, "A device name can't be empty") \
 X(NET_TS_APPLIES, "Applies the next time Tailscale starts") \
 X(NET_TS_CTRL, "Control server") \
@@ -268,7 +269,7 @@ X(HOSTS_ADD_TITLE, "Add host") \
 X(HOSTS_FROM_TAILNET, "From your tailnet") \
 X(HOSTS_MANUAL, "Enter manually") \
 X(HOSTS_NO_PEERS, "No tailnet peers online") \
-X(HOSTS_NOT_LISTED, "Your Claude host isn't listed here: its sessions are on the Sessions screen.") \
+X(HOSTS_NOT_LISTED, "The Host isn't listed here: its sessions are on the Sessions screen.") \
 X(HOSTS_LEAVE_NOTE, "Ctrl+] leaves an SSH session.") \
 X(HOSTS_NO_WIFI, "No Wi-Fi") \
 X(HOSTS_GONE, "This host was removed") \
@@ -278,8 +279,8 @@ X(TERM_KEY_TAB, "Tab") \
 X(TERM_KEY_CTRL_C, "^C") \
 X(TERM_KEY_UP, "\xe2\x86\x91") \
 X(TERM_KEY_DOWN, "\xe2\x86\x93") \
-X(TERM_STILL_RUNNING, "Session still running on the host") \
-X(TERM_OPENING, "Opening the session on the host\xe2\x80\xa6") \
+X(TERM_STILL_RUNNING, "Session still running on the Host") \
+X(TERM_OPENING, "Opening the session on the Host\xe2\x80\xa6") \
 X(TERM_OPENING_HINT, "Ctrl+] or \xe2\x86\x90 Leave returns to Sessions; the session keeps running.") \
 X(TERM_CONNECTING_TO, "Connecting to %s@%s:%d\xe2\x80\xa6") \
 X(TERM_SSH_HINT, "Ctrl+] or \xe2\x86\x90 Leave disconnects.") \
@@ -311,23 +312,24 @@ X(SES_OPEN, "\xe2\x8c\x83O Open") \
 X(SES_TERMINAL, "\xe2\x8c\x83T/\xe2\x8c\x83M Terminal") \
 X(SES_SETTINGS, "\xe2\x8c\x83P Settings") \
 X(SES_KEYS, "\xe2\x8c\x83K Keys") \
-X(SES_NO_HOST_BODY, "Set up your host to see its Claude sessions.") \
-X(SES_SET_UP_HOST, "Set up host") \
-X(SES_EMPTY, "No sessions on this host. Start one with `claude --bg`.") \
+X(SES_NO_HOST_BODY, "Set up your Host to see its Claude sessions.") \
+X(SES_SET_UP_HOST, "Set up Host") \
+X(SES_EMPTY, "No sessions on this Host. Start one with `claude --bg`.") \
 X(SES_WIFI_SETTINGS, "Wi-Fi settings") \
 X(SES_HOST_SETTINGS, "Host settings") \
 X(SES_BATTERY, "Battery") \
 X(SES_SLEEPS_AT, "The Tab5 sleeps at 10 %.") \
 X(SES_DISMISS, "Dismiss") \
-X(SES_RECONNECTING, "Reconnecting to host\xe2\x80\xa6") \
+X(SES_RECONNECTING, "Reconnecting to Host\xe2\x80\xa6") \
 X(SES_LOADING, "Loading sessions\xe2\x80\xa6") \
 X(SES_UPDATING, "Updating\xe2\x80\xa6") \
 X(SES_LIST_TOO_BIG, "Session list too large to load") \
-X(SES_CANT_LOAD, "Can't load sessions from the host\xe2\x80\xa6") \
+X(SES_CANT_LOAD, "Can't load sessions from the Host\xe2\x80\xa6") \
 X(SES_LOADING_OUTPUT, "Loading recent output\xe2\x80\xa6") \
 X(SES_NO_OUTPUT, "No output to show") \
 X(SES_NO_OUTPUT_YET, "No output yet") \
-X(SES_INTERACTIVE, "Interactive \xe2\x80\x94 answer it on the Host") \
+X(SES_INTERACTIVE, "Running in a terminal on the Host. Start sessions with claude --bg to open them here.") \
+X(SES_ON_HOST, "on Host") \
 X(SES_STOPPED, "This session has stopped.") \
 X(SES_TYPE_ANSWER, "Type an answer\xe2\x80\xa6") \
 X(SES_TYPE_MESSAGE, "Type a message\xe2\x80\xa6") \
@@ -339,8 +341,8 @@ X(SES_STILL_WORKING, "Still working on the last request") \
 X(SES_SENDING, "Sending\xe2\x80\xa6") \
 X(SES_OPENING, "Opening\xe2\x80\xa6") \
 X(SES_HAS_STOPPED, "Session has stopped") \
-X(SES_CANT_OPEN, "Can't open: set up the host in Settings \xe2\x80\xba Host") \
-X(SES_NOT_CONNECTED, "Not connected to the host") \
+X(SES_CANT_OPEN, "Can't open: set up the Host in Settings \xe2\x80\xba Host") \
+X(SES_NOT_CONNECTED, "Not connected to the Host") \
 X(SES_FORGET_RECONNECTING, "Old key forgotten; reconnecting\xe2\x80\xa6") \
 X(SES_NEW_KEY_PINNED, "New host key pinned:") \
 X(SES_KEYS_TITLE, "Keyboard shortcuts") \
@@ -366,7 +368,7 @@ X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
 X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
 X(HK_VOICE, "Voice input comes in a later update") \
-X(TERM_KEEPS_RUNNING, "The session keeps running on the host.") \
+X(TERM_KEEPS_RUNNING, "The session keeps running on the Host.") \
 X(SSH_NO_SESSION, "Couldn't start SSH. Try again.") \
 X(SSH_CANT_CONNECT, "Couldn't connect:") \
 X(SSH_PIN_UNREADABLE, "Can't read the saved host key; not connecting") \
@@ -395,6 +397,8 @@ X(HF_PASSWORD, "Password") \
 X(HF_SD_KEY, "Key file on SD card") \
 X(HF_PW_SET, "\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2 set") \
 X(HF_HOST_KEY, "Host key") \
+X(HF_FORGET_Q, "Forget this host's key?") \
+X(HF_FORGET_BODY, "Only do this if the host's SSH key changed. The Tab5 will trust the next key it sees.") \
 X(HF_KEY_FORGOTTEN, "Host key forgotten. The next connect asks you to trust the key.") \
 X(HF_DELETE, "Delete host") \
 X(HF_DELETE_Q, "Delete %s?") \
@@ -416,7 +420,7 @@ X(HOSTS_CONNECT_FAILED, "Couldn't start the connection. Try again.") \
 X(HF_ERR_NO_ADDRESS, "Enter the host's address") \
 X(HF_ERR_NO_USER, "Enter a user") \
 X(HF_ERR_BAD_PORT, "The port is a number from 1 to 65535") \
-X(HF_ERR_IS_HOST, "That's your Claude host: its sessions are on the Sessions screen.")
+X(HF_ERR_IS_HOST, "That's the Host: its sessions are on the Sessions screen.")
 
 typedef enum {
 #define X(id, en) STR_##id,

@@ -112,6 +112,31 @@ const char *sm_pill_text(const cc_session_t *s)
     }
 }
 
+void sm_meta(const cc_session_t *s, const char *age, char *out, size_t cap)
+{
+    if (!out || !cap) return;
+    out[0] = 0;
+    if (!s) return;
+    bool aged = age && age[0];
+    if (s->background) snprintf(out, cap, aged ? "%s \xc2\xb7 %s" : "%s", s->repo, aged ? age : "");
+    /* first, so a row too narrow for the whole meta still shows it */
+    else if (aged) snprintf(out, cap, "%s \xc2\xb7 %s \xc2\xb7 %s", tr(STR_SES_ON_HOST), s->repo, age);
+    else snprintf(out, cap, "%s \xc2\xb7 %s", tr(STR_SES_ON_HOST), s->repo);
+}
+
+int sm_hide_finished_tests(cc_session_t *s, int n)
+{
+    if (!s || n <= 0) return 0;
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        bool finished = s[i].state == CC_DONE || s[i].state == CC_ENDED;
+        if (finished && !strncmp(s[i].name, SM_TEST_PREFIX, strlen(SM_TEST_PREFIX))) continue;
+        if (k != i) s[k] = s[i];
+        k++;
+    }
+    return k;
+}
+
 sm_banner_t sm_banner(const sm_in_t *in)
 {
     /* §5.1 order. While Wi-Fi is still associating (a wake) it is not "No Wi-Fi": the link counts as down. */

@@ -11,6 +11,9 @@ extern "C" {
 
 /* Exclude a touch-only subtree from physical keyboard navigation. */
 #define UI_KEYBOARD_SKIP LV_OBJ_FLAG_USER_4
+/* The control the first key focuses (Down, Tab or the first Enter), instead of the first one: a picker's current
+   row, so a bare Enter on a fresh picker changes nothing. */
+#define UI_KEYBOARD_FIRST LV_OBJ_FLAG_USER_1
 
 /* ---- screen stack ---- */
 typedef lv_obj_t *(*ui_screen_create_fn)(void *arg);

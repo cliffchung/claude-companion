@@ -11,12 +11,16 @@ Prints one "<file>:<line>: <rule>" per problem and exits 1 if there are any. Rul
   exec-outside-cc_cmd  in ui/**: a string literal "claude attach|logs|agents|-p" or one holding /bin/sh,
                        or a cc_link_exec / cc_link_exec_tail call with no cc_cmd_ call before it in the
                        same function body
-  mac-word             the word "Mac" inside a string literal in ui/**, i18n/i18n.h, companion/cc_link.c,
-                       companion/cc_link.h, companion/cc_console.c or sys/checkin.c ("MacBook", mac_lan_ip pass)
-  literal-outside-tr   in ui/**: a string literal passed straight to lv_label_set_text(_fmt|_static),
-                       ui_toast*, ui_srow*, ui_btn, ui_chip, ui_banner_set, ui_confirm_ex, ui_prompt or
-                       ui_picker that holds a letter once its escapes and printf conversions are removed
-                       ("", "%s", "%s \xc2\xb7 %d%%" pass; tr(STR_*) is not a literal)
+  mac-word             the word "Mac" or "Macs" ("Mac's" too) inside a string literal in ui/**, i18n/i18n.h,
+                       companion/cc_link.c, cc_link.h, cc_console.c or sys/checkin.c ("MacBook", mac_lan_ip pass)
+  literal-outside-tr   in ui/**: text passed straight (not inside a nested call) to lv_label_set_text(_fmt|_static),
+                       lv_textarea_set_placeholder_text, ui_toast*, ui_srow*, ui_btn, ui_chip, ui_banner_set,
+                       ui_confirm(_ex), ui_prompt, ui_picker, ui_header, ui_text, ui_title, ui_alert,
+                       ui_empty_state, ui_action_sheet, ui_sheet_text, ui_busy, ui_footnote, ui_section_header,
+                       ui_add_row or ui_rail_row. Text is a literal holding a letter once its escapes and printf
+                       conversions are removed ("", "%s", "%s \\xc2\\xb7 %d%%" pass), or the name of a macro
+                       #defined under firmware/main as such a literal. tr(STR_*) is not a literal; a literal cast
+                       to (void *) is a callback key, not text (any other cast is still text).
   ui-alias             UI_BG, UI_CARD, UI_CARD_HI, UI_ACCENT, UI_ACCENT2, UI_DANGER, UI_WARN, UI_TEXT,
                        UI_MUTED or ui_button_colored, word-bounded, anywhere under firmware/main
   unused-str           an X(ID, ...) entry in i18n/i18n.h whose STR_ID no code under firmware/main uses
@@ -34,12 +38,17 @@ EXEC_CALL_RE = re.compile(r"\bcc_link_exec(?:_tail)?\s*\(")
 CC_CMD_RE = re.compile(r"\bcc_cmd_\w+\s*\(")
 COMMAND_LITERAL_RE = re.compile(r"claude (attach|logs|agents|-p)")
 
-MAC_WORD_RE = re.compile(r"\bMac\b")
+MAC_WORD_RE = re.compile(r"\bMacs?\b")
 MAC_WORD_FILES = {os.path.join("i18n", "i18n.h"), os.path.join("companion", "cc_link.c"),
                   os.path.join("companion", "cc_link.h"), os.path.join("companion", "cc_console.c"),
                   os.path.join("sys", "checkin.c")}
-TEXT_CALL_RE = re.compile(r"\b(?:lv_label_set_text(?:_fmt|_static)?|ui_toast\w*|ui_srow\w*|ui_btn|ui_chip|"
-                          r"ui_banner_set|ui_confirm_ex|ui_prompt|ui_picker)\s*\(")
+TEXT_CALL_RE = re.compile(r"\b(?:lv_label_set_text(?:_fmt|_static)?|lv_textarea_set_placeholder_text|ui_toast\w*|"
+                          r"ui_srow\w*|ui_btn|ui_chip|ui_banner_set|ui_confirm(?:_ex)?|ui_prompt|ui_picker|ui_header|"
+                          r"ui_text|ui_title|ui_alert|ui_empty_state|ui_action_sheet|ui_sheet_text|ui_busy|ui_footnote|"
+                          r"ui_section_header|ui_add_row|ui_rail_row)\s*\(")
+VOID_CAST_RE = re.compile(r"\(\s*void\s*\*\s*\)\s*$")
+TEXT_MACRO_RE = re.compile(r'^[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+"((?:[^"\\\n]|\\.)*)"[ \t]*$', re.MULTILINE)
+IDENT_RE = re.compile(r"\b[A-Za-z_]\w*\b")
 ESCAPE_RE = re.compile(r"\\(?:x[0-9a-fA-F]+|[0-7]{1,3}|.)")
 CONVERSION_RE = re.compile(r"%[-+ #0]*(?:\*|\d+)?(?:\.(?:\*|\d+))?(?:hh|h|ll|l|z|j|t|L)?[diouxXeEfFgGcsp%]")
 ALIAS_RE = re.compile(r"\b(?:UI_BG|UI_CARD|UI_CARD_HI|UI_ACCENT|UI_ACCENT2|UI_DANGER|UI_WARN|UI_TEXT|UI_MUTED|"
@@ -126,21 +135,31 @@ def call_args(code, open_paren):
     return open_paren + 1, len(code)
 
 
-def literal_args(code, literals):
-    """Offsets of the text literals passed straight (not inside a nested call) to a text call."""
+def text_macros(texts):
+    """The names #defined anywhere under firmware/main as one text literal (a format alone isn't text)."""
+    return {m.group(1) for text in texts.values() if "#" in text and "define" in text
+            for m in TEXT_MACRO_RE.finditer(text) if is_text(m.group(2))}
+
+
+def literal_args(code, literals, macros=frozenset()):
+    """Offsets of the text passed straight (not inside a nested call) to a text call: a text literal, or the name
+    of a text macro. A literal cast to (void *) is a key for the callback, not text."""
     found = []
     for m in TEXT_CALL_RE.finditer(code):
         start, end = call_args(code, m.end() - 1)
         for (offset, s) in literals:
             if start <= offset < end:
                 inner = code[start:offset]
-                cast = inner.rstrip().endswith(")")   # (void *)"sleep-usb": a key for the callback, not text
-                if inner.count("(") - inner.count(")") == 0 and not cast and is_text(s):
+                if inner.count("(") - inner.count(")") == 0 and not VOID_CAST_RE.search(inner) and is_text(s):
                     found.append(offset)
+        for t in IDENT_RE.finditer(code, start, end):
+            inner = code[start:t.start()]
+            if t.group(0) in macros and inner.count("(") - inner.count(")") == 0:
+                found.append(t.start())
     return found
 
 
-def lint_file(rel, text):
+def lint_file(rel, text, macros=frozenset()):
     problems = set()
     in_ui = rel.split(os.sep, 1)[0] == UI
     for m in ALIAS_RE.finditer(text):
@@ -167,7 +186,7 @@ def lint_file(rel, text):
             problems.add((line_of(code, m.start()), "amber-accessor"))
 
     if in_ui:
-        for offset in literal_args(code, literals):
+        for offset in literal_args(code, literals, macros):
             problems.add((line_of(text, offset), "literal-outside-tr"))
         for offset, s in literals:
             if COMMAND_LITERAL_RE.search(s) or "/bin/sh" in s:
@@ -195,7 +214,6 @@ def unused_strings(texts):
 
 
 def lint(main_dir):
-    problems = []
     texts = {}
     for root, dirs, files in os.walk(main_dir):
         dirs.sort()
@@ -206,7 +224,10 @@ def lint(main_dir):
             rel = os.path.relpath(path, main_dir)
             with open(path, encoding="utf-8", errors="replace") as f:
                 texts[rel] = f.read()
-            problems += lint_file(rel, texts[rel])
+    macros = text_macros(texts)
+    problems = []
+    for rel in texts:
+        problems += lint_file(rel, texts[rel], macros)
     return problems + unused_strings(texts)
 
 

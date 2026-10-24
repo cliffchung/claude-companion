@@ -132,7 +132,7 @@ static int cmd_companion(int argc, char **argv)
             printf("companion: rejected: the host has no spaces; the fallback is a private IPv4 address or none\n");
             return 1;
         }
-        if (e == ESP_ERR_INVALID_STATE) { printf("No host set up\n"); return 1; }
+        if (e == ESP_ERR_INVALID_STATE) { printf("No Host set up\n"); return 1; }
         if (e != ESP_OK) { printf("companion: the server list didn't save\n"); return 1; }
         char fb[16];
         cc_link_lan_fallback(fb, sizeof(fb));
@@ -159,13 +159,13 @@ static int cmd_companion(int argc, char **argv)
         esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
         if (e == ESP_OK) printf("New host key pinned: %s\n", fp);
         else if (e == ESP_ERR_TIMEOUT) printf("Old key forgotten; reconnecting...\n");
-        else printf("No host set up\n");
+        else printf("No Host set up\n");
         return e == ESP_OK || e == ESP_ERR_TIMEOUT ? 0 : 1;
     }
     if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "corrupt") == 0) {
         /* debug: shows the changed-key path without touching the Host */
         char hp[160];
-        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No host set up\n"); return 1; }
+        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No Host set up\n"); return 1; }
         printf("debug: host key pin for %s overwritten; reconnecting\n", hp);
         return 0;
     }

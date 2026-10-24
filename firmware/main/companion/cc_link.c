@@ -161,7 +161,7 @@ static struct {                             /* for cc_watch_status_text, under s
 } s_wv;
 
 /* Before cc_link_start (or if it failed) there is no lock and no link task: getters then
-   read the settings directly and the status is "no host set up". */
+   read the settings directly and the status is "no Host set up". */
 static void lock(void) { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 static int64_t now_us(void) { return esp_timer_get_time(); }
@@ -339,7 +339,7 @@ const char *cc_link_status_text(char *b, size_t cap)
 {
     if (!b || !cap) return "";
     if (!s_task) {
-        strlcpy(b, "no host set up", cap);
+        strlcpy(b, "no Host set up", cap);
         return b;
     }
     lock();
@@ -350,7 +350,7 @@ const char *cc_link_status_text(char *b, size_t cap)
     }
     switch (s_state) {
     case LS_NO_MAC:
-        strlcpy(b, "no host set up", cap);
+        strlcpy(b, "no Host set up", cap);
         break;
     case LS_CONNECTING:
         if (s_fail != CC_LINK_FAIL_NONE) snprintf(b, cap, "%s (retrying now)", s_fail_text);
@@ -542,7 +542,7 @@ static bool connect_once(const char *name)
     const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
     if (!sv) {
         ESP_LOGW(TAG, "no server named '%s' in the server list", name);
-        snprintf(why, sizeof(why), "no host entry named '%s' (Settings \xe2\x80\xba Host)", name);
+        snprintf(why, sizeof(why), "no Host entry named '%s' (Settings \xe2\x80\xba Host)", name);
         set_fail(CC_LINK_FAIL_NO_ENTRY, why);
         return false;
     }

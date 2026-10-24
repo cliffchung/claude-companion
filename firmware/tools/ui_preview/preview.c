@@ -60,7 +60,8 @@ static bool pv_notfound(void) { return !strcmp(env_str("PREVIEW_FAIL", ""), "not
 bool wifi_mgr_is_connected(void) { return pv_wifi(); }
 bool wifi_mgr_is_connecting(void) { return s_rc_preview; }
 void wifi_mgr_get_ip4(char *b, size_t n) { snprintf(b,n,"192.168.1.25"); }
-void wifi_mgr_disconnect(void) {}
+static int s_wifi_disconnect_calls;
+void wifi_mgr_disconnect(void) { s_wifi_disconnect_calls++; }
 /* Plan 3 surfaces Settings calls (the preview stopped linking at 8b94efb without them). */
 bool wifi_mgr_static_ip_get(wifi_static_ip_t *out) { if (out) memset(out, 0, sizeof(*out)); return true; }
 bool wifi_mgr_static_ip_set(const wifi_static_ip_t *in) { (void)in; return true; }
@@ -539,8 +540,13 @@ static void keyboard_check(void) {
     press_key(SK_DOWN,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==0 && !ui_keyboard_owns_input());
     ui_action_sheet("sheet",acts,2,0,keyboard_picked,NULL);
     press_key(SK_DOWN,0,false); press_key(SK_DOWN,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==1);
+    /* a fresh picker's first key lands on its current row, so a bare Enter changes nothing (review M6) */
     ui_picker("picker",acts,2,1,keyboard_picked,NULL);
-    press_key(SK_TAB,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==0);
+    press_key(SK_TAB,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==1);
+    keyboard_pick=-2; ui_picker("picker",acts,2,1,keyboard_picked,NULL);
+    press_key(SK_ENTER,0,false); assert(keyboard_pick==1);
+    keyboard_pick=-2; ui_picker("picker",acts,2,1,keyboard_picked,NULL);
+    press_key(SK_DOWN,0,false); press_key(SK_UP,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==0);
     /* T10-8 stays: a confirm's first control is Cancel, so Enter alone cancels */
     keyboard_answer=0; ui_confirm_ex("test",NULL,"Go",false,keyboard_confirmed,NULL);
     press_key(SK_ENTER,0,false); assert(keyboard_answer==-1);
@@ -943,7 +949,7 @@ static int sessions_case(lv_display_t *d, const char *v) {
     } else if (!strcmp(v, "stale")) {
         assert(find_label(s, "Updating\xe2\x80\xa6", false));
     } else if (!strcmp(v, "reconnecting")) {
-        assert(find_label(s, "Reconnecting to host\xe2\x80\xa6", false));
+        assert(find_label(s, "Reconnecting to Host\xe2\x80\xa6", false));
         assert(!find_label(s, "No Wi-Fi", true));
         assert(lv_obj_get_style_opa(list, 0) == LV_OPA_50);
     } else if (!strcmp(v, "no-wifi")) {
@@ -956,12 +962,12 @@ static int sessions_case(lv_display_t *d, const char *v) {
     } else if (!strcmp(v, "not-found")) {
         assert(find_label(s, "Host not found at studio-host.local", false) && find_clickable(s, "Host settings"));
     } else if (!strcmp(v, "no-host")) {
-        lv_obj_t *b = find_clickable(s, "Set up host");
+        lv_obj_t *b = find_clickable(s, "Set up Host");
         assert(b && obj_shown(b));
         assert(!find_shown(s, &lv_textarea_class));
         assert(!row0 || !obj_shown(row0));
     } else if (!strcmp(v, "empty")) {
-        assert(find_label(s, "No sessions on this host. Start one with `claude --bg`.", false));
+        assert(find_label(s, "No sessions on this Host. Start one with `claude --bg`.", false));
     } else if (!strcmp(v, "interactive")) {
         /* select the interactive blocked session */
         int k = -1;
@@ -969,7 +975,10 @@ static int sessions_case(lv_display_t *d, const char *v) {
         assert(k >= 0);
         for (int i = 0; i < k; i++) { assert(sink_sk(SK_DOWN)); step(d, 400); }
         assert(selected_index(list) == k);
-        assert(find_label(s, "Interactive \xe2\x80\x94 answer it on the Host", false));
+        /* P4C-11 (a): the pane says why it can't be opened here (wrapped, fit-checked below); the rows say "on Host" */
+        lv_obj_t *info = find_label(s, "Running in a terminal on the Host. Start sessions with claude --bg to open them here.", false);
+        assert(info && obj_shown(info) && lv_label_get_long_mode(info) == LV_LABEL_LONG_MODE_WRAP);
+        assert(find_label_has(list, "on Host \xc2\xb7 ", 0) && find_label_has(s, "on Host \xc2\xb7 desk", 0));   /* the row and the pane */
         assert(!find_shown(s, &lv_textarea_class));
         assert(find_label(s, "waiting on Host", false));
         if (pv_amber_pixels(s)) { printf("check %s: FAIL amber on a session that can't need you\n", name); return 1; }
@@ -1377,9 +1386,17 @@ static bool network_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *panel, const ch
         return true;
     }
     if (!strcmp(click, "Clientre Wi-Fi")) {
-        /* the current network: a sheet with Disconnect and Forget, both confirmed */
-        assert(sheet_rows("Clientre Wi-Fi") == 2 && find_label(top, "Disconnect", false));
+        /* the current network: a sheet with Other networks first, then Disconnect and Forget, both confirmed */
+        assert(sheet_rows("Clientre Wi-Fi") == 3 && find_label(top, "Disconnect", false));
         *r |= pv_run_checks(d, s, name, false, 0);
+        /* review M6: Enter on the fresh sheet changes nothing: it opens the list, asks nothing, disconnects nothing */
+        press_key(SK_ENTER, 0, false); step(d, 200);
+        assert(s_wifi_disconnect_calls == 0 && s_wifi_forget_calls == 0 && !ui_keyboard_owns_input());
+        assert(ui_nav_is_top(ui_settings_sub_create));
+        ui_nav_back(); step(d, 200);
+        s = lv_screen_active();
+        click_label(d, settings_panel(s), "Clientre Wi-Fi");
+        assert(sheet_rows("Clientre Wi-Fi") == 3);
         click_label(d, top, "Forget");
         assert(find_label(top, "Forget Clientre Wi-Fi?", false) && s_wifi_forget_calls == 0);
         click_label(d, top, "Forget");
@@ -1634,8 +1651,8 @@ static int settings_case(lv_display_t *d, int section) {
         assert(lv_obj_get_style_text_font(k, 0) == FONT_MONO);
         assert(find_label(top, "Add this line to ~/.ssh/authorized_keys on each host this Tab5 signs in to.", false));
     } else if (section == UI_SET_HOST && !strcmp(click, "Forget")) {
-        assert(find_label(top, "Forget this host's key?", false));
-        assert(find_label(top, "Only do this if the host's SSH key changed. The Tab5 will trust the next key it sees.", false));
+        assert(find_label(top, "Forget the Host's key?", false));
+        assert(find_label(top, "Only do this if the Host's SSH key changed. The Tab5 will trust the next key it sees.", false));
         r |= pv_run_checks(d, s, name, false, 0);   /* the confirm: wrapped title, fit, every button's 80 px hit */
         lv_obj_t *ok = find_clickable_shown(top, "Forget");
         assert(ok && s_forget_calls == 0);
@@ -1702,7 +1719,7 @@ static int settings_case(lv_display_t *d, int section) {
         panel = settings_panel(s);
     } else if (section == UI_SET_HOST && !click[0] && (!pv_host() || pv_notfound())) {
         /* U11 and the frozen countdown (T7 review I2): the Link row says Host, never Mac, and no "(retry in Ns)" */
-        const char *want = !pv_host() ? "No host set up" : "Host not found at studio-host.local";
+        const char *want = !pv_host() ? "No Host set up" : "Host not found at studio-host.local";
         if (!find_label(panel, want, false)) { printf("check %s: FAIL no Link text \"%s\"\n", name, want); return 1; }
         if (find_label_has(panel, "Mac", 0) || find_label_has(panel, "retry in", 0)) {
             printf("check %s: FAIL the Link row says \"%s\"\n", name,
@@ -1752,7 +1769,7 @@ static int host_dot_of(lv_obj_t *row) {
 }
 static lv_obj_t *host_note(lv_obj_t *row) { lv_obj_t *t = lv_obj_get_child(row, 2); return lv_obj_has_flag(t, LV_OBJ_FLAG_HIDDEN) ? NULL : t; }
 static bool red(lv_obj_t *l) { return l && lv_color_eq(lv_obj_get_style_text_color(l, 0), lv_color_hex(UI_TK_RED)); }
-#define FOOTNOTE "Your Claude host isn't listed here: its sessions are on the Sessions screen. Ctrl+] leaves an SSH session."
+#define FOOTNOTE "The Host isn't listed here: its sessions are on the Sessions screen. Ctrl+] leaves an SSH session."
 static lv_obj_t *open_terminal(lv_display_t *d) {
     preview_sessions_load();
     ui_nav_home(); step(d, 200);
@@ -1889,7 +1906,7 @@ static int terminal_case(lv_display_t *d, const char *v) {
         if (!ui_nav_is_top(ui_hosts_create)) { printf("check %s: FAIL the refused session didn't return to Terminal\n", name); return 1; }
         al = host_row(hosts_body(lv_screen_active()), "alias-box");
         lv_obj_t *an = host_note(al);
-        if (!red(an) || strncmp(lv_label_get_text(an), "Your Claude host isn't listed here", 34)) {
+        if (!red(an) || strncmp(lv_label_get_text(an), "The Host isn't listed here", 26)) {
             printf("check %s: FAIL the Host's key wasn't refused (\"%s\")\n", name, an ? lv_label_get_text(an) : "none"); return 1;
         }
         r |= pv_run_checks(d, lv_screen_active(), "terminal-hostkey", false, 0);
@@ -1940,7 +1957,7 @@ static int terminal_case(lv_display_t *d, const char *v) {
         lv_obj_clean(top);
         ts_peer_t hp; tailscale_peer(2, &hp);
         ui_settings_add_peer_host(&hp); step(d, 200);   /* Peers › Add as SSH host */
-        if (ui_nav_is_top(ui_host_form_create) || !find_label(top, "Your Claude host isn't listed here: its sessions are on the Sessions screen.", false)) {
+        if (ui_nav_is_top(ui_host_form_create) || !find_label(top, "The Host isn't listed here: its sessions are on the Sessions screen.", false)) {
             printf("check %s: FAIL Peers' Add as SSH host offered the Host\n", name); return 1;
         }
         lv_obj_clean(top);
@@ -1951,7 +1968,7 @@ static int terminal_case(lv_display_t *d, const char *v) {
         form_set(d, f, "Address", "studio-host.tail1234.ts.net");
         form_set(d, f, "User", "me");
         click_label(d, f, "Save");
-        if (!find_label(top, "That's your Claude host: its sessions are on the Sessions screen.", false) || s_store_adds) {
+        if (!find_label(top, "That's the Host: its sessions are on the Sessions screen.", false) || s_store_adds) {
             printf("check %s: FAIL the FQDN was saved\n", name); return 1;
         }
         lv_obj_clean(top);
@@ -2007,14 +2024,14 @@ static int hostform_case(lv_display_t *d, const char *v) {
         form_set(d, s, "Address", "STUDIO-HOST.local.");
         form_set(d, s, "Port", "2222");
         click_label(d, s, "Save");
-        assert(find_label(top, "That's your Claude host: its sessions are on the Sessions screen.", false) && !s_store_adds);
+        assert(find_label(top, "That's the Host: its sessions are on the Sessions screen.", false) && !s_store_adds);
         lv_obj_clean(top);
         /* C1: the Host's LAN fallback and its tailnet address, typed by hand, are the Host too */
         const char *host_addrs[] = { "192.168.77.20", PREVIEW_HOST_TS_IP };
         for (int i = 0; i < 2; i++) {
             form_set(d, s, "Address", host_addrs[i]);
             click_label(d, s, "Save");
-            if (!find_label(top, "That's your Claude host: its sessions are on the Sessions screen.", false) || s_store_adds) {
+            if (!find_label(top, "That's the Host: its sessions are on the Sessions screen.", false) || s_store_adds) {
                 printf("check %s: FAIL a manual %s wasn't refused as the Host\n", name, i ? "tailnet address" : "LAN fallback"); return 1;
             }
             lv_obj_clean(top);
@@ -2294,7 +2311,7 @@ static int takeover_case(lv_display_t *d, const char *v) {
     sent = s_ssh_sent_n;
     pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
     if (ui_terminal_is_top() || s_ssh_sent_n != sent || s_takeover_closed != 1) { printf("check %s: FAIL Ctrl+] didn't leave\n", name); return 1; }
-    if (!find_label(lv_layer_top(), "Session still running on the host", false)) { printf("check %s: FAIL no \"still running\" toast\n", name); return 1; }
+    if (!find_label(lv_layer_top(), "Session still running on the Host", false)) { printf("check %s: FAIL no \"still running\" toast\n", name); return 1; }
     if (fast_timers(16)) { printf("check %s: FAIL the 16 ms pump outlived the take-over\n", name); return 1; }
     /* "← Leave" leaves the same way and sends nothing (review Minor 1) */
     ui_terminal_open_command(0, "~/.local/bin/claude attach 1a2b3c4d", "companion-test-colour", takeover_closed_cb, NULL);

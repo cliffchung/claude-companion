@@ -123,6 +123,32 @@ class LintTests(unittest.TestCase):
                           "ui/a.c": "const char *s = tr(STR_USED);\n"})
         self.assertEqual(ui_lint.lint(main), [os.path.join("i18n", "i18n.h") + ":3: unused-str"])
 
+    def test_literal_rule_covers_more_calls_macros_and_casts(self):
+        main = self.tree({"ui/a.c": "#define HELLO \"Hello there\"\n"
+                                    "void f(lv_obj_t *p) {\n"
+                                    "    ui_header(p, \"Sessions\", NULL);\n"
+                                    "    ui_text(p, \"Hi\", UI_TONE_FG, false);\n"
+                                    "    ui_alert(\"Oops\", NULL);\n"
+                                    "    ui_empty_state(p, \"Nothing here\", NULL, NULL, NULL);\n"
+                                    "    lv_textarea_set_placeholder_text(p, \"Type\");\n"
+                                    "    ui_toast((const char *)\"Text\");\n"
+                                    "    ui_toast(HELLO);\n"
+                                    "    ui_toast(HELLO_ID);\n"
+                                    "}\n"})
+        problems = ui_lint.lint(main)
+        self.assertEqual(self.rules(problems), ["literal-outside-tr"] * 7)
+        self.assertEqual([int(p.split(":")[1]) for p in problems], [3, 4, 5, 6, 7, 8, 9])
+
+    def test_macro_from_a_header_flagged(self):
+        main = self.tree({"ui/a.h": "#define GREETING \"Welcome\"\n#define KEY \"%s\"\n",
+                          "ui/b.c": "void f(void) {\n    ui_toast(GREETING);\n    ui_toast(KEY);\n}\n"})
+        self.assertEqual(ui_lint.lint(main), [os.path.join("ui", "b.c") + ":2: literal-outside-tr"])
+
+    def test_mac_plural_and_possessive_flagged(self):
+        main = self.tree({"ui/a.c": "const char *a = \"Your Macs\";\nconst char *b = \"the Mac's key\";\n"
+                                    "const char *c = \"MacBook Pro\";\n"})
+        self.assertEqual(self.rules(ui_lint.lint(main)), ["mac-word", "mac-word"])
+
 
 if __name__ == "__main__":
     unittest.main()

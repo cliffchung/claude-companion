@@ -500,14 +500,13 @@ static int64_t wall_ms(void)
     return t > 1700000000 ? (int64_t)t * 1000 : 0;   /* 0 until the clock is set */
 }
 
-/* "repo · age" (the age once the clock is set) */
+/* "repo · age" (the age once the clock is set); "on Host · repo · age" for an interactive session */
 static void meta_of(const cc_session_t *s, char *out, size_t cap)
 {
     char a[16] = "";
     int64_t now = wall_ms();
     if (now && s->started_ms > 0) cc_age(now, s->started_ms, a, sizeof(a));
-    if (a[0]) snprintf(out, cap, "%s \xc2\xb7 %s", s->repo, a);
-    else snprintf(out, cap, "%s", s->repo);
+    sm_meta(s, a, out, cap);   /* an interactive session's leads with "on Host" (P4C-11) */
 }
 
 static const char *draft(void) { return s_drafts ? sm_draft_get(s_drafts, s_sel_key) : ""; }
@@ -1003,6 +1002,7 @@ static void load_snapshot(void)
     if (!s_snap || !s_items) return;
     int n = cc_poll_snapshot(s_snap, SNAP_CAP);
     if (n < 0) return;
+    n = sm_hide_finished_tests(s_snap, n);   /* P4C-11: finished companion-test-* sessions aren't shown */
     n = cc_sessions_visible(s_snap, n, 4);
     if (n > MAX_ROWS) n = MAX_ROWS;
     bool changed = n != s_n;

@@ -26,6 +26,13 @@ void sm_draft_set(sm_drafts_t *ds, const char *key, const char *text);     /* ""
 void sm_drafts_prune(sm_drafts_t *ds, const cc_session_t *items, int n);   /* drop drafts whose key matches no item */
 
 const char *sm_pill_text(const cc_session_t *s);
+/* The row meta: "repo · age" (age NULL or "": "repo"); an interactive session, which runs in a terminal on the
+   Host and can't be opened from the Tab5 (P4C-11), leads with "on Host · " so a narrow row still shows it. */
+void sm_meta(const cc_session_t *s, const char *age, char *out, size_t cap);
+/* P4C-11: compacts in place, dropping the DONE and ENDED sessions named "companion-test-*" (the agents' test
+   sessions); every other session, live test sessions included, stays in order. Returns the new count. */
+#define SM_TEST_PREFIX "companion-test-"
+int sm_hide_finished_tests(cc_session_t *s, int n);
 
 typedef enum { SM_B_NO_WIFI, SM_B_NO_HOST, SM_B_UNREACHABLE, SM_B_LOW_BATTERY, SM_B_RECONNECTING,
                SM_B_LOADING, SM_B_STALE, SM_B_EMPTY, SM_B_LIVE } sm_banner_t;
