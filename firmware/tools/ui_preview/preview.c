@@ -13,6 +13,8 @@
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "servers/server_store.h"
+#include "sys/power.h"
+#include "sys/checkin.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,11 +35,14 @@ bool sd_is_mounted(void) { return true; }
 const char *fs_ext(const char *p) { (void)p; return ""; }
 lv_image_dsc_t *image_loader_jpeg(const char *p,int w,int h,char *s,int cap) { return NULL; }
 void image_loader_free(lv_image_dsc_t *p) {}
-int sysinfo_battery_percent(void) { return 98; }
+static int env_int(const char *n, int d) { const char *e = getenv(n); return e && *e ? atoi(e) : d; }
+int sysinfo_battery_percent(void) { return env_int("PREVIEW_BAT", 52); }
+int sysinfo_rssi_cached(void) { return env_int("PREVIEW_RSSI", -60); }
 const char *sysinfo_app_version(void) { return "preview"; }
 void sysinfo_apply_timezone(void) {}
 void sysinfo_start_sntp(void) {}
-bool wifi_mgr_is_connected(void) { return true; }
+static bool s_rc_preview;   /* dashboard-reconnecting: woken from Radio off, Wi-Fi and the link not back yet */
+bool wifi_mgr_is_connected(void) { return !s_rc_preview; }
 bool wifi_mgr_is_connecting(void) { return false; }
 void wifi_mgr_get_ip4(char *b, size_t n) { snprintf(b,n,"192.168.1.25"); }
 void wifi_mgr_disconnect(void) {}
@@ -48,7 +53,23 @@ void keyboard_lvgl_focus(void *p) { focused_textarea = p; }
 void *keyboard_lvgl_focused(void) { return focused_textarea; }
 void keyboard_set_layout(uint8_t layout) { (void)layout; }
 void keyboard_set_led(uint8_t a,uint8_t b,uint8_t c,uint8_t d,uint8_t e) {}
-ts_state_t tailscale_state(void) { return TS_CONNECTED; }
+void power_kbd_light_refresh(void) {}
+/* power owner: the preview is always Active */
+bool power_setting_set(const char *name, int n) { (void)name; (void)n; return true; }
+bool hibernate_supported(void) { return false; }
+power_boot_t hibernate_boot_kind(void) { return POWER_BOOT_NORMAL; }
+void power_hold(power_hold_t h, bool on) { (void)h; (void)on; }
+uint32_t power_wake_seq(void) { return s_rc_preview ? 1 : 0; }
+uint32_t power_wake_gen(void) { return s_rc_preview ? 1 : 0; }   /* no result newer than the wake: stale */
+power_state_t power_woke_from(void) { return s_rc_preview ? PS_RADIO_OFF : PS_ACTIVE; }
+bool checkin_woke_parked(void) { return s_rc_preview; }
+power_wake_t power_wake_reason(void) { return PW_CONSOLE; }
+bool power_shield_up(void) { return false; }
+ts_state_t tailscale_state(void)
+{
+    int m = env_int("PREVIEW_TS", 2);
+    return m == 0 ? TS_OFF : m == 1 ? TS_CONNECTING : TS_CONNECTED;
+}
 bool tailscale_start(void) { return true; }
 void tailscale_stop(void) {}
 void audio_player_toggle(void) {}
@@ -61,9 +82,15 @@ void server_store_reload(void) {}
 int server_store_count(void) { return 3; }
 static server_t s_preview_server = { .name = "Mac", .host = "mac", .port = 22, .user = "me", .use_key = true };
 const server_t *server_store_get(int i) { return i >= 0 && i < 3 ? &s_preview_server : NULL; }
-power_info_t sysinfo_power(void) { power_info_t p = { .percent = 98, .src = PWR_USB_CHARGING, .valid = true }; return p; }
-void keyboard_set_sink(const key_sink_t *sink) { (void)sink; }
-void keyboard_clear_sink(void *user) { (void)user; }
+power_info_t sysinfo_power(void)
+{
+    power_info_t p = { .percent = env_int("PREVIEW_BAT", 52), .valid = true };
+    p.src = env_int("PREVIEW_CHG", 0) ? PWR_USB_CHARGING : PWR_BATTERY;
+    return p;
+}
+static key_sink_t preview_sink; static bool preview_have_sink;   /* dashboard-keys drives dash_key */
+void keyboard_set_sink(const key_sink_t *sink) { if (sink) { preview_sink = *sink; preview_have_sink = true; } else preview_have_sink = false; }
+void keyboard_clear_sink(void *user) { if (preview_have_sink && preview_sink.user == user) preview_have_sink = false; }
 void ui_terminal_open_command(int i, const char *c, void (*cb)(void *), void *ctx) { (void)i; (void)c; if (cb) cb(ctx); }
 /* companion link: the dashboard reads the synthetic agents fixture */
 static cc_session_t s_preview_sessions[16];
@@ -89,7 +116,14 @@ int cc_poll_snapshot(cc_session_t *out, int cap) {
 }
 void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { (void)cb; (void)ctx; }
 void cc_poll_set_rate(int s) { (void)s; }
-bool cc_link_connected(void) { return true; }
+void cc_poll_set_floor(int s) { (void)s; }
+uint32_t cc_poll_generation(void) { return 1; }
+int64_t cc_poll_last_ok_ms(void) { return 1; }
+bool cc_link_busy(void) { return false; }
+void cc_link_watch_enable(bool on) { (void)on; }
+void cc_link_watch_test_fallback(void) {}
+const char *cc_watch_status_text(char *b, size_t cap) { snprintf(b, cap, "watch: on I=3s, last block 4s ago, heartbeat 12s ago"); return b; }
+bool cc_link_connected(void) { return !s_rc_preview; }
 const char *cc_link_status_text(char *b, size_t cap) { snprintf(b, cap, "connected Mac"); return b; }
 cc_link_fail_t cc_link_failure(void) { return CC_LINK_FAIL_NONE; }
 int cc_poll_failures(bool *too_big) { if (too_big) *too_big = false; return 0; }
@@ -107,6 +141,16 @@ esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, cha
 }
 esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; if (cap) err[0] = 0; return ESP_OK; }
 esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; if (cap) err[0] = 0; return ESP_OK; }
+static int s_forget_calls;
+#define PREVIEW_FP "SHA256:Xq3v9yPreviewFingerprintOnly0123456789abcd"
+esp_err_t cc_link_forget_host_key(char *fp, size_t cap, int ms) {
+    (void)ms; s_forget_calls++;
+    snprintf(fp, cap, PREVIEW_FP);
+    return ESP_OK;
+}
+uint32_t cc_link_forget_done(char *fp, size_t cap) { snprintf(fp, cap, PREVIEW_FP); return (uint32_t)s_forget_calls; }
+bool cc_link_pinned_fingerprint(char *fp, size_t cap) { snprintf(fp, cap, "SHA256:OldPreviewKeyOnly9876543210zyxwvutsrqponm"); return true; }
+esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
 SCREEN(ui_servers_create) SCREEN(ui_files_create) SCREEN(ui_music_create)
 SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create)
@@ -139,6 +183,41 @@ static int snapshot(lv_obj_t *s, const char *path) {
         fputc(p[2],f); fputc(p[1],f); fputc(p[0],f);
     }
     fclose(f); lv_draw_buf_destroy(snap); return 0;
+}
+/* The screen with lv_layer_top (modals, toasts) blended over it. */
+static int snapshot_top(lv_obj_t *s, const char *path) {
+    int w=lv_obj_get_width(s), h=lv_obj_get_height(s);
+    lv_draw_buf_t *base=lv_snapshot_take(s,LV_COLOR_FORMAT_RGB888);
+    lv_draw_buf_t *top=lv_snapshot_take(lv_layer_top(),LV_COLOR_FORMAT_ARGB8888);
+    if(!base||!top) return 1;
+    FILE *f=fopen(path,"wb");
+    if (!f) return 1;
+    fprintf(f,"P6\n%d %d\n255\n",w,h);
+    for(int y=0;y<h;y++) for(int x=0;x<w;x++) {
+        uint8_t *p=base->data+y*base->header.stride+x*3;
+        uint8_t *q=top->data+y*top->header.stride+x*4;
+        unsigned a=q[3];
+        for (int c=2;c>=0;c--) fputc((q[c]*a+p[c]*(255-a))/255,f);
+    }
+    fclose(f); lv_draw_buf_destroy(base); lv_draw_buf_destroy(top); return 0;
+}
+/* The label under o whose text is t (or starts with t when prefix is set). */
+static lv_obj_t *find_label(lv_obj_t *o, const char *t, bool prefix) {
+    if (lv_obj_check_type(o,&lv_label_class)) {
+        const char *x=lv_label_get_text(o);
+        if (prefix ? !strncmp(x,t,strlen(t)) : !strcmp(x,t)) return o;
+    }
+    for (uint32_t i=0;i<lv_obj_get_child_count(o);i++) {
+        lv_obj_t *r=find_label(lv_obj_get_child(o,i),t,prefix);
+        if (r) return r;
+    }
+    return NULL;
+}
+/* The first clickable object at or above that label. */
+static lv_obj_t *find_clickable(lv_obj_t *o, const char *t) {
+    o=find_label(o,t,false);
+    while (o && !lv_obj_has_flag(o,LV_OBJ_FLAG_CLICKABLE)) o=lv_obj_get_parent(o);
+    return o;
 }
 static uint64_t flushed_pixels;
 static unsigned flushes;
@@ -441,6 +520,7 @@ int main(int argc,char **argv) {
     lv_display_set_flush_cb(d,flush);
     g_settings.brightness=58; g_settings.status_items=STATUS_DEFAULT;
     g_settings.term_line_height=26;
+    g_settings.kbd_dark_light=5;   /* PT24 default: "Low" */
     /* Exercise splash before font runtime copies or the application UI exist. */
     if (argc>1 && !strcmp(argv[1],"boot")) {
         ui_theme_set_preset(argc>2?atoi(argv[2]):0);
@@ -463,36 +543,16 @@ int main(int argc,char **argv) {
         return snapshot(lv_screen_active(),"screen.ppm");
     }
     if (argc>1 && !strcmp(argv[1],"font-policy")) { font_policy_check(d); return 0; }
-    if (argc>1 && !strcmp(argv[1],"standby")) {
-        lv_indev_t *pointer=lv_indev_create(); lv_indev_set_type(pointer,LV_INDEV_TYPE_POINTER);
-        lv_indev_set_read_cb(pointer,pointer_read); ui_init();
-        ui_nav_home(); ui_screensaver_start(); step(d,400);
-        assert(ui_screensaver_active());
-        assert(snapshot(lv_screen_active(),"/tmp/clientre-standby.ppm")==0);
-        key_event_t key={.type=KEY_EV_SPECIAL,.key=SK_ENTER};
-        assert(ui_keyboard_route(&key,false)); assert(!ui_screensaver_active());
-        step(d,400);
-        ui_screensaver_start(); step(d,400);
-        lv_obj_t *saver=lv_screen_active();
-        lv_obj_t *clock_card=lv_obj_get_child(saver,2);
-        lv_obj_t *clock=lv_obj_get_child(clock_card,1);
-        lv_area_t clock_area; lv_obj_get_coords(clock,&clock_area);
-        int clock_x=(clock_area.x1+clock_area.x2)/2;
-        int clock_y=(clock_area.y1+clock_area.y2)/2;
-        pointer_move(pointer,clock_x,clock_y,true);
-        pointer_move(pointer,clock_x,clock_y,false);
-        assert(!ui_screensaver_active());
-        step(d,400);
-        assert(lv_screen_active()!=saver);
-        assert(lv_screen_active()==ui_nav_current());
-        assert(ui_nav_is_top(ui_home_create));
-        assert(snapshot(lv_screen_active(),"/tmp/clientre-standby-clock-exit.ppm")==0);
-        g_settings.ss_classic=1; ui_screensaver_start(); step(d,400);
-        assert(ui_screensaver_active());
-        lv_obj_send_event(lv_screen_active(),LV_EVENT_CLICKED,NULL);
-        assert(!ui_screensaver_active());
-        lv_indev_delete(pointer);
-        puts("Standby render, keyboard/touch wake, repeated entry and classic mode passed."); return 0;
+    if (argc>1 && !strcmp(argv[1],"sleep-notice")) {
+        /* the pre-Hibernate notice over the dashboard */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        ui_nav_home(); step(d,400);
+        ui_sleep_notice(true); step(d,400);
+        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
+        lv_obj_t *notice=lv_obj_get_child(lv_layer_top(),-1);
+        assert(notice);
+        return snapshot(notice,"/tmp/claude-sleep-notice.ppm");
     }
     if (argc>1 && !strcmp(argv[1],"cli-colors")) { terminal_palette_preview(); return 0; }
     if (argc>1 && !strcmp(argv[1],"gesture")) { gesture_check(); return 0; }
@@ -520,12 +580,88 @@ int main(int argc,char **argv) {
         /* The live dashboard against the synthetic fixture; the first card is selected. */
         i18n_set_lang(LANG_EN);
         preview_sessions_load();
+        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
         ui_nav_home(); step(d,400);
         assert(ui_nav_is_top(ui_dashboard_create));
         step(d,400);
         lv_obj_t *s=lv_screen_active();
         lv_obj_update_layout(s); lv_refr_now(d);
         return snapshot(s,"/tmp/claude-dashboard.ppm");
+    }
+    if (argc>1 && !strcmp(argv[1],"dashboard-reconnecting")) {
+        /* A key woke it from Radio off: "Reconnecting to Mac…" (muted) over the stale cards, not "No Wi-Fi". */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
+        s_rc_preview = true;
+        ui_nav_home(); step(d,400);
+        assert(ui_nav_is_top(ui_dashboard_create));
+        step(d,400);
+        lv_obj_t *s=lv_screen_active();
+        lv_obj_update_layout(s); lv_refr_now(d);
+        assert(find_label(s,"Reconnecting to Mac\xe2\x80\xa6",false));
+        assert(!find_label(s,"No Wi-Fi",true));
+        printf("dashboard-reconnecting: ok\n");
+        return snapshot(s,"/tmp/claude-dashboard-reconnecting.ppm");
+    }
+    if (argc>1 && !strcmp(argv[1],"settings-forget")) {
+        /* Settings -> Companion -> Forget Mac host key: the confirm, then the toast after OK. */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        ui_nav_home(); step(d,400);
+        ui_nav_push(ui_settings_create,NULL); step(d,400);
+        lv_obj_t *s=lv_screen_active();
+        lv_obj_t *row=find_clickable(s,"Forget Mac host key");
+        assert(row);
+        lv_obj_send_event(row,LV_EVENT_CLICKED,NULL); step(d,400);
+        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
+        assert(find_label(s,"Pinned key: SHA256:OldPreviewKey",true));   /* the row shows the pinned key */
+        assert(find_label(lv_layer_top(),"Forget Mac host key?",false));
+        assert(find_label(lv_layer_top(),"Only do this if your Mac's SSH host key changed. The Tab5 will trust the next key it sees.",false));
+        int r = snapshot_top(s,"settings-forget.ppm");
+        assert(s_forget_calls==0);   /* nothing happens before Yes */
+        lv_obj_t *ok=find_clickable(lv_layer_top(),tr(STR_OK));
+        assert(ok);
+        lv_obj_send_event(ok,LV_EVENT_CLICKED,NULL); step(d,100); step(d,600);
+        assert(s_forget_calls==1);
+        assert(find_label(lv_layer_top(),"New Mac key pinned: " PREVIEW_FP,false));   /* from the poll */
+        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
+        r |= snapshot_top(lv_screen_active(),"settings-forget-toast.ppm");
+        puts("Settings forget host key: confirm, one request after OK, toast passed.");
+        return r;
+    }
+    if (argc>1 && !strcmp(argv[1],"dashboard-keys")) {
+        /* The Ctrl+K shortcuts overlay over the dashboard, opened through the dashboard's own sink. */
+        i18n_set_lang(LANG_EN);
+        preview_sessions_load();
+        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
+        ui_nav_home(); step(d,400);
+        assert(ui_nav_is_top(ui_dashboard_create) && preview_have_sink);
+        key_event_t k = { .type = KEY_EV_CHAR, .cp = 'k', .mods = MOD_CTRL };
+        assert(preview_sink.key(&k, preview_sink.user));
+        assert(ui_dashboard_keys_overlay_shown());
+        step(d,400);
+        lv_obj_t *s=lv_screen_active();
+        lv_obj_update_layout(s); lv_refr_now(d);
+        int r = snapshot(s,"/tmp/claude-dashboard-keys.ppm");
+        /* Ctrl+Tab is not taken by buttons mode while the overlay is up; the sink closes it */
+        key_event_t ct = { .type = KEY_EV_SPECIAL, .key = SK_TAB, .mods = MOD_CTRL };
+        assert(!ui_keyboard_route(&ct, true) && !ui_keyboard_owns_input());
+        key_event_t z = { .type = KEY_EV_CHAR, .cp = 'z' };
+        assert(preview_sink.key(&z, preview_sink.user));
+        assert(!ui_dashboard_keys_overlay_shown());
+        step(d,100);
+        assert(ui_nav_is_top(ui_dashboard_create));
+        /* Ctrl+P and Ctrl+M navigate (Settings, More); Esc comes back */
+        key_event_t p = { .type = KEY_EV_CHAR, .cp = 'p', .mods = MOD_CTRL };
+        assert(preview_sink.key(&p, preview_sink.user)); step(d,400);
+        assert(ui_nav_is_top(ui_settings_create));
+        ui_nav_back(); step(d,400);
+        key_event_t m = { .type = KEY_EV_CHAR, .cp = 'm', .mods = MOD_CTRL };
+        assert(preview_have_sink && preview_sink.key(&m, preview_sink.user)); step(d,400);
+        assert(ui_nav_is_top(ui_home_create));
+        puts("Dashboard hotkeys: Ctrl+K overlay, any key closes it, Ctrl+P settings, Ctrl+M more passed.");
+        return r;
     }
     ui_screen_create_fn create= argc>1 && !strcmp(argv[1],"settings") ? ui_settings_create :
                  argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create :
@@ -540,7 +676,7 @@ int main(int argc,char **argv) {
     lv_obj_t *s = lv_screen_active();
     if (create == ui_settings_create) {
         /* Real click events, including selection preservation across rebuilds. */
-        for (unsigned i = 0; i < 7; i++) {
+        for (unsigned i = 0; i < 8; i++) {
             lv_obj_t *before = s;
             lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
             lv_obj_send_event(lv_obj_get_child(nav, i), LV_EVENT_CLICKED, NULL);
@@ -548,11 +684,11 @@ int main(int argc,char **argv) {
             s = lv_screen_active();
             assert(s == before); /* tab switch must not rebuild the screen */
             lv_obj_t *deck = lv_obj_get_child(lv_obj_get_child(s, 1), 1);
-            for (unsigned j = 0; j < 7; j++)
+            for (unsigned j = 0; j < 8; j++)
                 assert(lv_obj_has_flag(lv_obj_get_child(deck, j), LV_OBJ_FLAG_HIDDEN) == (j != i));
         }
         unsigned category = argc>5 ? (unsigned)atoi(argv[5]) : 0;
-        assert(category < 7);
+        assert(category < 8);
         lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
         lv_obj_send_event(lv_obj_get_child(nav, category), LV_EVENT_CLICKED, NULL);
         lv_tick_inc(200); lv_timer_handler();

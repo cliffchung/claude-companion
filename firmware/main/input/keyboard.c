@@ -1,16 +1,20 @@
 #include "keyboard.h"
+#include "key_log.h"
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
 #include "settings/settings.h"
 #include "ui/ui.h"
+#include "sys/power.h"
 
 static const char *TAG = "kbd";
 
@@ -40,6 +44,8 @@ static void *s_focused_ta = NULL;
 static uint8_t s_i2c_mods = 0;
 static TickType_t s_i2c_last_key = 0;
 static key_event_t s_i2c_repeat; static bool s_i2c_held = false;
+static volatile bool s_quiet;          /* Off: no 20 ms poll, wait on the INT */
+static SemaphoreHandle_t s_int_sem;    /* given by the GPIO50 NEGEDGE ISR */
 
 /* ------------------------------------------------------------- HID map */
 typedef struct { uint8_t code; char plain; char shifted; special_key_t sk; } hidmap_t;
@@ -274,9 +280,17 @@ void keyboard_dispatch(const key_event_t *ev)
     if (!ui_keyboard_route(ev, s_have_sink)) dispatch_input(ev);
 }
 
+/* With LVGL paused (Off and deeper) the drain timer is stopped: wake, and the drain swallows it. */
+static void wake_if_dark(void)
+{
+    if (power_state() >= PS_OFF) power_wake(PW_KEY);
+}
+
 bool keyboard_post(const key_event_t *ev)
 {
-    return s_q && xQueueSend(s_q, ev, pdMS_TO_TICKS(200)) == pdTRUE;
+    bool ok = s_q && xQueueSend(s_q, ev, pdMS_TO_TICKS(200)) == pdTRUE;
+    if (ok) wake_if_dark();
+    return ok;
 }
 
 /* On-screen keys already have a text destination; do not navigate the UI. */
@@ -293,6 +307,10 @@ static bool kb_read(uint8_t reg, uint8_t *buf, size_t n)
     return s_dev && i2c_master_transmit_receive(s_dev, &reg, 1, buf, n, 50) == ESP_OK;
 }
 
+static void (*s_led_src)(uint8_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *);
+static uint8_t s_last_led[5];   /* under s_led_lock */
+static SemaphoreHandle_t s_led_lock;   /* recursive: serializes whole LED write sequences */   /* mode, bright, r, g, b of the last keyboard_set_led */
+
 static bool kb_probe(void)
 {
     if (!s_bus) return false;
@@ -308,8 +326,20 @@ static bool kb_probe(void)
     kb_write(REG_INT_CFG, s_layout ? 0x01 : 0x02);
     s_mode_dirty = false;
     kb_write(REG_EVENT_NUM, 0);     /* clear FIFO */
-    keyboard_set_led(g_settings.kbd_led_mode, g_settings.kbd_led_bright,
-                     g_settings.kbd_led_rgb[0], g_settings.kbd_led_rgb[1], g_settings.kbd_led_rgb[2]);
+    static bool s_boot_read;   /* Task 6: what the A164 kept through a deep sleep, before we write anything */
+    if (!s_boot_read) {
+        s_boot_read = true;
+        uint8_t lb = 0, lm = 0, rgb[4] = { 0 };
+        if (kb_read(REG_BRIGHTNESS, &lb, 1) && kb_read(REG_RGB_MODE, &lm, 1) && kb_read(REG_RGB_BASE, rgb, 4))
+            ESP_LOGI(TAG, "light at boot: mode=%u bright=%u rgb=%02x%02x%02x", lm, lb, rgb[2], rgb[1], rgb[0]);
+    }
+    keyboard_led_lock();   /* the colour we ask for is the colour that lands */
+    uint8_t m, br, r, g, b;
+    if (s_led_src) s_led_src(&m, &br, &r, &g, &b);
+    else { m = g_settings.kbd_led_mode; br = g_settings.kbd_led_bright; r = g_settings.kbd_led_rgb[0];
+           g = g_settings.kbd_led_rgb[1]; b = g_settings.kbd_led_rgb[2]; }
+    keyboard_write_led(m, br, r, g, b);
+    keyboard_led_unlock();
     return true;
 }
 
@@ -325,7 +355,7 @@ static void kb_task(void *arg)
                 last_probe = now;
                 if (kb_probe()) { s_present = true; fail = 0; ESP_LOGI(TAG, "Tab5 keyboard detected, fw=0x%02X", s_fw); }
             }
-            vTaskDelay(pdMS_TO_TICKS(200));
+            vTaskDelay(pdMS_TO_TICKS(s_quiet ? 1000 : 200));
             continue;
         }
         if (s_mode_dirty) {
@@ -334,6 +364,8 @@ static void kb_task(void *arg)
             kb_write(REG_INT_CFG, s_layout ? 0x01 : 0x02);
             kb_write(REG_EVENT_NUM, 0);          /* the queued events are stale */
         }
+        bool quiet = s_quiet;
+        if (quiet && s_int_sem) xSemaphoreTake(s_int_sem, pdMS_TO_TICKS(1000));   /* 1 s safety poll */
         bool has_int = gpio_get_level(KB_INT) == 0;
         uint8_t cnt = 0;
         if (!kb_read(REG_EVENT_NUM, &cnt, 1)) {
@@ -342,6 +374,7 @@ static void kb_task(void *arg)
             continue;
         }
         fail = 0;
+        if (quiet && cnt > 0) power_wake(PW_KEY);
         while (cnt-- > 0) {
             const keydef_t (*layout)[14] = s_layout;   /* may change under us */
             if (layout) {
@@ -360,26 +393,94 @@ static void kb_task(void *arg)
             s_i2c_repeat = ke; s_i2c_held = true; s_i2c_last_key = xTaskGetTickCount();
             xQueueSend(s_q, &ke, 0);
         }
-        if (has_int) kb_write(REG_INT_STA, 0);
+        if (has_int || quiet) kb_write(REG_INT_STA, 0);   /* or the INT stays low and never edges again */
         /* simple auto-repeat while held */
         if (s_i2c_held && xTaskGetTickCount() - s_i2c_last_key > pdMS_TO_TICKS(500)) {
             xQueueSend(s_q, &s_i2c_repeat, 0);
             s_i2c_last_key = xTaskGetTickCount() - pdMS_TO_TICKS(440);
         }
-        vTaskDelay(pdMS_TO_TICKS(has_int ? 5 : 20));
+        if (!s_quiet) vTaskDelay(pdMS_TO_TICKS(has_int ? 5 : 20));
     }
+}
+
+static void IRAM_ATTR kb_int_isr(void *arg)
+{
+    (void)arg;
+    BaseType_t hp = pdFALSE;
+    if (s_int_sem) xSemaphoreGiveFromISR(s_int_sem, &hp);
+    if (hp) portYIELD_FROM_ISR();
+}
+
+void keyboard_set_quiet(bool quiet)
+{
+    s_quiet = quiet;
+    if (!quiet && s_int_sem) xSemaphoreGive(s_int_sem);   /* leave the wait now */
+}
+
+void keyboard_led_lock(void) { if (s_led_lock) xSemaphoreTakeRecursive(s_led_lock, portMAX_DELAY); }
+void keyboard_led_unlock(void) { if (s_led_lock) xSemaphoreGiveRecursive(s_led_lock); }
+
+/* The three writes and the record of them are one step under the LED lock. The lock is never held
+   while calling anything but I2C; callers that hold it may call the LED source (lock order: LED
+   lock, then the power and cc_link locks; nothing takes the LED lock while holding those).
+   Register map (M5Tab5-Keyboard-Internal-FW user_i2c_reg.h, Tab5_Keyboard-I2C-Protocol-EN-V1.0): 0x03 brightness
+   0..100, the A164 scaling every channel by it; 0x11 RGB mode, 0 bind (its own indicators) or 1 custom, nothing
+   else (values above 1 are ignored; no breathe or blink, PT24); 0x60..0x67 two LEDs as B, G, R, unused. */
+static bool write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b, bool raw_mode)
+{
+    if (!s_present && !s_dev) return false;
+    keyboard_led_lock();
+    s_last_led[0] = mode ? 1 : 0; s_last_led[1] = bright > 100 ? 100 : bright;
+    s_last_led[2] = r; s_last_led[3] = g; s_last_led[4] = b;
+    bool ok = kb_write(REG_BRIGHTNESS, s_last_led[1]);
+    ok = kb_write(REG_RGB_MODE, raw_mode ? mode : s_last_led[0]) && ok;
+    if (mode) {
+        uint8_t w[9] = { REG_RGB_BASE };
+        pr_a164_pack(&w[1], r, g, b);   /* PT24: B, G, R, unused per LED (was 0, R, G, B); host-tested */
+        ok = s_dev && i2c_master_transmit(s_dev, w, 9, 50) == ESP_OK && ok;
+    }
+    keyboard_led_unlock();
+    return ok;
+}
+
+bool keyboard_write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
+{
+    return write_led(mode, bright, r, g, b, false);
+}
+
+bool keyboard_write_led_raw(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
+{
+    return write_led(mode, bright, r, g, b, true);
+}
+
+bool keyboard_read_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    /* 9c M3: outputs zeroed first, and the same guard as write_led */
+    *mode = 0; *bright = 0; *r = 0; *g = 0; *b = 0;
+    if (!s_present && !s_dev) return false;   /* kb_read checks s_dev itself */
+    uint8_t rgb[4] = { 0 };
+    keyboard_led_lock();
+    bool ok = kb_read(REG_BRIGHTNESS, bright, 1) && kb_read(REG_RGB_MODE, mode, 1) && kb_read(REG_RGB_BASE, rgb, 4);
+    keyboard_led_unlock();
+    if (ok) pr_a164_unpack(rgb, r, g, b);
+    return ok;
 }
 
 void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
 {
-    if (!s_present && !s_dev) return;
-    kb_write(REG_BRIGHTNESS, bright > 100 ? 100 : bright);
-    kb_write(REG_RGB_MODE, mode ? 1 : 0);
-    if (mode) {
-        uint8_t w[9] = { REG_RGB_BASE, 0, r, g, b, 0, r, g, b };
-        if (s_dev) i2c_master_transmit(s_dev, w, 9, 50);
-    }
+    keyboard_write_led(mode, bright, r, g, b);
 }
+
+void keyboard_set_led_source(void (*get)(uint8_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *)) { s_led_src = get; }
+
+void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    keyboard_led_lock();
+    *mode = s_last_led[0]; *bright = s_last_led[1]; *r = s_last_led[2]; *g = s_last_led[3]; *b = s_last_led[4];
+    keyboard_led_unlock();
+}
+
+void keyboard_mark_absent(void) { s_present = false; s_i2c_held = false; }
 
 /* ---------------------------------------------------------- USB HID */
 static uint8_t s_usb_prev[6];
@@ -395,9 +496,26 @@ void keyboard_usb_hid_report(const uint8_t *rep, int len)
         for (int j = 0; j < 6; j++) if (s_usb_prev[j] == code) was = true;
         if (was) continue;
         key_event_t ke;
-        if (hid_to_event(mod, code, &ke)) xQueueSend(s_q, &ke, 0);
+        if (hid_to_event(mod, code, &ke) && xQueueSend(s_q, &ke, 0) == pdTRUE) wake_if_dark();
     }
     memcpy(s_usb_prev, rep + 2, 6);
+}
+
+/* ------------------------------------------------------- key log */
+static volatile bool s_key_log;             /* set on the console task, read by the drain */
+static int64_t s_key_log_since_ms;
+
+void keyboard_set_log(bool on)
+{
+    s_key_log_since_ms = esp_timer_get_time() / 1000;
+    s_key_log = on;
+}
+
+static void key_log(const key_event_t *ev, bool swallowed)
+{
+    char line[KEY_LOG_LINE_MAX];
+    key_log_format(ev, swallowed, line, sizeof(line));
+    printf("%s\n", line);
 }
 
 /* ------------------------------------------------------- LVGL bridge */
@@ -406,7 +524,14 @@ static void drain_timer_cb(lv_timer_t *t)
     (void)t;
     key_event_t ke;
     int n = 0;
+    if (s_key_log && key_log_expired(s_key_log_since_ms, esp_timer_get_time() / 1000)) {
+        s_key_log = false;
+        printf("key: log off (%d min auto-off)\n", KEY_LOG_AUTO_OFF_MS / 60000);
+    }
     while (n++ < 16 && xQueueReceive(s_q, &ke, 0) == pdTRUE) {
+        bool take = power_take_key();
+        if (s_key_log) key_log(&ke, !take);
+        if (!take) continue;   /* the waking key (and its repeats) never reach the UI */
         lv_display_trigger_activity(NULL);
         keyboard_dispatch(&ke);
     }
@@ -415,9 +540,15 @@ static void drain_timer_cb(lv_timer_t *t)
 void keyboard_init(void)
 {
     s_q = xQueueCreate(64, sizeof(key_event_t));
+    s_led_lock = xSemaphoreCreateRecursiveMutex();
     keyboard_set_layout(g_settings.kbd_layout);
-    gpio_config_t io = { .pin_bit_mask = 1ULL << KB_INT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
+    s_int_sem = xSemaphoreCreateBinary();
+    gpio_config_t io = { .pin_bit_mask = 1ULL << KB_INT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
+                         .intr_type = GPIO_INTR_NEGEDGE };
     gpio_config(&io);
+    esp_err_t ie = gpio_install_isr_service(0);
+    if (ie == ESP_OK || ie == ESP_ERR_INVALID_STATE) gpio_isr_handler_add(KB_INT, kb_int_isr, NULL);
+    else ESP_LOGW(TAG, "no GPIO ISR service: quiet mode polls every second");
     i2c_master_bus_config_t bc = {
         .i2c_port = 0, .sda_io_num = KB_SDA, .scl_io_num = KB_SCL,
         .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true,

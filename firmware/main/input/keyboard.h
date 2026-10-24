@@ -54,7 +54,30 @@ bool keyboard_post(const key_event_t *ev);        /* queue an event as if the A1
 void key_console_init(void);                      /* registers the `key` debug console command */
 void keyboard_set_layout(uint8_t layout);          /* kbd_layout_t */
 void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
+/* Who decides the light: kb_probe asks the source (not g_settings), so a keyboard plugged in
+   later picks up the current state. The source runs on the keyboard task. */
+/* Same, but true only if the keyboard took every write (false: absent or an I2C error). */
+bool keyboard_write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
+/* Debug (PT24 probe): writes the mode byte as given, unclamped. */
+bool keyboard_write_led_raw(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
+/* Reads back what the A164 holds (brightness, RGB mode, LED 1's colour); false with no keyboard. */
+bool keyboard_read_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b);
+/* Callers that choose a colour and write it hold this around both (recursive). */
+void keyboard_led_lock(void);
+void keyboard_led_unlock(void);
+void keyboard_set_led_source(void (*get)(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b));
+/* The values keyboard_set_led wrote last (zeros before the first write). */
+void keyboard_get_last_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b);
+/* Debug (`key log on|off`, Task 10): while on, the drain prints every event it takes off the
+   queue, real presses and console keys alike (key_log.c). A character typed without Ctrl, Meta
+   or Alt prints as cp='*', so the log never holds typed text. Off at boot, and off again by
+   itself 5 min after `on`. */
+void keyboard_set_log(bool on);
+void keyboard_mark_absent(void);   /* debug: the keyboard task probes again, as on a hot-plug */
 void keyboard_usb_hid_report(const uint8_t *report, int len); /* called by USB HID glue */
+/* Off: the keyboard task stops its 20 ms poll and waits on the GPIO50 INT (1 s safety poll),
+   clears REG_INT_STA after each read and wakes the power owner when it reads an event. */
+void keyboard_set_quiet(bool quiet);
 /* The default LVGL sink targets the focused text area. */
 void keyboard_lvgl_focus(void *lv_obj_textarea);   /* NULL to clear */
 void *keyboard_lvgl_focused(void);

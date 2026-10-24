@@ -169,6 +169,8 @@ static void test_summary_text(void)
     char out[64];
     int n = cc_sessions_parse(j, s, 16);
     free(j);
+    /* the fixture's blocked sessions have no pid (stopped): give them one, a stopped one is not counted */
+    for (int i = 0; i < n; i++) if (s[i].state == CC_NEEDS_YOU) s[i].live = true;
     cc_summary(s, n, out, sizeof(out));
     TEST_ASSERT_EQUAL_STRING("2 need you \xc2\xb7 1 working", out);
     cc_summary(s, 1, out, sizeof(out));
@@ -177,6 +179,26 @@ static void test_summary_text(void)
     TEST_ASSERT_EQUAL_STRING("1 working", out);
     cc_summary(s + 4, 1, out, sizeof(out)); /* done */
     TEST_ASSERT_EQUAL_STRING("All quiet", out);
+}
+
+static void test_summary_stopped_blocked_not_counted(void)
+{
+    cc_session_t s[3];
+    char out[64];
+    memset(s, 0, sizeof(s));
+    s[0].state = CC_NEEDS_YOU; s[0].background = true; s[0].live = false;   /* stopped */
+    s[1].state = CC_NEEDS_YOU; s[1].background = false; s[1].live = true;   /* interactive */
+    s[2].state = CC_WORKING; s[2].background = true; s[2].live = true;
+    TEST_ASSERT_FALSE(cc_session_needs_you(&s[0]));
+    TEST_ASSERT_FALSE(cc_session_needs_you(&s[1]));
+    cc_summary(s, 3, out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("1 working", out);
+    cc_summary(s, 2, out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("All quiet", out);
+    s[0].live = true;
+    TEST_ASSERT_TRUE(cc_session_needs_you(&s[0]));
+    cc_summary(s, 1, out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("1 needs you", out);
 }
 
 static void test_age_format(void)
@@ -222,6 +244,7 @@ int main(void)
     RUN_TEST(test_parse_real_capture);
     RUN_TEST(test_visible_limits_finished);
     RUN_TEST(test_summary_text);
+    RUN_TEST(test_summary_stopped_blocked_not_counted);
     RUN_TEST(test_age_format);
     RUN_TEST(test_parse_live_from_pid);
     return UNITY_END();

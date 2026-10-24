@@ -182,3 +182,9 @@ CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
 CONFIG_ML_MAX_PEERS=16
 CONFIG_ML_H2_BUFFER_SIZE_KB=256
 CONFIG_ML_JSON_BUFFER_SIZE_KB=256
+
+# ---- Power ----
+# Brownout detector at 2.6 V, the P4's highest threshold and its default, now explicit so a battery sag resets
+# cleanly (counted as "brownout" by `power resets`) instead of corrupting flash writes.
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y

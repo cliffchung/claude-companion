@@ -11,6 +11,7 @@
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
 #include "input/keyboard.h"
+#include "sys/power.h"
 #include "src/misc/lv_event_private.h" /* LVGL 9.6 has no public event-filter accessor. */
 #include <time.h>
 
@@ -363,14 +364,57 @@ lv_obj_t *ui_list_item(lv_obj_t *parent, const char *icon, const char *title, co
 
 /* ------------------------------------------------------------- toast */
 static lv_obj_t *s_toast = NULL;
+static lv_timer_t *s_toast_timer = NULL;   /* one timer: an older toast's must not cut a newer one short */
 static void toast_del_cb(lv_timer_t *t)
 {
     if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
+    if (s_toast_timer == t) s_toast_timer = NULL;
     lv_timer_delete(t);
 }
+/* ---------------------------------------------------- sleep notice */
+static lv_obj_t *s_sleep_notice;
+
+static void sleep_notice_deleted(lv_event_t *e)
+{
+    if (lv_event_get_target_obj(e) == s_sleep_notice) s_sleep_notice = NULL;
+}
+
+void ui_sleep_notice(bool show)
+{
+    if (!show) {
+        if (s_sleep_notice) lv_obj_delete(s_sleep_notice);
+        s_sleep_notice = NULL;
+        return;
+    }
+    if (s_sleep_notice) return;
+    lv_obj_t *o = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(o, lv_color_hex(0x0e1116), 0);   /* spec D9 bg / fg */
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_add_flag(o, UI_KEYBOARD_SKIP);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *l = lv_label_create(o);
+    lv_label_set_text(l, "Sleeping to save battery. Press the side button to wake.");
+    lv_obj_set_style_text_color(l, lv_color_hex(0xe9e7e1), 0);
+    lv_obj_set_style_text_font(l, FONT_BODY, 0);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(l, LV_PCT(80));
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_center(l);
+    lv_obj_add_event_cb(o, sleep_notice_deleted, LV_EVENT_DELETE, NULL);
+    s_sleep_notice = o;
+}
+
 void ui_toast(const char *text)
 {
-    ESP_LOGI(TAG, "toast: %s", text);   /* screenshots don't include the top layer */
+    ui_toast_ms(text, 2200);
+}
+
+void ui_toast_ms(const char *text, uint32_t ms)
+{
+    ESP_LOGI(TAG, "toast: %s", text);
+    if (s_toast_timer) { lv_timer_delete(s_toast_timer); s_toast_timer = NULL; }
     if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
     lv_obj_t *layer = lv_layer_top();
     s_toast = lv_obj_create(layer);
@@ -389,7 +433,7 @@ void ui_toast(const char *text)
     lv_obj_set_style_text_color(l, UI_TEXT, 0);
     lv_obj_set_style_text_font(l, FONT_BODY, 0);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -40);
-    lv_timer_create(toast_del_cb, 2200, NULL);
+    s_toast_timer = lv_timer_create(toast_del_cb, ms, NULL);
 }
 void ui_toastf(const char *fmt, ...)
 {
@@ -657,12 +701,10 @@ static void keyboard_walk(lv_obj_t *obj, keyboard_walk_t *walk)
 bool ui_keyboard_route(const key_event_t *ev, bool terminal)
 {
     lv_display_trigger_activity(NULL);
-    if (ui_screensaver_active()) {
-        lv_obj_send_event(lv_screen_active(), LV_EVENT_CLICKED, NULL);
-        return true;
-    }
     lv_obj_t *modal = keyboard_modal();
     if (!terminal) s_keyboard_terminal_ui = false;
+    /* The dashboard's Ctrl+K overlay: every key, Ctrl+Tab included, goes to its sink, which closes it. */
+    if (terminal && !modal && ui_dashboard_keys_overlay_shown()) { s_keyboard_terminal_ui = false; return false; }
     if (terminal && !modal && ev->type == KEY_EV_SPECIAL && ev->key == SK_TAB && (ev->mods & MOD_CTRL)) {
         s_keyboard_terminal_ui = !s_keyboard_terminal_ui;
         keyboard_focus_set(NULL);
@@ -785,7 +827,7 @@ static void indev_gesture_cb(lv_event_t *e)
 {
     (void)e;
     lv_indev_t *in = lv_indev_active();
-    if (!in || s_modal_count || ui_screensaver_active()) return;
+    if (!in || s_modal_count || power_shield_up()) return;   /* a swipe that wakes the screen does nothing else */
     /* A slider drag belongs to the control, never to screen navigation.
      * The indev callback bypasses LV_OBJ_FLAG_GESTURE_BUBBLE. */
     for (lv_obj_t *obj = lv_indev_get_active_obj(); obj; obj = lv_obj_get_parent(obj))

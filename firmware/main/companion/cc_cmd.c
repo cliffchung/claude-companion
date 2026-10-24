@@ -104,6 +104,44 @@ bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap)
     return put(out, cap, &n, "%s attach %s", claude, id);
 }
 
+/* Fixed loop text (ruling P28). A background reader takes the keepalives: `read -t T` that
+   times out means no byte for T seconds (quiet); one that returns early is EOF (bash 3.2's
+   `read -t` returns 1 on both). It then prints BYE in the background and, half a second later,
+   kills its own process group (`kill -- -$$`: under sshd's pty session $$ leads it). If the
+   shell leads no group (run outside sshd), that fails and only the loop's shell is killed
+   (`kill $$`), never the caller's group; `exit` ends the reader. So the
+   loop exits even while a write is blocked because the Tab5 vanished and sshd stopped draining
+   the pty. The main loop runs `agents` every I s (`</dev/null` keeps claude from eating
+   keepalives), and `stty -echo` stops the pty echoing them back. No ' may appear inside: the
+   whole loop is one single-quoted sh -c argument. */
+static const char WATCH_FMT[] =
+    "exec /bin/sh -c 'stty -echo 2>/dev/null; C=%s; I=%d; H=%d; T=%d; L=%d; echo \"@@CC-WATCH 1\"; "
+    "b() { echo \"@@CC-BYE $1\" & sleep 0.5; kill -- -$$ 2>/dev/null || kill $$; exit; }; "
+    "{ while :; do j=$SECONDS; if read -r -t \"$T\" x; then :; "
+    "elif [ $((SECONDS-j)) -lt \"$T\" ]; then b eof; else b quiet; fi; done; } <&0 & "
+    "p=; s=0; while [ \"$SECONDS\" -lt \"$L\" ]; do "
+    "o=$(\"$C\" agents --json --all </dev/null 2>&1); r=$?; "
+    "if [ \"$o\" != \"$p\" ]; then echo \"@@CC-BEGIN $r\"; printf \"%%s\\n\" \"$o\"; echo \"@@CC-END\"; p=$o; s=$SECONDS; "
+    "elif [ $((SECONDS-s)) -ge \"$H\" ]; then echo \"@@CC-HB $SECONDS\"; s=$SECONDS; fi; "
+    "sleep \"$I\"; done; b life'";
+
+static bool in_range(int v, int lo, int hi)
+{
+    return v >= lo && v <= hi;
+}
+
+bool cc_cmd_watch(const char *claude, const cc_watch_params_t *p, char *out, size_t cap)
+{
+    if (!out || !cap) return false;
+    out[0] = 0;
+    if (!p || !cc_path_valid(claude)) return false;
+    if (!in_range(p->interval_s, 1, 120) || !in_range(p->heartbeat_s, 1, 600) ||
+        !in_range(p->quiet_s, 2, 600) || !in_range(p->life_s, 5, 7200)) return false;
+    int r = snprintf(out, cap, WATCH_FMT, claude, p->interval_s, p->heartbeat_s, p->quiet_s, p->life_s);
+    if (r < 0 || (size_t)r >= cap) { out[0] = 0; return false; }
+    return true;
+}
+
 bool cc_cmd_reply(const char *claude, const char *sid, const char *text, char *out, size_t cap)
 {
     size_t n;

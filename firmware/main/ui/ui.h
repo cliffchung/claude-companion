@@ -64,7 +64,8 @@ lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_c
 lv_obj_t *ui_section_title(lv_obj_t *parent, const char *text);
 lv_obj_t *ui_list_item(lv_obj_t *parent, const char *icon, const char *title, const char *subtitle, lv_event_cb_t cb, void *user_data);
 
-void ui_toast(const char *text);
+void ui_toast(const char *text);                  /* ui_toast_ms(text, 2200) */
+void ui_toast_ms(const char *text, uint32_t ms);
 void ui_toastf(const char *fmt, ...);
 typedef void (*ui_confirm_cb_t)(bool yes, void *user_data);
 void ui_confirm(const char *title, const char *text, ui_confirm_cb_t cb, void *user_data);
@@ -76,7 +77,7 @@ void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_
 lv_obj_t *ui_busy(const char *text);      /* returns overlay; delete to dismiss */
 void ui_busy_close(lv_obj_t *busy);
 
-/* Status strip content used by home & screensaver. */
+/* Status strip content used by home. */
 void ui_status_text(char *buf, size_t len);
 /* Adds the WiFi/Tailscale icons, IP/battery/keyboard text and the clock to a
  * top bar, honouring g_settings.status_items. Owns its own refresh timer. */
@@ -106,10 +107,13 @@ lv_obj_t *ui_terminal_create(void *arg);         /* arg: server index */
 /* The SSH Terminal refuses the companion's Mac (no login shell there) with this toast. */
 #define TERM_COMPANION_REFUSED "Open sessions from the dashboard"
 /* Full-screen terminal running one command on a pty exec channel (never a login shell).
-   Ctrl+Q leaves without sending anything; on_close runs once when the terminal closes. */
+   Ctrl+] (or Ctrl+Q) leaves without sending anything; on_close runs once when the terminal closes. */
 void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx);
 bool ui_terminal_is_top(void);                   /* either terminal is the current screen */
 lv_obj_t *ui_dashboard_create(void *arg);        /* home: the Mac's Claude sessions */
+/* The dashboard's Ctrl+K shortcuts overlay (any key or a touch closes it). For the preview. */
+void ui_dashboard_keys_overlay(bool show);
+bool ui_dashboard_keys_overlay_shown(void);     /* up on the current dashboard */
 lv_obj_t *ui_files_create(void *arg);            /* arg: const char *path or NULL */
 lv_obj_t *ui_image_create(void *arg);            /* arg: const char *path */
 lv_obj_t *ui_text_create(void *arg);
@@ -124,10 +128,10 @@ lv_obj_t *ui_devinfo_create(void *arg);
 lv_obj_t *ui_usb_create(void *arg);
 lv_obj_t *ui_backup_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);
-lv_obj_t *ui_screensaver_settings_create(void *arg);
-void ui_screensaver_start(void);
-bool ui_screensaver_active(void);
 void ui_music_bar_update(void);   /* background playback bar */
+/* The pre-Hibernate notice: a full-screen bg object on lv_layer_top with the centred fg text
+   "Sleeping to save battery. Press the side button to wake." (power lights the panel first). */
+void ui_sleep_notice(bool show);
 
 #ifdef __cplusplus
 }

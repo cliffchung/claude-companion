@@ -54,21 +54,21 @@ Decisions made while executing `docs/superpowers/plans/2026-10-22-session-contro
 - Task 5: minor (deferred): blob check is char-class only, locale-dependent; HOME empty → /.ssh; test uses hard-coded scratch path and weak reject assertions
 - Task 4b: minor (deferred): device_key_get explicit_bzero(buf,len) after INVALID_LENGTH could use an updated len > allocation (needs concurrent write)
 - Task 6: minor (deferred): subscriber callback calling cc_link_paste re-enters refresh() and clobbers s_parse — document "exec only from callbacks"
-- Task 6: minor (deferred): host-key pin keyed on resolved IP vs terminal's p.host; NVS read error treated as UNKNOWN → re-pin
+- Task 6: minor (deferred): host-key pin keyed on resolved IP vs terminal's p.host; NVS read error treated as UNKNOWN → re-pin — the first half was a misreading: the terminal's `ssh_client` resolves MagicDNS before its check too, so both pin the same address (Plan 2 P76); the forget action clears both forms. The NVS read error half is done in Plan 2 Task 9 fix round 1 (P80): a read error is `KH_PIN_ERROR`, which fails the connect and never re-pins.
 - Task 6: minor (deferred): do_poll trivial wrapper; cc_console_init declared in cc_link.h; UTF-8 C1 controls pass cc_paste_build
 - Task 6: minor (deferred): logs tail can start inside a CSI sequence → stray params survive strip (cosmetic)
 - Task 6: minor (deferred, final-review triage): gate checks only the last `❯` line; a ❯-less dialog drawn after an empty input box, a selected ❯ followed by blanks, or a trailing bare ❯ would pass — harden by refusing when the tail after that line has options or an esc hint, or when ❯ ends the buffer
 - Task 6: minor (deferred): every refusal says "needs approval"; use "session isn't at its input prompt" for non-dialog refusals
-- Task 6: minor (deferred): no real permission-dialog capture exists; the positive case is synthetic
+- Task 6: minor (deferred): no real permission-dialog capture exists; the positive case is synthetic — done in Plan 2 Task 9 (`screen_permission_dialog.bin`, `test_screen_real_permission_dialog`)
 - Task 7: "No Wi-Fi" red line may flash at boot; the empty-command terminal is blank for one frame; the stale open-check drop path is verified by code review only.
 
 ## Follow-ups for Plan 2 and later
 
-- On-device "forget the Mac host key" action (confirmed); nothing can clear a changed key today.
-- Capture a real permission dialog for the R19 gate tests (the positive sample is synthetic).
-- cc_link_failure() reads state without the lock; ssh_new() failure keeps an old failure reason.
+- On-device "forget the Mac host key" action (confirmed); nothing can clear a changed key today. — done in Plan 2 Task 9: Settings → Companion → Forget Mac host key, console `companion hostkey forget` (P76, P77).
+- Capture a real permission dialog for the R19 gate tests (the positive sample is synthetic). — done in Plan 2 Task 9: a real 2.1.309 Bash dialog; the existing gate and matcher pass on it unchanged (P78).
+- cc_link_failure() reads state without the lock; ssh_new() failure keeps an old failure reason. — done in Plan 2 Task 9: both read under the lock, and `connect_once` clears the reason when `ssh_new()` fails.
 - MicroLink peer table is read lock-free across tasks; fine for a best-effort guard only.
 - Check reconnect lag after Mac sleep/wake within the keypair lifetime (stale peer-up shortcut).
 - Two brownout resets seen on USB power during Task 7.
 - Split ui_dashboard.c (R22).
-- Before the repo goes public (R25): scrub SSID/IP/username from notes/img screenshots and the spec Environment section; consider NVS encryption for the device key.
+- Before the repo goes public (R25): scrub SSID/IP/username from notes/img screenshots and the spec Environment section; consider NVS encryption for the device key. Also (Plan 2 Task 9 review M2, M6): put `companion hostkey corrupt` and `ssh_known_host_set_debug` behind a `CONFIG_COMPANION_DEBUG_CMDS` Kconfig (default y for development, n for release images); scrub the `Claude Max` plan label and the `~/workspace/claude-companion-plan2` path from `firmware/test/host/fixtures/screen_permission_dialog.bin` (keep the dialog bytes the test asserts on).

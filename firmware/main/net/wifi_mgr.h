@@ -36,6 +36,26 @@ char *wifi_mgr_export_json(void);           /* caller frees */
 bool wifi_mgr_import_json(const char *json);
 const char *wifi_mgr_last_error(void);
 
+/* ---- Plan 2 Task 8: background reconnect, the parked radio, modem power save ----
+ * A drop that the user didn't ask for is retried by the `wifi_rc` task after pr_backoff_s(attempt)
+ * seconds (1, 2, 4, 8, 16, then 30 s for ever) until an IP, a park or a user disconnect. */
+/* Parks the radio for Radio off: esp_wifi_stop() (an RPC to the C6). If the stop fails, or an earlier
+   unpark's esp_wifi_start() failed, it parks with esp_wifi_disconnect() + WIFI_PS_MAX_MODEM instead
+   and logs `park mode: disconnect` (sticky until reboot). While parked a drop never reconnects and
+   STA_START never auto-connects. True when the radio is parked by either method. Blocks (RPC). */
+bool wifi_mgr_park(void);
+/* Clears parked and brings the radio back: esp_wifi_start() (its STA_START joins the last network),
+   or esp_wifi_connect() in disconnect mode. Blocks (RPC). */
+void wifi_mgr_unpark(void);
+bool wifi_mgr_parked(void);
+const char *wifi_mgr_park_mode(void);       /* "stop" or "disconnect" (the mode the next park uses) */
+/* WIFI_PS_MAX_MODEM (max) or WIFI_PS_MIN_MODEM; applied on the wifi_rc task, so any task may call it. */
+void wifi_mgr_set_ps_max(bool max);
+/* Debug (`wifi test drop`): esp_wifi_disconnect() without the user flag, as a real drop. */
+void wifi_mgr_test_drop(void);
+/* "reconnect: idle" | "reconnect: attempt <n>, next in <s> s" | "parked (<mode>)", for the console */
+void wifi_mgr_reconnect_text(char *buf, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

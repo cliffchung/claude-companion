@@ -2,6 +2,7 @@
 #include "sysinfo.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include <sys/time.h>
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -9,10 +10,13 @@
 #include "esp_app_desc.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/i2c_master.h"
 #include "bsp/m5stack_tab5.h"
 #include "settings/settings.h"
 #include "i18n/i18n.h"
+#include "net/wifi_mgr.h"
 
 static const char *TAG = "sysinfo";
 #define INA226_ADDR 0x41
@@ -21,6 +25,11 @@ static const char *TAG = "sysinfo";
 static i2c_master_dev_handle_t s_ina = NULL, s_rtc = NULL;
 static power_info_t s_pwr;
 static bool s_charge_stat_valid = false;
+static int s_last_pin = -1;
+static vitals_batt_t s_batt;
+static int64_t s_batt_us;
+static vitals_src_t s_src;
+
 
 static bool i2c_wr_rd(i2c_master_dev_handle_t dev, const uint8_t *w, size_t wl, uint8_t *r, size_t rl)
 {
@@ -37,15 +46,17 @@ static bool ina_read16(uint8_t reg, uint16_t *v)
     return true;
 }
 
+static void ina_config(uint16_t cfg);
+
 void sysinfo_init(void)
 {
     i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
     if (!bus) { ESP_LOGW(TAG, "no I2C bus"); return; }
     i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = INA226_ADDR, .scl_speed_hz = 400000 };
     if (i2c_master_probe(bus, INA226_ADDR, 50) == ESP_OK && i2c_master_bus_add_device(bus, &cfg, &s_ina) == ESP_OK) {
-        /* config: avg 16, 1.1ms conversions, continuous shunt+bus */
-        uint8_t w[3] = { 0x00, 0x45, 0x27 };
-        i2c_wr_rd(s_ina, w, 3, NULL, 0);
+        /* config: avg 16, 1.1ms conversions, continuous shunt+bus (also undoes a probe's slow mode and a
+           Hibernate's power-down) */
+        ina_config(0x4527);
         /* calibration for 5mR shunt: CAL = 0.00512 / (LSB * R); LSB = 1mA -> 1024 */
         uint8_t c[3] = { 0x05, 0x04, 0x00 };
         i2c_wr_rd(s_ina, c, 3, NULL, 0);
@@ -65,43 +76,119 @@ void sysinfo_init(void)
 }
 
 bool sysinfo_ina226_present(void) { return s_ina != NULL; }
+
+static void ina_config(uint16_t cfg)
+{
+    uint8_t w[3] = { 0x00, (uint8_t)(cfg >> 8), (uint8_t)cfg };
+    if (!i2c_wr_rd(s_ina, w, 3, NULL, 0)) ESP_LOGW(TAG, "INA226 config 0x%04x failed", cfg);
+}
+
+void sysinfo_ina226_slow(bool slow) { ina_config(slow ? 0x4E3F : 0x4527); }
+void sysinfo_ina226_power_down(void) { ina_config(0x4520); }
+
+bool sysinfo_ina226_raw(uint16_t *config, uint16_t *bus, int16_t *shunt)
+{
+    i2c_master_bus_handle_t b = bsp_i2c_get_handle();
+    if (!b || i2c_master_probe(b, INA226_ADDR, 50) != ESP_OK) return false;
+    i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = INA226_ADDR, .scl_speed_hz = 400000 };
+    i2c_master_dev_handle_t d = NULL;
+    if (i2c_master_bus_add_device(b, &cfg, &d) != ESP_OK) return false;
+    uint8_t r[2], reg;
+    bool ok = true;
+    reg = 0x00; ok = ok && i2c_wr_rd(d, &reg, 1, r, 2); *config = (uint16_t)(r[0] << 8 | r[1]);
+    reg = 0x02; ok = ok && i2c_wr_rd(d, &reg, 1, r, 2); *bus = (uint16_t)(r[0] << 8 | r[1]);
+    reg = 0x01; ok = ok && i2c_wr_rd(d, &reg, 1, r, 2); *shunt = (int16_t)(r[0] << 8 | r[1]);
+    i2c_master_bus_rm_device(d);
+    return ok;
+}
+
+bool sysinfo_ina226_oneshot(int *mv, int *ma)
+{
+    i2c_master_bus_handle_t b = bsp_i2c_get_handle();
+    if (!b) return false;
+    i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = INA226_ADDR, .scl_speed_hz = 400000 };
+    i2c_master_dev_handle_t d = NULL;
+    if (i2c_master_bus_add_device(b, &cfg, &d) != ESP_OK) return false;
+    /* AVG 4 (001), VBUSCT and VSHCT 1.1 ms (100), mode 011: shunt and bus, triggered */
+    const uint8_t trig[3] = { 0x00, 0x43, 0x23 };
+    bool ok = i2c_wr_rd(d, trig, 3, NULL, 0);
+    uint8_t r[2], reg;
+    bool ready = false;
+    for (int i = 0; ok && i < 10 && !ready; i++) {   /* CVRF (Mask/Enable bit 3): up to 20 ms */
+        vTaskDelay(pdMS_TO_TICKS(2));
+        reg = 0x06;
+        ready = i2c_wr_rd(d, &reg, 1, r, 2) && (r[1] & 0x08);
+    }
+    int16_t shunt = 0;
+    uint16_t bus = 0;
+    if (ready) {
+        reg = 0x01; ok = i2c_wr_rd(d, &reg, 1, r, 2); shunt = (int16_t)(r[0] << 8 | r[1]);
+        reg = 0x02; ok = ok && i2c_wr_rd(d, &reg, 1, r, 2); bus = (uint16_t)(r[0] << 8 | r[1]);
+    }
+    const uint8_t down[3] = { 0x00, 0x45, 0x20 };   /* power-down, as hibernate left it */
+    i2c_wr_rd(d, down, 3, NULL, 0);
+    i2c_master_bus_rm_device(d);
+    if (!ok || !ready) return false;
+    *mv = (int)bus * 5 / 4;          /* 1.25 mV */
+    *ma = (int)shunt / 2;            /* 2.5 uV / 5 mR = 0.5 mA */
+    return true;
+}
+
 bool sysinfo_rtc_present(void) { return s_rtc != NULL; }
 
-static int voltage_to_percent(float v)
+int sysinfo_charge_pin(void)
 {
-    /* 2S Li-ion (NP-F550 style): 6.0V empty .. 8.4V full */
-    float pct = (v - 6.4f) / (8.35f - 6.4f) * 100.0f;
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    return (int)(pct + 0.5f);
+    esp_io_expander_handle_t ex2 = bsp_io_expander1_init();
+    uint32_t lv = 0;
+    /* CHG_STAT (the IP2326's LED output) is expander 2 pin 6 on the Tab5 schematic; pin 4, which the fork
+       read, is PWROFF_PULSE and reads 0 whatever the supply (Task 6 notes) */
+    if (!ex2 || esp_io_expander_get_level(ex2, IO_EXPANDER_PIN_NUM_6, &lv) != ESP_OK) return -1;
+    return lv ? 1 : 0;
+}
+
+int sysinfo_charge_pin_last(void) { return s_last_pin; }
+
+bool sysinfo_charging(void)
+{
+    return s_pwr.valid && vitals_charging((int)lroundf(s_pwr.current_a * 1000.0f));
 }
 
 void sysinfo_poll(void)
 {
-    if (!s_ina) { s_pwr.valid = false; s_pwr.percent = -1; s_pwr.src = PWR_UNKNOWN; return; }
+    if (!s_ina) { s_pwr.valid = false; s_pwr.percent = -1; s_pwr.src = PWR_UNKNOWN; memset(&s_src, 0, sizeof(s_src)); return; }
     uint16_t bus, cur, pwr;
     if (!ina_read16(0x02, &bus) || !ina_read16(0x04, &cur) || !ina_read16(0x03, &pwr)) { s_pwr.valid = false; return; }
     s_pwr.bus_v = bus * 1.25f / 1000.0f;
     s_pwr.current_a = (int16_t)cur * 0.001f;
     s_pwr.power_w = pwr * 0.025f;
-    s_pwr.percent = voltage_to_percent(s_pwr.bus_v);
+    int64_t now = esp_timer_get_time();
+    float dt = s_batt_us ? (now - s_batt_us) / 1e6f : 0.0f;
+    s_batt_us = now;
+    s_pwr.percent = vitals_batt_update(&s_batt, s_pwr.bus_v, s_pwr.current_a, dt);
     s_pwr.valid = true;
-    /* Charge status from IO expander 2 pin 4 (input, active low) when available. */
-    esp_io_expander_handle_t ex2 = bsp_io_expander1_init();
-    bool charging = false;
-    if (ex2) {
-        uint32_t lv = 0;
-        if (esp_io_expander_get_level(ex2, IO_EXPANDER_PIN_NUM_4, &lv) == ESP_OK) {
-            charging = (lv == 0);
-            s_charge_stat_valid = true;
-        }
-    }
-    if (s_pwr.current_a < -0.05f || charging) s_pwr.src = PWR_USB_CHARGING;
-    else if (s_pwr.current_a > 0.08f) s_pwr.src = PWR_BATTERY;
-    else s_pwr.src = s_pwr.bus_v > 8.3f ? PWR_USB_STANDBY : PWR_USB;
+    /* CHG_STAT (IO expander 2 pin 6) for diagnostics only: it reads 0 whether or not the pack charges, so the
+       source comes from the INA226 alone (PT23) */
+    int pin = sysinfo_charge_pin();
+    s_last_pin = pin;
+    if (pin >= 0) s_charge_stat_valid = true;
+    s_pwr.src = vitals_src_step(&s_src, (int)(s_pwr.bus_v * 1000.0f + 0.5f), (int)lroundf(s_pwr.current_a * 1000.0f));
 }
 
 power_info_t sysinfo_power(void) { return s_pwr; }
+int sysinfo_rssi_cached(void)
+{
+    static int s_rssi;
+    static int64_t s_at;
+    int64_t now = esp_timer_get_time();
+    if (!s_at || now - s_at >= 10 * 1000000LL) {
+        s_rssi = wifi_mgr_rssi();
+        s_at = now;
+        int64_t took = esp_timer_get_time() - now;
+        if (took > 20000) ESP_LOGW(TAG, "rssi read took %d us", (int)took);
+    }
+    return s_rssi;
+}
+
 int sysinfo_battery_percent(void) { return s_pwr.valid ? s_pwr.percent : -1; }
 
 const char *sysinfo_power_src_text(void)
@@ -150,11 +237,7 @@ bool sysinfo_rtc_write(const struct tm *in)
 
 void sysinfo_apply_timezone(void)
 {
-    /* POSIX TZ has the sign inverted: UTC+9 -> "UTC-9" */
-    int off = g_settings.utc_offset_min;
-    char tz[32];
-    snprintf(tz, sizeof(tz), "UTC%c%d:%02d", off >= 0 ? '-' : '+', abs(off) / 60, abs(off) % 60);
-    setenv("TZ", tz, 1);
+    setenv("TZ", vitals_tz_valid(g_settings.tz_rule) ? g_settings.tz_rule : TZ_DEFAULT, 1);
     tzset();
 }
 
@@ -166,6 +249,23 @@ void sysinfo_time_from_rtc(void)
     time_t t = utc_mktime(&tm);
     struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
     settimeofday(&tv, NULL);
+}
+
+bool sysinfo_rtc_epoch_raw(time_t *out)
+{
+    i2c_master_bus_handle_t b = bsp_i2c_get_handle();
+    if (!b) return false;
+    i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = RX8130_ADDR, .scl_speed_hz = 400000 };
+    i2c_master_dev_handle_t d = NULL;
+    if (i2c_master_bus_add_device(b, &cfg, &d) != ESP_OK) return false;
+    i2c_master_dev_handle_t keep = s_rtc;
+    s_rtc = d;   /* sysinfo_rtc_read through the temporary device */
+    struct tm tm;
+    bool ok = sysinfo_rtc_read(&tm);
+    s_rtc = keep;
+    i2c_master_bus_rm_device(d);
+    if (ok) *out = utc_mktime(&tm);
+    return ok;
 }
 
 static void sntp_sync_cb(struct timeval *tv)

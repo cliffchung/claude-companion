@@ -7,11 +7,13 @@
 #include "nvs.h"
 #include "esp_log.h"
 #include "companion/cc_cmd.h"
+#include "sys/vitals.h"
+#include "sys/power_rules.h"
 
 static const char *TAG = "settings";
 #define NS "app"
 #define KEY "cfg"
-#define CFG_VERSION 17
+#define CFG_VERSION 20
 
 app_settings_t g_settings;
 
@@ -20,6 +22,30 @@ typedef struct {
     uint32_t version;
     app_settings_t s;
 } cfg_blob_t;
+
+void settings_power_defaults(void)
+{
+    g_settings.pw_dim_s = 30;
+    g_settings.pw_off_s = 120;
+    g_settings.pw_sleep_on_usb = 1;
+    g_settings.pw_wake_needs_you = 1;
+    g_settings.kbd_needs_light = 1;
+    g_settings.kbd_dark_light = PR_DARK_LIGHT_DEFAULT;   /* PT24 */
+    g_settings.pw_radio_off = 0;
+    g_settings.pw_radio_off_min = 20;
+    g_settings.pw_checkin_min = 5;
+    g_settings.pw_light_sleep = 0;
+    g_settings.pw_deep_idle_min = 60;
+    g_settings.pw_hibernate_h = 2;
+    g_settings.pw_hibernate_checkin_h = 0;      /* reserved */
+    g_settings.pw_hibernate_checkin_min = 15;   /* PT16, PT18 */
+}
+
+static void plan2_defaults(void)
+{
+    strcpy(g_settings.tz_rule, TZ_DEFAULT);
+    settings_power_defaults();
+}
 
 void settings_reset_defaults(void)
 {
@@ -56,6 +82,7 @@ void settings_reset_defaults(void)
     strcpy(g_settings.ts_device_name, "claude-companion");
     g_settings.companion_server[0] = 0;
     strcpy(g_settings.claude_path, "~/.local/bin/claude");
+    plan2_defaults();
 }
 
 void settings_init(void)
@@ -89,9 +116,23 @@ void settings_init(void)
             if (old_version <= 14) g_settings.ss_classic = 0;
             if (old_version <= 15) g_settings.kbd_layout = KBD_LAYOUT_STOCK;
             /* v17 added companion_server and claude_path at the end: defaults stand. */
+            /* v18 added the Plan 2 fields at the end. The old blob's tail padding may have
+               landed on them, so set them all, whatever the old UTC offset was. */
+            if (old_version <= 17) plan2_defaults();
+            /* v19 added pw_hibernate_checkin_min (PT16): an existing device gets the default */
+            if (old_version <= 18) g_settings.pw_hibernate_checkin_min = 15;
+            /* v20 (PT24) reuses kbd_off_cap's byte (a battery Off cap, default 100 = none) as kbd_dark_light:
+               the old value means something else, so an existing device gets the default */
+            g_settings.kbd_dark_light = (uint8_t)pr_dark_light_load(old_version, g_settings.kbd_dark_light);
             settings_save();
         }
         free(blob);
+    }
+    /* Amber on the keyboard means needs-you only: a saved gold or orange goes back to the default blue. */
+    if (pr_rgb_amber_like(((uint32_t)g_settings.kbd_led_rgb[0] << 16) | ((uint32_t)g_settings.kbd_led_rgb[1] << 8) |
+                          g_settings.kbd_led_rgb[2])) {
+        g_settings.kbd_led_rgb[0] = 0x00; g_settings.kbd_led_rgb[1] = 0x80; g_settings.kbd_led_rgb[2] = 0xFF;
+        settings_save();
     }
     /* Builds from the upstream fork stored its manifest URL as the default; drop it. */
     if (strstr(g_settings.ota_url, "github") && strstr(g_settings.ota_url, "Mozgi512/")) g_settings.ota_url[0] = 0;
@@ -99,6 +140,17 @@ void settings_init(void)
     if (g_settings.ss_idle_min == 0) g_settings.ss_idle_min = 5;
     g_settings.companion_server[sizeof(g_settings.companion_server) - 1] = 0;
     g_settings.claude_path[sizeof(g_settings.claude_path) - 1] = 0;
+    g_settings.tz_rule[sizeof(g_settings.tz_rule) - 1] = 0;
+    if (!vitals_tz_valid(g_settings.tz_rule)) strcpy(g_settings.tz_rule, TZ_DEFAULT);
+    vitals_clamp_dim_off(&g_settings.pw_dim_s, &g_settings.pw_off_s);
+    g_settings.pw_deep_idle_min = vitals_clamp_or_zero(g_settings.pw_deep_idle_min, 15, 720);
+    g_settings.pw_hibernate_h = vitals_clamp_or_zero(g_settings.pw_hibernate_h, 1, 48);
+    g_settings.pw_hibernate_checkin_min = (uint16_t)pr_hib_checkin_clamp_min(g_settings.pw_hibernate_checkin_min);
+    g_settings.kbd_dark_light = (uint8_t)pr_dark_light_clamp(g_settings.kbd_dark_light);
+    if (g_settings.pw_radio_off_min < 5) g_settings.pw_radio_off_min = 5;
+    if (g_settings.pw_radio_off_min > 240) g_settings.pw_radio_off_min = 240;
+    if (g_settings.pw_checkin_min < 1) g_settings.pw_checkin_min = 1;
+    if (g_settings.pw_checkin_min > 60) g_settings.pw_checkin_min = 60;
     if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 

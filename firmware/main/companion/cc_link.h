@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "companion/cc_sessions.h"
 #ifdef __cplusplus
@@ -22,16 +23,35 @@ bool cc_link_connected(void);
    "connected <host>; session list not updating (N polls failed)" |
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
    "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
-   is "host key changed for <ip>; not connecting", "no server named '<name>' in Servers" or "<name> refused the device key". */
+   is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting", "no server named '<name>' in Servers" or "<name> refused the device key". */
 const char *cc_link_status_text(char *buf, size_t cap);
 /* Why the link is down when it isn't reachability (the status text has the words). */
 typedef enum {
     CC_LINK_FAIL_NONE,        /* connected, or unreachable / no Wi-Fi / still trying */
     CC_LINK_FAIL_NO_ENTRY,    /* no server with the configured name */
-    CC_LINK_FAIL_HOSTKEY,     /* the Mac's host key doesn't match its pin */
+    CC_LINK_FAIL_HOSTKEY,     /* the Mac's host key doesn't match its pin, or the pin is unreadable */
     CC_LINK_FAIL_AUTH,        /* the Mac refused the device key */
 } cc_link_fail_t;
 cc_link_fail_t cc_link_failure(void);
+/* Forgets the Mac's host key: erases the link's pin (the address it connects to) and the
+   terminal's (the server entry's host string, and its MagicDNS address), then has the link task
+   drop the session (the Tab5's own close: never counted toward the watch fallback) and connect
+   again at once, pinning the key it meets as new. ESP_OK with fp_out "SHA256:..." when that
+   connect happened within timeout_ms, ESP_ERR_TIMEOUT if not (the pins are cleared either way,
+   and the forget stays pending: see cc_link_forget_done). It counts as link-busy while it waits.
+   ESP_ERR_INVALID_STATE when no Mac is set up. Blocks: never call it from the LVGL task. */
+esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms);
+#define CC_FORGET_TIMEOUT_MS 30000   /* the UI and console wait: a tunnel wait (20 s) plus a connect */
+/* A forget that timed out stays pending until the link's next connect pins a key. This counts
+   the forgets done so far (it only grows) and copies the key the last one pinned; the UI polls
+   it and toasts "New Mac key pinned: SHA256:..." when it grows. Safe from any task. */
+uint32_t cc_link_forget_done(char *fp_out, size_t fp_cap);
+/* The fingerprint now pinned for the Mac ("SHA256:..."), false if none or unreadable. Reads
+   NVS: fine from the LVGL task, but not every frame. */
+bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap);
+/* Debug (`companion hostkey corrupt`): overwrites the link's own pin with a wrong value and
+   reconnects, so the changed-key path shows without touching the Mac. host_out gets host:port. */
+esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap);
 /* Failed polls in a row while connected (0 when not connected); *too_big (may be NULL) is
    set when the last one failed because `agents` output didn't fit the poll buffer. */
 int cc_poll_failures(bool *too_big);
@@ -58,13 +78,37 @@ esp_err_t cc_link_paste(const char *id, const char *text, char *err, size_t err_
    ESP_OK, or ESP_ERR_NOT_FOUND with err "no such session" / "session has stopped" /
    "not a background session"; ESP_ERR_INVALID_STATE when not connected. */
 esp_err_t cc_link_check_live(const char *id, char *err, size_t err_cap);
-/* Seconds between refreshes: 3 while the dashboard is visible, 30 when dimmed, 0 = paused. */
+/* Seconds between refreshes: 3 (Active or Dim, any screen), 15 while a session is open
+   full-screen, 0 = paused. With the watch running it is the loop's I. */
 void cc_poll_set_rate(int seconds);
+/* The effective interval is floor > 0 ? floor : rate (Task 5 sets 15 in Off, else 0). */
+void cc_poll_set_floor(int seconds);
+/* Counts successful results published (watch blocks and heartbeats, polls). */
+uint32_t cc_poll_generation(void);
+/* True while a paste or live check is in flight (a power hold). */
+bool cc_link_busy(void);
+/* The long-poll watch (spec "Long poll"): one pty exec channel runs cc_cmd_watch's loop and
+   replaces the fixed poll while connected; it falls back to polling when it can't start or
+   keeps ending, and is retried after 10 min or on the next connect. On by default. */
+void cc_link_watch_enable(bool on);
+bool cc_link_watch_wanted(void);           /* the `companion watch on|off` choice */
+/* A check-in's pause and resume: sets the wish only, never forgets a fallback (cc_link_watch_enable(true) does). */
+void cc_link_watch_resume(bool on);
+/* Debug: the next watch start gives up on its banner after 1 ms (tests the fallback). */
+void cc_link_watch_test_fallback(void);
+/* "watch: on I=3s, last block 4s ago, heartbeat 12s ago" | "watch: starting" |
+   "watch: fallback (<why>), polling every 3s" | "watch: off", plus "watch: starting (link down)"
+   and "watch: off (polling paused)" (rate 0). Safe from any task. */
+const char *cc_watch_status_text(char *buf, size_t cap);
 typedef void (*cc_sessions_cb_t)(const cc_session_t *s, int n, void *ctx);
 /* Called on the poll task after each successful refresh (up to 4 subscribers). */
 void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx);
 /* Copies the last successful poll; returns the count, or -1 if there hasn't been one. */
 int cc_poll_snapshot(cc_session_t *out, int cap);
+/* The esp_timer time (ms) of the last successful result from the Mac (a poll, a watch block or a
+   watch heartbeat after a good block), or 0 if there has been none.
+   Safe from any task; it does not block. */
+int64_t cc_poll_last_ok_ms(void);
 /* Wi-Fi hook (from the app's global Wi-Fi callback). */
 void cc_link_on_wifi(bool connected);
 
@@ -79,6 +123,24 @@ bool cc_link_is_companion_server(int idx);
 /* Store a new server name / Claude path and reconnect (server) as needed. */
 void cc_link_set_server(const char *name);
 bool cc_link_set_claude_path(const char *path);   /* false unless cc_path_valid */
+
+/* ---- Plan 2 Task 8: Radio off ---- */
+/* Parked closes the session (the Tab5's own close: never counted toward the watch fallback) and
+   doesn't reconnect; unparked reconnects at once (the backoff starts again). */
+void cc_link_park(bool parked);
+bool cc_link_parked(void);
+/* One plain refresh() now, as a queued request: ESP_OK when it published a result, ESP_FAIL when the
+   poll failed, ESP_ERR_INVALID_STATE when not connected, ESP_ERR_TIMEOUT. Blocks up to timeout_ms. */
+esp_err_t cc_link_poll_now(int timeout_ms);
+/* The stale-peer fix: after a failed ssh_connect to a tailnet IP, kick a handshake before the next
+   retry. Console `companion kick on|off` (RAM only, default on). */
+void cc_link_set_kick(bool on);
+bool cc_link_kick_on(void);
+/* The last 8 link down/up events with wall-clock time, one per line (for the Mac sleep measurement). */
+const char *cc_link_reconnect_log(char *buf, size_t cap);
+/* The Mac's address for a check-in: the address the link last pinned (a tailnet IP after MagicDNS),
+   else the server entry's host. False when no Mac is set up. */
+bool cc_link_mac_address(char *out, size_t cap);
 
 /* Registers companion, sessions, reply, logs and wifi console commands. */
 void cc_console_init(void);

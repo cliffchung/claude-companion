@@ -13,6 +13,16 @@ bool cc_cmd_logs(const char *claude, const char *id, char *out, size_t cap);
    later reply to a stopped session (`claude -p --resume <sid> -- '<text>'`). */
 bool cc_cmd_reply(const char *claude, const char *sid, const char *text, char *out, size_t cap);
 bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap);
+/* The long-poll loop (spec "Long poll"): `exec /bin/sh -c '<loop>'` with fixed loop text; only
+   the Claude path and the four integers vary. The loop runs `<claude> agents --json --all` every
+   interval_s, prints it between @@CC-BEGIN <rc> / @@CC-END when it changed, @@CC-HB <s> after
+   heartbeat_s of silence, and exits (@@CC-BYE eof|quiet|life) on stdin EOF, no keepalive byte for
+   quiet_s, or after life_s. Parsed by cc_watch.h. */
+typedef struct { int interval_s, heartbeat_s, quiet_s, life_s; } cc_watch_params_t;
+/* ranges: interval 1..120, heartbeat 1..600, quiet 2..600, life 5..7200 */
+bool cc_cmd_watch(const char *claude, const cc_watch_params_t *p, char *out, size_t cap);
+#define CC_WATCH_KEEPALIVE_S 20     /* K: the Tab5 writes "\n" this often */
+/* product values: interval 3 (Active/Dim) or 15 (Off), heartbeat 60, quiet 3K = 60, life 1800 */
 /* Removes CSI and OSC escape sequences in place; returns the new length. */
 size_t cc_strip_ansi(char *s);
 /* Turns raw TUI output (`claude logs`) into its last max_lines readable lines, in place:

@@ -6,10 +6,12 @@
 #include "term/vt.h"
 #include "term/term_view.h"
 #include "term/term_keys.h"
+#include "ui/hotkeys.h"
 #include "input/keyboard.h"
 #include "settings/settings.h"
 #include "companion/cc_cmd.h"
 #include "companion/cc_link.h"
+#include "sys/power.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -27,8 +29,8 @@ static const char *TAG = "term_ui";
 #define TAIL_CAP 2048
 
 /* Command mode (ui_terminal_open_command): one remote command on a pty, full screen.
- * Ctrl+Q is taken here and never sent; leaving, or the command ending, returns to the
- * screen below with a toast. */
+ * Ctrl+] (and the old Ctrl+Q) is taken here and never sent (hotkeys.c); leaving, or the
+ * command ending, returns to the screen below with a toast. */
 typedef struct {
     char cmd[256];
     void (*on_close)(void *ctx);
@@ -60,6 +62,14 @@ typedef struct {
 
 static term_ctx_t *s_ctx = NULL;
 bool g_ssh_session_active = false;
+
+/* An SSH session is up: also the power hold (it counts while "Stay awake in SSH Terminal" is on).
+   A take-over (command mode) has its own hold, POWER_HOLD_TAKEOVER, set by the dashboard. */
+static void ssh_active(const term_ctx_t *c, bool on)
+{
+    g_ssh_session_active = on;
+    if (!on || !c->cmd_mode) power_hold(POWER_HOLD_SSH, on);
+}
 
 /* -------------------------------------------------------- ssh callbacks (ssh task) */
 static void on_data(const uint8_t *d, size_t n, void *user)
@@ -161,13 +171,14 @@ static bool term_key(const key_event_t *ev, void *user)
     key_event_t e = *ev;
     if (c->ctrl_on) e.mods |= MOD_CTRL;
     if (c->alt_on) e.mods |= MOD_ALT;
-    if (c->cmd_mode && e.type == KEY_EV_CHAR && (e.mods & MOD_CTRL) && (e.cp == 'q' || e.cp == 'Q')) {
+    hk_term_t hk = hk_takeover(&e, c->cmd_mode);
+    if (hk == HK_T_LEAVE) {
         c->ctrl_on = c->alt_on = false;
         cmd_close(c, "Session still running on your Mac");
         return true;   /* never sent */
     }
-    if (ev->type == KEY_EV_SPECIAL && (ev->key == SK_PGUP || ev->key == SK_PGDN) && (ev->mods & MOD_SHIFT)) {
-        vt_scroll_view(c->vt, ev->key == SK_PGUP ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
+    if (hk == HK_T_SCROLL_UP || hk == HK_T_SCROLL_DOWN) {
+        vt_scroll_view(c->vt, hk == HK_T_SCROLL_UP ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
         lv_obj_invalidate(term_view_obj(c->tv));
         return true;
     }
@@ -385,11 +396,12 @@ static void pump_cb(lv_timer_t *t)
     }
     if (sd && c->cmd_mode) {
         if (st == SSH_ST_CONNECTED) {
-            g_ssh_session_active = true;
+            ssh_active(c, true);
+            ui_toast_ms(HK_TAKEOVER_TOAST, HK_TAKEOVER_TOAST_MS);
             ESP_LOGI(TAG, "command session: connected %lld ms after open",
                      (long long)((esp_timer_get_time() - c->t_open_us) / 1000));
         } else if (st == SSH_ST_CLOSED || st == SSH_ST_ERROR) {
-            g_ssh_session_active = false;
+            ssh_active(c, false);
             char line[200];
             int code = ssh_client_exit_status(c->ssh);
             if (st == SSH_ST_ERROR) {
@@ -411,9 +423,9 @@ static void pump_cb(lv_timer_t *t)
         switch (st) {
         case SSH_ST_CONNECTING: txt = tr(STR_CONNECTING); break;
         case SSH_ST_AUTH: txt = tr(STR_CONNECTING); break;
-        case SSH_ST_CONNECTED: txt = tr(STR_CONNECTED); g_ssh_session_active = true; break;
-        case SSH_ST_CLOSED: txt = tr(STR_DISCONNECTED); g_ssh_session_active = false; break;
-        case SSH_ST_ERROR: snprintf(tmp, sizeof(tmp), "%s %s", tr(STR_SSH_CONN_FAILED), msg); txt = tmp; g_ssh_session_active = false; break;
+        case SSH_ST_CONNECTED: txt = tr(STR_CONNECTED); ssh_active(c, true); break;
+        case SSH_ST_CLOSED: txt = tr(STR_DISCONNECTED); ssh_active(c, false); break;
+        case SSH_ST_ERROR: snprintf(tmp, sizeof(tmp), "%s %s", tr(STR_SSH_CONN_FAILED), msg); txt = tmp; ssh_active(c, false); break;
         default: break;
         }
         if (txt) {
@@ -440,7 +452,7 @@ static void scr_delete_cb(lv_event_t *e)
     if (c->cmd_mode && !c->cmd_done && c->on_close) { c->cmd_done = true; c->on_close(c->close_ctx); }
     if (c->timer) lv_timer_delete(c->timer);
     if (c->ssh) { ssh_client_stop(c->ssh); c->ssh = NULL; }
-    g_ssh_session_active = false;
+    ssh_active(c, false);
     /* term view frees itself with the object; vt after */
     vt_destroy(c->vt);
     free(c->rx);
@@ -508,7 +520,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
 
     char banner[200];
     if (c->cmd_mode)
-        snprintf(banner, sizeof(banner), "\x1b[36mOpening the session on %s ...\x1b[0m\r\n\x1b[90mCtrl+Q returns to the dashboard; the session keeps running.\x1b[0m\r\n", s->name);
+        snprintf(banner, sizeof(banner), "\x1b[36mOpening the session on %s ...\x1b[0m\r\n\x1b[90mCtrl+] returns to the dashboard; the session keeps running.\x1b[0m\r\n", s->name);
     else
         snprintf(banner, sizeof(banner), "\x1b[36m%s %s@%s:%d ...\x1b[0m\r\n\x1b[90m%s\x1b[0m\r\n", tr(STR_CONNECTING), s->user, s->host, s->port, tr(STR_TERM_HINT));
     vt_feed(c->vt, (const uint8_t *)banner, strlen(banner));

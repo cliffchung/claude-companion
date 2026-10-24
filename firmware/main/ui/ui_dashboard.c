@@ -10,6 +10,7 @@
 #include "ui.h"
 #include "ui_dashboard.h"
 #include "ui_motion.h"
+#include "ui_vitals.h"
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "companion/cc_cmd.h"
@@ -17,10 +18,14 @@
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
 #include "settings/settings.h"
+#include "sys/power.h"
+#include "sys/checkin.h"
 #include "input/keyboard.h"
+#include "ui/hotkeys.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #ifndef UI_PREVIEW
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -73,7 +78,7 @@ typedef struct {
     int64_t at_ms;
 } note_t;
 
-typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK } job_type_t;
+typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY } job_type_t;
 typedef struct {
     job_type_t type;
     unsigned token;        /* which request this is (actions only) */
@@ -100,7 +105,6 @@ static unsigned s_seen_poll, s_seen_act, s_seen_logs;
 static int64_t s_logs_at_ms;
 static char s_logs_for[16];
 static int64_t s_down_since_ms;            /* link down while it could be up */
-static bool s_session_open;
 static bool s_shown_live;                  /* cards were built for a connected link */
 /* The request in flight: an answer to it is used only by the dashboard visit that asked,
    and an open check only while it is fresh (it can take up to the poll timeout). */
@@ -108,12 +112,19 @@ static unsigned s_req_token, s_visit, s_req_visit;
 static int64_t s_req_at_ms;
 
 /* Widgets (valid while the screen exists). */
-static lv_obj_t *s_scr, *s_list, *s_summary, *s_bat, *s_wifi, *s_dot, *s_host, *s_clock;
+static lv_obj_t *s_scr, *s_list, *s_summary, *s_vitals, *s_dot, *s_host;
 static lv_obj_t *s_ages[MAX_CARDS], *s_cards[MAX_CARDS];
 static lv_obj_t *s_logs_lbl, *s_ta;
 static unsigned s_ticks;
+static int s_view_shown = -1;   /* the pr_cards_t the list is styled for (-1: a new screen) */
 
+/* LVGL's tick stops in Off (lvgl_port_stop), so TTLs and the open-check age use esp_timer on the
+   device. The preview has no esp_timer and drives lv_tick itself. */
+#ifdef UI_PREVIEW
 static int64_t mono_ms(void) { return (int64_t)lv_tick_get(); }
+#else
+static int64_t mono_ms(void) { return esp_timer_get_time() / 1000; }
+#endif
 
 /* ------------------------------------------------------------------ worker */
 
@@ -122,9 +133,45 @@ static char *s_logs_buf;   /* worker only */
 static void res_lock(void);
 static void res_unlock(void);
 
+/* Forget host key: the worker's result, shown by forget_toast_cb on the LVGL task. */
+static char s_forget_toast[128];
+
+static void forget_toast_cb(void *arg)
+{
+    (void)arg;
+    ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
+}
+
+/* The success toast comes from forget_poll_cb alone, for a forget done in time and for one
+   that timed out and was done by a later connect, so it shows once either way. */
+static void run_forget(void)
+{
+    char fp[80];
+    esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
+    ESP_LOGI(TAG, "forget host key: %s %s", esp_err_to_name(e), fp);
+    if (e == ESP_OK) return;
+    if (e == ESP_ERR_TIMEOUT) strlcpy(s_forget_toast, "Old key forgotten; reconnecting\xe2\x80\xa6", sizeof(s_forget_toast));
+    else strlcpy(s_forget_toast, "No Mac set up", sizeof(s_forget_toast));
+    ui_async(forget_toast_cb, NULL);
+}
+
+/* LVGL task, every 500 ms, on no screen: toasts each forget the link has finished. */
+static void forget_poll_cb(lv_timer_t *t)
+{
+    (void)t;
+    static uint32_t seen;
+    char fp[80];
+    uint32_t n = cc_link_forget_done(fp, sizeof(fp));
+    if (n == seen) return;
+    seen = n;
+    snprintf(s_forget_toast, sizeof(s_forget_toast), "New Mac key pinned: %s", fp);
+    ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
+}
+
 static void run_job(const job_t *j)
 {
     char claude[64], cmd[192], msg[160] = "";
+    if (j->type == JOB_FORGET_KEY) { run_forget(); return; }
     cc_settings_claude_path(claude, sizeof(claude));
     if (j->type == JOB_LOGS) {
         bool ok = false;
@@ -217,6 +264,7 @@ static void init_once(void)
     s_items = heap_caps_calloc(MAX_CARDS, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
     s_logs_buf = heap_caps_calloc(1, LOGS_CAP, MALLOC_CAP_SPIRAM);
     worker_start();
+    lv_timer_create(forget_poll_cb, 500, NULL);   /* lives as long as the app */
 }
 
 /* The dashboard can be built before cc_link_start (it is the first screen), and
@@ -228,6 +276,17 @@ static void subscribe_when_ready(void)
     cc_poll_subscribe(poll_cb, NULL);
     subscribed = true;
     s_poll_gen++;
+}
+
+bool ui_dashboard_forget_host_key(void)
+{
+    init_once();
+    job_t *j = heap_caps_calloc(1, sizeof(job_t), MALLOC_CAP_SPIRAM);   /* job_t holds an answer */
+    if (!j) return false;
+    j->type = JOB_FORGET_KEY;
+    bool ok = job_post(j);
+    heap_caps_free(j);
+    return ok;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -312,8 +371,11 @@ static void clip_lines(const char *in, char *out, size_t cap)
     out[o] = 0;
 }
 
-static const char *pill_text(cc_state_t st)
+/* A blocked session that is not live (or not a background one) is not amber and not "needs you". */
+static const char *pill_text(const cc_session_t *s)
 {
+    cc_state_t st = s->state;
+    if (st == CC_NEEDS_YOU && !cc_session_needs_you(s)) return s->background ? "STOPPED" : "WAITING";
     switch (st) {
     case CC_NEEDS_YOU: return "NEEDS YOU";
     case CC_WORKING:   return "WORKING";
@@ -352,8 +414,10 @@ static lv_obj_t *row(lv_obj_t *parent, int gap)
     return r;
 }
 
-static void pill(lv_obj_t *parent, cc_state_t st)
+static void pill(lv_obj_t *parent, const cc_session_t *sess)
 {
+    cc_state_t st = sess->state;
+    bool amber = cc_session_needs_you(sess);
     lv_obj_t *p = box(parent);
     lv_obj_set_size(p, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_radius(p, LV_RADIUS_CIRCLE, 0);
@@ -364,7 +428,10 @@ static void pill(lv_obj_t *parent, cc_state_t st)
     uint32_t fg, bg, border;
     lv_opa_t bg_opa = LV_OPA_20;
     switch (st) {
-    case CC_NEEDS_YOU: fg = C_BG;    bg = C_AMBER; border = C_AMBER; bg_opa = LV_OPA_COVER; break;
+    case CC_NEEDS_YOU:
+        if (amber) { fg = C_BG; bg = C_AMBER; border = C_AMBER; bg_opa = LV_OPA_COVER; }
+        else { fg = C_MUTED; bg = C_LINE; border = C_LINE; bg_opa = LV_OPA_40; }
+        break;
     case CC_WORKING:   fg = C_GREEN; bg = C_GREEN; border = C_GREEN; break;
     case CC_ENDED:     fg = C_RED;   bg = C_RED;   border = C_RED;   break;
     default:           fg = C_MUTED; bg = C_LINE;  border = C_LINE;  bg_opa = LV_OPA_40; break;
@@ -372,8 +439,8 @@ static void pill(lv_obj_t *parent, cc_state_t st)
     lv_obj_set_style_bg_color(p, HEX(bg), 0);
     lv_obj_set_style_bg_opa(p, bg_opa, 0);
     lv_obj_set_style_border_color(p, HEX(border), 0);
-    lv_obj_set_style_border_opa(p, st == CC_NEEDS_YOU ? LV_OPA_COVER : LV_OPA_50, 0);
-    text(p, pill_text(st), FONT_SMALL, fg);
+    lv_obj_set_style_border_opa(p, amber ? LV_OPA_COVER : LV_OPA_50, 0);
+    text(p, pill_text(sess), FONT_SMALL, fg);
 }
 
 static void select_index(int i);
@@ -483,8 +550,8 @@ static void build_card(int i)
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 14, 0);
     lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, HEX(s->state == CC_NEEDS_YOU ? C_AMBER : C_LINE), 0);
-    lv_obj_set_style_border_opa(card, s->state == CC_NEEDS_YOU ? LV_OPA_60 : LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(card, HEX(cc_session_needs_you(s) ? C_AMBER : C_LINE), 0);
+    lv_obj_set_style_border_opa(card, cc_session_needs_you(s) ? LV_OPA_60 : LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(card, 16, 0);
     lv_obj_set_style_pad_ver(card, 10, 0);
     lv_obj_set_style_pad_row(card, 8, 0);
@@ -516,7 +583,7 @@ static void build_card(int i)
     lv_obj_set_style_min_width(s_ages[i], 48, 0);
     lv_obj_set_style_text_align(s_ages[i], LV_TEXT_ALIGN_RIGHT, 0);
     set_age(s_ages[i], s);
-    pill(h, s->state);
+    pill(h, s);
     if (sel) build_expanded(card, s);
 }
 
@@ -599,7 +666,7 @@ static void open_selected(void)
 static void session_closed_cb(void *ctx)
 {
     (void)ctx;
-    s_session_open = false;
+    power_hold(POWER_HOLD_TAKEOVER, false);
     cc_poll_set_rate(3);
     s_logs_at_ms = 0;
 }
@@ -621,8 +688,8 @@ static void open_now(const cc_session_t *s)
     }
     note_clear(key_of(s));
     ESP_LOGI(TAG, "opening %s", s->id);
-    s_session_open = true;
-    cc_poll_set_rate(0);
+    power_hold(POWER_HOLD_TAKEOVER, true);   /* a take-over never dims or sleeps */
+    cc_poll_set_rate(15);   /* the watch keeps feeding the keyboard light; nothing redraws */
     ui_terminal_open_command(idx, cmd, session_closed_cb, NULL);
 }
 
@@ -703,10 +770,104 @@ static void draft_add(const char *utf8)
     draft_changed();
 }
 
+/* ------------------------------------------------------------------ Ctrl+K overlay */
+
+/* The shortcuts list: a panel over an 80 % backdrop on the dashboard screen. Any key closes
+   it and is eaten (dash_key; ui_keyboard_route sends even Ctrl+Tab here while it is up), and
+   so does a touch. It lives on the screen it was opened on and clears s_keys_ov itself. */
+static lv_obj_t *s_keys_ov;
+
+static void keys_ov_deleted(lv_event_t *e)
+{
+    if (lv_event_get_target_obj(e) == s_keys_ov) s_keys_ov = NULL;
+}
+
+static void keys_ov_clicked(lv_event_t *e)
+{
+    (void)e;
+    ui_dashboard_keys_overlay(false);
+}
+
+bool ui_dashboard_keys_overlay_shown(void)
+{
+    return s_keys_ov != NULL && s_scr != NULL && lv_obj_get_screen(s_keys_ov) == s_scr;
+}
+
+void ui_dashboard_keys_overlay(bool show)
+{
+    if (!show) {
+        if (s_keys_ov) {
+            lv_obj_t *o = s_keys_ov;
+            s_keys_ov = NULL;
+            lv_obj_delete(o);   /* LVGL 9 marks a target deleted in its own click event */
+        }
+        return;
+    }
+    if (s_keys_ov || !s_scr) return;
+    lv_obj_t *o = box(s_scr);
+    lv_obj_set_size(o, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(o, HEX(C_BG), 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_80, 0);
+    lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE | UI_KEYBOARD_SKIP);
+    lv_obj_add_event_cb(o, keys_ov_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(o, keys_ov_deleted, LV_EVENT_DELETE, NULL);
+
+    lv_obj_t *p = box(o);
+    lv_obj_set_size(p, LV_PCT(92), LV_SIZE_CONTENT);
+    lv_obj_set_style_max_width(p, 900, 0);
+    lv_obj_center(p);
+    lv_obj_set_style_bg_color(p, HEX(C_PANEL), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(p, 1, 0);
+    lv_obj_set_style_border_color(p, HEX(C_LINE), 0);
+    lv_obj_set_style_radius(p, 14, 0);
+    lv_obj_set_style_pad_hor(p, 32, 0);
+    lv_obj_set_style_pad_ver(p, 24, 0);
+    lv_obj_set_style_pad_row(p, 8, 0);
+    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(p, LV_OBJ_FLAG_CLICKABLE);   /* a touch anywhere reaches the backdrop */
+    lv_obj_add_flag(p, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_t *t = text(p, "Keyboard shortcuts", FONT_BODY, C_FG);
+    lv_obj_set_style_pad_bottom(t, 8, 0);
+    for (int i = 0; hk_overlay_lines[i]; i++) {
+        /* "<keys>  <what it does>": the keys in muted, the rest in fg */
+        const char *line = hk_overlay_lines[i];
+        const char *gap = strstr(line, "  ");
+        char keys[64];
+        size_t kn = gap ? (size_t)(gap - line) : 0;
+        if (kn >= sizeof(keys)) kn = sizeof(keys) - 1;
+        memcpy(keys, line, kn);
+        keys[kn] = 0;
+        lv_obj_t *r = row(p, 16);
+        lv_obj_t *k = text(r, keys, FONT_SMALL, C_MUTED);
+        lv_obj_set_width(k, LV_PCT(46));
+        lv_label_set_long_mode(k, LV_LABEL_LONG_WRAP);
+        lv_obj_t *dsc = text(r, gap ? gap + 2 : line, FONT_SMALL, C_FG);
+        lv_obj_set_flex_grow(dsc, 1);
+        lv_label_set_long_mode(dsc, LV_LABEL_LONG_WRAP);
+    }
+    lv_obj_t *h = text(p, "Any key or a touch closes this", FONT_SMALL, C_MUTED);
+    lv_obj_set_style_pad_top(h, 8, 0);
+    s_keys_ov = o;
+}
+
 static bool dash_key(const key_event_t *ev, void *user)
 {
     (void)user;
+    if (s_keys_ov) { ui_dashboard_keys_overlay(false); return true; }   /* any key closes it, eaten */
+    /* Local shortcuts first: they work with no cards on screen and never reach s_draft
+       (which stays as it was, for Esc back from Settings or More). */
+    switch (hk_dashboard(ev)) {
+    case HK_D_OPEN:     if (s_shown_live && cc_link_connected()) open_selected(); return true;
+    case HK_D_SETTINGS: ui_nav_push(ui_settings_create, NULL); return true;
+    case HK_D_MORE:     ui_nav_push(ui_home_create, NULL); return true;
+    case HK_D_KEYS:     ui_dashboard_keys_overlay(true); return true;
+    case HK_D_LOCAL:    return true;
+    case HK_D_NONE:     break;
+    }
     if (!s_shown_live) return true;   /* no cards on screen: nothing to act on */
+    if (!cc_link_connected()) return true;   /* stale cards while reconnecting after Radio off: inert */
     const cc_session_t *s = selected();
     if (ev->type == KEY_EV_SPECIAL) {
         switch (ev->key) {
@@ -733,10 +894,7 @@ static bool dash_key(const key_event_t *ev, void *user)
         }
         return true;
     }
-    if (ev->mods & (MOD_CTRL | MOD_META)) {
-        if (ev->cp == 'o' || ev->cp == 'O') open_selected();
-        return true;
-    }
+    if (ev->mods & (MOD_CTRL | MOD_META)) return true;   /* hk_dashboard took every such character */
     if (field_visible(s)) {
         char b[5] = {0};
         uint32_t c = ev->cp;
@@ -799,6 +957,20 @@ static void load_snapshot(void)
     rebuild();
 }
 
+/* Stale cards after a wake from Off or deeper (I was 15 s): dimmed with "Updating…" until a
+   result newer than the wake arrives. The power owner records the generation at the wake, so a
+   dashboard built later (it went home, or Settings was open) judges the same wake the same way.
+   A wake from Dim never marks them: the link ran at I = 3 s throughout. */
+static pr_cards_t cards_view(void)
+{
+    /* a key during a Hibernate check-in boot is an ordinary wake: the same Waking line */
+    bool hib = hibernate_boot_kind() == POWER_BOOT_HIB_WAKE || hibernate_boot_kind() == POWER_BOOT_HIB_CHECKIN;
+    bool dark_wake = power_wake_seq() > 0 && power_woke_from() >= PS_OFF;
+    if (!hib && !dark_wake) return PR_CARDS_LIVE;
+    return pr_cards_view(hib, cc_poll_generation(), dark_wake ? power_wake_gen() : 0,
+                         power_wake_reason() == PW_NEEDS_YOU);
+}
+
 static void update_status(void)
 {
     char name[48], line[224];
@@ -806,6 +978,9 @@ static void update_status(void)
     bool up = cc_link_connected();
     int64_t now = mono_ms();
     uint32_t dot = C_MUTED, color = C_FG;
+    pr_cards_t view = cards_view();
+    /* woken from Radio off: the radio comes back first, so say so over the stale cards (Task 8) */
+    bool reconnecting = name[0] && checkin_woke_parked() && view == PR_CARDS_STALE;
     if (!name[0]) {
         strlcpy(line, "Set up your Mac in Settings \xe2\x86\x92 Companion.", sizeof(line));
         s_down_since_ms = 0;
@@ -825,12 +1000,18 @@ static void update_status(void)
         bool net = wifi && (!g_settings.ts_enable || tailscale_state() == TS_CONNECTED);
         if (!net) s_down_since_ms = 0;
         else if (!s_down_since_ms) s_down_since_ms = now;
-        if (!wifi && !wifi_mgr_is_connecting()) {
+        if (reconnecting) {
+            snprintf(line, sizeof(line), "Reconnecting to %s\xe2\x80\xa6", name);
+            color = C_MUTED;
+        } else if (!wifi && !wifi_mgr_is_connecting()) {
             snprintf(line, sizeof(line), "No Wi-Fi, so the Tab5 can't reach %s.", name);
             color = dot = C_RED;
         } else if (s_down_since_ms && now - s_down_since_ms >= UNREACHABLE_MS) {
             snprintf(line, sizeof(line), "Can't reach %s. Is your Mac awake?", name);
             color = dot = C_RED;
+        } else if (view == PR_CARDS_WAKING) {
+            strlcpy(line, "Waking: reconnecting to Mac", sizeof(line));
+            color = C_MUTED;
         } else {
             snprintf(line, sizeof(line), "Connecting to %s\xe2\x80\xa6", name);
             color = C_MUTED;
@@ -847,7 +1028,10 @@ static void update_status(void)
         } else if (fails >= CC_POLL_FAILS_SHOWN) {
             snprintf(line, sizeof(line), "Can't load sessions from %s, so these cards aren't updating.", name);
             color = dot = C_RED;
-        } else if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
+        } else if (view == PR_CARDS_WAKING) { strlcpy(line, "Waking: reconnecting to Mac", sizeof(line)); color = C_MUTED; }
+        else if (reconnecting) { snprintf(line, sizeof(line), "Reconnecting to %s\xe2\x80\xa6", name); color = C_MUTED; }
+        else if (view == PR_CARDS_STALE && s_n >= 0) { strlcpy(line, "Updating\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
+        else if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
         else if (s_n == 0) snprintf(line, sizeof(line), "No sessions on %s. Start one on your Mac with claude --bg.", name);
         else cc_summary(s_items, s_n, line, sizeof(line));
     }
@@ -858,23 +1042,22 @@ static void update_status(void)
     if (s_dot) lv_obj_set_style_bg_color(s_dot, HEX(dot), 0);
     if (s_host && strcmp(lv_label_get_text(s_host), name[0] ? name : "No Mac"))
         lv_label_set_text(s_host, name[0] ? name : "No Mac");
-    bool live = up && name[0];
+    if (s_list && (int)view != s_view_shown) {   /* a style write redraws the list: only on a change */
+        static const char *names[] = { "live", "stale", "waking" };
+        ESP_LOGI(TAG, "cards: %s", names[view]);
+        s_view_shown = (int)view;
+        lv_obj_set_style_opa(s_list, view == PR_CARDS_STALE ? LV_OPA_50 : LV_OPA_COVER, 0);
+        if (view == PR_CARDS_WAKING) lv_obj_add_flag(s_list, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(s_list, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* after a wake from Radio off the stale cards stay up (dimmed, inert) while the radio comes back */
+    bool live = (up || reconnecting) && name[0];
     if (live != s_shown_live) { s_shown_live = live; rebuild(); }
 }
 
 static void update_vitals(void)
 {
-    char b[48] = "";
-    int bat = sysinfo_battery_percent();
-    if (bat >= 0)
-        snprintf(b, sizeof(b), "%d%%%s", bat, sysinfo_power().src == PWR_USB_CHARGING ? " charging" : "");
-    if (s_bat && strcmp(lv_label_get_text(s_bat), b)) lv_label_set_text(s_bat, b);
-    if (s_wifi) lv_obj_set_style_text_color(s_wifi, HEX(wifi_mgr_is_connected() ? C_FG : C_MUTED), 0);
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
-    strftime(b, sizeof(b), "%H:%M", &tm);
-    if (s_clock && strcmp(lv_label_get_text(s_clock), b)) lv_label_set_text(s_clock, b);
+    ui_vitals_update(s_vitals);
 }
 
 static void tick_cb(lv_timer_t *t)
@@ -896,6 +1079,17 @@ static void tick_cb(lv_timer_t *t)
     if (s_ticks++ % 3 == 0) update_vitals();
     if (s_ticks % 30 == 0)
         for (int i = 0; i < s_n && i < MAX_CARDS; i++) if (s_ages[i]) set_age(s_ages[i], &s_items[i]);
+}
+
+bool ui_dashboard_selected_center(int32_t *x, int32_t *y)
+{
+    if (!s_scr || s_scr != lv_screen_active() || s_n <= 0 || s_sel < 0 || s_sel >= MAX_CARDS || !s_cards[s_sel])
+        return false;
+    lv_area_t a;
+    lv_obj_get_coords(s_cards[s_sel], &a);
+    *x = (a.x1 + a.x2) / 2;
+    *y = (a.y1 + a.y2) / 2;
+    return true;
 }
 
 /* ------------------------------------------------------------------ screen */
@@ -934,11 +1128,11 @@ static void scr_delete_cb(lv_event_t *e)
     lv_obj_t *scr = lv_event_get_target_obj(e);
     keyboard_clear_sink(scr);   /* only if it is still this screen's sink */
     if (scr != s_scr) return;
-    s_scr = s_list = s_summary = s_bat = s_wifi = s_dot = s_host = s_clock = NULL;
+    s_scr = s_list = s_summary = s_vitals = s_dot = s_host = NULL;
     s_logs_lbl = s_ta = NULL;
     memset(s_cards, 0, sizeof(s_cards));
     memset(s_ages, 0, sizeof(s_ages));
-    if (!s_session_open) cc_poll_set_rate(30);   /* not on screen: refresh slowly */
+    /* PT11: the rate stays 3 s on every other screen (Active/Dim); Off sets its floor */
 }
 
 lv_obj_t *ui_dashboard_create(void *arg)
@@ -968,17 +1162,9 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_style_pad_column(v, 18, 0);
     lv_obj_t *brand = text(v, "Claude Companion", FONT_BODY, C_FG);
     lv_obj_set_flex_grow(brand, 1);
-    s_bat = text(v, "", FONT_SMALL, C_MUTED);
-    s_wifi = text(v, LV_SYMBOL_WIFI, FONT_BODY, C_MUTED);
-    lv_obj_t *link = row(v, 8);
-    lv_obj_set_width(link, LV_SIZE_CONTENT);
-    s_dot = box(link);
-    lv_obj_set_size(s_dot, 12, 12);
-    lv_obj_set_style_radius(s_dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(s_dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s_dot, HEX(C_MUTED), 0);
-    s_host = text(link, "", FONT_SMALL, C_MUTED);
-    s_clock = text(v, "--:--", FONT_BODY, C_FG);
+    s_vitals = ui_vitals_create(v);
+    s_dot = ui_vitals_link_dot(s_vitals);
+    s_host = ui_vitals_link_host(s_vitals);
 
     /* summary or status line */
     s_summary = text(scr, "", FONT_BODY, C_FG);
@@ -1012,8 +1198,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_flex_flow(f, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(f, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(f, 12, 0);
-    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 Ctrl+O open \xc2\xb7 Ctrl+Q leave \xc2\xb7 Ctrl+Tab buttons",
-                          FONT_SMALL, C_MUTED);
+    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 " HK_DASH_HINT, FONT_SMALL, C_MUTED);
     lv_obj_set_flex_grow(keys, 1);
     lv_label_set_long_mode(keys, LV_LABEL_LONG_DOT);
     lv_obj_set_height(keys, lv_font_get_line_height(FONT_SMALL));
@@ -1026,6 +1211,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
 
     s_visit++;   /* answers to requests from an earlier visit are not acted on */
     s_shown_live = false;
+    s_view_shown = -1;
     s_seen_poll = s_poll_gen - 1;   /* load the snapshot now */
     lv_timer_t *t = lv_timer_create(tick_cb, 300, NULL);
     ui_timer_bind(t, scr);

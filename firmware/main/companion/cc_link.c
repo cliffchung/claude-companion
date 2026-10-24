@@ -1,9 +1,11 @@
 #include "cc_link.h"
 #include "cc_cmd.h"
+#include "cc_watch.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -39,7 +41,7 @@ static const char *TAG = "cc_link";
 #define DEFAULT_CLAUDE  "~/.local/bin/claude"
 
 typedef enum { LS_NO_MAC, LS_CONNECTING, LS_WAITING, LS_CONNECTED } link_state_t;
-typedef enum { REQ_EXEC, REQ_PASTE, REQ_CHECK } req_type_t;
+typedef enum { REQ_EXEC, REQ_PASTE, REQ_CHECK, REQ_POLL } req_type_t;
 
 typedef struct {
     req_type_t type;
@@ -74,14 +76,83 @@ static cc_link_fail_t s_fail;           /* why the last connect failed, other th
 static char s_fail_text[128];          /* its text for the status line */
 static int s_poll_fails;               /* consecutive failed refreshes while connected */
 static bool s_poll_too_big;            /* the last refresh failed: output over JSON_CAP */
+static volatile int s_floor;           /* cc_poll_set_floor: overrides s_rate when > 0 */
+static uint32_t s_gen;                 /* successful results published (blocks, heartbeats, polls) */
+static volatile int s_busy;            /* pastes and live checks in flight */
+/* Forget host key (cc_link_forget_host_key), all under s_lock: */
+static char s_pin_host[128];           /* the address the link pins: the one its last attempt used
+                                          for the current server ("" after a server change) */
+static int s_pin_port;
+/* Requests made, acked by the task (torn down), and done (a connect after the ack pinned a key).
+   A forget stays pending (done < req) past its caller's timeout, until such a connect. */
+static uint32_t s_forget_req, s_forget_ack, s_forget_done;
+static char s_forget_fp[80];           /* the key that connect pinned */
+static volatile bool s_forget;         /* the task tears down and reconnects now */
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
+
+/* Task 8 */
+static volatile bool s_parked;              /* cc_link_park: no session, no reconnect */
+static volatile bool s_kick = true;         /* companion kick on|off: the stale-peer fix */
+#define RLOG_N 8
+typedef struct { uint32_t epoch; int64_t mono_ms; bool up; char why[24]; } rlog_t;
+static rlog_t s_rlog[RLOG_N];               /* under s_lock */
+static int s_rlog_n, s_rlog_head;
+
+/* ---------- long-poll watch state ----------
+ * One pty exec channel runs cc_cmd_watch's loop on the Mac for as long as the link is up and
+ * the effective interval is > 0. Its output is parsed into s_wbody (its own buffer, so the
+ * refresh() calls of a paste or live check never overwrite a half-read block). The task owns
+ * every field; the few the status line shows are copied under s_lock (s_wv). */
+#define WATCH_HEARTBEAT_S   60
+#define WATCH_QUIET_S       (3 * CC_WATCH_KEEPALIVE_S)
+#define WATCH_LIFE_S        1800
+#define WATCH_BANNER_MS     10000
+#define WATCH_RETRY_US      (10 * 60 * 1000000LL)   /* after a fallback */
+#define WATCH_ENDS_WINDOW_US (5 * 60 * 1000000LL)  /* 3 unasked ends in this long: fall back */
+#define WATCH_WAIT_MS       250                     /* queue wait between channel reads */
+
+typedef enum { WM_OFF, WM_STARTING, WM_ON, WM_FALLBACK, WM_PAUSED } watch_mode_t;
+
+static volatile bool s_watch_want = true;   /* companion watch on|off */
+static volatile bool s_watch_reset;         /* on: forget a fallback and retry now */
+static volatile int s_banner_ms = WATCH_BANNER_MS;   /* next start only (test-fallback: 1) */
+static ssh_channel s_wch;                   /* task only */
+static cc_watch_t s_w;                      /* task only */
+static char *s_wbody;                       /* s_w's body (PSRAM, JSON_CAP) */
+static int s_w_interval;                    /* the running channel's I */
+static int s_w_banner_ms;                   /* the running start's banner timeout */
+static int64_t s_w_opened_us, s_w_live_us, s_w_ka_us;
+static bool s_w_good;                       /* the channel's last block parsed (rc 0) */
+static bool s_w_bad;                        /* ... failed (rc != 0, overflow, not JSON) */
+static int64_t s_w_fallback_until_us;       /* fallback: retry the watch after this */
+static int64_t s_w_ends[3];                 /* times of the last unasked channel ends */
+static struct {                             /* for cc_watch_status_text, under s_lock */
+    watch_mode_t mode;
+    int interval;
+    int64_t block_us, hb_us;
+    char why[64];
+} s_wv;
 
 /* Before cc_link_start (or if it failed) there is no lock and no link task: getters then
    read the settings directly and the status is "no Mac set up". */
 static void lock(void) { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 static int64_t now_us(void) { return esp_timer_get_time(); }
+static int64_t s_last_ok_ms;   /* esp_timer ms of the last successful result, 0 = none */
+
+static void rlog_add(bool up, const char *why)
+{
+    lock();
+    rlog_t *r = &s_rlog[s_rlog_head];
+    r->epoch = (uint32_t)time(NULL);
+    r->mono_ms = now_us() / 1000;
+    r->up = up;
+    strlcpy(r->why, why ? why : "", sizeof(r->why));
+    s_rlog_head = (s_rlog_head + 1) % RLOG_N;
+    if (s_rlog_n < RLOG_N) s_rlog_n++;
+    unlock();
+}
 
 static void kick(void)
 {
@@ -155,6 +226,7 @@ void cc_link_set_server(const char *name)
 {
     lock();
     strlcpy(g_settings.companion_server, name ? name : "", sizeof(g_settings.companion_server));
+    s_pin_host[0] = 0;   /* the old Mac's address: a forget must not erase its pin */
     unlock();
     settings_save();
     s_reconfig = true;
@@ -186,6 +258,11 @@ const char *cc_link_status_text(char *b, size_t cap)
         return b;
     }
     lock();
+    if (s_parked && s_state != LS_CONNECTED && s_state != LS_NO_MAC) {
+        snprintf(b, cap, "parked (radio off): %s", s_shown);
+        unlock();
+        return b;
+    }
     switch (s_state) {
     case LS_NO_MAC:
         strlcpy(b, "no Mac set up", cap);
@@ -218,7 +295,10 @@ const char *cc_link_status_text(char *b, size_t cap)
 
 cc_link_fail_t cc_link_failure(void)
 {
-    return s_state == LS_CONNECTED ? CC_LINK_FAIL_NONE : s_fail;
+    lock();
+    cc_link_fail_t f = s_state == LS_CONNECTED ? CC_LINK_FAIL_NONE : s_fail;
+    unlock();
+    return f;
 }
 
 int cc_poll_failures(bool *too_big)
@@ -251,8 +331,15 @@ static bool drain_queue_down(TickType_t wait)
     return woke;
 }
 
+static void watch_close(bool asked);
+
+static const char *s_down_why = "dropped";   /* task only: why the next teardown happens */
+
 static void teardown(void)
 {
+    watch_close(true);   /* the Tab5's own close: never counted toward a fallback */
+    if (s_sess) rlog_add(false, s_down_why);
+    s_down_why = "dropped";
     if (s_sess) {
         ssh_disconnect(s_sess);
         ssh_free(s_sess);
@@ -297,8 +384,15 @@ static bool connect_once(const char *name)
         ESP_LOGW(TAG, "tunnel to %s not confirmed, trying anyway", host);
 
     /* a standing failure stays shown while the next attempt runs, so the line doesn't flicker */
+    lock();
+    strlcpy(s_pin_host, host, sizeof(s_pin_host));
+    s_pin_port = port;
+    unlock();
     ssh_session s = ssh_new();
-    if (!s) return false;
+    if (!s) {
+        set_fail(CC_LINK_FAIL_NONE, NULL);   /* out of memory: no old reason may stick */
+        return false;
+    }
     long timeout = 10;
     int nodelay = 1, verb = SSH_LOG_NOLOG;
     ssh_options_set(s, SSH_OPTIONS_HOST, host);
@@ -312,6 +406,9 @@ static bool connect_once(const char *name)
         ESP_LOGW(TAG, "connect %s:%d failed: %s", host, port, ssh_get_error(s));
         set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreachable */
         ssh_free(s);
+        /* the stale-peer fix: MicroLink can report a peer up on a dead keypair (the Mac slept), so
+           kick a fresh handshake now, before the backoff's next retry */
+        if (s_kick && tailscale_is_tailnet_ip(host)) tailscale_kick_peer(host);
         return false;
     }
     char fp[80];
@@ -325,10 +422,14 @@ static bool connect_once(const char *name)
     if (kh == KH_CHANGED) {
         snprintf(why, sizeof(why), "host key changed for %s; not connecting", host);
         set_fail(CC_LINK_FAIL_HOSTKEY, why);
-    } else if (kh != KH_OK) set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreadable: retried as unreachable */
+    } else if (kh == KH_PIN_ERROR) {
+        /* never treated as unknown: re-pinning over a pin we can't read could accept any key */
+        snprintf(why, sizeof(why), "can't read the host key pin for %s; not connecting", host);
+        set_fail(CC_LINK_FAIL_HOSTKEY, why);
+    } else if (kh != KH_OK) set_fail(CC_LINK_FAIL_NONE, NULL);   /* server key unreadable: retried as unreachable */
     if (kh != KH_OK) {
         ESP_LOGE(TAG, "host key %s for %s:%d (%s); not connecting",
-                 kh == KH_CHANGED ? "CHANGED" : "unreadable", host, port, fp);
+                 kh == KH_CHANGED ? "CHANGED" : kh == KH_PIN_ERROR ? "pin unreadable" : "unreadable", host, port, fp);
         ssh_disconnect(s);
         ssh_free(s);
         return false;
@@ -355,10 +456,20 @@ static bool connect_once(const char *name)
     s_drop = false;
     set_fail(CC_LINK_FAIL_NONE, NULL);
     lock();
+    /* a pending forget is done by the first connect after the task's teardown */
+    bool forget_done = s_forget_done != s_forget_req && s_forget_ack == s_forget_req;
+    if (forget_done) {
+        s_forget_done = s_forget_req;
+        strlcpy(s_forget_fp, fp, sizeof(s_forget_fp));
+    }
     s_poll_fails = 0;
     s_poll_too_big = false;
     unlock();
+    if (forget_done) ESP_LOGW(TAG, "forget host key: new Mac key pinned: %s", fp);
+    s_w_fallback_until_us = 0;   /* a fallback is retried on the next connect */
+    memset(s_w_ends, 0, sizeof(s_w_ends));
     ESP_LOGI(TAG, "connected to %s (%s:%d)", name, host, port);
+    rlog_add(true, "connected");
     return true;
 }
 
@@ -624,14 +735,34 @@ static esp_err_t do_paste(req_t *r)
     return ESP_OK;
 }
 
+static int refresh(int64_t deadline_us);
+
 static void handle(req_t *r)
 {
     if (!s_sess || s_drop) { answer(r, ESP_ERR_INVALID_STATE); return; }
     if (now_us() > r->deadline_us) { answer(r, ESP_ERR_TIMEOUT); return; }
+    if (r->type == REQ_POLL) { answer(r, refresh(r->deadline_us) >= 0 ? ESP_OK : ESP_FAIL); return; }
     answer(r, r->type == REQ_EXEC ? do_exec(r) : do_paste(r));   /* paste and check */
 }
 
 static int refresh_once(int64_t deadline_us, bool *too_big);
+
+/* Publishes s_parse[0..n) as the newest session list: copies it for snapshots, stamps the
+   last-ok time, counts it and calls the subscribers (on this task). */
+static void publish(int n)
+{
+    struct { cc_sessions_cb_t cb; void *ctx; } subs[MAX_SUBS];
+    lock();
+    memcpy(s_list, s_parse, sizeof(cc_session_t) * n);
+    s_list_n = n;
+    s_last_ok_ms = now_us() / 1000;
+    s_gen++;
+    memcpy(subs, s_subs, sizeof(subs));
+    unlock();
+    for (int i = 0; i < MAX_SUBS; i++) {
+        if (subs[i].cb) subs[i].cb(s_parse, n, subs[i].ctx);
+    }
+}
 
 /* Runs `claude agents --json --all`, parses it into s_parse and publishes it, and counts
    consecutive failures for the status line. Returns the count, or -1 on failure. */
@@ -640,7 +771,9 @@ static int refresh(int64_t deadline_us)
     bool too_big = false;
     int n = refresh_once(deadline_us, &too_big);
     lock();
-    if (n >= 0) { s_poll_fails = 0; s_poll_too_big = false; }
+    /* the loop never repeats unchanged output, so a watch failure stays shown until its
+       next good block, even when a paste's own refresh works */
+    if (n >= 0) { s_poll_fails = s_w_bad ? CC_POLL_FAILS_SHOWN : 0; s_poll_too_big = s_w_bad && s_poll_too_big; }
     else { s_poll_fails++; s_poll_too_big = too_big; }
     unlock();
     return n;
@@ -680,16 +813,268 @@ static int refresh_once(int64_t deadline_us, bool *too_big)
         ESP_LOGW(TAG, "poll: output is not a JSON array");
         return -1;
     }
-    struct { cc_sessions_cb_t cb; void *ctx; } subs[MAX_SUBS];
-    lock();
-    memcpy(s_list, s_parse, sizeof(cc_session_t) * n);
-    s_list_n = n;
-    memcpy(subs, s_subs, sizeof(subs));
-    unlock();
-    for (int i = 0; i < MAX_SUBS; i++) {
-        if (subs[i].cb) subs[i].cb(s_parse, n, subs[i].ctx);
-    }
+    publish(n);
     return n;
+}
+
+/* ---------- long-poll watch (task only) ---------- */
+
+static int eff_rate(void)
+{
+    int f = s_floor;
+    return f > 0 ? f : s_rate;
+}
+
+static void wv_set_mode(watch_mode_t m, int interval)
+{
+    lock();
+    s_wv.mode = m;
+    s_wv.interval = interval;
+    if (m == WM_STARTING) s_wv.block_us = s_wv.hb_us = 0;
+    unlock();
+}
+
+/* Closes the channel. EOF + close, so sshd hangs up the pty and the loop gets SIGHUP.
+   asked: the Tab5's own close (an interval change, off, a link teardown), never counted. */
+static void watch_close(bool asked)
+{
+    if (!s_wch) return;
+    close_channel(s_wch);
+    s_wch = NULL;
+    s_w_good = s_w_bad = false;
+    ESP_LOGI(TAG, "watch: closed%s", asked ? "" : " (ended by the Mac or the link)");
+}
+
+static void watch_fallback(const char *why)
+{
+    watch_close(true);
+    s_w_fallback_until_us = now_us() + WATCH_RETRY_US;
+    ESP_LOGW(TAG, "watch: falling back to polling: %s", why);
+    lock();
+    s_wv.mode = WM_FALLBACK;
+    strlcpy(s_wv.why, why, sizeof(s_wv.why));
+    unlock();
+}
+
+/* A channel end the Tab5 didn't ask for (EOF, BYE eof, BYE quiet, a read error): three in
+   5 min fall back to polling. Returns true when it fell back. */
+static bool watch_unasked_end(const char *what)
+{
+    watch_close(false);
+    int64_t t = now_us();
+    memmove(s_w_ends, s_w_ends + 1, sizeof(s_w_ends[0]) * 2);
+    s_w_ends[2] = t;
+    ESP_LOGW(TAG, "watch: channel ended: %s", what);
+    if (s_w_ends[0] && t - s_w_ends[0] <= WATCH_ENDS_WINDOW_US) {
+        watch_fallback("the channel ended 3 times in 5 min");
+        return true;
+    }
+    return false;
+}
+
+static void watch_start(int interval)
+{
+    char claude[64], cmd[1024];
+    if (interval > 120) interval = 120;   /* cc_cmd_watch's range; s_w_interval keeps the same I */
+    cc_watch_params_t p = { interval, WATCH_HEARTBEAT_S, WATCH_QUIET_S, WATCH_LIFE_S };
+    if (!cc_cmd_watch(cc_settings_claude_path(claude, sizeof(claude)), &p, cmd, sizeof(cmd))) {
+        watch_fallback("bad watch command");
+        return;
+    }
+    int64_t opened = now_us();         /* the banner deadline counts the requests too */
+    ssh_channel ch = open_channel();   /* a failure here is the link's: s_drop */
+    if (!ch) return;
+    if (ssh_channel_request_pty_size(ch, "xterm-256color", 200, 50) != SSH_OK) {
+        ESP_LOGW(TAG, "watch: pty request failed: %s", ssh_get_error(s_sess));
+        close_channel(ch);
+        watch_fallback("pty request failed");
+        return;
+    }
+    if (ssh_channel_request_exec(ch, cmd) != SSH_OK) {
+        ESP_LOGW(TAG, "watch: exec request failed: %s", ssh_get_error(s_sess));
+        close_channel(ch);
+        watch_fallback("exec request failed");
+        return;
+    }
+    s_wch = ch;
+    cc_watch_init(&s_w, s_wbody, JSON_CAP);
+    s_w_interval = interval;
+    s_w_banner_ms = s_banner_ms;
+    s_banner_ms = WATCH_BANNER_MS;
+    s_w_good = s_w_bad = false;
+    s_w_opened_us = opened;
+    s_w_live_us = now_us();
+    s_w_ka_us = 0;   /* the first keepalive goes at once */
+    wv_set_mode(WM_STARTING, interval);
+    ESP_LOGI(TAG, "watch: starting, I=%ds", interval);
+}
+
+static void watch_block(void)
+{
+    int64_t t = now_us();
+    lock();
+    s_wv.block_us = t;
+    unlock();
+    int n = -1;
+    if (s_w.rc == 0) n = cc_sessions_parse(s_w.body, s_parse, POLL_CAP);
+    if (n >= 0) {
+        s_w_good = true;
+        s_w_bad = false;
+        lock();
+        s_poll_fails = 0;
+        s_poll_too_big = false;
+        unlock();
+        publish(n);
+        return;
+    }
+    char first[120];
+    strlcpy(first, s_w.body, sizeof(first));
+    first_line(first);
+    if (s_w.rc != 0) ESP_LOGW(TAG, "watch: agents exited %d: %s", s_w.rc, first);
+    else ESP_LOGW(TAG, "watch: output is not a JSON array");
+    s_w_good = false;
+    s_w_bad = true;
+    lock();
+    s_poll_fails = CC_POLL_FAILS_SHOWN;   /* unchanged output is never repeated: show it now */
+    s_poll_too_big = false;
+    unlock();
+}
+
+/* Unchanged list, confirmed fresh: stamp it and tell the subscribers (the keyboard light's
+   staleness rule reads the last-ok time). Only after a good block on this channel. */
+static void watch_heartbeat(void)
+{
+    lock();
+    s_wv.hb_us = now_us();
+    int n = s_w_good ? s_list_n : -1;
+    if (n > 0) memcpy(s_parse, s_list, sizeof(cc_session_t) * n);
+    unlock();
+    if (n >= 0) publish(n);
+}
+
+/* Returns false when the channel is gone (closed here, or fallen back). */
+static bool watch_event(cc_watch_ev_t ev)
+{
+    s_w_live_us = now_us();
+    switch (ev) {
+    case CC_WATCH_BANNER:
+        wv_set_mode(WM_ON, s_w_interval);
+        ESP_LOGI(TAG, "watch: on, I=%ds", s_w_interval);
+        break;
+    case CC_WATCH_BLOCK:
+        watch_block();
+        break;
+    case CC_WATCH_OVERFLOW:
+        ESP_LOGE(TAG, "watch: agents output is over %d KB; session list not updated", JSON_CAP / 1024);
+        s_w_good = false;
+        s_w_bad = true;
+        lock();
+        s_poll_fails = CC_POLL_FAILS_SHOWN;
+        s_poll_too_big = true;
+        unlock();
+        break;
+    case CC_WATCH_HEARTBEAT:
+        watch_heartbeat();
+        break;
+    case CC_WATCH_BYE:
+        if (strcmp(s_w.bye, "life") == 0) {
+            ESP_LOGI(TAG, "watch: loop reached its lifetime; restarting");
+            watch_close(true);
+        } else {
+            char what[32];
+            snprintf(what, sizeof(what), "BYE %s", s_w.bye);
+            watch_unasked_end(what);
+        }
+        return false;
+    default:
+        break;
+    }
+    return true;
+}
+
+/* Reads what has arrived without blocking, writes the keepalive, checks liveness. */
+static void watch_service(void)
+{
+    char tmp[1024];
+    int64_t t0 = now_us();
+    /* the banner deadline is checked before reading, so a deadline that has passed wins over
+       a banner that is already buffered (test-fallback's 1 ms) */
+    lock();
+    bool starting = s_wv.mode == WM_STARTING;
+    unlock();
+    if (starting && t0 - s_w_opened_us >= (int64_t)s_w_banner_ms * 1000) {
+        char why[48];
+        if (s_w_banner_ms < 1000) snprintf(why, sizeof(why), "no banner in %d ms", s_w_banner_ms);
+        else snprintf(why, sizeof(why), "no banner in %d s", s_w_banner_ms / 1000);
+        watch_fallback(why);
+        return;
+    }
+    for (;;) {
+        int n = ssh_channel_read_nonblocking(s_wch, tmp, sizeof(tmp), 0);
+        if (n == SSH_EOF || (n == 0 && ssh_channel_is_eof(s_wch))) { watch_unasked_end("EOF"); return; }
+        if (n < 0) {
+            watch_unasked_end("read error");
+            if (!ssh_is_connected(s_sess)) s_drop = true;
+            return;
+        }
+        if (n == 0) break;
+        size_t off = 0;
+        while (off < (size_t)n) {
+            size_t used = 0;
+            cc_watch_ev_t ev = cc_watch_feed(&s_w, tmp + off, (size_t)n - off, &used);
+            off += used;
+            if (ev != CC_WATCH_NONE && !watch_event(ev)) return;
+        }
+        if (now_us() - t0 > 200000) break;   /* serve requests between big reads */
+    }
+    /* drain stderr (a pty merges it into stdout, but don't let it fill a window) */
+    while (ssh_channel_read_nonblocking(s_wch, tmp, sizeof(tmp), 1) > 0) {}
+    int64_t t = now_us();
+    if (!s_w_ka_us || t - s_w_ka_us >= (int64_t)CC_WATCH_KEEPALIVE_S * 1000000) {
+        if (!send_bytes(s_wch, "\n", 1)) { watch_unasked_end("keepalive write failed"); return; }
+        s_w_ka_us = t;
+    }
+    lock();
+    watch_mode_t m = s_wv.mode;
+    unlock();
+    int64_t dead_us = (int64_t)(2 * WATCH_HEARTBEAT_S + s_w_interval) * 1000000;
+    if (m == WM_ON && t - s_w_live_us > dead_us) {
+        ESP_LOGW(TAG, "watch: no block or heartbeat for %ds; the link is dead",
+                 2 * WATCH_HEARTBEAT_S + s_w_interval);
+        s_drop = true;
+    }
+}
+
+/* One step of the connected loop while the watch should run (interval > 0). Returns false
+   when the watch is not wanted or in fallback, so the caller polls instead. */
+static bool watch_step(int interval)
+{
+    if (interval > 120) interval = 120;   /* the loop's range; compared with s_w_interval below */
+    if (s_watch_reset) {
+        s_watch_reset = false;
+        s_w_fallback_until_us = 0;
+        memset(s_w_ends, 0, sizeof(s_w_ends));
+    }
+    if (!s_watch_want || interval <= 0) {
+        watch_close(true);
+        wv_set_mode(s_watch_want ? WM_PAUSED : WM_OFF, interval);
+        return false;
+    }
+    if (s_w_fallback_until_us) {
+        if (now_us() < s_w_fallback_until_us) return false;
+        s_w_fallback_until_us = 0;
+        ESP_LOGI(TAG, "watch: retrying after the fallback");
+    }
+    if (s_wch && s_w_interval != interval) {
+        ESP_LOGI(TAG, "watch: interval %ds -> %ds; restarting", s_w_interval, interval);
+        watch_close(true);
+    }
+    if (!s_wch) {
+        watch_start(interval);
+        if (!s_wch) return s_w_fallback_until_us == 0;   /* a channel open failure: s_drop */
+    }
+    watch_service();
+    return true;
 }
 
 static void link_task(void *arg)
@@ -704,10 +1089,31 @@ static void link_task(void *arg)
             attempt = 0;
             lock();
             s_list_n = -1;
+            s_pin_host[0] = 0;
             unlock();
             set_fail(CC_LINK_FAIL_NONE, NULL);
         }
         if (s_reset_backoff) { s_reset_backoff = false; attempt = 0; }
+        if (s_forget) {
+            /* cc_link_forget_host_key cleared the pins: drop the session (the Tab5's own
+               close, so the watch fallback doesn't count it) and connect again now */
+            s_forget = false;
+            teardown();
+            attempt = 0;
+            set_fail(CC_LINK_FAIL_NONE, NULL);
+            lock();
+            s_forget_ack = s_forget_req;
+            unlock();
+        }
+        if (s_parked) {
+            /* Radio off: the Tab5's own close (never counted toward the watch fallback), and no
+               reconnect until unparked */
+            if (s_sess) { s_down_why = "parked"; teardown(); }
+            attempt = 0;
+            if (s_state != LS_WAITING) set_state(LS_WAITING);
+            drain_queue_down(pdMS_TO_TICKS(1000));
+            continue;
+        }
         if (s_sess && s_drop) {
             teardown();
             attempt = 0;     /* first retry right away, then back off */
@@ -738,14 +1144,22 @@ static void link_task(void *arg)
             s_retry_at_us = now_us() + (int64_t)wait * 1000000;
             s_state = LS_WAITING;
             unlock();
-            while (now_us() < s_retry_at_us && !s_reconfig && !s_reset_backoff) {
+            while (now_us() < s_retry_at_us && !s_reconfig && !s_reset_backoff && !s_forget && !s_parked) {
                 int64_t left_ms = (s_retry_at_us - now_us()) / 1000;
                 drain_queue_down(pdMS_TO_TICKS(left_ms > 0 ? left_ms : 1));
             }
             continue;
         }
-        /* connected */
-        int rate = s_rate;
+        /* connected: the watch channel feeds the list; Plan 1's fixed poll is the fallback */
+        int rate = eff_rate();
+        if (watch_step(rate)) {
+            last_alive = now_us();
+            req_t *r = NULL;
+            if (!s_drop && s_wch &&
+                xQueueReceive(s_queue, &r, pdMS_TO_TICKS(WATCH_WAIT_MS)) == pdTRUE && r)
+                handle(r);
+            continue;
+        }
         int64_t t = now_us();
         if (rate > 0 && t - last_poll >= (int64_t)rate * 1000000) {
             refresh(INT64_MAX);
@@ -769,11 +1183,20 @@ static void link_task(void *arg)
 
 /* ---------- public calls ---------- */
 
+static void busy(int d)
+{
+    lock();
+    s_busy += d;
+    unlock();
+}
+
+
 static esp_err_t submit(req_t *r)
 {
     if (!s_queue || !cc_link_connected()) return ESP_ERR_INVALID_STATE;
     if (xTaskGetCurrentTaskHandle() == s_task) {   /* a subscriber calling back in */
         if (!s_sess || s_drop) return ESP_ERR_INVALID_STATE;
+        if (r->type == REQ_POLL) return refresh(r->deadline_us) >= 0 ? ESP_OK : ESP_FAIL;
         return r->type == REQ_EXEC ? do_exec(r) : do_paste(r);
     }
     r->done = xSemaphoreCreateBinary();
@@ -833,7 +1256,9 @@ esp_err_t cc_link_paste(const char *id, const char *text, char *err, size_t err_
     }
     req_t r = { .type = REQ_PASTE, .cmd = cmd, .id = id, .payload = payload, .payload_len = n,
                 .err = err, .err_cap = err_cap, .deadline_us = now_us() + (int64_t)PASTE_BUDGET_MS * 1000 };
+    busy(1);
     esp_err_t e = submit(&r);
+    busy(-1);
     free(payload);
     return e;
 }
@@ -849,13 +1274,97 @@ esp_err_t cc_link_check_live(const char *id, char *err, size_t err_cap)
     }
     req_t r = { .type = REQ_CHECK, .id = id, .err = err, .err_cap = err_cap,
                 .deadline_us = now_us() + (int64_t)POLL_TIMEOUT_MS * 1000 };
-    return submit(&r);
+    busy(1);
+    esp_err_t e = submit(&r);
+    busy(-1);
+    return e;
 }
 
 void cc_poll_set_rate(int seconds)
 {
     s_rate = seconds < 0 ? 0 : seconds;
     kick();
+}
+
+void cc_poll_set_floor(int seconds)
+{
+    s_floor = seconds < 0 ? 0 : seconds;
+    kick();
+}
+
+uint32_t cc_poll_generation(void)
+{
+    if (!s_lock) return 0;
+    lock();
+    uint32_t g = s_gen;
+    unlock();
+    return g;
+}
+
+bool cc_link_busy(void)
+{
+    return s_busy > 0;
+}
+
+void cc_link_watch_enable(bool on)
+{
+    s_watch_want = on;
+    if (on) s_watch_reset = true;   /* forget a fallback and try now */
+    kick();
+}
+
+bool cc_link_watch_wanted(void) { return s_watch_want; }
+
+void cc_link_watch_resume(bool on)
+{
+    s_watch_want = on;
+    kick();
+}
+
+void cc_link_watch_test_fallback(void)
+{
+    s_banner_ms = 1;
+}
+
+static int ago_s(int64_t then_us, int64_t now)
+{
+    return (int)((now - then_us) / 1000000);
+}
+
+const char *cc_watch_status_text(char *b, size_t cap)
+{
+    if (!b || !cap) return "";
+    if (!s_task || !s_watch_want) {
+        strlcpy(b, "watch: off", cap);
+        return b;
+    }
+    lock();
+    watch_mode_t m = s_wv.mode;
+    int iv = s_wv.interval;
+    int64_t blk = s_wv.block_us, hb = s_wv.hb_us;
+    char why[sizeof(s_wv.why)];
+    strlcpy(why, s_wv.why, sizeof(why));
+    bool up = s_state == LS_CONNECTED;
+    unlock();
+    int64_t t = now_us();
+    int rate = eff_rate();
+    if (!up) {
+        strlcpy(b, "watch: starting (link down)", cap);
+    } else if (m == WM_FALLBACK) {
+        snprintf(b, cap, "watch: fallback (%s), polling every %ds", why, rate);
+    } else if (m == WM_PAUSED) {
+        strlcpy(b, "watch: off (polling paused)", cap);
+    } else if (m == WM_ON) {
+        char a[32], h[32];
+        if (blk) snprintf(a, sizeof(a), "last block %ds ago", ago_s(blk, t));
+        else strlcpy(a, "no block yet", sizeof(a));
+        if (hb) snprintf(h, sizeof(h), "heartbeat %ds ago", ago_s(hb, t));
+        else strlcpy(h, "no heartbeat yet", sizeof(h));
+        snprintf(b, cap, "watch: on I=%ds, %s, %s", iv, a, h);
+    } else {
+        strlcpy(b, "watch: starting", cap);
+    }
+    return b;
 }
 
 void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx)
@@ -868,6 +1377,15 @@ void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx)
     unlock();
 }
 
+int64_t cc_poll_last_ok_ms(void)
+{
+    if (!s_lock) return 0;
+    lock();
+    int64_t t = s_last_ok_ms;
+    unlock();
+    return t;
+}
+
 int cc_poll_snapshot(cc_session_t *out, int cap)
 {
     if (!s_lock) return -1;
@@ -877,6 +1395,160 @@ int cc_poll_snapshot(cc_session_t *out, int cap)
     if (n > 0) memcpy(out, s_list, sizeof(cc_session_t) * n);
     unlock();
     return n;
+}
+
+/* The host:port pins the link and the terminal use for the companion's Mac: the address the
+   link last tried, the server entry's host after a MagicDNS lookup, and the entry's
+   host string itself. Returns how many it filled (0: no Mac set up). */
+static int pin_targets(char hosts[3][128], int ports[3])
+{
+    char name[sizeof(g_settings.companion_server)];
+    lock();
+    strlcpy(name, g_settings.companion_server, sizeof(name));
+    unlock();
+    int n = 0;
+    int idx = name[0] ? server_index(name) : -1;
+    const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
+    if (sv) {
+        int port = sv->port > 0 ? sv->port : 22;
+        strlcpy(hosts[n], sv->host, sizeof(hosts[n])); ports[n++] = port;
+        char ip[16];
+        if (tailscale_resolve(sv->host, ip, sizeof(ip))) { strlcpy(hosts[n], ip, sizeof(hosts[n])); ports[n++] = port; }
+    }
+    lock();
+    if (s_pin_host[0]) { strlcpy(hosts[n], s_pin_host, sizeof(hosts[n])); ports[n++] = s_pin_port; }
+    unlock();
+    return n;
+}
+
+esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms)
+{
+    if (fp_out && fp_cap) fp_out[0] = 0;
+    if (!s_task || xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
+    char hosts[3][128]; int ports[3];
+    int n = pin_targets(hosts, ports);
+    if (n == 0) return ESP_ERR_INVALID_STATE;
+    for (int i = 0; i < n; i++) ssh_known_host_forget(hosts[i], ports[i]);
+    lock();
+    uint32_t want = ++s_forget_req;
+    unlock();
+    s_forget = true;
+    kick();
+    busy(+1);   /* the power ladder holds while the forget runs */
+    int64_t end = now_us() + (int64_t)timeout_ms * 1000;
+    esp_err_t r;
+    for (;;) {
+        lock();
+        bool done = (int32_t)(s_forget_done - want) >= 0;
+        if (done && fp_out && fp_cap) strlcpy(fp_out, s_forget_fp, fp_cap);
+        unlock();
+        if (done) { r = ESP_OK; break; }
+        if (now_us() >= end) { r = ESP_ERR_TIMEOUT; break; }   /* stays pending: cc_link_forget_done */
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    busy(-1);
+    return r;
+}
+
+uint32_t cc_link_forget_done(char *fp_out, size_t fp_cap)
+{
+    lock();
+    uint32_t n = s_forget_done;
+    if (fp_out && fp_cap) strlcpy(fp_out, s_forget_fp, fp_cap);
+    unlock();
+    return n;
+}
+
+bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap)
+{
+    if (fp_out && fp_cap) fp_out[0] = 0;
+    char hosts[3][128]; int ports[3];
+    int n = pin_targets(hosts, ports);
+    for (int i = n - 1; i >= 0; i--)   /* the link's own address first */
+        if (ssh_known_host_fingerprint(hosts[i], ports[i], fp_out, fp_cap)) return true;
+    return false;
+}
+
+esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)
+{
+    if (host_out && host_cap) host_out[0] = 0;
+    char hosts[3][128]; int ports[3];
+    int n = pin_targets(hosts, ports);
+    if (n == 0) return ESP_ERR_INVALID_STATE;
+    /* the last target is the link's own pin when it has connected, else the resolved entry */
+    if (!ssh_known_host_set_debug(hosts[n - 1], ports[n - 1])) return ESP_FAIL;
+    if (host_out && host_cap) snprintf(host_out, host_cap, "%s:%d", hosts[n - 1], ports[n - 1]);
+    s_drop = true;   /* reconnect, so the next connect meets the wrong pin */
+    kick();
+    return ESP_OK;
+}
+
+void cc_link_park(bool parked)
+{
+    if (s_parked == parked) return;
+    s_parked = parked;
+    if (!parked) s_reset_backoff = true;   /* connect at once */
+    ESP_LOGI(TAG, "%s", parked ? "parked (radio off)" : "unparked: connecting");
+    kick();
+}
+
+bool cc_link_parked(void) { return s_parked; }
+
+esp_err_t cc_link_poll_now(int timeout_ms)
+{
+    if (timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+    req_t r = { .type = REQ_POLL, .deadline_us = now_us() + (int64_t)timeout_ms * 1000 };
+    return submit(&r);
+}
+
+void cc_link_set_kick(bool on) { s_kick = on; }
+bool cc_link_kick_on(void) { return s_kick; }
+
+const char *cc_link_reconnect_log(char *b, size_t cap)
+{
+    if (!b || !cap) return "";
+    b[0] = 0;
+    rlog_t r[RLOG_N];
+    int n, head;
+    lock();
+    memcpy(r, s_rlog, sizeof(r));
+    n = s_rlog_n;
+    head = s_rlog_head;
+    unlock();
+    if (!n) { strlcpy(b, "reconnect log: empty", cap); return b; }
+    int64_t now = now_us() / 1000;
+    size_t len = 0;
+    for (int i = 0; i < n && len + 1 < cap; i++) {
+        const rlog_t *e = &r[(head - n + i + RLOG_N) % RLOG_N];
+        char when[24] = "-";
+        time_t t = (time_t)e->epoch;
+        struct tm tm;
+        if (t > 1600000000 && localtime_r(&t, &tm)) strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &tm);
+        int w = snprintf(b + len, cap - len, "%s%s %s %s (%.1f s ago)", i ? "\n" : "", when, e->up ? "up" : "down", e->why,
+                         (now - e->mono_ms) / 1000.0);
+        if (w < 0) break;
+        len += (size_t)w;
+        if (len >= cap) { len = cap - 1; break; }
+    }
+    return b;
+}
+
+bool cc_link_mac_address(char *out, size_t cap)
+{
+    if (!out || !cap) return false;
+    out[0] = 0;
+    lock();
+    strlcpy(out, s_pin_host, cap);
+    char name[sizeof(g_settings.companion_server)];
+    strlcpy(name, g_settings.companion_server, sizeof(name));
+    unlock();
+    if (out[0]) return true;
+    if (!name[0]) return false;
+    int idx = server_index(name);
+    const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
+    if (!sv) return false;
+    strlcpy(out, sv->host, cap);
+    return out[0] != 0;
 }
 
 void cc_link_on_wifi(bool connected)
@@ -905,7 +1577,8 @@ esp_err_t cc_link_start(void)
     s_parse = heap_caps_calloc(POLL_CAP, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
     s_json = heap_caps_malloc(JSON_CAP, MALLOC_CAP_SPIRAM);
     s_screen = heap_caps_malloc(SCREEN_CAP, MALLOC_CAP_SPIRAM);
-    if (!s_lock || !s_queue || !s_list || !s_parse || !s_json || !s_screen) return ESP_ERR_NO_MEM;
+    s_wbody = heap_caps_malloc(JSON_CAP, MALLOC_CAP_SPIRAM);
+    if (!s_lock || !s_queue || !s_list || !s_parse || !s_json || !s_screen || !s_wbody) return ESP_ERR_NO_MEM;
     cJSON_Hooks hooks = { .malloc_fn = psram_malloc, .free_fn = heap_caps_free };
     cJSON_InitHooks(&hooks);
     libssh_esp32_init();   /* once only */

@@ -32,6 +32,23 @@ bool tailscale_resolve(const char *host, char *ip_out, size_t cap);
 void tailscale_set_event_cb(ts_event_cb_t cb, void *user);
 bool tailscale_forget_node(void);         /* factory reset of node keys (re-auth needed) */
 const char *tailscale_last_error(void);
+
+/* ---- Plan 2 Task 8: Radio-off check-ins ---- */
+/* While on, tailscale_on_wifi(true) doesn't call microlink_rebind: a check-in tries the
+   WireGuard handshake first and rebinds only when that fails. */
+void tailscale_set_fast_resume(bool on);
+bool tailscale_fast_resume(void);
+typedef enum { TS_CHECKIN_HANDSHAKE, TS_CHECKIN_REBIND, TS_CHECKIN_FAILED } ts_checkin_t;
+const char *tailscale_checkin_name(ts_checkin_t c);   /* "handshake", "rebind", "failed" */
+/* Brings the tunnel to the Mac up. host is a tailnet IP or a MagicDNS name (resolved here). Waits up to
+   60 s for MicroLink to be connected (a cold boot registers first), then kicks
+   ml_wg_mgr_trigger_handshake + ml_wg_mgr_send_cmm and waits up to 8 s for ml_wg_mgr_peer_is_up. Only
+   when that fails (or force_rebind) it calls microlink_rebind, waits up to 60 s for
+   ML_EVT_COORD_REGISTERED | ML_EVT_DERP_CONNECTED and handshakes again. A host that isn't on the
+   tailnet needs no tunnel: HANDSHAKE at once. *ms_out (may be NULL) gets the time taken. Blocks. */
+ts_checkin_t tailscale_checkin(const char *host, bool force_rebind, uint32_t *ms_out);
+/* Kicks a handshake (and CMM) to a tailnet peer without waiting: the stale-peer fix. */
+void tailscale_kick_peer(const char *ip);
 #ifdef __cplusplus
 }
 #endif

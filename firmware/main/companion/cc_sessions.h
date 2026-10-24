@@ -24,6 +24,10 @@ typedef struct {
    (interactive) are kept with empty ids and background = false.
    Order: NEEDS_YOU, WORKING, IDLE, DONE, ENDED; newest startedAt first within each state. */
 int cc_sessions_parse(const char *json, cc_session_t *out, int cap);
+/* The one definition of "needs you": a background session with a live process that is blocked.
+   Used by cc_summary, the dashboard's pill and amber styling, and the keyboard light. A stopped
+   or interactive session that is blocked does not count. */
+bool cc_session_needs_you(const cc_session_t *s);
 /* Compacts in place: every active session plus the newest max_finished DONE/ENDED; keeps order. */
 int cc_sessions_visible(cc_session_t *s, int n, int max_finished);
 /* "2 need you · 1 working", "1 needs you", "3 working", or "All quiet" */
