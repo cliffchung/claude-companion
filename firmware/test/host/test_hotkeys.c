@@ -105,7 +105,7 @@ static void test_ctrl_m_is_not_enter(void)
 static void test_overlay_lists_every_shortcut(void)
 {
     const char *need[] = { "Up / Down", "Enter", "Ctrl+O", "Ctrl+T", "Ctrl+P", "Ctrl+K", "Ctrl+Space",
-                           "Esc", "Ctrl+]", "Shift+Up / Down" };
+                           "Esc", "Ctrl+Q", "Shift+Up / Down" };
     int n = hk_overlay_n;
     TEST_ASSERT_EQUAL(10, n);
     for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++) {

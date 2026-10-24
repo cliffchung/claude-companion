@@ -26,6 +26,7 @@
   "startedAt": 1792700100000,
   "sessionId": "c0000003-0003-4003-8003-000000000003",
   "name": "desk-question",
+  "waitingFor": "input needed",
   "state": "blocked"
  },
  {
