@@ -6,14 +6,9 @@
 #include <stdlib.h>
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
-#include "settings/settings.h"
-#include "sys/sysinfo.h"
-#include "net/wifi_mgr.h"
-#include "net/tailscale.h"
 #include "input/keyboard.h"
 #include "sys/power.h"
 #include "src/misc/lv_event_private.h" /* LVGL 9.6 has no public event-filter accessor. */
-#include <time.h>
 
 static const char *TAG = "ui";
 
@@ -793,18 +788,6 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
     return true;
 }
 
-/* ----------------------------------------------------------- helpers */
-void ui_status_text(char *buf, size_t len)
-{
-    char ip[48] = "";
-    wifi_mgr_get_ip4(ip, sizeof(ip));
-    int bat = sysinfo_battery_percent();
-    if (bat >= 0)
-        snprintf(buf, len, "%s %s   " LV_SYMBOL_BATTERY_FULL " %d%%", wifi_mgr_is_connected() ? LV_SYMBOL_WIFI : "", ip, bat);
-    else
-        snprintf(buf, len, "%s %s", wifi_mgr_is_connected() ? LV_SYMBOL_WIFI : "", ip);
-}
-
 /* ------------------------------------------------------------ gestures */
 static lv_obj_t       *s_gesture_scr;
 static ui_gesture_cb_t s_gesture_cb;
@@ -869,86 +852,6 @@ void ui_tailscale_icon_set_color(lv_obj_t *icon, lv_color_t color, lv_opa_t opa)
         lv_obj_set_style_bg_color(d, color, 0);
         lv_obj_set_style_bg_opa(d, opa, 0);
     }
-}
-
-/* ------------------------------------------------------- status bar */
-typedef struct { lv_obj_t *wifi, *ts, *text, *clock; bool blink; unsigned n; } statusbar_t;
-
-/* Solid while the link is up, blinking between text and muted while it is coming
- * up, and dimmed grey rather than hidden while it is off, the way a phone shows
- * it. Only a element switched off in the settings disappears. */
-static void statusbar_icon(lv_obj_t *o, bool show, bool up, bool busy, bool blink, bool dots)
-{
-    if (!show) { lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN); return; }
-    lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
-    lv_color_t col;
-    lv_opa_t opa;
-    if (busy) { col = blink ? UI_TEXT : UI_MUTED; opa = LV_OPA_COVER; }
-    else      { col = up ? UI_TEXT : UI_MUTED;    opa = up ? LV_OPA_COVER : LV_OPA_40; }
-    if (dots) {
-        ui_tailscale_icon_set_color(o, col, opa);
-    } else {
-        lv_obj_set_style_text_color(o, col, 0);
-        lv_obj_set_style_text_opa(o, opa, 0);
-    }
-}
-
-static void statusbar_tick(lv_timer_t *t)
-{
-    statusbar_t *sb = lv_timer_get_user_data(t);
-    unsigned it = g_settings.status_items;
-    sb->blink = !sb->blink;
-
-    statusbar_icon(sb->wifi, (it & STATUS_WIFI) != 0,
-                   wifi_mgr_is_connected(), wifi_mgr_is_connecting(), sb->blink, false);
-    ts_state_t ts = tailscale_state();
-    statusbar_icon(sb->ts, (it & STATUS_TAILSCALE) != 0, ts == TS_CONNECTED,
-                   ts == TS_WAIT_WIFI || ts == TS_CONNECTING || ts == TS_REGISTERING || ts == TS_RECONNECTING,
-                   sb->blink, true);
-
-    /* The rest changes slowly, and reading the battery costs an I2C round trip. */
-    if (sb->n++ % 3) return;
-
-    char b[128]; int n = 0;
-    b[0] = 0;
-    if (it & STATUS_IP) {
-        char ip[48]; wifi_mgr_get_ip4(ip, sizeof(ip));
-        if (ip[0]) n += snprintf(b + n, sizeof(b) - n, "%s", ip);
-    }
-    int bat = (it & STATUS_BATTERY) ? sysinfo_battery_percent() : -1;
-    if (bat >= 0) n += snprintf(b + n, sizeof(b) - n, "%s" LV_SYMBOL_BATTERY_FULL " %d%%", n ? "   " : "", bat);
-    if ((it & STATUS_KEYBOARD) && keyboard_present()) n += snprintf(b + n, sizeof(b) - n, "%s" LV_SYMBOL_KEYBOARD, n ? "   " : "");
-    if (strcmp(lv_label_get_text(sb->text), b)) lv_label_set_text(sb->text, b);
-
-    char fmt[24] = "";
-    if (it & STATUS_DATE) strlcat(fmt, (it & STATUS_YEAR) ? "%Y-%m-%d" : "%m/%d", sizeof(fmt));
-    if (it & STATUS_CLOCK) { if (fmt[0]) strlcat(fmt, " ", sizeof(fmt)); strlcat(fmt, "%H:%M", sizeof(fmt)); }
-    if (fmt[0]) {
-        time_t now = time(NULL); struct tm tm; localtime_r(&now, &tm);
-        char tb[48]; strftime(tb, sizeof(tb), fmt, &tm);
-        if (strcmp(lv_label_get_text(sb->clock), tb)) lv_label_set_text(sb->clock, tb);
-    } else {
-        if (*lv_label_get_text(sb->clock)) lv_label_set_text(sb->clock, "");
-    }
-}
-
-static void statusbar_del_cb(lv_event_t *e) { free(lv_event_get_user_data(e)); }
-
-void ui_statusbar_attach(lv_obj_t *bar)
-{
-    statusbar_t *sb = calloc(1, sizeof(*sb));
-    if (!sb) return;
-    sb->wifi = lv_label_create(bar);
-    lv_label_set_text(sb->wifi, LV_SYMBOL_WIFI);
-    sb->ts = ui_tailscale_icon(bar, 4, 2);
-    sb->text = lv_label_create(bar);
-    lv_obj_set_style_text_color(sb->text, UI_MUTED, 0);
-    sb->clock = lv_label_create(bar);
-    lv_obj_set_style_text_color(sb->clock, UI_MUTED, 0);
-    lv_obj_add_event_cb(bar, statusbar_del_cb, LV_EVENT_DELETE, sb);
-    lv_timer_t *t = lv_timer_create(statusbar_tick, 400, sb);
-    ui_timer_bind(t, bar);
-    statusbar_tick(t);
 }
 
 void ui_format_size(char *buf, size_t len, uint64_t bytes)

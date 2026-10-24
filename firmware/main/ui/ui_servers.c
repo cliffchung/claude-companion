@@ -56,7 +56,7 @@ static void status_timer(lv_timer_t *t)
     lv_label_set_text(l, buf);
 }
 
-lv_obj_t *ui_servers_create(void *arg)
+lv_obj_t *ui_hosts_create(void *arg)
 {
     (void)arg;
     lv_obj_t *scr = ui_screen_base();

@@ -45,7 +45,7 @@ static void plan2_defaults(void)
 void settings_reset_defaults(void)
 {
     memset(&g_settings, 0, sizeof(g_settings));
-    g_settings.rotation = 1;            /* landscape, USB-C on the left */
+    g_settings.rotation = 1;            /* reserved (Plan 4): the display is always ROTATION_90 */
     g_settings.brightness = 80;
     g_settings.ss_enable = 1;
     g_settings.ss_idle_min = 5;
@@ -61,7 +61,6 @@ void settings_reset_defaults(void)
     g_settings.kbd_led_mode = 0;
     g_settings.kbd_led_bright = 20;
     g_settings.kbd_led_rgb[0] = 0; g_settings.kbd_led_rgb[1] = 128; g_settings.kbd_led_rgb[2] = 255;
-    g_settings.status_items = STATUS_DEFAULT;
     g_settings.creds_on_sd = 0;
     g_settings.term_cursor_style = 0;
     g_settings.term_cursor_blink = 1;
@@ -70,7 +69,7 @@ void settings_reset_defaults(void)
     ui_theme_set_preset(0);
     g_settings.term_font = 0;
     g_settings.volume = 60;
-    g_settings.ota_url[0] = 0;           /* no update manifest yet; the OTA tile is hidden */
+    g_settings.ota_url[0] = 0;           /* no update manifest yet */
     g_settings.ssh_bell = 1;
     g_settings.ts_enable = 0;
     g_settings.ts_direct = 0;

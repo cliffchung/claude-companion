@@ -44,7 +44,7 @@ static void test_dashboard_keys(void)
     key_event_t e;
     e = ch('o', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_OPEN, hk_dashboard(&e));
     e = ch('P', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_SETTINGS, hk_dashboard(&e));
-    e = ch('m', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_MORE, hk_dashboard(&e));
+    e = ch('m', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_TERMINAL, hk_dashboard(&e));
     e = ch('k', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_KEYS, hk_dashboard(&e));
     e = ch('p', MOD_META); TEST_ASSERT_EQUAL(HK_D_SETTINGS, hk_dashboard(&e));
     e = ch('x', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_LOCAL, hk_dashboard(&e));
@@ -65,7 +65,7 @@ static void test_dashboard_ctrl_never_typed(void)
 static void test_ctrl_m_is_not_enter(void)
 {
     key_event_t e = ch('m', MOD_CTRL);
-    TEST_ASSERT_EQUAL(HK_D_MORE, hk_dashboard(&e));
+    TEST_ASSERT_EQUAL(HK_D_TERMINAL, hk_dashboard(&e));
     e = sk(SK_ENTER, MOD_CTRL);
     TEST_ASSERT_EQUAL(HK_D_NONE, hk_dashboard(&e));   /* Ctrl+Enter keeps today's meaning */
 }

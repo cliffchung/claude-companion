@@ -1,19 +1,13 @@
 #include "screenshot.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <sys/stat.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"
 #include "driver/jpeg_encode.h"
 #include "mbedtls/base64.h"
 #include "lvgl.h"
-#include "esp_lcd_touch.h"
-#include "bsp/m5stack_tab5.h"
-#include "storage/sd.h"
-#include "ui/ui.h"
-#include "sys/display_ctl.h"
 #include "sys/power.h"
 #include "esp_timer.h"
 

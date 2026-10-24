@@ -156,9 +156,8 @@ uint32_t cc_link_forget_done(char *fp, size_t cap) { snprintf(fp, cap, PREVIEW_F
 bool cc_link_pinned_fingerprint(char *fp, size_t cap) { snprintf(fp, cap, "SHA256:OldPreviewKeyOnly9876543210zyxwvutsrqponm"); return true; }
 esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
-SCREEN(ui_servers_create)
+SCREEN(ui_hosts_create)
 SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create)
-SCREEN(ui_ota_create) SCREEN(ui_devinfo_create)
 SCREEN(ui_server_form_create)
 static int snapshot(lv_obj_t *s, const char *path) {
     int w=lv_obj_get_width(s), h=lv_obj_get_height(s);
@@ -319,18 +318,6 @@ static void keyboard_check(void) {
     assert(lv_obj_has_state(toggle,LV_STATE_FOCUS_KEY));
     press_key(SK_ENTER,0,false); assert(lv_obj_has_state(toggle,LV_STATE_CHECKED));
     press_key(SK_ENTER,0,false); assert(!lv_obj_has_state(toggle,LV_STATE_CHECKED));
-    /* Exercise the real home tiles, especially the second row without quick actions. */
-    for (unsigned tile=0; tile<9; tile++) {
-        ui_nav_home(); ui_nav_push(ui_home_create,NULL);
-        lv_obj_t *home=lv_screen_active();
-        lv_obj_t *tiles=lv_obj_get_child(home,1);
-        lv_obj_t *target=lv_obj_get_child(tiles,tile);
-        for (unsigned n=0;n<12 && !lv_obj_has_state(target,LV_STATE_FOCUS_KEY);n++)
-            press_key(SK_TAB,0,false);
-        assert(lv_obj_has_state(target,LV_STATE_FOCUS_KEY));
-        press_key(SK_ENTER,0,false);
-        assert(lv_screen_active()!=home);
-    }
     puts("Keyboard navigation, slider persistence, modal isolation, mixed input, switches, deletion and SSH routing checks passed.");
 }
 
@@ -507,7 +494,7 @@ int main(int argc,char **argv) {
     void *buf=malloc(w*50*4);
     lv_display_set_buffers(d,buf,NULL,w*50*4,LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(d,flush);
-    g_settings.brightness=58; g_settings.status_items=STATUS_DEFAULT;
+    g_settings.brightness=58;
     g_settings.term_line_height=26;
     g_settings.kbd_dark_light=5;   /* PT24 default: "Low" */
     /* Exercise splash before font runtime copies or the application UI exist. */
@@ -637,19 +624,20 @@ int main(int argc,char **argv) {
         assert(!ui_dashboard_keys_overlay_shown());
         step(d,100);
         assert(ui_nav_is_top(ui_dashboard_create));
-        /* Ctrl+P and Ctrl+M navigate (Settings, More); Esc comes back */
+        /* Ctrl+P and Ctrl+M navigate (Settings, Terminal); Esc comes back */
         key_event_t p = { .type = KEY_EV_CHAR, .cp = 'p', .mods = MOD_CTRL };
         assert(preview_sink.key(&p, preview_sink.user)); step(d,400);
         assert(ui_nav_is_top(ui_settings_create));
         ui_nav_back(); step(d,400);
         key_event_t m = { .type = KEY_EV_CHAR, .cp = 'm', .mods = MOD_CTRL };
         assert(preview_have_sink && preview_sink.key(&m, preview_sink.user)); step(d,400);
-        assert(ui_nav_is_top(ui_home_create));
-        puts("Dashboard hotkeys: Ctrl+K overlay, any key closes it, Ctrl+P settings, Ctrl+M more passed.");
+        assert(ui_nav_is_top(ui_hosts_create));
+        puts("Dashboard hotkeys: Ctrl+K overlay, any key closes it, Ctrl+P settings, Ctrl+M terminal passed.");
         return r;
     }
     ui_screen_create_fn create= argc>1 && !strcmp(argv[1],"settings") ? ui_settings_create :
-                 argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create : ui_home_create;
+                 argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create : NULL;
+    if (!create) { fprintf(stderr, "preview: unknown case %s\n", argc>1 ? argv[1] : "(none)"); return 2; }
     g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;   /* Settings → Network's switch (PREVIEW_TS=0: off) */
     /* Exercise persisted preset indexes and live theme rebuilds before capture. */
     ui_nav_push(create, NULL);
@@ -661,7 +649,7 @@ int main(int argc,char **argv) {
     lv_obj_t *s = lv_screen_active();
     if (create == ui_settings_create) {
         /* Real click events, including selection preservation across rebuilds. */
-        for (unsigned i = 0; i < 8; i++) {
+        for (unsigned i = 0; i < 7; i++) {
             lv_obj_t *before = s;
             lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
             lv_obj_send_event(lv_obj_get_child(nav, i), LV_EVENT_CLICKED, NULL);
@@ -669,11 +657,11 @@ int main(int argc,char **argv) {
             s = lv_screen_active();
             assert(s == before); /* tab switch must not rebuild the screen */
             lv_obj_t *deck = lv_obj_get_child(lv_obj_get_child(s, 1), 1);
-            for (unsigned j = 0; j < 8; j++)
+            for (unsigned j = 0; j < 7; j++)
                 assert(lv_obj_has_flag(lv_obj_get_child(deck, j), LV_OBJ_FLAG_HIDDEN) == (j != i));
         }
         unsigned category = argc>5 ? (unsigned)atoi(argv[5]) : 0;
-        assert(category < 8);
+        assert(category < 7);
         lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
         lv_obj_send_event(lv_obj_get_child(nav, category), LV_EVENT_CLICKED, NULL);
         lv_tick_inc(200); lv_timer_handler();
@@ -681,14 +669,5 @@ int main(int argc,char **argv) {
     }
     step(d,400);
     lv_obj_update_layout(s); lv_refr_now(d);
-    if (create == ui_home_create) {
-        lv_obj_t *content = lv_obj_get_child(s, 1);
-        unsigned tiles = lv_obj_get_child_count(content);
-        assert(tiles >= 5);   /* Plan 4 Tasks 1-2 removed Music, Camera, USB and Files */
-        for (unsigned i = 0; i < tiles; i++) {
-            lv_area_t a; lv_obj_get_coords(lv_obj_get_child(content, i), &a);
-            assert(a.x1 >= 0 && a.x2 < w && a.y1 >= UI_TOPBAR_H && a.y2 < h);
-        }
-    }
     return snapshot(s, "screen.ppm");
 }

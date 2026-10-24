@@ -7,24 +7,12 @@
 extern "C" {
 #endif
 
-/* Status bar elements, as a bitmask in app_settings_t.status_items. */
-#define STATUS_WIFI      (1u << 0)
-#define STATUS_TAILSCALE (1u << 1)
-#define STATUS_IP        (1u << 2)
-#define STATUS_BATTERY   (1u << 3)
-#define STATUS_KEYBOARD  (1u << 4)
-#define STATUS_CLOCK     (1u << 5)
-#define STATUS_DATE      (1u << 6)
-#define STATUS_YEAR      (1u << 7)
-#define STATUS_DEFAULT   (STATUS_WIFI | STATUS_TAILSCALE | STATUS_IP | STATUS_BATTERY | \
-                          STATUS_KEYBOARD | STATUS_CLOCK | STATUS_DATE)
-
 typedef struct {
     /* Reserved fields keep the NVS blob layout of older builds; unused. */
     uint8_t  lang;              /* reserved (was lang_t): English only */
     uint8_t  reserved_src;          /* reserved: formerly the input source */
     uint8_t  reserved_kana_mode;    /* reserved: formerly the kana mode */
-    uint8_t  rotation;          /* 0..3 -> lv_display_rotation_t */
+    uint8_t  rotation;          /* reserved (Plan 4): the display is always LV_DISPLAY_ROTATION_90 */
     uint8_t  brightness;        /* 5..100 */
     /* ss_*: reserved, so old blobs keep their layout; the fork's screensaver was removed (Plan 2) */
     uint8_t  ss_enable;         /* reserved */
@@ -43,14 +31,14 @@ typedef struct {
     uint8_t  volume;            /* 0..100 */
     uint8_t  reserved_autostart;        /* reserved: formerly a web service autostart */
     uint8_t  reserved_dict_sd;          /* reserved: formerly a dictionary option */
-    char     ota_url[160];
+    char     ota_url[160];      /* the OTA manifest URL (no Settings row since Plan 4; Task 7 adds `ota url`) */
     uint8_t  ssh_bell;
     uint8_t  ts_enable;          /* the Tailscale switch: sticky (tailscale_set_enabled saves it); v21 turned it off once */
     char     ts_auth_key[160];
     char     ts_device_name[40];
     char     ts_ctrl_host[96];
     uint8_t  ts_direct;          /* try direct UDP paths (experimental); 0 = DERP relay only */
-    uint8_t  status_items;       /* STATUS_* bitmask */
+    uint8_t  status_items;       /* reserved (Plan 4): the fork status bar was removed */
     uint8_t  creds_on_sd;        /* keep the SSH server list on the TF card, not in NVS */
     uint8_t  theme_preset;       /* index into the preset table, UI_THEME_CUSTOM for custom */
     uint32_t theme_colors[8];    /* used when the preset is custom */

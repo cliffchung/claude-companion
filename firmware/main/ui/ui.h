@@ -77,12 +77,6 @@ void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_
 lv_obj_t *ui_busy(const char *text);      /* returns overlay; delete to dismiss */
 void ui_busy_close(lv_obj_t *busy);
 
-/* Status strip content used by home. */
-void ui_status_text(char *buf, size_t len);
-/* Adds the WiFi/Tailscale icons, IP/battery/keyboard text and the clock to a
- * top bar, honouring g_settings.status_items. Owns its own refresh timer. */
-void ui_statusbar_attach(lv_obj_t *bar);
-
 /* The Tailscale mark is a 3x3 grid of dots and no font shipped here has it, so
  * it is drawn. `dot` is the diameter of one dot and `gap` the space between. */
 lv_obj_t *ui_tailscale_icon(lv_obj_t *parent, int dot, int gap);
@@ -100,8 +94,7 @@ void ui_async(lv_async_cb_t fn, void *arg);
 void ui_timer_bind(lv_timer_t *t, lv_obj_t *obj);
 
 /* Screens */
-lv_obj_t *ui_home_create(void *arg);
-lv_obj_t *ui_servers_create(void *arg);
+lv_obj_t *ui_hosts_create(void *arg);
 lv_obj_t *ui_server_form_create(void *arg);      /* arg: int index or -1 */
 lv_obj_t *ui_terminal_create(void *arg);         /* arg: server index */
 /* The SSH Terminal refuses the companion's Mac (no login shell there) with this toast. */
@@ -118,8 +111,6 @@ lv_obj_t *ui_wifi_create(void *arg);
 lv_obj_t *ui_settings_create(void *arg);
 lv_obj_t *ui_appearance_create(void *arg);
 lv_obj_t *ui_ansi_create(void *arg);
-lv_obj_t *ui_ota_create(void *arg);
-lv_obj_t *ui_devinfo_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);
 /* The pre-Hibernate notice: a full-screen bg object on lv_layer_top with the centred fg text
    "Sleeping to save battery. Press the side button to wake." (power lights the panel first). */

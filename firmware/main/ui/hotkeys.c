@@ -32,7 +32,7 @@ hk_dash_t hk_dashboard(const key_event_t *ev)
     switch (lower(ev->cp)) {
     case 'o': return HK_D_OPEN;
     case 'p': return HK_D_SETTINGS;
-    case 'm': return HK_D_MORE;
+    case 'm': return HK_D_TERMINAL;
     case 'k': return HK_D_KEYS;
     default:  return HK_D_LOCAL;
     }
@@ -43,9 +43,9 @@ const char *const hk_overlay_lines[] = {
     "Enter  send the answer",
     "Ctrl+O  open the session",
     "Ctrl+P  settings",
-    "Ctrl+M  more",
+    "Ctrl+M  terminal",
     "Ctrl+K  this list",
-    "Esc  back (Settings, More)",
+    "Esc  back (Settings, Terminal)",
     "In a session: Ctrl+]  leave (it keeps running)",
     "In a session: Shift+Up / Down  scroll back",
     "Ctrl+Tab  buttons mode",

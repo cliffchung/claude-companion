@@ -118,3 +118,42 @@ The measured gain (+16.5 KB) is well over the spec's expected 5.7 KB (Files 5.1 
 decoders and file-system driver state plus the image cache bookkeeping, now compiled out. Caveat: the Task 1 figure came after
 2 min idle with three test sessions and the screen off, and this one after a fresh flash, so the two are not like for like.
 After the flash `companion status` is unchanged (connected, LAN 192.168.1.50, host key SHA256:EXAM...), and the heartbeat resumed.
+
+## Task 3: the More launcher, the fork status bar, rotation, Device info, OTA and USB screens
+
+**Removed.** `ui_home.c` (the More launcher), `ui_devinfo.c`, `ui_ota.c` (`ota/ota.c` and `storage/sd.c` stay for Plan 7),
+`ui_statusbar_attach` / `statusbar_tick` / `statusbar_icon` and its 400 ms timer, `ui_status_text` (and, per C3, its call in
+`ui_terminal.c`'s `build_status`, with the label it filled; the rest of `build_status` waits for T10), `usb_mgr_status_text()`
+(C1), the `STATUS_*` bitmask, the Status bar category (rail is 7: System, Network, Display, Power, Input, Security, About),
+the rotation row, the System › OTA URL row (T7 adds `ota url`), and the `STR_HOME_*`, `STR_SB_*` and `STR_STATUS_*` strings.
+`app_settings_t.rotation` and `status_items` are marked reserved (Plan 4); the blob layout is unchanged.
+`display_apply_settings` always sets `LV_DISPLAY_ROTATION_90`.
+
+**Added.** The dashboard footer's "More" is now "Terminal", and Ctrl+M is `HK_D_TERMINAL`; both push `ui_hosts_create`
+(the P4-9 bridge: `ui_servers_create` renamed in `ui_servers.c`, and `term_create`'s fallback uses it). The overlay lines say
+"Ctrl+M  terminal" and "Esc  back (Settings, Terminal)". Network gets the bridge row "Wi-Fi networks" (value: the SSID),
+which opens `ui_wifi_create`; T8 deletes it.
+
+**Implementer ruling T3-a (hard rule 5).** "Based on Clientre 5 by Mozgi512 (MIT)" lived only in Device info. So that About
+keeps showing it until T7 rebuilds About, the line is appended to `STR_ABOUT_TEXT` (Settings › About alert), and
+`tools/check_trim.sh`'s allowlist moves from `ui_devinfo.c` to `i18n/i18n.h`. Cost if wrong: one line T7 rewrites anyway.
+
+**Preview.** `CMakeLists.txt` drops `ui_home.c` (C11). The `home` case, the home tile keyboard walk in `keyboard`, the tile-fit
+check, the `ui_ota_create` / `ui_devinfo_create` stubs and `status_items` are gone; an unknown case now exits 2. The settings
+loops and the category assert use 7 (C13). `dashboard-keys` asserts `ui_nav_is_top(ui_hosts_create)` after Ctrl+M. The README
+drops `home`, the portrait (720 × 1280) commands and table row, and the Backup / Status bar categories. `font-policy` still
+aborts on its FONT_SMALL == FONT_BODY assert, as at the base commit e57d44d (C8: T4 deletes that case).
+
+**Device (C18).** The old check "no 400 ms timer on the dashboard" asserted nothing, since only the launcher attached the
+status bar. Replaced by the grep (no `ui_statusbar_attach` anywhere) plus `ui timers` on the dashboard and after `key ctrl m`.
+
+| Item | Task 2 | Task 3 | Delta |
+|---|---|---|---|
+| Total image | 7,341,993 B | 7,282,043 B | −59,950 B |
+| `ts` free internal, dashboard, a few min after boot, Tailscale off | 160,899 B | 161,283 B | +384 B |
+| `ui timers`, dashboard | 6 timers (300, 500, 10, 16 ×3) | same 6; no 400 ms | none |
+| `ui timers`, after `key ctrl m` (server list) | n/a | 2000, 500, 10, 16 ×3; no 400 ms | |
+
+`key ctrl m` opens the server list and `key esc` returns to the dashboard (timers 2000 ms → 300 ms). `ui settings`, then
+Network › Wi-Fi networks opens the Wi-Fi screen. The first key after the screen dims is swallowed as the wake key, as designed,
+so device scripts must check the screen before relying on a key. No test sessions were created, and no card was selected or opened.

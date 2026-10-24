@@ -30,21 +30,6 @@ static void bright_cb(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save();
 }
 
-static void rot_menu_cb(int i, void *ud)
-{
-    (void)ud;
-    if (i < 0) return;
-    g_settings.rotation = i; settings_save();
-    lv_display_set_rotation(NULL, (lv_display_rotation_t)i);
-    ui_nav_refresh();
-}
-static void rot_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *items[] = { "0°", "90°", "180°", "270°" };
-    ui_menu(tr(STR_SET_ROTATION), items, 4, rot_menu_cb, NULL);
-}
-
 static void ntp_cb(lv_event_t *e)
 {
     (void)e;
@@ -122,8 +107,6 @@ static void creds_reload_cb(lv_event_t *e)
 static void reboot_yes(bool yes, void *ud) { (void)ud; if (yes) link_down_restart("Settings reboot"); }
 static void reboot_cb(lv_event_t *e) { (void)e; ui_confirm(tr(STR_REBOOT), tr(STR_REBOOT_Q), reboot_yes, NULL); }
 static void about_cb(lv_event_t *e) { (void)e; char b[400]; snprintf(b, sizeof(b), "v%s\n%s", sysinfo_app_version(), tr(STR_ABOUT_TEXT)); ui_alert(tr(STR_ABOUT), b); }
-static void ota_url_cb(const char *v, void *ud) { (void)ud; if (v) { strlcpy(g_settings.ota_url, v, sizeof(g_settings.ota_url)); settings_save(); ui_nav_refresh(); } }
-static void ota_url_row_cb(lv_event_t *e) { (void)e; ui_prompt(tr(STR_OTA_URL), "https://", g_settings.ota_url, false, ota_url_cb, NULL); }
 
 /* Power: the ladder's timings, wakes and the time zone (Plan 2). Menus of presets; the values go
    through power_setting_set, so they get the console's clamps. */
@@ -296,6 +279,7 @@ static void ts_switch_cb(lv_event_t *e)
     ui_nav_refresh();
 }
 static void ts_details_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_tailscale_create, NULL); }
+static void wifi_networks_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_wifi_create, NULL); }
 static void mac_fallback_prompt_cb(const char *v, void *ud)
 {
     (void)ud;
@@ -363,19 +347,11 @@ static lv_obj_t *slider_row(lv_obj_t *parent, const char *label, int min, int ma
     return s;
 }
 
-static void sb_bit_cb(lv_event_t *e)
-{
-    unsigned bit = (unsigned)(uintptr_t)lv_event_get_user_data(e);
-    if (lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED)) g_settings.status_items |= bit;
-    else g_settings.status_items &= ~bit;
-    settings_save();
-}
-
 /* Keep the selected category when returning from a nested setting. Each panel
  * has its own scroll area beside the category menu. */
 static unsigned s_category;
 static const str_id_t s_categories[] = {
-    STR_SET_SYSTEM, STR_SET_NETWORK, STR_SET_DISPLAY, STR_SET_POWER, STR_SET_STATUSBAR, STR_SET_INPUT,
+    STR_SET_SYSTEM, STR_SET_NETWORK, STR_SET_DISPLAY, STR_SET_POWER, STR_SET_INPUT,
     STR_SET_SECURITY, STR_ABOUT
 };
 /* Only the visible category is built: LVGL's small objects land in internal RAM, which TLS and
@@ -388,7 +364,6 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         time_t now = time(NULL); struct tm tm; localtime_r(&now, &tm);
         strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
         ui_setting_row(c, tr(STR_SET_NTP), buf, ntp_cb, NULL);
-        ui_setting_row(c, tr(STR_OTA_URL), g_settings.ota_url, ota_url_row_cb, NULL);
         ui_section_title(c, "Companion");
         char mac[48], cpath[64];
         cc_settings_server_name(mac, sizeof(mac));
@@ -417,6 +392,9 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         ui_label(c, buf, FONT_SMALL, UI_MUTED);
         ui_label(c, "The Host link uses your home network. The fallback address is used when the Host's name "
                     "doesn't resolve. Devices reachable only over Tailscale need the switch on.", FONT_SMALL, UI_MUTED);
+        /* P4-9 bridge until Task 8 rebuilds Network: the old Wi-Fi screen lost its launcher tile */
+        ui_setting_row(c, "Wi-Fi networks", wifi_mgr_is_connected() ? wifi_mgr_ssid() : tr(STR_WIFI_NOT_CONNECTED),
+                       wifi_networks_cb, NULL);
         ui_section_title(c, "Wi-Fi advanced");
         char sip[64];
         sip_text(sip, sizeof(sip));
@@ -427,8 +405,6 @@ static void panel_fill(lv_obj_t *c, unsigned category)
     }
     case 2: {
         slider_row(c, tr(STR_SET_BRIGHTNESS), 5, 100, g_settings.brightness, bright_cb);
-        snprintf(buf, sizeof(buf), "%d°", g_settings.rotation * 90);
-        ui_setting_row(c, tr(STR_SET_ROTATION), buf, rot_cb, NULL);
         ui_setting_row(c, tr(STR_SET_THEME), "", appearance_cb, NULL);
         break;
     }
@@ -454,19 +430,6 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         break;
     }
     case 4: {
-        static const struct { str_id_t id; unsigned bit; } sb_items[] = {
-            { STR_SB_WIFI, STATUS_WIFI }, { STR_SB_TAILSCALE, STATUS_TAILSCALE },
-            { STR_SB_IP, STATUS_IP },     { STR_SB_BATTERY, STATUS_BATTERY },
-            { STR_SB_KEYBOARD, STATUS_KEYBOARD }, { STR_SB_CLOCK, STATUS_CLOCK },
-            { STR_SB_DATE, STATUS_DATE }, { STR_SB_YEAR, STATUS_YEAR },
-        };
-        for (size_t i = 0; i < sizeof(sb_items) / sizeof(sb_items[0]); i++)
-            ui_switch_row(c, tr(sb_items[i].id), (g_settings.status_items & sb_items[i].bit) != 0,
-                          sb_bit_cb, (void *)(uintptr_t)sb_items[i].bit);
-        ui_label(c, tr(STR_SB_NOTE), FONT_SMALL, UI_MUTED);
-        break;
-    }
-    case 5: {
         ui_label(c, tr(STR_GESTURE_NOTE), FONT_SMALL, UI_MUTED);
         snprintf(buf, sizeof(buf), tr(STR_SET_KBD_STATUS), keyboard_present() ? tr(STR_PRESENT) : (keyboard_usb_present() ? "USB" : tr(STR_ABSENT)));
         ui_label(c, buf, FONT_SMALL, UI_MUTED);
@@ -481,13 +444,13 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         lv_obj_set_style_text_color(lv_obj_get_user_data(lc), UI_TEXT, 0);
         break;
     }
-    case 6: {
+    case 5: {
         ui_switch_row(c, tr(STR_CREDS_ON_SD), g_settings.creds_on_sd, creds_sd_cb, NULL);
         ui_label(c, tr(STR_CREDS_NOTE), FONT_SMALL, UI_MUTED);
         if (g_settings.creds_on_sd) ui_setting_row(c, tr(STR_CREDS_RELOAD), "", creds_reload_cb, NULL);
         break;
     }
-    case 7: {
+    case 6: {
         snprintf(buf, sizeof(buf), "v%s", sysinfo_app_version());
         ui_setting_row(c, tr(STR_ABOUT), buf, about_cb, NULL);
         ui_button_colored(c, tr(STR_REBOOT), UI_DANGER, reboot_cb, NULL);

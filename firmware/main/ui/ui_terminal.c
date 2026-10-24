@@ -340,11 +340,6 @@ static lv_obj_t *build_status(term_ctx_t *c)
     lv_obj_set_flex_grow(c->status_lbl, 1);
     lv_label_set_long_mode(c->status_lbl, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(c->status_lbl, FONT_SMALL, 0);
-    lv_obj_t *st = lv_label_create(bar);
-    char buf[128]; ui_status_text(buf, sizeof(buf));
-    lv_label_set_text(st, buf);
-    lv_obj_set_style_text_font(st, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(st, UI_MUTED, 0);
     return bar;
 }
 
@@ -469,7 +464,7 @@ static void back_async(void *arg) { (void)arg; ui_nav_back(); }
 static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
 {
     const server_t *s = server_store_get(idx);
-    if (!s) return ui_servers_create(NULL);
+    if (!s) return ui_hosts_create(NULL);
     /* No interactive login shell on the companion's Mac: it would start the user's tmux and
        type into live sessions. Only the dashboard's pty exec (`claude attach`) goes there. */
     if ((!cmd || !cmd->cmd[0]) && cc_link_is_companion_server(idx)) {

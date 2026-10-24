@@ -49,15 +49,6 @@ X(ON, "On") \
 X(OFF, "Off") \
 X(NONE, "None") \
 X(UNKNOWN, "Unknown") \
-X(HOME_SSH, "SSH Terminal") \
-X(HOME_MUSIC, "Music") \
-X(HOME_CAMERA, "Camera") \
-X(HOME_WIFI, "WiFi") \
-X(HOME_SETTINGS, "Settings") \
-X(HOME_DEVINFO, "Device Info") \
-X(HOME_USB, "USB") \
-X(HOME_TOOLS, "Tools") \
-X(HOME_OTA, "Firmware") \
 X(CAMERA_STARTING, "Starting camera...") \
 X(CAMERA_READY, "Ready") \
 X(CAMERA_CAPTURE, "Take photo") \
@@ -147,15 +138,6 @@ X(SET_UTC_NOTE, "UTC+ means local time is ahead of UTC. Japan is UTC+9.") \
 X(SET_NTP, "Sync time (NTP)") \
 X(SET_TIME_SYNCED, "Time synchronized") \
 X(SET_STATUSBAR, "Status bar") \
-X(SB_WIFI, "WiFi icon") \
-X(SB_TAILSCALE, "Tailscale icon") \
-X(SB_IP, "IP address") \
-X(SB_BATTERY, "Battery") \
-X(SB_KEYBOARD, "Keyboard icon") \
-X(SB_CLOCK, "Clock") \
-X(SB_DATE, "Date") \
-X(SB_YEAR, "Year in the date") \
-X(SB_NOTE, "Icons blink while the link is coming up.") \
 X(SET_THEME, "Appearance") \
 X(TH_PRESET, "Theme") \
 X(TH_CUSTOM, "Custom") \
@@ -252,14 +234,13 @@ X(USB_WAITING, "Waiting for USB device...") \
 X(USB_FORMAT, "Format USB (FAT32)") \
 X(USB_FORMAT_WARN, "Formatting will erase all files on the USB drive.") \
 X(USB_FORMATTED, "USB drive formatted") \
-X(STATUS_BAR_TIME, "Time") \
 X(BATTERY_PCT, "Battery %d%%") \
 X(TERM_HINT, "Edges: top=status, left=controls, right=keyboard") \
 X(SOFT_KBD, "Soft Keyboard") \
 X(REBOOT, "Reboot") \
 X(REBOOT_Q, "Reboot now?") \
 X(ABOUT, "About") \
-X(ABOUT_TEXT,       "Claude Companion: session control for Claude Code on M5Stack Tab5.\nlibssh (LGPL 2.1), MicroLink (MIT), LVGL (MIT), Noto Sans CJK (OFL).") \
+X(ABOUT_TEXT,       "Claude Companion: session control for Claude Code on M5Stack Tab5.\nlibssh (LGPL 2.1), MicroLink (MIT), LVGL (MIT), Noto Sans CJK (OFL).\nBased on Clientre 5 by Mozgi512 (MIT)") \
 X(SD_LOW_SPACE, "TF card has less than 20MB free") \
 X(TAILSCALE, "Tailscale") \
 X(TS_ENABLE, "Join tailnet") \

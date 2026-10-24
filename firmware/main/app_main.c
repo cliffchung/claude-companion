@@ -100,7 +100,7 @@ static bool display_init_early(void)
 static void display_apply_settings(void)
 {
     bsp_display_lock(0);
-    lv_display_set_rotation(s_display, (lv_display_rotation_t)(g_settings.rotation & 3));
+    lv_display_set_rotation(s_display, LV_DISPLAY_ROTATION_90);   /* landscape, USB-C on the left (Plan 4: fixed) */
     lv_refr_now(s_display);
     bsp_display_unlock();
     bsp_display_brightness_set(s_dark_boot ? 0 : g_settings.brightness);

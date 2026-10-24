@@ -875,11 +875,11 @@ static bool dash_key(const key_event_t *ev, void *user)
     (void)user;
     if (s_keys_ov) { ui_dashboard_keys_overlay(false); return true; }   /* any key closes it, eaten */
     /* Local shortcuts first: they work with no cards on screen and never reach s_draft
-       (which stays as it was, for Esc back from Settings or More). */
+       (which stays as it was, for Esc back from Settings or Terminal). */
     switch (hk_dashboard(ev)) {
     case HK_D_OPEN:     if (s_shown_live && cc_link_connected()) open_selected(); return true;
     case HK_D_SETTINGS: ui_nav_push(ui_settings_create, NULL); return true;
-    case HK_D_MORE:     ui_nav_push(ui_home_create, NULL); return true;
+    case HK_D_TERMINAL: ui_nav_push(ui_hosts_create, NULL); return true;
     case HK_D_KEYS:     ui_dashboard_keys_overlay(true); return true;
     case HK_D_LOCAL:    return true;
     case HK_D_NONE:     break;
@@ -1118,7 +1118,7 @@ bool ui_dashboard_selected_center(int32_t *x, int32_t *y)
 /* Home has nothing to go back to: a stray swipe must not rebuild it. */
 static void dash_gesture_cb(lv_dir_t dir) { (void)dir; }
 
-static void more_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_home_create, NULL); }
+static void terminal_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_hosts_create, NULL); }
 static void settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }
 
 static lv_obj_t *footer_button(lv_obj_t *parent, const char *label, lv_event_cb_t cb)
@@ -1206,7 +1206,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
 
     /* footer: keys, and the way to the fork's tools (Ctrl+Tab: Tab walks the cards and the
-       Settings / More buttons, Enter presses one, Esc goes back to the session keys) */
+       Settings / Terminal buttons, Enter presses one, Esc goes back to the session keys) */
     lv_obj_t *f = box(scr);
     lv_obj_set_size(f, W, FOOTER_H);
     lv_obj_set_pos(f, 0, H - FOOTER_H);
@@ -1224,7 +1224,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_label_set_long_mode(keys, LV_LABEL_LONG_DOT);
     lv_obj_set_height(keys, lv_font_get_line_height(FONT_SMALL));
     footer_button(f, "Settings", settings_cb);
-    footer_button(f, "More", more_cb);
+    footer_button(f, "Terminal", terminal_cb);
 
     key_sink_t sink = { .key = dash_key, .user = scr };   /* per screen */
     keyboard_set_sink(&sink);

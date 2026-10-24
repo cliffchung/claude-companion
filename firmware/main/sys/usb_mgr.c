@@ -87,6 +87,3 @@ void usb_mgr_init(void)
 {
     host_start();
 }
-
-/* HID only since Plan 4 Task 1; Device info shows it until Task 3 deletes that screen. */
-const char *usb_mgr_status_text(void) { return "USB host"; }
