@@ -17,6 +17,7 @@
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "servers/server_store.h"
+#include "servers/host_rules.h"
 #include "companion/cc_cmd.h"
 #include "ui/ui_host_form.h"
 #include "net/ts_host.h"
@@ -199,10 +200,28 @@ bool server_store_remove(int i) {
     memmove(&s_preview_servers[i], &s_preview_servers[i + 1], sizeof(server_t) * (size_t)(s_preview_server_n - i - 1));
     s_preview_server_n--; return true;
 }
-/* the Host's entry by index or address, as cc_link_is_companion_server decides it */
+/* The link's known Host addresses (invented): the entry's host, the LAN fallback and the tailnet carry address,
+   preview-host-c's IP (so the tailnet sheet must drop that peer). As cc_link.c decides it: index 0 or any address. */
+#define PREVIEW_HOST_TS_IP "100.64.0.13"
+void cc_link_host_addresses(hf_host_addrs_t *h) {
+    hf_host_addrs_init(h);
+    if (!pv_host()) return;
+    hf_host_addrs_add(h, s_preview_servers[0].host);
+    hf_host_addrs_add(h, "192.168.77.20");
+    hf_host_addrs_add(h, PREVIEW_HOST_TS_IP);
+}
 bool cc_link_is_companion_server(int idx) {
     const server_t *s = server_store_get(idx);
-    return s && pv_host() && cc_is_companion_server(idx, s->host, 0, s_preview_servers[0].host);
+    if (!s || !pv_host()) return false;
+    if (idx == 0) return true;
+    hf_host_addrs_t h; cc_link_host_addresses(&h);
+    return hf_is_host(s->host, &h);
+}
+static int s_rename_calls; static char s_rename_old[48], s_rename_new[48];
+bool cc_link_rename_server(const char *o, const char *n) {
+    s_rename_calls++;
+    snprintf(s_rename_old, sizeof(s_rename_old), "%s", o); snprintf(s_rename_new, sizeof(s_rename_new), "%s", n);
+    return true;
 }
 /* known hosts: build-box (100.64.0.11:22) has a pin until it is forgotten */
 #define PREVIEW_HOST_FP "SHA256:BuildBoxPreviewPinOnly0123456789abcdefghijk"
@@ -294,18 +313,18 @@ bool cc_link_connected(void) { return pv_wifi() && pv_host() && !pv_notfound(); 
 /* the device's own wording (cc_link.c), so the banner's cut is tested */
 const char *cc_link_status_text(char *b, size_t cap) {
     if (!pv_host()) snprintf(b, cap, "no Host set up");
-    else if (pv_notfound()) snprintf(b, cap, "Host not found at my-host.local (set its address in Settings \xe2\x86\x92 Network) (retry in 12s)");
-    else snprintf(b, cap, cc_link_connected() ? "connected my-host" : "connecting to my-host");
+    else if (pv_notfound()) snprintf(b, cap, "Host not found at studio-host.local (set its address in Settings \xe2\x86\x92 Network) (retry in 12s)");
+    else snprintf(b, cap, cc_link_connected() ? "connected studio-host" : "connecting to studio-host");
     return b;
 }
 cc_link_fail_t cc_link_failure(void) { return pv_notfound() ? CC_LINK_FAIL_NOT_FOUND : CC_LINK_FAIL_NONE; }
 bool cc_link_mac_address(char *o, size_t cap) { snprintf(o, cap, "100.101.102.103"); return true; }
-bool cc_link_mac_path(char *o, size_t cap) { snprintf(o, cap, "lan 192.168.1.50"); return true; }
+bool cc_link_mac_path(char *o, size_t cap) { snprintf(o, cap, "lan 192.168.77.20"); return true; }
 bool cc_link_set_lan_fallback(const char *ip) { (void)ip; return true; }
-const char *cc_link_lan_fallback(char *o, size_t cap) { snprintf(o, cap, "192.168.1.50"); return o; }
+const char *cc_link_lan_fallback(char *o, size_t cap) { snprintf(o, cap, "192.168.77.20"); return o; }
 int cc_poll_failures(bool *too_big) { if (too_big) *too_big = false; return 0; }
 const char *cc_settings_claude_path(char *o, size_t cap) { snprintf(o, cap, "~/.local/bin/claude"); return o; }
-const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "%s", pv_host() ? "my-host" : ""); return o; }
+const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "%s", pv_host() ? "studio-host" : ""); return o; }
 int cc_settings_server(void) { return pv_host() ? 0 : -1; }
 static int s_set_server_calls; static char s_set_server_name[48];
 void cc_link_set_server(const char *n) { s_set_server_calls++; snprintf(s_set_server_name, sizeof(s_set_server_name), "%s", n ? n : ""); }
@@ -635,9 +654,9 @@ static lv_obj_t *probe_gallery_create(void *arg) {
     ui_btn(buttons, UI_BTN_DESTRUCTIVE, "Forget", noop_cb, NULL);
     lv_obj_t *pill = ui_state_pill(buttons);
     ui_state_pill_set(pill, &ss[2]);
-    ui_srow(col, UI_ROW_VALUE, "Fallback address", "192.168.1.50", noop_cb, NULL);
+    ui_srow(col, UI_ROW_VALUE, "Fallback address", "192.168.77.20", noop_cb, NULL);
     ui_srow(col, UI_ROW_SWITCH, "Tailscale", "on", noop_cb, NULL);
-    ui_srow(col, UI_ROW_NAV, "Host", "my-host.local", noop_cb, NULL);
+    ui_srow(col, UI_ROW_NAV, "Host", "studio-host.local", noop_cb, NULL);
     ui_srow_slider(col, "Brightness", 5, 100, 58, noop_cb, NULL);
     ui_srow(col, UI_ROW_INFO, "Link", "connected over home Wi-Fi", NULL, NULL);
     ui_footnote(col, "A footnote wraps onto as many lines as it needs, in the muted label role.");
@@ -873,7 +892,7 @@ static int sessions_case(lv_display_t *d, const char *v) {
         assert(selected_index(list) == 0);
         if (pv_bar_hits_clear(s, row0, why, sizeof(why))) { printf("check %s: FAIL bar hits: %s\n", name, why); return 1; }
     } else if (!strcmp(v, "not-found")) {
-        assert(find_label(s, "Host not found at my-host.local", false) && find_clickable(s, "Host settings"));
+        assert(find_label(s, "Host not found at studio-host.local", false) && find_clickable(s, "Host settings"));
     } else if (!strcmp(v, "no-host")) {
         lv_obj_t *b = find_clickable(s, "Set up host");
         assert(b && obj_shown(b));
@@ -1619,7 +1638,7 @@ static int settings_case(lv_display_t *d, int section) {
         panel = settings_panel(s);
     } else if (section == UI_SET_HOST && !click[0] && (!pv_host() || pv_notfound())) {
         /* U11 and the frozen countdown (T7 review I2): the Link row says Host, never Mac, and no "(retry in Ns)" */
-        const char *want = !pv_host() ? "No Host set up" : "Host not found at my-host.local";
+        const char *want = !pv_host() ? "No Host set up" : "Host not found at studio-host.local";
         if (!find_label(panel, want, false)) { printf("check %s: FAIL no Link text \"%s\"\n", name, want); return 1; }
         if (find_label_has(panel, "Mac", 0) || find_label_has(panel, "retry in", 0)) {
             printf("check %s: FAIL the Link row says \"%s\"\n", name,
@@ -1799,10 +1818,14 @@ static int terminal_case(lv_display_t *d, const char *v) {
         if (sheet_rows("Add host") != 2 || !find_label(top, "From your tailnet", false)) { printf("check %s: FAIL the add sheet\n", name); return 1; }
         r |= pv_run_checks(d, s, name, false, 0);
         click_label(d, top, "From your tailnet");
-        assert(sheet_rows("From your tailnet") == 2 && find_label(top, "preview-host-c", false) && !find_label(top, "preview-host-b", false));   /* online only */
-        click_label(d, top, "preview-host-c");
+        /* online only, and never the Host's own peer (C1: preview-host-c's IP is the Host's tailnet address) */
+        if (sheet_rows("From your tailnet") != 1 || find_label(top, "preview-host-c", false) || find_label(top, "preview-host-b", false)) {
+            printf("check %s: FAIL the tailnet sheet offers %d peers (the Host's: %s)\n", name, sheet_rows("From your tailnet"),
+                   find_label(top, "preview-host-c", false) ? "yes" : "no"); return 1;
+        }
+        click_label(d, top, "preview-host-a");
         lv_obj_t *f = lv_screen_active();
-        if (!ui_nav_is_top(ui_host_form_create) || !find_label(f, "100.64.0.13", false) || !find_label(f, "preview-host-c", false)) { printf("check %s: FAIL the peer didn't prefill the form\n", name); return 1; }
+        if (!ui_nav_is_top(ui_host_form_create) || !find_label(f, "100.64.0.11", false) || !find_label(f, "preview-host-a", false)) { printf("check %s: FAIL the peer didn't prefill the form\n", name); return 1; }
         lv_obj_clean(top);
         ui_nav_back(); step(d, 200);   /* prefilled, unchanged: no discard question */
         assert(ui_nav_is_top(ui_hosts_create));
@@ -1872,7 +1895,28 @@ static int hostform_case(lv_display_t *d, const char *v) {
         click_label(d, s, "Save");
         assert(find_label(top, "That's your Claude host: its sessions are on the Sessions screen.", false) && !s_store_adds);
         lv_obj_clean(top);
+        /* C1: the Host's LAN fallback and its tailnet address, typed by hand, are the Host too */
+        const char *host_addrs[] = { "192.168.77.20", PREVIEW_HOST_TS_IP };
+        for (int i = 0; i < 2; i++) {
+            form_set(d, s, "Address", host_addrs[i]);
+            click_label(d, s, "Save");
+            if (!find_label(top, "That's your Claude host: its sessions are on the Sessions screen.", false) || s_store_adds) {
+                printf("check %s: FAIL a manual %s wasn't refused as the Host\n", name, i ? "tailnet address" : "LAN fallback"); return 1;
+            }
+            lv_obj_clean(top);
+        }
         form_set(d, s, "Address", "box.local");
+        /* I1: a name another entry has (any case) is refused */
+        form_set(d, s, "Name", "PI-LAN");
+        click_label(d, s, "Save");
+        if (!find_label(top, "Another host already has that name", false) || s_store_adds) { printf("check %s: FAIL a taken name\n", name); return 1; }
+        lv_obj_clean(top);
+        form_set(d, s, "Name", "");
+        /* M7: leaving by any way asks too: home (a wake, `ui home`) waits for the answer */
+        ui_nav_home(); step(d, 200);
+        if (!find_label(top, "Discard changes?", false) || !ui_nav_is_top(ui_host_form_create)) { printf("check %s: FAIL home didn't ask\n", name); return 1; }
+        click_label(d, top, "Cancel");
+        assert(ui_nav_is_top(ui_host_form_create) && lv_screen_active() == s);
         /* Sign in with: Device key or Password; the password row then shows, masked, starting empty */
         click_row(d, lv_obj_get_child(s, 1), "Sign in with");
         assert(sheet_rows("Sign in with") == 2);
@@ -1910,6 +1954,17 @@ static int hostform_case(lv_display_t *d, const char *v) {
         }
         assert(lv_obj_get_style_text_font(fp, 0) == FONT_MONO);
         r |= pv_run_checks(d, s, name, false, 0);
+        /* M8: the store changes under the form and the screen is rebuilt (`ui refresh`): still build-box */
+        server_t extra = { .name = "aaa-first", .host = "10.9.9.9", .port = 22, .user = "x", .use_key = true, .keypath = "device" };
+        memmove(&s_preview_servers[1], &s_preview_servers[0], sizeof(server_t) * (size_t)s_preview_server_n);
+        s_preview_servers[0] = extra; s_preview_server_n++;
+        ui_nav_refresh(); step(d, 200);
+        s = lv_screen_active();
+        if (!ui_nav_is_top(ui_host_form_create) || strcmp(form_value(s, "Name"), "build-box")) { printf("check %s: FAIL the re-create opened \"%s\"\n", name, form_value(s, "Name")); return 1; }
+        memmove(&s_preview_servers[0], &s_preview_servers[1], sizeof(server_t) * (size_t)(s_preview_server_n - 1)); s_preview_server_n--;
+        ui_nav_refresh(); step(d, 200);
+        s = lv_screen_active();
+        assert(!strcmp(form_value(s, "Name"), "build-box"));
         click_label(d, lv_obj_get_child(s, 1), PREVIEW_HOST_FP);
         if (!find_label(top, "Forget this host's key?", false) ||
             !find_label(top, "Only do this if the host's SSH key changed. The Tab5 will trust the next key it sees.", false) || s_kh_forget_calls) {
@@ -1953,8 +2008,16 @@ static int hostform_case(lv_display_t *d, const char *v) {
         r |= pv_run_checks(d, s, name, false, 0);
         form_set(d, s, "User", "me2");
         click_label(d, s, "Save");
-        if (s_store_updates != 1 || s_set_server_calls != 1 || strcmp(s_set_server_name, "Mac") || !ui_nav_is_top(ui_settings_create)) {
+        if (s_store_updates != 1 || s_set_server_calls != 1 || strcmp(s_set_server_name, "Mac") || s_rename_calls || !ui_nav_is_top(ui_settings_create)) {
             printf("check %s: FAIL the Host's entry save (updates %d, set_server %d)\n", name, s_store_updates, s_set_server_calls); return 1;
+        }
+        /* M1: a rename of the Host's entry follows it (no carry-clearing switch of Host) */
+        click_row(d, settings_panel(lv_screen_active()), "Address");
+        s = lv_screen_active();
+        form_set(d, s, "Name", "Studio");
+        click_label(d, s, "Save");
+        if (s_rename_calls != 1 || strcmp(s_rename_old, "Mac") || strcmp(s_rename_new, "Studio") || strcmp(s_set_server_name, "Studio")) {
+            printf("check %s: FAIL the rename (%d calls)\n", name, s_rename_calls); return 1;
         }
         /* the Host picker's Add host…: the new entry becomes the Host (P4-6) */
         click_row(d, settings_panel(lv_screen_active()), "Host");
@@ -1963,8 +2026,13 @@ static int hostform_case(lv_display_t *d, const char *v) {
         assert(ui_nav_is_top(ui_host_form_create));
         form_set(d, s, "Address", "studio.local");
         form_set(d, s, "User", "me");
+        form_set(d, s, "Name", "pi-lan");   /* I1: the picker can't add a second "pi-lan" (it would pick the wrong entry) */
         click_label(d, s, "Save");
-        if (s_store_adds != 1 || s_set_server_calls != 2 || strcmp(s_set_server_name, "me@studio.local")) { printf("check %s: FAIL picker add\n", name); return 1; }
+        if (!find_label(top, "Another host already has that name", false) || s_store_adds) { printf("check %s: FAIL a taken name from the picker\n", name); return 1; }
+        lv_obj_clean(top);
+        form_set(d, s, "Name", "");
+        click_label(d, s, "Save");
+        if (s_store_adds != 1 || s_set_server_calls != 3 || strcmp(s_set_server_name, "me@studio.local")) { printf("check %s: FAIL picker add\n", name); return 1; }
         printf("%s: the Host's entry from Settings (no Delete, no Host key), save tells the link; picker add sets the Host\n", name);
         return r;
     }

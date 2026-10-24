@@ -12,6 +12,7 @@
 #include "servers/server_store.h"
 #include "ssh/ssh_client.h"
 #include "companion/cc_link.h"
+#include "servers/host_rules.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,9 +96,9 @@ static void field_cb(lv_event_t *e)
     if (!s_f) return;
     field_t f = (field_t)(intptr_t)lv_event_get_user_data(e);
     switch (f) {
-    case F_NAME: ui_prompt(tr(STR_HF_NAME), "user@host", s_f->d.name, false, prompt_cb, (void *)(intptr_t)f); break;
-    case F_ADDRESS: ui_prompt(tr(STR_HF_ADDRESS), "box.local", s_f->d.host, false, prompt_cb, (void *)(intptr_t)f); break;
-    case F_PORT: ui_prompt(tr(STR_HF_PORT), "22", s_f->port, false, prompt_cb, (void *)(intptr_t)f); break;
+    case F_NAME: ui_prompt(tr(STR_HF_NAME), tr(STR_HF_NAME_PH), s_f->d.name, false, prompt_cb, (void *)(intptr_t)f); break;
+    case F_ADDRESS: ui_prompt(tr(STR_HF_ADDRESS), tr(STR_HF_ADDRESS_PH), s_f->d.host, false, prompt_cb, (void *)(intptr_t)f); break;
+    case F_PORT: ui_prompt(tr(STR_HF_PORT), tr(STR_HF_PORT_PH), s_f->port, false, prompt_cb, (void *)(intptr_t)f); break;
     case F_USER: ui_prompt(tr(STR_HF_USER), "", s_f->d.user, false, prompt_cb, (void *)(intptr_t)f); break;
     case F_PASSWORD: ui_prompt(tr(STR_HF_PASSWORD), "", "", true, prompt_cb, (void *)(intptr_t)f); break;   /* starts empty */
     }
@@ -151,7 +152,7 @@ static void delete_yes(bool yes, void *ud)
     if (!yes) return;
     int idx = entry_index();
     if (idx < 0) { ui_toast(tr(STR_HOSTS_GONE)); return; }
-    if (!server_store_remove(idx)) { ui_toast(tr(STR_HF_SAVE_FAILED)); return; }
+    if (!server_store_remove(idx)) { ui_toast(tr(STR_HF_DELETE_FAILED)); return; }
     s_f->leaving = true;
     ui_nav_back();
 }
@@ -165,6 +166,16 @@ static void delete_cb(lv_event_t *e)
 }
 
 /* ------------------------------------------------------------ save, discard */
+/* I1: the name is another entry's (the Host is chosen by name) */
+static bool name_taken(const char *name, int self)
+{
+    int n = server_store_count();
+    if (n > SERVER_MAX) n = SERVER_MAX;
+    const char *names[SERVER_MAX];
+    for (int i = 0; i < n; i++) { const server_t *t = server_store_get(i); names[i] = t ? t->name : NULL; }
+    return hf_name_taken(name, names, n, self);
+}
+
 static void save_cb(lv_event_t *e)
 {
     if (!s_f) return;
@@ -172,21 +183,33 @@ static void save_cb(lv_event_t *e)
     if (!dirty()) { s_f->leaving = true; ui_nav_back(); return; }
     int idx = entry_index();
     if (s_f->editing && idx < 0) { ui_toast(tr(STR_HOSTS_GONE)); return; }
-    int ci = cc_settings_server();
-    const server_t *h = ci >= 0 ? server_store_get(ci) : NULL;
-    int port = 0;
     static const str_id_t msg[] = { STR_HF_SAVED, STR_HF_ERR_NO_ADDRESS, STR_HF_ERR_NO_USER, STR_HF_ERR_BAD_PORT,
-                                    STR_HF_ERR_IS_HOST };
-    hf_err_t err = hf_validate(s_f->d.host, s_f->port, s_f->d.user, host_entry(idx), h ? h->host : "", &port);
-    if (err != HF_OK) { ui_toast(tr(msg[err])); return; }
+                                    STR_HF_ERR_IS_HOST, STR_HF_ERR_NAME_TAKEN };
+    /* C1: the Host by any address the link knows (its LAN fallback, tailnet IP, verified address, ...) */
+    hf_host_addrs_t *h = malloc(sizeof(*h));
+    if (!h) { ui_toast(tr(STR_HF_SAVE_FAILED)); return; }
+    cc_link_host_addresses(h);
+    int port = 0;
+    hf_err_t err = hf_validate_addrs(s_f->d.host, s_f->port, s_f->d.user, host_entry(idx), h, &port);
+    free(h);
     server_t out = s_f->d;
     out.port = port;
     if (!out.name[0]) snprintf(out.name, sizeof(out.name), "%s@%s", out.user, out.host);   /* §5.5: user@host */
+    if (err == HF_OK && name_taken(out.name, idx)) err = HF_NAME_TAKEN;
+    if (err != HF_OK) { memset(&out, 0, sizeof(out)); ui_toast(tr(msg[err])); return; }
+    if (idx < 0 && server_store_count() >= SERVER_MAX) { memset(&out, 0, sizeof(out)); ui_toast(tr(STR_HF_LIST_FULL)); return; }
     out.use_key = s_f->auth != HF_AUTH_PASSWORD;
     if (s_f->auth == HF_AUTH_DEVICE) strlcpy(out.keypath, "device", sizeof(out.keypath));
     else if (s_f->auth == HF_AUTH_SD_FILE) strlcpy(out.keypath, s_f->orig.keypath, sizeof(out.keypath));
     bool ok = idx >= 0 ? server_store_update(idx, &out) : server_store_add(&out) >= 0;
-    if (ok && s_f->origin != HF_FROM_TERMINAL) cc_link_set_server(out.name);   /* P4-6: the Host's entry */
+    if (ok && s_f->origin == HF_FROM_SETTINGS_HOST) {
+        /* the Host's own entry: a rename follows it and keeps the pin carry-over (M1); then the link reconfigures
+           under the same name (cc_link_set_server with an unchanged name keeps the carry too) */
+        if (strcmp(out.name, s_f->orig.name)) cc_link_rename_server(s_f->orig.name, out.name);
+        cc_link_set_server(out.name);
+    } else if (ok && s_f->origin == HF_FROM_HOST_PICKER) {
+        cc_link_set_server(out.name);   /* P4-6: a new Host */
+    }
     memset(&out, 0, sizeof(out));
     if (!ok) { ui_toast(tr(STR_HF_SAVE_FAILED)); return; }
     ui_toast(tr(STR_HF_SAVED));
@@ -198,9 +221,9 @@ static void discard_yes(bool yes, void *ud)
 {
     if (!s_f) return;
     (void)ud;
-    if (!yes) return;
+    if (!yes) { ui_nav_cancel_pending(); return; }
     s_f->leaving = true;
-    ui_nav_back();
+    ui_nav_proceed();   /* whatever was leaving: Back, Esc, a swipe, home, a push (M7) */
 }
 static bool back_guard(void)
 {
@@ -221,7 +244,7 @@ static void fill(lv_obj_t *p)
     char v[200];
     if (s_f->d.name[0]) value_row(tr(STR_HF_NAME), s_f->d.name, F_NAME);
     else {
-        snprintf(v, sizeof(v), "%s@%s", s_f->d.user[0] ? s_f->d.user : "user", s_f->d.host[0] ? s_f->d.host : "host");
+        snprintf(v, sizeof(v), "%s@%s", s_f->d.user[0] ? s_f->d.user : tr(STR_HF_USER_PH), s_f->d.host[0] ? s_f->d.host : tr(STR_HF_HOST_PH));
         value_row(tr(STR_HF_NAME), v, F_NAME);   /* the default it saves as */
     }
     value_row(tr(STR_HF_ADDRESS), s_f->d.host[0] ? s_f->d.host : tr(STR_SET_NOT_SET), F_ADDRESS);
@@ -236,16 +259,7 @@ static void fill(lv_obj_t *p)
     char fp[80];
     if (s_f->editing && s_f->origin == HF_FROM_TERMINAL && ssh_known_host_fingerprint(s_f->orig.host, s_f->orig.port, fp, sizeof(fp))) {
         ui_section_header(p, tr(STR_HF_HOST_KEY));
-        lv_obj_t *r = ui_srow(p, UI_ROW_ACTION, fp, NULL, forget_cb, NULL);
-        lv_obj_t *l = lv_obj_get_child(r, 0);
-        ui_text_mono(l);
-        ui_text_tone(l, UI_TONE_MUTED);
-        lv_obj_set_height(l, LV_SIZE_CONTENT);
-        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_set_style_min_height(r, UI_TK_ROW_H, 0);
-        lv_obj_set_style_pad_ver(r, UI_TK_GAP_S, 0);
-        lv_obj_set_height(r, LV_SIZE_CONTENT);
-        ui_srow_chip(r, tr(STR_SET_FORGET), true);
+        ui_srow_fingerprint(p, fp, tr(STR_SET_FORGET), forget_cb, NULL);
     }
     if (s_f->editing && s_f->origin == HF_FROM_TERMINAL) {   /* never the Host's entry from Settings */
         lv_obj_t *r = ui_srow(p, UI_ROW_ACTION, tr(STR_HF_DELETE), NULL, delete_cb, NULL);
@@ -279,7 +293,23 @@ lv_obj_t *ui_host_form_create(void *arg)
     s_f = calloc(1, sizeof(*s_f));
     if (!s_f) return NULL;   /* nav falls back a level */
     s_f->origin = a ? a->origin : HF_FROM_TERMINAL;
-    const server_t *s = a && a->index >= 0 ? server_store_get(a->index) : NULL;
+    hf_arg_t *w = (hf_arg_t *)a;   /* the caller's static arg: the form records what it opened */
+    const server_t *s = NULL;
+    if (w && w->index >= 0) {
+        if (w->opened) {   /* a re-create (ui_nav_refresh): the same entry by identity, never a stale index */
+            int n = server_store_count();
+            for (int i = 0; i < n && !s; i++) {
+                const server_t *t = server_store_get(i);
+                if (t && !strcmp(t->name, w->opened_name) && !strcmp(t->host, w->opened_host) && t->port == w->opened_port) s = t;
+            }
+            if (!s) { ui_toast(tr(STR_HOSTS_GONE)); free(s_f); s_f = NULL; return NULL; }
+        } else if ((s = server_store_get(w->index)) != NULL) {
+            w->opened = true;
+            strlcpy(w->opened_name, s->name, sizeof(w->opened_name));
+            strlcpy(w->opened_host, s->host, sizeof(w->opened_host));
+            w->opened_port = s->port;
+        }
+    }
     if (s) {
         s_f->editing = true;
         s_f->orig = *s;

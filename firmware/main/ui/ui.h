@@ -54,10 +54,14 @@ void ui_nav_home(void);
 bool ui_nav_is_top(ui_screen_create_fn create);
 lv_obj_t *ui_nav_current(void);
 void ui_nav_refresh(void);   /* recreate current screen (e.g. after language change) */
-/* scr's back guard: every ui_nav_back (the back chip, Esc, a swipe) while scr shows asks guard() first, and does
-   nothing more when it returns true (it asked "Discard changes?"). One at a time; cleared when scr is deleted. */
+/* scr's back guard: every way off scr while it shows (ui_nav_back: the back chip, Esc, a swipe; ui_nav_home: a
+   wake, `ui home`; ui_nav_push / ui_nav_replace: hotkeys, console verbs) asks guard() first. True means it is asking
+   ("Discard changes?"): the move is kept as pending until the screen calls ui_nav_proceed (do it, and drop the
+   guard) or ui_nav_cancel_pending. One at a time; cleared when scr is deleted. */
 typedef bool (*ui_back_guard_t)(void);
 void ui_nav_set_back_guard(lv_obj_t *scr, ui_back_guard_t guard);
+void ui_nav_proceed(void);
+void ui_nav_cancel_pending(void);
 
 /* ---- common widgets ---- */
 lv_obj_t *ui_screen_base(void);

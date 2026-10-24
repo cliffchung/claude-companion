@@ -24,6 +24,7 @@ static lv_style_t s_row, s_row_sel, s_session_geom, s_srow_geom, s_skeleton, s_s
 static lv_style_t s_dot_on, s_dot_off, s_scrim, s_spinner_main, s_spinner_ind, s_pressed_destructive;
 static lv_style_t s_green_text, s_red_text, s_mono, s_rail, s_swatch, s_chip_destructive;
 static lv_style_t s_host_geom, s_host_line, s_host_dot, s_dot_green, s_dot_line, s_add_row;
+static lv_style_t s_host_col, s_host_hint, s_host_fail, s_srow_wrap, s_wrap_label;
 static lv_style_t s_title, s_bar, s_side_bottom, s_side_top, s_banner_muted, s_banner_red, s_section;
 /* the LVGL widgets the screens create directly (theme layer) */
 static lv_style_t s_w_button, s_w_field, s_w_track, s_w_on, s_w_knob_off, s_w_knob_on, s_w_knob;
@@ -66,7 +67,8 @@ void ui_comp_init(void)
                           &s_title, &s_bar, &s_side_bottom, &s_side_top, &s_banner_muted, &s_banner_red, &s_section,
                           &s_w_button, &s_w_field, &s_w_track, &s_w_on, &s_w_knob_off, &s_w_knob_on, &s_w_knob,
                           &s_green_text, &s_red_text, &s_mono, &s_rail, &s_swatch, &s_chip_destructive,
-                          &s_host_geom, &s_host_line, &s_host_dot, &s_dot_green, &s_dot_line, &s_add_row };
+                          &s_host_geom, &s_host_line, &s_host_dot, &s_dot_green, &s_dot_line, &s_add_row,
+                          &s_host_col, &s_host_hint, &s_host_fail, &s_srow_wrap, &s_wrap_label };
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
 
     lv_style_set_bg_color(&s_bg, HEX(UI_TK_BG));
@@ -176,6 +178,22 @@ void ui_comp_init(void)
     lv_style_set_bg_opa(&s_host_dot, LV_OPA_COVER);
     lv_style_set_bg_color(&s_dot_green, HEX(UI_TK_GREEN));
     lv_style_set_bg_color(&s_dot_line, HEX(UI_TK_LINE));
+    lv_style_set_layout(&s_host_col, LV_LAYOUT_FLEX);
+    lv_style_set_flex_flow(&s_host_col, LV_FLEX_FLOW_COLUMN);
+    lv_style_set_pad_row(&s_host_col, 4);
+    /* the trailing label: the one-line focus hint, or a red failure of two lines at most */
+    lv_style_set_width(&s_host_hint, LV_SIZE_CONTENT);
+    lv_style_set_max_width(&s_host_hint, LV_PCT(60));
+    lv_style_set_height(&s_host_hint, lv_font_get_line_height(FONT_SMALL));
+    lv_style_set_width(&s_host_fail, LV_PCT(60));
+    lv_style_set_height(&s_host_fail, LV_SIZE_CONTENT);
+    lv_style_set_max_height(&s_host_fail, 2 * lv_font_get_line_height(FONT_SMALL));
+    lv_style_set_text_align(&s_host_fail, LV_TEXT_ALIGN_RIGHT);
+    /* a row whose label wraps (a fingerprint): at least 64 px, 8 px above and below */
+    lv_style_set_min_height(&s_srow_wrap, UI_TK_ROW_H);
+    lv_style_set_pad_ver(&s_srow_wrap, UI_TK_GAP_S);
+    lv_style_set_height(&s_srow_wrap, LV_SIZE_CONTENT);
+    lv_style_set_height(&s_wrap_label, LV_SIZE_CONTENT);
     /* + Add host: 72 px, a dashed-look line border (LVGL draws no dashed borders), muted */
     lv_style_set_height(&s_add_row, UI_TK_SESSION_ROW_H);
     lv_style_set_radius(&s_add_row, UI_TK_RADIUS);
@@ -887,10 +905,9 @@ lv_obj_t *ui_host_row(lv_obj_t *parent, const char *name, const char *meta, cons
     lv_obj_add_style(dot, &s_host_dot, 0);
     lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
     lv_obj_t *col = plain(r);
+    lv_obj_add_style(col, &s_host_col, 0);
     lv_obj_set_size(col, 1, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(col, 1);
-    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(col, 4, 0);
     lv_obj_t *n = text(col, name, NULL, NULL);
     lv_obj_set_size(n, LV_PCT(100), lv_font_get_line_height(FONT_BODY));
     lv_label_set_long_mode(n, LV_LABEL_LONG_MODE_DOTS);
@@ -898,8 +915,7 @@ lv_obj_t *ui_host_row(lv_obj_t *parent, const char *name, const char *meta, cons
     lv_obj_set_size(m, LV_PCT(100), lv_font_get_line_height(FONT_SMALL));
     lv_label_set_long_mode(m, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_t *t = text(r, hint, &s_muted, &s_label);
-    lv_obj_set_style_max_width(t, LV_PCT(60), 0);
-    lv_obj_set_height(t, lv_font_get_line_height(FONT_SMALL));
+    lv_obj_add_style(t, &s_host_hint, 0);
     lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_add_flag(t, LV_OBJ_FLAG_HIDDEN);
     if (edit_cb) {
@@ -944,13 +960,24 @@ void ui_host_row_note(lv_obj_t *row, const char *note, bool busy, const char *hi
     bool fail = note && !busy;
     tone_apply(t, fail ? UI_TONE_RED : UI_TONE_MUTED);
     /* a failure wraps to two lines at most, so a refusal (TS_HOST_OFF_MESSAGE) reads whole; the hint is one line */
-    int32_t lh = lv_font_get_line_height(FONT_SMALL);
-    lv_obj_set_width(t, fail ? LV_PCT(60) : LV_SIZE_CONTENT);
-    lv_obj_set_height(t, fail ? LV_SIZE_CONTENT : lh);
-    lv_obj_set_style_max_height(t, 2 * lh, 0);
-    lv_obj_set_style_text_align(t, fail ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_AUTO, 0);
+    lv_obj_remove_style(t, &s_host_fail, 0);
+    if (fail) lv_obj_add_style(t, &s_host_fail, 0);
     set_text(t, note ? note : hint);
     set_flag(t, LV_OBJ_FLAG_HIDDEN, !note && !busy && !lv_obj_has_state(row, LV_STATE_FOCUS_KEY));
+}
+
+lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, lv_event_cb_t cb, void *ud)
+{
+    lv_obj_t *r = ui_srow(parent, UI_ROW_ACTION, fp, NULL, cb, ud);
+    lv_obj_add_style(r, &s_srow_wrap, 0);
+    lv_obj_t *l = lv_obj_get_child(r, 0);
+    lv_obj_add_style(l, &s_mono, 0);
+    lv_obj_remove_local_style_prop(l, LV_STYLE_HEIGHT, 0);   /* srow_base's one-line height: the shared style wraps */
+    lv_obj_add_style(l, &s_wrap_label, 0);
+    tone_apply(l, UI_TONE_MUTED);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
+    if (chip) ui_srow_chip(r, chip, true);
+    return r;
 }
 
 lv_obj_t *ui_add_row(lv_obj_t *parent, const char *t, lv_event_cb_t cb, void *ud)

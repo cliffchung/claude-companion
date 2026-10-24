@@ -117,7 +117,7 @@ static void ts_ev(void *user)
     (void)user;
     if (s_ts_queued) return;
     s_ts_queued = true;
-    ui_async(ts_async, NULL);
+    if (!ui_async(ts_async, NULL)) s_ts_queued = false;   /* never posted: the next event tries again (M6) */
 }
 
 /* ------------------------------------------------------------ connect */
@@ -144,7 +144,8 @@ static void row_cb(lv_event_t *e)
     if (refused) { ui_host_row_note(row, refused, false, hint); return; }
     /* the spinner shows until the session screen takes over; a failure comes back to this row */
     ui_host_row_note(row, tr(STR_HOSTS_CONNECTING), true, hint);
-    lv_async_call(connect_async, (void *)(intptr_t)idx);
+    if (lv_async_call(connect_async, (void *)(intptr_t)idx) != LV_RESULT_OK)   /* M6: never a spinner that stays */
+        ui_host_row_note(row, tr(STR_HOSTS_CONNECT_FAILED), false, hint);
 }
 
 static void edit_cb(lv_event_t *e)
@@ -191,11 +192,18 @@ static void tailnet_sheet(void)
     s_add_n = 0;
     if (!s_add_peers) s_add_peers = malloc(sizeof(ts_peer_t) * ADD_PEERS_MAX);
     if (!s_add_peers) return;
+    /* C1 (hard rule 1): the Host's own peer is never offered, by its tailnet IP or its name */
+    hf_host_addrs_t *h = malloc(sizeof(*h));
+    if (!h) return;
+    cc_link_host_addresses(h);
     int n = tailscale_peer_count();
     for (int i = 0; i < n && s_add_n < ADD_PEERS_MAX; i++) {
         ts_peer_t *p = &s_add_peers[s_add_n];
-        if (tailscale_peer(i, p) && p->online) { s_add_items[s_add_n] = p->hostname; s_add_n++; }
+        if (!tailscale_peer(i, p) || !p->online || hf_is_host(p->ip, h) || hf_is_host(p->hostname, h)) continue;
+        s_add_items[s_add_n] = p->hostname;
+        s_add_n++;
     }
+    free(h);
     if (!s_add_n) { ui_toast(tr(STR_HOSTS_NO_PEERS)); return; }
     ui_action_sheet(tr(STR_HOSTS_FROM_TAILNET), s_add_items, s_add_n, 0, peer_pick_cb, NULL);
 }

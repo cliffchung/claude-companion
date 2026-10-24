@@ -214,16 +214,7 @@ static void fill_host(lv_obj_t *p)
     char fp[80];
     if (cc_link_pinned_fingerprint(fp, sizeof(fp))) {
         /* the whole fingerprint, wrapped, to compare with ssh-keygen -lf on the host */
-        lv_obj_t *r = ui_srow(p, UI_ROW_ACTION, fp, NULL, forget_cb, NULL);
-        lv_obj_t *l = lv_obj_get_child(r, 0);
-        ui_text_mono(l);
-        ui_text_tone(l, UI_TONE_MUTED);
-        lv_obj_set_height(l, LV_SIZE_CONTENT);
-        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_set_style_min_height(r, UI_TK_ROW_H, 0);
-        lv_obj_set_style_pad_ver(r, UI_TK_GAP_S, 0);
-        lv_obj_set_height(r, LV_SIZE_CONTENT);
-        ui_srow_chip(r, tr(STR_SET_FORGET), true);
+        ui_srow_fingerprint(p, fp, tr(STR_SET_FORGET), forget_cb, NULL);
     } else {
         ui_srow(p, UI_ROW_INFO, tr(STR_SET_NO_PIN), NULL, NULL, NULL);
     }

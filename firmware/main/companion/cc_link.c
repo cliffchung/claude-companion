@@ -19,6 +19,7 @@
 #include "cJSON.h"
 #include "settings/settings.h"
 #include "servers/server_store.h"
+#include "servers/host_rules.h"
 #include "net/tailscale.h"
 #include "net/wifi_mgr.h"
 #include "ssh/ssh_client.h"
@@ -103,6 +104,7 @@ static volatile bool s_forget;         /* the task tears down and reconnects now
    cc_link_set_server_host. host[0] == 0: none. */
 typedef struct { char host[128]; char ip[16]; uint8_t hash[32]; } carry_t;
 static carry_t s_carry;
+static hc_cache_t s_hc;   /* the host cache (fast check-in) */
 static char s_lan_last[16];            /* the last LAN address the Mac's name resolved to (M2) */
 static void carry_store(const carry_t *c);
 
@@ -236,14 +238,46 @@ bool cc_link_is_companion_server(int idx)
     const server_t *s = server_store_get(idx);
     if (!s) return false;
     int ci = cc_settings_server();
+    if (ci >= 0 && idx == ci) return true;
+    /* C1 (hard rule 1): every address the link knows the Host by, and the entry's name after a MagicDNS lookup */
+    hf_host_addrs_t *h = malloc(sizeof(*h));
+    if (!h) return true;   /* fail closed: no shell when it can't tell */
+    cc_link_host_addresses(h);
+    char a[128];
+    bool host = hf_is_host(s->host, h) || (tailscale_resolve(s->host, a, sizeof(a)) && hf_is_host(a, h));
+    free(h);
+    return host;
+}
+
+void cc_link_host_addresses(hf_host_addrs_t *h)
+{
+    hf_host_addrs_init(h);
+    int ci = cc_settings_server();
     const server_t *c = ci >= 0 ? server_store_get(ci) : NULL;
-    if (cc_is_companion_server(idx, s->host, ci, c ? c->host : NULL)) return true;
-    if (!c) return false;
-    /* a name on one entry and its tailnet IP on the other */
-    char a[128], b[128];
-    if (!tailscale_resolve(s->host, a, sizeof(a))) strlcpy(a, s->host, sizeof(a));
-    if (!tailscale_resolve(c->host, b, sizeof(b))) strlcpy(b, c->host, sizeof(b));
-    return cc_same_host(a, b);
+    if (!c) return;   /* no Host set: nothing is the Host */
+    char ip[128];
+    hf_host_addrs_add(h, c->host);
+    if (tailscale_resolve(c->host, ip, sizeof(ip))) hf_host_addrs_add(h, ip);
+    lock();
+    hf_host_addrs_add(h, g_settings.mac_lan_ip);
+    hf_host_addrs_add(h, g_settings.mac_ts_ip);
+    hf_host_addrs_add(h, s_carry.ip);
+    hf_host_addrs_add(h, s_ok_host);
+    hf_host_addrs_add(h, s_pin_host);
+    hf_host_addrs_add(h, s_lan_last);
+    if (cc_same_host(s_hc.entry, c->host)) hf_host_addrs_add(h, s_hc.ip);
+    unlock();
+}
+
+bool cc_link_rename_server(const char *old_name, const char *new_name)
+{
+    if (!old_name || !new_name || !new_name[0]) return false;
+    lock();
+    bool ok = !strcmp(g_settings.companion_server, old_name);
+    if (ok) strlcpy(g_settings.companion_server, new_name, sizeof(g_settings.companion_server));
+    unlock();
+    if (ok) settings_save();   /* the same entry and host string: the pin carry-over stays (L3 is for another Host) */
+    return ok;
 }
 
 void cc_link_set_server(const char *name)
@@ -390,7 +424,6 @@ static void set_fail(cc_link_fail_t f, const char *text)
 /* Plan 3 Task 3 Step 4: the Host's last looked-up address and the key met there, NVS "cc"/"hcache" only (L44:
    not also in the hib record; an NVS read is about 1 ms), under s_lock. The link connects
    to it first and looks the name up only when that connect fails or its pin doesn't match (fast_rules). */
-static hc_cache_t s_hc;
 static bool s_hc_off;   /* `companion hostcache off` (measurement), RAM only */
 
 static void hc_load(void)

@@ -236,32 +236,33 @@ static int authenticate(ssh_client_t *c)
     rc = AUTH_RETRY(ssh_userauth_none(c->session, NULL));
     if (rc == SSH_AUTH_SUCCESS) return 0;
     int methods = ssh_userauth_list(c->session, NULL);
+    /* B6, M10: the plan (host_rules.c, host-tested): an empty or "device" path is the Tab5's own key (NVS); a path
+       under /sdcard/ is that file, and a missing file or any other path fails: never the device key for it
+       (ssh_task checked it before connecting; this is the race). A key entry never tries a password, so a key file's
+       passphrase (c->p.pass) is never sent to the server. */
+    struct stat st;
+    hf_auth_plan_t plan = hf_auth_plan(c->p.use_key, c->p.keypath, stat(c->p.keypath, &st) == 0);
     if (c->p.use_key) {
-        /* B6: an empty or "device" path is the Tab5's own key (NVS); any other path is that file, and a missing
-           file fails: never the device key for it (ssh_task checked it before connecting; this is the race). */
-        struct stat st;
-        hf_key_src_t src = hf_key_source(c->p.keypath, stat(c->p.keypath, &st) == 0);
         ssh_key key = NULL;
-        if (src == HF_KEY_FILE_MISSING) {
-            snprintf(c->err, sizeof(c->err), "%s", HF_KEY_FILE_MISSING_MSG);
+        if (plan.key == HF_KEY_FILE_MISSING || plan.key == HF_KEY_BAD_PATH) {
+            snprintf(c->err, sizeof(c->err), "%s", plan.key == HF_KEY_BAD_PATH ? HF_KEY_BAD_PATH_MSG : HF_KEY_FILE_MISSING_MSG);
             rc = SSH_ERROR;
-        } else if (src == HF_KEY_DEVICE) {
+        } else if (plan.key == HF_KEY_DEVICE) {
             rc = (device_key_ensure() == ESP_OK && device_key_get(&key) == ESP_OK) ? SSH_OK : SSH_ERROR;
             if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Device key unavailable");
         } else {
             rc = ssh_pki_import_privkey_file(c->p.keypath, c->p.pass[0] ? c->p.pass : NULL, NULL, NULL, &key);
             if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Key import failed: %s", ssh_get_error(c->session));
         }
-        if (rc == SSH_OK) {
-            rc = AUTH_RETRY(ssh_userauth_publickey(c->session, NULL, key));
-            ssh_key_free(key);
-            if (rc == SSH_AUTH_SUCCESS) return 0;
-            ESP_LOGW(TAG, "publickey auth failed: %s", ssh_get_error(c->session));
-        } else {
-            ESP_LOGW(TAG, "%s", c->err);
-            return -1;
-        }
+        if (rc != SSH_OK) { ESP_LOGW(TAG, "%s", c->err); return -1; }
+        rc = AUTH_RETRY(ssh_userauth_publickey(c->session, NULL, key));
+        ssh_key_free(key);
+        if (rc == SSH_AUTH_SUCCESS) return 0;
+        ESP_LOGW(TAG, "publickey auth failed: %s", ssh_get_error(c->session));
+        snprintf(c->err, sizeof(c->err), "%s", HF_KEY_REFUSED_MSG);
+        return -1;   /* M10: no password fallback for a key entry */
     }
+    if (!plan.try_password) return -1;
     if ((methods & SSH_AUTH_METHOD_PASSWORD) || methods == 0) {
         rc = AUTH_RETRY(ssh_userauth_password(c->session, NULL, c->p.pass));
         if (rc == SSH_AUTH_SUCCESS) return 0;
@@ -292,13 +293,18 @@ static void ssh_task(void *arg)
         set_state(c, SSH_ST_ERROR, refused);
         goto done;
     }
-    if (c->p.use_key && hf_key_source(c->p.keypath, true) == HF_KEY_FILE) {
-        /* B6: a key file on the SD card: mount the card on demand, and fail before connecting if the file is gone */
-        if (hf_key_on_sd(c->p.keypath)) sd_mount();
-        struct stat st;
-        if (hf_key_source(c->p.keypath, stat(c->p.keypath, &st) == 0) == HF_KEY_FILE_MISSING) {
-            ESP_LOGW(TAG, "key file for this host not found; not connecting");
-            set_state(c, SSH_ST_ERROR, HF_KEY_FILE_MISSING_MSG);
+    if (c->p.use_key && hf_key_source(c->p.keypath, true) != HF_KEY_DEVICE) {
+        /* B6: a key file on the SD card: mount the card on demand, and fail before connecting if the file is gone
+           (or the path isn't on the card, M9) */
+        hf_key_src_t src = hf_key_source(c->p.keypath, true);
+        if (src == HF_KEY_FILE) {
+            sd_mount();
+            struct stat st;
+            src = hf_key_source(c->p.keypath, stat(c->p.keypath, &st) == 0);
+        }
+        if (src != HF_KEY_FILE) {
+            ESP_LOGW(TAG, "key file for this host not usable; not connecting");
+            set_state(c, SSH_ST_ERROR, src == HF_KEY_BAD_PATH ? HF_KEY_BAD_PATH_MSG : HF_KEY_FILE_MISSING_MSG);
             goto done;
         }
     }
@@ -335,7 +341,9 @@ static void ssh_task(void *arg)
     if (GONE(c)) goto done;
     set_state(c, SSH_ST_AUTH, NULL);
     if (authenticate(c) != 0) {
-        char m[160]; snprintf(m, sizeof(m), "Authentication failed: %s", ssh_get_error(c->session));
+        char m[200];
+        if (c->err[0]) snprintf(m, sizeof(m), "%s", c->err);   /* the key's own reason (B6, M10) */
+        else snprintf(m, sizeof(m), "Authentication failed: %s", ssh_get_error(c->session));
         set_state(c, SSH_ST_ERROR, m); goto done;
     }
     if (GONE(c)) goto done;   /* C1: closed while the auth ran */

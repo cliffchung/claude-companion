@@ -555,3 +555,47 @@ Final state: `ts off`, `power set defaults`, DHCP, Host link connected on the LA
 - Incident: during the gate a Shift+Tab then Enter on Terminal took the back chip to Sessions, and two Downs then
   moved the Sessions selection onto a real card (P4C-4). It was moved back to the test session with Up only, within a
   minute; nothing was opened, sent or expanded (the detail pane loaded that card's recent output, a read).
+
+**Task 9 fix round 1.**
+- C1 (hard rule 1): `cc_link_host_addresses` (cc_link.c) collects every address the link knows the Host by. That is
+  the entry's host and its MagicDNS IP, the LAN fallback, `mac_ts_ip`, the carry IP, the verified and pinned
+  addresses, the last LAN address and the host cache. It is empty with no Host set. `cc_link_is_companion_server`
+  matches an entry's host (and its MagicDNS IP) against all of them through the pure `hf_is_host`
+  (`cc_same_host`, host-tested), and it fails closed when it can't allocate. As a result:
+  - Terminal can't list it.
+  - `row_cb` and `term_create` refuse it with the footnote's sentence.
+  - The form's Save uses `hf_validate_addrs` (HF_IS_HOST for the fallback or the tailnet IP typed by hand).
+  - "From your tailnet" drops any peer whose IP or name matches.
+
+  Preview: `terminal add` (the Host's tailnet peer is not offered) and `hostform new` (the fallback and the tailnet
+  address are refused). Invented addresses only. The preview's stubs now say `studio-host` / 192.168.77.20 instead of
+  the user's real name and fallback.
+- I1: Save refuses a name another entry already has (case-insensitive, excluding the edited entry): HF_NAME_TAKEN,
+  "Another host already has that name". It applies from Terminal and from the Host picker (`hf_name_taken`,
+  host-tested).
+- M1: new `cc_link_rename_server(old, new)`. It follows a rename of the Host's entry without clearing the pin
+  carry-over. Settings' Save calls it before the same-name `cc_link_set_server` (which keeps the carry). This
+  replaces T9-10's last clause.
+- M3: the host row's column, hint and failure note, and the fingerprint row, now use shared static styles.
+  `ui_srow_fingerprint` serves Settings › Host and the form.
+- M4: the prompt placeholders and the Name row's user/host fallback are `STR_*`.
+- M5: Save failure, list full (checked before an add) and delete failure each have their own string.
+- M6: the connect post and Terminal's Tailscale post check their results. A failed connect post shows "Couldn't
+  start the connection. Try again." on the row; a failed event post clears the queued flag.
+- M7: the back guard covers every way off the screen (`ui_nav_back`, `ui_nav_home`, `ui_nav_push`,
+  `ui_nav_replace`). A blocked move waits as pending: Discard runs it (`ui_nav_proceed`) and Cancel drops it. This
+  replaces T9-9's guard clause. Preview `hostform new`: `ui_nav_home` asks first.
+- M8: `hf_arg_t` keeps the identity the form opened (opened_*). A re-create (`ui refresh`) finds that entry by
+  identity, or toasts "This host was removed" and falls back a level. Preview `hostform edit-pin` inserts an entry
+  before it and refreshes.
+- M9: a key path outside `/sdcard/`, or with a `..` part, is HF_KEY_BAD_PATH: "The key file must be on the SD card",
+  before connecting and in `authenticate`.
+- M10: a key entry never tries a password or keyboard-interactive answer, so an SD key's passphrase is never sent as
+  a password. A refused key fails with "The host refused the key", and `ssh_task` shows the client's own reason.
+  Saved passwords on device-key entries are no longer sent either.
+- M11: `authenticate` decides through the pure `hf_auth_plan(use_key, keypath, exists)`, which is host-tested
+  (`test_auth_plan`). It is a seam, not an integration test: there is no libssh on the host. The device-side wiring
+  stays a visit item.
+- M2 is deferred to Task 12.
+- `idf.py size`: image 7,247,675 B, DIRAM 189,728 B (+800 B against the first Task 9 build).
+- Flashed. Nothing was saved on the device and no navigation keys were sent (P4C-9). The final state is unchanged.

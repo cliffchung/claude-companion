@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "companion/cc_sessions.h"
+#include "servers/host_rules.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -124,9 +125,16 @@ void cc_link_on_wifi(bool connected);
 const char *cc_settings_claude_path(char *out, size_t cap);   /* default "~/.local/bin/claude" */
 int cc_settings_server(void);                /* index in the fork's server list, or -1 */
 const char *cc_settings_server_name(char *out, size_t cap);   /* the configured name, "" when none */
-/* True when server idx is the companion's Mac: its index, or the same host as the companion
-   entry (also after a MagicDNS lookup). The SSH Terminal opens no login shell there. */
+/* True when server idx is the companion's Host: its index, or an address cc_same_host matches with any address the
+   link knows the Host by (cc_link_host_addresses; also after a MagicDNS lookup of the entry's name). Terminal never
+   lists it and the SSH Terminal opens no login shell there (hard rule 1). */
 bool cc_link_is_companion_server(int idx);
+/* Every address the link knows the Host by: the entry's host and its tailnet IP, the LAN fallback, mac_ts_ip and the
+   carry address, the last verified and pinned addresses, the last LAN address, the host cache. Empty with no Host. */
+void cc_link_host_addresses(hf_host_addrs_t *out);
+/* The Host's entry was renamed (the same entry): follows it without clearing the pin carry-over. False (nothing
+   changed) unless the configured name was old_name. */
+bool cc_link_rename_server(const char *old_name, const char *new_name);
 /* Store a new server name / Claude path and reconnect (server) as needed. */
 void cc_link_set_server(const char *name);
 bool cc_link_set_claude_path(const char *path);   /* false unless cc_path_valid */

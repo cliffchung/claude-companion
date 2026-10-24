@@ -52,7 +52,55 @@ static void nav_show_top(void)
     s_current = scr;
 }
 
-void ui_nav_push(ui_screen_create_fn create, void *arg)
+/* A screen's back guard (the host form's "Discard changes?"): asked first by every way off its screen (back, home,
+   push, replace) while that screen is current; true means it is asking, and the move waits as the pending one
+   until the screen calls ui_nav_proceed (or ui_nav_cancel_pending). Forgotten when the screen is deleted. */
+typedef enum { NAV_BACK, NAV_HOME, NAV_PUSH, NAV_REPLACE } nav_op_t;
+static lv_obj_t *s_guard_scr;
+static ui_back_guard_t s_guard;
+static struct { bool set; nav_op_t op; ui_screen_create_fn create; void *arg; } s_pending;
+static void guard_scr_deleted(lv_event_t *e)
+{
+    if (lv_event_get_target_obj(e) == s_guard_scr) { s_guard_scr = NULL; s_guard = NULL; s_pending.set = false; }
+}
+void ui_nav_set_back_guard(lv_obj_t *scr, ui_back_guard_t guard)
+{
+    if (s_guard_scr) lv_obj_remove_event_cb(s_guard_scr, guard_scr_deleted);
+    s_guard_scr = guard ? scr : NULL;
+    s_guard = scr ? guard : NULL;
+    s_pending.set = false;
+    if (s_guard_scr) lv_obj_add_event_cb(s_guard_scr, guard_scr_deleted, LV_EVENT_DELETE, NULL);
+}
+static bool guarded(nav_op_t op, ui_screen_create_fn create, void *arg)
+{
+    if (!s_guard || !s_guard_scr || s_guard_scr != lv_screen_active()) return false;
+    s_pending.set = true; s_pending.op = op; s_pending.create = create; s_pending.arg = arg;
+    if (s_guard()) return true;
+    s_pending.set = false;
+    return false;
+}
+static void nav_push(ui_screen_create_fn create, void *arg);
+static void nav_replace(ui_screen_create_fn create, void *arg);
+static void nav_back(void);
+static void nav_home(void);
+void ui_nav_proceed(void)
+{
+    bool set = s_pending.set;
+    nav_op_t op = s_pending.op;
+    ui_screen_create_fn create = s_pending.create;
+    void *arg = s_pending.arg;
+    s_pending.set = false;
+    if (s_guard_scr) lv_obj_remove_event_cb(s_guard_scr, guard_scr_deleted);
+    s_guard_scr = NULL;   /* the guard said go: no second question */
+    s_guard = NULL;
+    if (!set || op == NAV_BACK) nav_back();
+    else if (op == NAV_HOME) nav_home();
+    else if (op == NAV_PUSH) nav_push(create, arg);
+    else nav_replace(create, arg);
+}
+void ui_nav_cancel_pending(void) { s_pending.set = false; }
+
+static void nav_push(ui_screen_create_fn create, void *arg)
 {
     if (s_depth >= NAV_MAX) { ESP_LOGW(TAG, "nav stack full"); return; }
     s_stack[s_depth].create = create;
@@ -60,46 +108,33 @@ void ui_nav_push(ui_screen_create_fn create, void *arg)
     s_depth++;
     nav_show_top();
 }
+void ui_nav_push(ui_screen_create_fn create, void *arg) { if (!guarded(NAV_PUSH, create, arg)) nav_push(create, arg); }
 
-void ui_nav_replace(ui_screen_create_fn create, void *arg)
+static void nav_replace(ui_screen_create_fn create, void *arg)
 {
     if (s_depth == 0) s_depth = 1;
     s_stack[s_depth - 1].create = create;
     s_stack[s_depth - 1].arg = arg;
     nav_show_top();
 }
+void ui_nav_replace(ui_screen_create_fn create, void *arg) { if (!guarded(NAV_REPLACE, create, arg)) nav_replace(create, arg); }
 
-/* A screen's back guard (the host form's "Discard changes?"): asked first by every ui_nav_back while its screen is
-   current; true means it handled the back itself. Forgotten when the screen is deleted. */
-static lv_obj_t *s_guard_scr;
-static ui_back_guard_t s_guard;
-static void guard_scr_deleted(lv_event_t *e)
+static void nav_back(void)
 {
-    if (lv_event_get_target_obj(e) == s_guard_scr) { s_guard_scr = NULL; s_guard = NULL; }
-}
-void ui_nav_set_back_guard(lv_obj_t *scr, ui_back_guard_t guard)
-{
-    if (s_guard_scr) lv_obj_remove_event_cb(s_guard_scr, guard_scr_deleted);
-    s_guard_scr = guard ? scr : NULL;
-    s_guard = scr ? guard : NULL;
-    if (s_guard_scr) lv_obj_add_event_cb(s_guard_scr, guard_scr_deleted, LV_EVENT_DELETE, NULL);
-}
-
-void ui_nav_back(void)
-{
-    if (s_guard && s_guard_scr && s_guard_scr == lv_screen_active() && s_guard()) return;
-    if (s_depth <= 1) { ui_nav_home(); return; }
+    if (s_depth <= 1) { nav_home(); return; }
     s_depth--;
     nav_show_top();
 }
+void ui_nav_back(void) { if (!guarded(NAV_BACK, NULL, NULL)) nav_back(); }
 
-void ui_nav_home(void)
+static void nav_home(void)
 {
     s_depth = 1;
     s_stack[0].create = ui_sessions_create;   /* Sessions is the only home */
     s_stack[0].arg = NULL;
     nav_show_top();
 }
+void ui_nav_home(void) { if (!guarded(NAV_HOME, NULL, NULL)) nav_home(); }
 
 bool ui_nav_is_top(ui_screen_create_fn create)
 {

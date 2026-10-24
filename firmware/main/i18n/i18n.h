@@ -457,7 +457,16 @@ X(HF_DISCARD_Q, "Discard changes?") \
 X(HF_DISCARD, "Discard") \
 X(HF_SAVE, "Save") \
 X(HF_SAVED, "Saved") \
-X(HF_SAVE_FAILED, "Couldn't save the host. The list holds 24 hosts.") \
+X(HF_SAVE_FAILED, "Couldn't save the host. Try again.") \
+X(HF_LIST_FULL, "The list is full: it holds 24 hosts. Delete one first.") \
+X(HF_DELETE_FAILED, "Couldn't delete the host. Try again.") \
+X(HF_ERR_NAME_TAKEN, "Another host already has that name") \
+X(HF_NAME_PH, "user@host") \
+X(HF_ADDRESS_PH, "box.local") \
+X(HF_PORT_PH, "22") \
+X(HF_USER_PH, "user") \
+X(HF_HOST_PH, "host") \
+X(HOSTS_CONNECT_FAILED, "Couldn't start the connection. Try again.") \
 X(HF_ERR_NO_ADDRESS, "Enter the host's address") \
 X(HF_ERR_NO_USER, "Enter a user") \
 X(HF_ERR_BAD_PORT, "The port is a number from 1 to 65535") \
