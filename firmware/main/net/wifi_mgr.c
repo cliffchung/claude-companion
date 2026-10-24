@@ -16,6 +16,7 @@
 #include "sys/power_rules.h"
 #include "sys/boot_phase.h"
 #include "lwip/ip4_addr.h"
+#include "sys/link_guard.h"
 
 static const char *TAG = "wifi";
 #define NS "wifi"
@@ -486,21 +487,45 @@ int wifi_mgr_channel(void)
     return 0;
 }
 
+/* The deauth, then up to 1 s for its STA_DISCONNECTED (s_connected false), so nothing that reopens after
+   it can start a session on the old association. */
+static void leave_now(void)
+{
+    s_user_disconnect = true;
+    s_rc_active = false;
+    esp_wifi_disconnect();
+    for (int i = 0; i < 100 && s_connected; i++) vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+typedef struct { const char *ssid, *pass; } join_t;
+static void switch_down(void *ctx)
+{
+    const join_t *j = ctx;
+    leave_now();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    do_connect(j->ssid, j->pass);
+}
+
 void wifi_mgr_connect(const char *ssid, const char *pass, bool save)
 {
     if (!s_started) return;
     if (save) saved_put(ssid, pass);
     s_rc_active = false;
-    if (s_connected || s_connecting) { s_user_disconnect = true; esp_wifi_disconnect(); vTaskDelay(pdMS_TO_TICKS(200)); }
-    do_connect(ssid, pass);
+    join_t j = { ssid, pass };
+    if (s_connected || s_connecting) {
+        /* final review C1: a network switch takes the link down: close SSH first, while the old network
+           still carries the close to the Host, then switch and let the link reconnect */
+        lg_around(false, LG_CLOSE_MS, switch_down, &j, true);
+    } else do_connect(ssid, pass);
     s_auto_connect = false;
 }
 
+static void disconnect_down(void *ctx) { (void)ctx; leave_now(); }
+
 void wifi_mgr_disconnect(void)
 {
-    s_user_disconnect = true;
-    s_rc_active = false;
-    esp_wifi_disconnect();
+    /* final review C1: Wi-Fi -> Disconnect, the home toggle, `wifi leave` and hibernate: close SSH first */
+    lg_around(false, LG_CLOSE_MS, disconnect_down, NULL, true);
 }
 
 bool wifi_mgr_scan_start(void)

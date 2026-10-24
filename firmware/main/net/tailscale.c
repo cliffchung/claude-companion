@@ -112,6 +112,8 @@ static void worker_task(void *arg)
     for (int i = 0; i < 600 && !done; i++) {   /* 300 s */
         ctl_lock();
         done = reap_locked();
+        /* review M5: a late state callback that raced teardown can't leave "Connected" behind */
+        if (done && !s_ml) { s_state = TS_OFF; s_ip[0] = 0; }
         if (done && g_settings.ts_enable && !s_hold && !s_started && wifi_mgr_is_connected()) {
             ESP_LOGI(TAG, "switched on again while stopping: starting now");
             start_locked();
@@ -127,10 +129,25 @@ static void worker_task(void *arg)
     vTaskDelete(NULL);
 }
 
-/* Detaches the live instance and hands its stop and free to the worker. Never waits. Its node keys
-   stay in NVS, so starting again reuses the registered node. */
+static ts_stop_hook_t s_stop_hook;
+void tailscale_set_stop_hook(ts_stop_hook_t hook) { s_stop_hook = hook; }
+
+static void teardown_now(void *ctx);
+/* Detaches the live instance and hands its stop and free to the worker. Its node keys stay in NVS, so
+   starting again reuses the registered node. C1: with an instance, the stop hook first closes the SSH
+   sessions over the tunnel (bounded, about 2 s) while it still carries their close to the Host. */
 static void teardown(void)
 {
+    ctl_lock();
+    bool live = s_ml != NULL;
+    ctl_unlock();
+    if (live && s_stop_hook) s_stop_hook(teardown_now, NULL);
+    else teardown_now(NULL);
+}
+
+static void teardown_now(void *ctx)
+{
+    (void)ctx;
     ctl_lock();
     microlink_t *ml = s_ml;
     bool was_started = s_started;
@@ -150,7 +167,7 @@ bool tailscale_stopping(void) { return s_zombie != NULL; }
 static void on_state(microlink_t *ml, microlink_state_t st, void *user)
 {
     (void)user;
-    if (ml != s_ml) return;   /* a stopped instance's last task: the switch is off */
+    if (ml != s_ml || !g_settings.ts_enable) return;   /* a stopped instance's last task: the switch is off */
     switch (st) {
     case ML_STATE_IDLE: s_state = TS_OFF; break;
     case ML_STATE_WIFI_WAIT: s_state = TS_WAIT_WIFI; break;

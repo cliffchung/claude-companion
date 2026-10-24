@@ -1,3 +1,4 @@
+#include "sys/link_down.h"
 #include "ui.h"
 #include "storage/sd.h"
 #include "storage/backup.h"
@@ -28,7 +29,7 @@ static void export_plain_yes(bool yes, void *ud)
     if (backup_export(NULL, path, sizeof(path), err, sizeof(err))) ui_toastf(tr(STR_BACKUP_WRITTEN), path); else ui_alert(tr(STR_ERROR), err);
 }
 static void export_plain_cb(lv_event_t *e) { (void)e; ui_confirm(tr(STR_BACKUP_EXPORT_PLAIN), tr(STR_BACKUP_PLAIN_WARN), export_plain_yes, NULL); }
-static void reboot_timer(lv_timer_t *t) { (void)t; esp_restart(); }
+static void reboot_timer(lv_timer_t *t) { (void)t; link_down_restart("backup restored"); }
 static void import_done(bool ok, const char *err)
 {
     if (!ok) { ui_alert(tr(STR_ERROR), err); return; }

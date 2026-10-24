@@ -44,6 +44,17 @@ static void test_needs_tailscale(void)
     TEST_ASSERT_FALSE(ts_host_needs_tailscale(NULL));
 }
 
+/* M2/L48: the terminal's refusal is a pure check, so `ts term-test` never starts a client (no Host command). */
+static void test_term_refusal(void)
+{
+    TEST_ASSERT_EQUAL_STRING(TS_HOST_OFF_MESSAGE, ts_host_term_refusal("100.101.102.103", false));
+    TEST_ASSERT_EQUAL_STRING(TS_HOST_OFF_MESSAGE, ts_host_term_refusal("pi.tail1234.ts.net", false));
+    TEST_ASSERT_NULL(ts_host_term_refusal("100.101.102.103", true));
+    TEST_ASSERT_NULL(ts_host_term_refusal("192.168.1.50", false));
+    TEST_ASSERT_NULL(ts_host_term_refusal("my-host.local", false));
+    TEST_ASSERT_NULL(ts_host_term_refusal(NULL, false));
+}
+
 /* A check-in brings the tunnel up only for a host that may be on the tailnet: a tailnet address, a
    *.ts.net name or a bare MagicDNS name. A LAN address, a .local name or another DNS name never waits on it. */
 static void test_maybe_tailnet(void)
@@ -89,6 +100,7 @@ int main(void)
     RUN_TEST(test_ipv4);
     RUN_TEST(test_tailnet_ip);
     RUN_TEST(test_needs_tailscale);
+    RUN_TEST(test_term_refusal);
     RUN_TEST(test_maybe_tailnet);
     RUN_TEST(test_mdns);
     RUN_TEST(test_lan_fallback_valid);

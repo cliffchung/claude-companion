@@ -75,3 +75,8 @@ bool ts_host_lan_fallback_valid(const char *s)
     if (!parse_ipv4(s, &v)) return false;
     return (v >> 24) == 10 || (v & 0xFFF00000u) == 0xAC100000u || (v & 0xFFFF0000u) == 0xC0A80000u;
 }
+
+const char *ts_host_term_refusal(const char *host, bool ts_on)
+{
+    return !ts_on && ts_host_needs_tailscale(host) ? TS_HOST_OFF_MESSAGE : NULL;
+}

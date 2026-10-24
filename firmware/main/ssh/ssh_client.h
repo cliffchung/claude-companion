@@ -37,6 +37,11 @@ ssh_state_t ssh_client_state(ssh_client_t *c);
 const char *ssh_client_error(ssh_client_t *c);
 /* Command mode: the remote exit status once the state is CLOSED, or -1 if unknown. */
 int ssh_client_exit_status(ssh_client_t *c);
+/* Final review C1: registers the live clients' closer with the close-before-down guard (sys/link_guard.h):
+   every path that takes the link down first closes each open SSH Terminal and take-over session and waits
+   (bounded) for its disconnect. Its state then ends as SSH_ST_ERROR "the network is going down". Called
+   once at boot, before any client starts. */
+void ssh_client_guard_init(void);
 /* known hosts (NVS "kh"): key = hash of host:port, value = SHA256 of the server key */
 void ssh_known_hosts_clear(void);
 /* kh_result_t is in kh_rules.h. KH_PIN_ERROR (the pin is unreadable) never re-pins. */

@@ -36,6 +36,7 @@
 #include "net/tailscale.h"
 #include "companion/cc_link.h"
 #include "sys/boot_phase.h"
+#include "sys/link_down.h"
 
 static void wifi_global_cb(wifi_ev_t ev, void *user)
 {
@@ -181,6 +182,7 @@ void app_main(void)
     bsp_display_unlock();
 
     wifi_mgr_set_global_cb(wifi_global_cb, NULL);
+    link_down_init();   /* final review C1: every link-down path closes SSH first */
     wifi_mgr_init();
     usb_mgr_init();
     audio_player_init();

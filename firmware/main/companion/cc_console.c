@@ -131,11 +131,11 @@ static int cmd_companion(int argc, char **argv)
             printf("companion: rejected: the host has no spaces; the fallback is a private IPv4 address or none\n");
             return 1;
         }
-        if (e == ESP_ERR_INVALID_STATE) { printf("No Mac set up\n"); return 1; }
+        if (e == ESP_ERR_INVALID_STATE) { printf("No Host set up\n"); return 1; }
         if (e != ESP_OK) { printf("companion: the server list didn't save\n"); return 1; }
         char fb[16];
         cc_link_lan_fallback(fb, sizeof(fb));
-        printf("companion: Mac entry host %s, fallback %s; reconnecting\n", argv[2], fb[0] ? fb : "none");
+        printf("companion: Host entry host %s, fallback %s; reconnecting\n", argv[2], fb[0] ? fb : "none");
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "watch") == 0) {
@@ -158,13 +158,13 @@ static int cmd_companion(int argc, char **argv)
         esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
         if (e == ESP_OK) printf("New Mac key pinned: %s\n", fp);
         else if (e == ESP_ERR_TIMEOUT) printf("Old key forgotten; reconnecting...\n");
-        else printf("No Mac set up\n");
+        else printf("No Host set up\n");
         return e == ESP_OK || e == ESP_ERR_TIMEOUT ? 0 : 1;
     }
     if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "corrupt") == 0) {
         /* debug: shows the changed-key path without touching the Mac */
         char hp[160];
-        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No Mac set up\n"); return 1; }
+        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No Host set up\n"); return 1; }
         printf("debug: host key pin for %s overwritten; reconnecting\n", hp);
         return 0;
     }
@@ -342,42 +342,28 @@ static int cmd_wifi(int argc, char **argv)
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "static") == 0 && strcmp(argv[2], "off") == 0) {
-        wifi_mgr_static_ip_set(NULL);
-        printf("wifi static: off (from the next join)\n");
-        return 0;
+        /* review N2: a failed save leaves the static address on: say so */
+        bool ok = wifi_mgr_static_ip_set(NULL);
+        printf("wifi static: %s\n", ok ? "off (from the next join)" : "not saved (still on)");
+        return ok ? 0 : 1;
     }
     printf("usage: wifi leave | wifi join [ssid] | wifi status | wifi test drop | "
            "wifi static [off | <ip/prefix> <gw> [dns]]   (join uses the saved password)\n");
     return 1;
 }
 
-/* `ts term-test <tailnet host>`: runs the SSH terminal's client on a tailnet host with the switch off and
-   prints its error. Only for that case: it never connects anywhere (no session, no login shell). */
-static volatile int s_tt_state = -1;
-static char s_tt_msg[160];
-static void tt_state_cb(ssh_state_t st, const char *msg, void *user)
-{
-    (void)user;
-    if (msg) strlcpy(s_tt_msg, msg, sizeof(s_tt_msg));
-    s_tt_state = st;
-}
+/* `ts term-test <tailnet host>`: prints the SSH terminal's refusal for a tailnet host with the switch off.
+   Ruling L48 (final review M2): it runs only the client's pure first check (ts_host_term_refusal, the same
+   call ssh_task makes before any socket) and starts no client, so no command line reaches any host. */
 static int ts_term_test(const char *host)
 {
-    if (tailscale_enabled() || !ts_host_needs_tailscale(host)) {
+    const char *refused = ts_host_term_refusal(host, tailscale_enabled());
+    if (!refused) {
         printf("ts term-test: only for a tailnet host with the switch off\n");
         return 1;
     }
-    ssh_params_t p = { .port = 22, .use_key = true, .cols = 80, .rows = 24 };
-    strlcpy(p.host, host, sizeof(p.host));
-    strlcpy(p.user, "nobody", sizeof(p.user));
-    strlcpy(p.cmd, "true", sizeof(p.cmd));
-    s_tt_state = -1; s_tt_msg[0] = 0;
-    ssh_client_t *c = ssh_client_start(&p, NULL, tt_state_cb, NULL, NULL);
-    if (!c) { printf("ts term-test: no SSH task\n"); return 1; }
-    for (int i = 0; i < 50 && s_tt_state != SSH_ST_ERROR && s_tt_state != SSH_ST_CLOSED; i++) vTaskDelay(pdMS_TO_TICKS(20));
-    ssh_client_stop(c);
-    printf("ts term-test %s: %s: %s\n", host, s_tt_state == SSH_ST_ERROR ? "error" : "no error", s_tt_msg);
-    return s_tt_state == SSH_ST_ERROR ? 0 : 1;
+    printf("ts term-test %s: error: %s\n", host, refused);
+    return 0;
 }
 
 /* The Tailscale switch: saved at once, sticky across every boot and wake. */

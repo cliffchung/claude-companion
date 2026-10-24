@@ -1,5 +1,6 @@
 #include "hibernate.h"
 #include "sys/boot_phase.h"
+#include "sys/link_guard.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -434,7 +435,11 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
            Before, the link noticed only after the Wi-Fi went, and every check-in left an idle session on the
            Host until its timeout (42 of them piled up in a fast test chain, and sshd then reset new connects). */
         cc_link_park(true);
-        for (int i = 0; i < 100 && cc_link_connected(); i++) vTaskDelay(pdMS_TO_TICKS(10));
+        /* final review C1/I1: close the link and any open SSH Terminal or take-over session, and wait (about 2 s
+           at most) until none is open or opening, not just until the link stops reading as connected: a
+           connect in flight closes its new session itself, and a poll or paste in flight gives up */
+        lg_token_t lt = lg_close(false, LG_CLOSE_MS);
+        if (!lt.idle) ESP_LOGW(TAG, "hibernate: SSH still busy after %d ms; going down anyway", lt.waited_ms);
         wifi_mgr_disconnect();
         vTaskDelay(pdMS_TO_TICKS(fast ? 50 : 200));   /* the deauth goes out */
     }

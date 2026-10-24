@@ -17,6 +17,7 @@
 #include "sys/power.h"
 #include "sys/hibernate.h"
 #include "sys/boot_phase.h"
+#include "sys/link_guard.h"
 
 static const char *TAG = "checkin";
 
@@ -219,7 +220,6 @@ static bool wait_for(bool (*cond)(void), int ms)
 
 static bool wifi_up(void) { return wifi_mgr_is_connected(); }
 static bool link_up(void) { return cc_link_connected(); }
-static bool link_down(void) { return !cc_link_connected(); }
 static bool judged(void) { return power_state() < PS_OFF || power_results_judged(); }
 
 /* Steps 4-5: SSH, then one plain poll. A handshake path counts only once SSH works: a stale keypair can
@@ -236,11 +236,11 @@ static ts_checkin_t tunnel(const char *mac, bool rebind)
 {
     if (!tailscale_enabled() && ts_host_needs_tailscale(mac)) {
         /* the Mac entry is still a tailnet host: no link can come up, so don't wait for one */
-        ESP_LOGW(TAG, "tunnel: the Mac (%s) needs Tailscale, which is off", mac);
+        ESP_LOGW(TAG, "tunnel: the Host (%s) needs Tailscale, which is off", mac);
         return TS_CHECKIN_FAILED;
     }
     if (!needs_tunnel(mac)) {
-        ESP_LOGI(TAG, "tunnel: skipped (%s)", tailscale_enabled() ? "the Mac is on the LAN" : "Tailscale is off");
+        ESP_LOGI(TAG, "tunnel: skipped (%s)", tailscale_enabled() ? "the Host is on the LAN" : "Tailscale is off");
         return TS_CHECKIN_SKIPPED;
     }
     return tailscale_checkin(mac, rebind, NULL);
@@ -268,8 +268,11 @@ static ts_checkin_t link_and_poll(const char *mac, ts_checkin_t ts, int link_ms,
 static void park_now(void)
 {
     cc_link_park(true);
-    wait_for(link_down, 2000);   /* the SSH close goes out before the radio stops */
+    /* the SSH close goes out before the radio stops (final review C1/I1: the link and any terminal, and a
+       connect in flight too); the radio park keeps the link parked after the guard's reopen */
+    lg_token_t lt = lg_close(false, LG_CLOSE_MS);
     bool ok = wifi_mgr_park();
+    lg_reopen(lt);
     s_parked = true;
     ESP_LOGI(TAG, "radio parked: park mode %s%s", wifi_mgr_park_mode(), ok ? "" : " (the park failed: radio may be on)");
 }

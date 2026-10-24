@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include "net/ts_host.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,7 +27,7 @@ bool tailscale_stopping(void);
 /* True while tailscale_forget_node runs; a second call meanwhile returns false at once (N4). */
 bool tailscale_forgetting(void);
 /* The SSH terminal's message for a tailnet host while the switch is off. */
-#define TS_OFF_MESSAGE "Tailscale is off. Turn it on in Settings → Network."
+#define TS_OFF_MESSAGE TS_HOST_OFF_MESSAGE   /* net/ts_host.h: the pure precheck returns it */
 void tailscale_on_wifi(bool connected);   /* called from the WiFi manager hook */
 ts_state_t tailscale_state(void);
 const char *tailscale_state_text(void);
@@ -43,6 +44,11 @@ void tailscale_tcp_probe(const char *ip, int port, int timeout_ms);
 /* MagicDNS-style lookup of a tailnet hostname; returns false if unknown. */
 bool tailscale_resolve(const char *host, char *ip_out, size_t cap);
 void tailscale_set_event_cb(ts_event_cb_t cb, void *user);
+/* Final review C1: called around every stop of a live instance (the switch, `ts off`, a backup restore,
+   tailscale_stop, a node forget), before the tunnel goes: hook(stop, ctx) must close the SSH sessions over
+   tailnet addresses and then call stop(ctx) exactly once. Not called with s_ctl held. */
+typedef void (*ts_stop_hook_t)(void (*stop)(void *ctx), void *ctx);
+void tailscale_set_stop_hook(ts_stop_hook_t hook);
 bool tailscale_forget_node(void);         /* factory reset of node keys (re-auth needed) */
 const char *tailscale_last_error(void);
 

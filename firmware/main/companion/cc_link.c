@@ -25,6 +25,8 @@
 #include "ssh/device_key.h"
 #include "net/ts_host.h"
 #include "companion/kh_carry.h"
+#include "companion/cc_park.h"
+#include "sys/link_guard.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 
@@ -107,7 +109,14 @@ static void carry_store(const carry_t *c);
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 
 /* Task 8 */
-static volatile bool s_parked;              /* cc_link_park: no session, no reconnect */
+static volatile bool s_parked;              /* cc_park_on(&s_park): no session, no reconnect */
+static cc_park_t s_park;                    /* under s_lock: Radio off and the close-before-down guard (C1) */
+static volatile bool s_in_connect;          /* the task is inside connect_once (I1) */
+static volatile bool s_have_sess;           /* s_sess != NULL, for other tasks (I1) */
+static volatile uint32_t s_host_gen;        /* cc_link_set_server_host's moves: a connect in flight doesn't
+                                               overwrite the carry source moved meanwhile (review M4) */
+static char s_ok_host[128];                 /* under s_lock: the last address whose key the link verified and
+                                               authenticated on: the only take-over target (review M6) */
 static volatile bool s_kick = true;         /* companion kick on|off: the stale-peer fix */
 #define RLOG_N 8
 typedef struct { uint32_t epoch; int64_t mono_ms; bool up; char why[24]; } rlog_t;
@@ -243,6 +252,7 @@ void cc_link_set_server(const char *name)
     bool other = strcmp(g_settings.companion_server, name ? name : "") != 0;
     strlcpy(g_settings.companion_server, name ? name : "", sizeof(g_settings.companion_server));
     s_pin_host[0] = 0;   /* the old Mac's address: a forget must not erase its pin */
+    s_ok_host[0] = 0;    /* M6 */
     if (other) s_lan_last[0] = 0;
     unlock();
     if (other) carry_store(NULL);   /* another Mac: the old one's key must not carry over (L3) */
@@ -362,6 +372,7 @@ static void teardown(void)
         ssh_disconnect(s_sess);
         ssh_free(s_sess);
         s_sess = NULL;
+        s_have_sess = false;
         ESP_LOGI(TAG, "link closed");
     }
     s_drop = false;
@@ -457,9 +468,20 @@ static bool mac_resolve(const char *host, char *out, size_t cap, const char **ho
     return false;
 }
 
+/* I1: parked while a connect runs (a hibernate, a Wi-Fi leave, a restart): the session is closed here,
+   while the Wi-Fi still carries the close, and never handed to the loop. */
+static bool parked_now(void)
+{
+    lock();
+    bool p = !cc_park_keep_new_session(&s_park);
+    unlock();
+    return p;
+}
+
 static bool connect_once(const char *name)
 {
     char why[sizeof(s_fail_text)];
+    uint32_t gen = s_host_gen;
     int idx = server_index(name);
     const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
     if (!sv) {
@@ -535,6 +557,7 @@ lookup:
     strlcpy(s_pin_host, host, sizeof(s_pin_host));
     s_pin_port = port;
     unlock();
+    if (parked_now()) return false;   /* I1: no new session once parked */
     ssh_session s = ssh_new();
     if (!s) {
         set_fail(CC_LINK_FAIL_NONE, NULL);   /* out of memory: no old reason may stick */
@@ -574,6 +597,12 @@ lookup:
         return false;
     }
     boot_phase_mark(BP_KEX);
+    if (parked_now()) {   /* I1: parked during the connect: close it now, before the Wi-Fi goes */
+        ESP_LOGI(TAG, "parked during the connect: closing");
+        ssh_disconnect(s);
+        ssh_free(s);
+        return false;
+    }
     char fp[80];
     kh_result_t kh = ssh_known_host_check(s, host, port, fp, sizeof(fp));
     uint8_t met[32];
@@ -634,6 +663,7 @@ lookup:
         set_fail(CC_LINK_FAIL_HOSTKEY, why);
         lock();
         s_pin_host[0] = 0;   /* M1 */
+        s_ok_host[0] = 0;
         unlock();
         ssh_disconnect(s);
         ssh_free(s);
@@ -650,6 +680,7 @@ lookup:
     if (kh != KH_OK) {
         lock();
         s_pin_host[0] = 0;   /* M1: never hand a refused address to a take-over */
+        s_ok_host[0] = 0;
         unlock();
         ESP_LOGE(TAG, "host key %s for %s:%d (%s); not connecting",
                  kh == KH_CHANGED ? "CHANGED" : kh == KH_PIN_ERROR ? "pin unreadable" : "unreadable", host, port, fp);
@@ -665,8 +696,14 @@ lookup:
         do {
             rc = ssh_userauth_publickey(s, NULL, key);
             if (rc == SSH_AUTH_AGAIN) vTaskDelay(pdMS_TO_TICKS(100));
-        } while (rc == SSH_AUTH_AGAIN && ++n < 200);
+        } while (rc == SSH_AUTH_AGAIN && ++n < 200 && !parked_now());
         ssh_key_free(key);
+    }
+    if (rc != SSH_AUTH_SUCCESS && parked_now()) {   /* I1: parked while the auth was pending: not an auth failure */
+        ESP_LOGI(TAG, "parked during the auth: closing");
+        ssh_disconnect(s);
+        ssh_free(s);
+        return false;
     }
     if (rc != SSH_AUTH_SUCCESS) {
         ESP_LOGW(TAG, "device key auth failed: %s", ssh_get_error(s));
@@ -677,7 +714,17 @@ lookup:
         return false;
     }
     boot_phase_mark(BP_AUTH);
+    if (parked_now()) {
+        /* I1: parked while the auth ran (go_down's wait, a Wi-Fi leave): the session is closed here, while
+           the Wi-Fi still carries the close, instead of being handed to the loop after the park was seen */
+        ESP_LOGI(TAG, "parked during the auth: closing the new session");
+        ssh_disconnect(s);
+        ssh_free(s);
+        set_fail(CC_LINK_FAIL_NONE, NULL);
+        return false;
+    }
     s_sess = s;
+    s_have_sess = true;
     s_drop = false;
     set_fail(CC_LINK_FAIL_NONE, NULL);
     lock();
@@ -689,8 +736,11 @@ lookup:
     }
     s_poll_fails = 0;
     s_poll_too_big = false;
+    strlcpy(s_ok_host, host, sizeof(s_ok_host));   /* M6: key checked and authenticated */
+    bool moved = s_host_gen != gen;                /* M4: `companion server-host` ran meanwhile */
     unlock();
-    if (tnet) {
+    if (tnet && moved) ESP_LOGW(TAG, "kh: the Host entry moved during this connect; the carry source is kept");
+    if (tnet && !moved) {
         /* remember the key met on the entry's tailnet address: it carries over when the entry moves to the LAN */
         carry_t nc = { 0 };
         strlcpy(nc.host, entry_host, sizeof(nc.host));
@@ -768,6 +818,7 @@ static esp_err_t do_exec(req_t *r)
     if (r->out && r->cap) r->out[0] = 0;
     if (r->err && r->err_cap) r->err[0] = 0;
     if (r->exit_status) *r->exit_status = -1;
+    if (s_parked) return ESP_ERR_INVALID_STATE;   /* I1 */
     ssh_channel ch = open_channel();
     if (!ch) return ESP_ERR_INVALID_STATE;
     if (ssh_channel_request_exec(ch, r->cmd) != SSH_OK) {
@@ -777,7 +828,7 @@ static esp_err_t do_exec(req_t *r)
         return ESP_FAIL;
     }
     size_t olen = 0, elen = 0;
-    bool truncated = false, failed = false, timed_out = false;
+    bool truncated = false, failed = false, timed_out = false, parked = false;
     char tmp[512];
     for (;;) {
         int n = ssh_channel_read_timeout(ch, tmp, sizeof(tmp), 0, 50);
@@ -805,8 +856,9 @@ static esp_err_t do_exec(req_t *r)
         read_stderr(ch, r->err, r->err_cap, &elen);
         if (n == 0 && ssh_channel_is_eof(ch)) break;
         if (now_us() > r->deadline_us) { timed_out = true; break; }
+        if (s_parked) { parked = true; break; }   /* I1: the link is going down: give up now */
     }
-    if (!failed && !timed_out && r->exit_status) {
+    if (!failed && !timed_out && !parked && r->exit_status) {
         uint32_t code = 0;
         char *sig = NULL;
         int core = 0;
@@ -816,6 +868,7 @@ static esp_err_t do_exec(req_t *r)
     close_channel(ch);
     if (r->err && r->err_cap) first_line(r->err);
     if (failed) { s_drop = true; return ESP_FAIL; }
+    if (parked) return ESP_ERR_INVALID_STATE;   /* the park's teardown closes the session */
     /* A channel that never finishes means the link is gone (Wi-Fi lost without an event)
        or wedged; start over either way. */
     if (timed_out) { s_drop = true; return ESP_ERR_TIMEOUT; }
@@ -876,9 +929,10 @@ static void last_line(char *plain, char *out, size_t cap)
 
 static int refresh(int64_t deadline_us);
 
+/* I1: a park counts as the deadline: the paste stops between steps and detaches with Ctrl+Z. */
 static bool late(const req_t *r)
 {
-    return now_us() > r->deadline_us;
+    return now_us() > r->deadline_us || s_parked;
 }
 
 /* Every phase checks the request's deadline: nothing is typed once it has passed, and
@@ -979,7 +1033,7 @@ static int refresh(int64_t deadline_us);
 
 static void handle(req_t *r)
 {
-    if (!s_sess || s_drop) { answer(r, ESP_ERR_INVALID_STATE); return; }
+    if (!s_sess || s_drop || s_parked) { answer(r, ESP_ERR_INVALID_STATE); return; }
     if (now_us() > r->deadline_us) { answer(r, ESP_ERR_TIMEOUT); return; }
     if (r->type == REQ_POLL) { answer(r, refresh(r->deadline_us) >= 0 ? ESP_OK : ESP_FAIL); return; }
     answer(r, r->type == REQ_EXEC ? do_exec(r) : do_paste(r));   /* paste and check */
@@ -1330,6 +1384,7 @@ static void link_task(void *arg)
             lock();
             s_list_n = -1;
             s_pin_host[0] = 0;
+            s_ok_host[0] = 0;
             unlock();
             set_fail(CC_LINK_FAIL_NONE, NULL);
         }
@@ -1371,7 +1426,10 @@ static void link_task(void *arg)
             }
             set_state(LS_CONNECTING);
             drain_queue_down(0);
-            if (connect_once(name)) {
+            s_in_connect = true;
+            bool ok = connect_once(name);
+            s_in_connect = false;
+            if (ok) {
                 set_state(LS_CONNECTED);
                 attempt = 0;
                 last_poll = 0;
@@ -1642,7 +1700,7 @@ int cc_poll_snapshot(cc_session_t *out, int cap)
    fallback LAN address, the last LAN address the name resolved to, (resolve: a fresh lookup of the
    name now, which can block for seconds) and, last, the address the link last tried. Deduplicated.
    Returns how many it filled (0: no Mac set up). */
-#define PIN_TARGETS 7
+#define PIN_TARGETS 8
 static int add_target(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS], int n, const char *h, int port)
 {
     if (!h || !h[0] || n >= PIN_TARGETS) return n;
@@ -1681,6 +1739,11 @@ static int pin_targets(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS], boo
     n = add_target(hosts, ports, n, tsip, port);
     n = add_target(hosts, ports, n, fb, port);
     n = add_target(hosts, ports, n, last, port);
+    char cached[16];   /* review M3: the Host address cache's address, which may differ from all the above */
+    lock();
+    strlcpy(cached, s_hc.ip, sizeof(cached));
+    unlock();
+    n = add_target(hosts, ports, n, cached, port);
     if (resolve) {
         const char *how;
         if (mac_resolve(host, ip, sizeof(ip), &how)) n = add_target(hosts, ports, n, ip, port);
@@ -1707,7 +1770,9 @@ esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms)
     if (n == 0) return ESP_ERR_INVALID_STATE;
     for (int i = 0; i < n; i++) ssh_known_host_forget(hosts[i], ports[i]);
     carry_store(NULL);   /* the old key is no longer trusted: nothing carries it over */
+    cc_link_host_cache_clear();   /* review M3: the cached address was the old key's too */
     lock();
+    s_ok_host[0] = 0;    /* M6: the forgotten key's address is no take-over target */
     uint32_t want = ++s_forget_req;
     unlock();
     s_forget = true;
@@ -1761,14 +1826,72 @@ esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)
     return ESP_OK;
 }
 
-void cc_link_park(bool parked)
+/* Applies a change to s_park; logs and wakes the task when the parked state flips. */
+static void park_apply(void (*change)(cc_park_t *p, void *arg), void *arg, const char *why)
 {
-    if (s_parked == parked) return;
-    s_parked = parked;
-    if (!parked) s_reset_backoff = true;   /* connect at once */
-    ESP_LOGI(TAG, "%s", parked ? "parked (radio off)" : "unparked: connecting");
+    lock();
+    bool was = cc_park_on(&s_park);
+    change(&s_park, arg);
+    bool now = cc_park_on(&s_park);
+    s_parked = now;
+    unlock();
+    if (was == now) return;
+    if (!now) s_reset_backoff = true;   /* connect at once */
+    ESP_LOGI(TAG, "%s", now ? why : "unparked: connecting");
     kick();
 }
+static void ch_radio(cc_park_t *p, void *arg) { cc_park_set_radio(p, *(bool *)arg); }
+static void ch_take(cc_park_t *p, void *arg) { (void)arg; cc_park_guard_take(p); }
+static void ch_drop(cc_park_t *p, void *arg) { (void)arg; cc_park_guard_drop(p); }
+
+void cc_link_park(bool parked)
+{
+    park_apply(ch_radio, &parked, "parked (radio off)");
+}
+
+bool cc_link_idle(void)
+{
+    return cc_park_idle(s_have_sess, s_in_connect);
+}
+
+bool cc_link_close_now(int timeout_ms)
+{
+    park_apply(ch_take, NULL, "parked: closing before the link goes down");
+    int64_t end = now_us() + (int64_t)timeout_ms * 1000;
+    while (!cc_link_idle() && now_us() < end) vTaskDelay(pdMS_TO_TICKS(10));
+    bool idle = cc_link_idle();
+    if (!idle) ESP_LOGW(TAG, "close: still busy after %d ms", timeout_ms);
+    return idle;
+}
+
+void cc_link_reopen(void)
+{
+    park_apply(ch_drop, NULL, "");
+}
+
+/* The close-before-down guard's closer (C1): parks the link (a nested guard park, so a Radio-off park
+   survives the reopen) when its session isn't excluded by tailnet_only. */
+static bool link_on_tailnet(void)
+{
+    lock();
+    bool t = tailscale_is_tailnet_ip(s_pin_host);
+    unlock();
+    return t;
+}
+static bool lg_link_close(bool tailnet_only, void *ctx)
+{
+    (void)ctx;
+    if (tailnet_only && !link_on_tailnet()) return false;
+    park_apply(ch_take, NULL, "parked: closing before the link goes down");
+    return true;
+}
+static bool lg_link_idle(bool tailnet_only, void *ctx)
+{
+    (void)ctx;
+    if (tailnet_only && !link_on_tailnet()) return true;
+    return cc_link_idle();
+}
+static void lg_link_reopen(void *ctx) { (void)ctx; cc_link_reopen(); }
 
 bool cc_link_parked(void) { return s_parked; }
 
@@ -1829,6 +1952,15 @@ bool cc_link_mac_address(char *out, size_t cap)
     return out[0] != 0;
 }
 
+bool cc_link_verified_address(char *out, size_t cap)
+{
+    if (!out || !cap) return false;
+    lock();
+    strlcpy(out, s_ok_host, cap);
+    unlock();
+    return out[0] != 0;
+}
+
 bool cc_link_resolve_test(const char *host, char *out, size_t cap, const char **how)
 {
     if (!host || !out || !cap || !how) return false;
@@ -1867,6 +1999,9 @@ esp_err_t cc_link_set_server_host(const char *host, const char *fallback)
     int idx = cc_settings_server();
     const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
     if (!sv) return ESP_ERR_INVALID_STATE;
+    lock();
+    s_host_gen++;   /* M4: a tailnet connect in flight must not store the old host as the carry source */
+    unlock();
     server_t e = *sv;
     /* the address whose pin carries over: the link's last tailnet address, else the old entry's */
     char tsip[sizeof(g_settings.mac_ts_ip)] = "";
@@ -1894,6 +2029,7 @@ esp_err_t cc_link_set_server_host(const char *host, const char *fallback)
     if (fb) strlcpy(g_settings.mac_lan_ip, fb, sizeof(g_settings.mac_lan_ip));
     s_lan_last[0] = 0;
     s_pin_host[0] = 0;   /* M2: the old host's address is no take-over target, even before the reconfig */
+    s_ok_host[0] = 0;
     unlock();
     settings_save();
     ESP_LOGI(TAG, "Host entry host -> %s, fallback %s, carry source %s", host,
@@ -1966,6 +2102,8 @@ esp_err_t cc_link_start(void)
     carry_load();
     hc_load();
     libssh_esp32_init();   /* once only */
+    static const lg_closer_t closer = { "cc_link", lg_link_close, lg_link_idle, lg_link_reopen, NULL };
+    lg_register(&closer);   /* C1: every path that takes the link down closes it first */
     if (xTaskCreatePinnedToCore(link_task, "cc_link", 24576, NULL, 4, &s_task, 1) != pdPASS)
         return ESP_ERR_NO_MEM;
     return ESP_OK;

@@ -1,3 +1,4 @@
+#include "sys/link_down.h"
 #include "ui.h"
 #include "ui_motion.h"
 #include "ui_softkbd.h"
@@ -119,7 +120,7 @@ static void creds_reload_cb(lv_event_t *e)
     server_store_reload();
     ui_toastf("%s: %d", tr(STR_SERVERS), server_store_count());
 }
-static void reboot_yes(bool yes, void *ud) { (void)ud; if (yes) esp_restart(); }
+static void reboot_yes(bool yes, void *ud) { (void)ud; if (yes) link_down_restart("Settings reboot"); }
 static void reboot_cb(lv_event_t *e) { (void)e; ui_confirm(tr(STR_REBOOT), tr(STR_REBOOT_Q), reboot_yes, NULL); }
 static void about_cb(lv_event_t *e) { (void)e; char b[400]; snprintf(b, sizeof(b), "v%s\n%s", sysinfo_app_version(), tr(STR_ABOUT_TEXT)); ui_alert(tr(STR_ABOUT), b); }
 static void ota_url_cb(const char *v, void *ud) { (void)ud; if (v) { strlcpy(g_settings.ota_url, v, sizeof(g_settings.ota_url)); settings_save(); ui_nav_refresh(); } }
@@ -307,7 +308,7 @@ static void mac_fallback_cb(lv_event_t *e)
 {
     (void)e;
     char cur[16];
-    ui_prompt("Mac fallback address", "192.168.1.50", cc_link_lan_fallback(cur, sizeof(cur)), false, mac_fallback_prompt_cb, NULL);
+    ui_prompt("Host fallback address", "192.168.1.50", cc_link_lan_fallback(cur, sizeof(cur)), false, mac_fallback_prompt_cb, NULL);
 }
 
 /* Plan 3 Task 3: Network > Wi-Fi advanced, the optional static address (off by default) */
@@ -329,7 +330,8 @@ static void sip_prompt_cb(const char *v, void *ud)
     if (!v) return;
     while (*v == ' ') v++;
     if (!*v) {
-        wifi_mgr_static_ip_set(NULL);
+        /* review N2: a failed save leaves the static address on: say so, and don't show it as off */
+        if (!wifi_mgr_static_ip_set(NULL)) { ui_toast("Static address not changed (not saved)"); return; }
         ui_toast("Static address off: DHCP from the next join");
         ui_nav_refresh();
         return;
@@ -410,11 +412,11 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         ui_setting_row(c, "Tailscale details", "Auth key, device name, control host", ts_details_cb, NULL);
         char fb[16], path[40];
         cc_link_lan_fallback(fb, sizeof(fb));
-        ui_setting_row(c, "Mac fallback address", fb[0] ? fb : "None", mac_fallback_cb, NULL);
+        ui_setting_row(c, "Host fallback address", fb[0] ? fb : "None", mac_fallback_cb, NULL);
         cc_link_mac_path(path, sizeof(path));
-        snprintf(buf, sizeof(buf), "Mac link: %s", path);
+        snprintf(buf, sizeof(buf), "Host link: %s", path);
         ui_label(c, buf, FONT_SMALL, UI_MUTED);
-        ui_label(c, "The Mac link uses your home network. The fallback address is used when the Mac's name "
+        ui_label(c, "The Host link uses your home network. The fallback address is used when the Host's name "
                     "doesn't resolve. Devices reachable only over Tailscale need the switch on.", FONT_SMALL, UI_MUTED);
         ui_section_title(c, "Wi-Fi advanced");
         char sip[64];

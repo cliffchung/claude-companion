@@ -38,7 +38,7 @@ typedef enum {
     CC_LINK_FAIL_TS_OFF,      /* the Mac entry is a tailnet host and the Tailscale switch is off */
     CC_LINK_FAIL_NOT_FOUND,   /* the Mac's name doesn't resolve, or its fallback address doesn't answer */
 } cc_link_fail_t;
-#define CC_LINK_TS_OFF_TEXT "the Mac is a tailnet host and Tailscale is off (Settings \xe2\x86\x92 Network)"
+#define CC_LINK_TS_OFF_TEXT "the Host is a tailnet host and Tailscale is off (Settings \xe2\x86\x92 Network)"
 cc_link_fail_t cc_link_failure(void);
 /* Forgets the Mac's host key: erases the link's pin (the address it connects to) and the
    terminal's (the server entry's host string, and its MagicDNS address), then has the link task
@@ -136,6 +136,19 @@ bool cc_link_set_claude_path(const char *path);   /* false unless cc_path_valid 
    doesn't reconnect; unparked reconnects at once (the backoff starts again). */
 void cc_link_park(bool parked);
 bool cc_link_parked(void);
+/* ---- Plan 3 final review C1/I1: close before the link goes down ---- */
+/* Parks the link (a guard park, nested and separate from Radio off's) and waits up to timeout_ms until it
+   is idle: no session and no connect in flight. A connect that finishes its auth meanwhile closes its new
+   session at once, and a poll or paste in flight gives up. True when idle. Blocks: not from the link task.
+   The close-before-down guard (sys/link_guard.h) calls the same park through its registered closer. */
+bool cc_link_close_now(int timeout_ms);
+/* Drops cc_link_close_now's park; the link reconnects at once unless Radio off still parks it. */
+void cc_link_reopen(void);
+/* No session and no connect in flight. */
+bool cc_link_idle(void);
+/* Review M6: the last address whose key the link checked and authenticated on ("" after a refusal, a
+   forget or a host change). The only address a take-over may be handed. */
+bool cc_link_verified_address(char *out, size_t cap);
 /* One plain refresh() now, as a queued request: ESP_OK when it published a result, ESP_FAIL when the
    poll failed, ESP_ERR_INVALID_STATE when not connected, ESP_ERR_TIMEOUT. Blocks up to timeout_ms. */
 esp_err_t cc_link_poll_now(int timeout_ms);

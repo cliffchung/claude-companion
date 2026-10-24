@@ -19,6 +19,12 @@ bool ts_host_is_mdns(const char *host);
 /* The Mac's fallback address: "" (none) or a private IPv4 address (10/8, 172.16/12, 192.168/16). */
 bool ts_host_lan_fallback_valid(const char *s);
 
+/* The SSH terminal's message for a tailnet host while the switch is off (tailscale.h's TS_OFF_MESSAGE). */
+#define TS_HOST_OFF_MESSAGE "Tailscale is off. Turn it on in Settings \xe2\x86\x92 Network."
+/* The terminal client's first check, before any socket (final review M2, L48): TS_HOST_OFF_MESSAGE when
+   host needs Tailscale and the switch is off, else NULL (go on). `ts term-test` calls only this. */
+const char *ts_host_term_refusal(const char *host, bool ts_on);
+
 #ifdef __cplusplus
 }
 #endif
