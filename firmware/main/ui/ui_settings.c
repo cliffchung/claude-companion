@@ -141,18 +141,30 @@ static void forget_cb(lv_event_t *e)
 }
 
 /* Trust this key (polish 1): the key the Host presented on a first connect, which nothing pins or carries over. The
-   confirm shows it again with the command that prints the Host's own; only that key is pinned (cc_link_trust_host_key). */
+   confirm shows it again with the command that prints the Host's own; only that key is pinned (cc_link_trust_host_key).
+   s_trust_fp is the panel's (every refill rewrites it); the confirm trusts its own copy, s_confirm_fp, which only
+   trust_cb writes, so a refill while it is open can't change what gets trusted (fix round 1, C1). */
 static char s_trust_fp[80];
+static char s_confirm_fp[80];
 static char s_trust_body[320];
 static void trust_yes(bool yes, void *ud)
 {
     (void)ud;
-    if (yes && !ui_sessions_trust_host_key(s_trust_fp)) ui_toast(tr(STR_SET_BUSY));
+    if (!yes) return;
+    /* the key the Host presents now must still be the one the confirm showed: else nothing is trusted */
+    char now[80];
+    if (!cc_link_unknown_host_key(now, sizeof(now)) || strcmp(now, s_confirm_fp) != 0) {
+        ui_toast(tr(STR_SET_TRUST_STALE));
+        refill();
+        return;
+    }
+    if (!ui_sessions_trust_host_key(s_confirm_fp)) ui_toast(tr(STR_SET_BUSY));
 }
 static void trust_cb(lv_event_t *e)
 {
     (void)e;
-    snprintf(s_trust_body, sizeof(s_trust_body), tr(STR_SET_TRUST_BODY), s_trust_fp);
+    strlcpy(s_confirm_fp, s_trust_fp, sizeof(s_confirm_fp));
+    snprintf(s_trust_body, sizeof(s_trust_body), tr(STR_SET_TRUST_BODY), s_confirm_fp);
     ui_confirm_ex(tr(STR_SET_TRUST_Q), s_trust_body, tr(STR_SET_TRUST_ACTION), false, trust_yes, NULL);
 }
 
@@ -633,6 +645,17 @@ static void panel_fill(void)
     case UI_SET_ABOUT: fill_about(s_panel); break;
     default: break;
     }
+}
+
+void ui_settings_key_pinned(void)
+{
+    if (!s_panel) return;
+    lv_obj_t *f = ui_keyboard_focused();
+    while (f && f != s_panel) f = lv_obj_get_parent(f);
+    ui_settings_refill();
+    /* M7: the pinned row has the same fingerprint label as the Trust row, with Forget on it: the focus restored
+       there would sit on a destructive control, so it goes to the panel's first control instead */
+    if (f && s_section == UI_SET_HOST) ui_keyboard_focus_in(s_panel, 0);
 }
 
 void ui_settings_refill(void)

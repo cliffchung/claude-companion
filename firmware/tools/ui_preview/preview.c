@@ -437,7 +437,12 @@ esp_err_t cc_link_trust_host_key(const char *want, char *fp, size_t cap, int ms)
     snprintf(fp, cap, "%s", want);
     return ESP_OK;
 }
-bool cc_link_unknown_host_key(char *fp, size_t cap) { snprintf(fp, cap, "%s", pv_newkey() ? PREVIEW_NEW_FP : ""); return pv_newkey(); }
+#define PREVIEW_OTHER_FP "SHA256:OtherPreviewHostKeyOnly9876543210zyxwvutsr"
+static bool s_pv_other_key;   /* newkey: the Host now presents another unknown key (fix round 1, C1) */
+bool cc_link_unknown_host_key(char *fp, size_t cap) {
+    snprintf(fp, cap, "%s", pv_newkey() ? (s_pv_other_key ? PREVIEW_OTHER_FP : PREVIEW_NEW_FP) : "");
+    return pv_newkey();
+}
 uint32_t cc_link_forget_done(char *fp, size_t cap) {
     snprintf(fp, cap, "%s", s_trust_calls ? s_trust_fp : PREVIEW_FP);
     return (uint32_t)(s_forget_calls + s_trust_calls);
@@ -1780,7 +1785,27 @@ static int settings_case(lv_display_t *d, int section) {
         assert(cancel);
         lv_obj_send_event(cancel, LV_EVENT_CLICKED, NULL); step(d, 200);
         if (s_trust_calls) { printf("check %s: FAIL Cancel trusted the key\n", name); return 1; }
+        /* fix round 1, C1: the confirm trusts its own copy. The Host presents key B and the panel refills while the
+           confirm (still reading A) is open: Trust trusts nothing, says so, and the panel shows B */
         lv_obj_send_event(find_clickable_shown(settings_panel(s), "Trust this key"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        s_pv_other_key = true;
+        ui_settings_refill(); step(d, 100);
+        if (!find_label_has(top, PREVIEW_NEW_FP, 0) || !find_label(settings_panel(s), PREVIEW_OTHER_FP, false)) {
+            printf("check %s: FAIL the refill under the confirm\n", name); return 1;
+        }
+        lv_obj_send_event(find_clickable_shown(top, "Trust"), LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 200);
+        if (s_trust_calls || !find_label(top, "Not trusted: the Host now presents a different key. Check it again.", false)) {
+            printf("check %s: FAIL a refill changed what the confirm trusts (%d calls, \"%s\")\n", name, s_trust_calls, s_trust_fp); return 1;
+        }
+        lv_obj_clean(top);
+        /* the same key after a refill under the confirm: A is trusted, exactly the copy the confirm showed. The
+           keyboard focus is on the Trust row (M7: after the pin it must not land on Forget) */
+        s_pv_other_key = false;
+        ui_settings_refill(); step(d, 100);
+        lv_obj_t *trow = find_clickable_shown(settings_panel(s), "Trust this key");
+        assert(trow && ui_keyboard_focus_in(trow, 0));
+        lv_obj_send_event(trow, LV_EVENT_CLICKED, NULL); step(d, 200);
+        ui_settings_refill(); step(d, 100);
         lv_obj_t *ok = find_clickable_shown(top, "Trust");
         assert(ok);
         lv_obj_send_event(ok, LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 200);
@@ -1793,7 +1818,11 @@ static int settings_case(lv_display_t *d, int section) {
             find_clickable_shown(panel, "Trust this key") || !find_clickable_shown(panel, "Forget")) {
             printf("check %s: FAIL after the trust: no toast, or the panel didn't follow\n", name); return 1;
         }
-        printf("%s: the confirm shows the key and ssh-keygen; Cancel trusts nothing; Trust pins that key once\n", name);
+        lv_obj_t *fz = ui_keyboard_focused(), *fg = find_clickable_shown(panel, "Forget");
+        for (lv_obj_t *o = fz; o; o = lv_obj_get_parent(o))
+            if (o == fg) { printf("check %s: FAIL the focus landed on Forget after the trust (M7)\n", name); return 1; }
+        if (!fz || fz != row_labeled(panel, "Host")) { printf("check %s: FAIL the focus after the trust isn't the panel's first control\n", name); return 1; }
+        printf("%s: the confirm shows the key and ssh-keygen; Cancel trusts nothing; a key changed under the confirm is refused; Trust pins the confirmed key once; focus off Forget\n", name);
         lv_obj_clean(top);
         return r;
     } else if (section == UI_SET_ABOUT && !strcmp(click, "Reset settings")) {

@@ -254,13 +254,14 @@ static char s_forget_toast[128];
 
 /* The worker's outcome, passed as ui_async's arg; the text is composed here, on the LVGL task, so only
    that task writes s_forget_toast (review M3). */
-enum { FORGET_TIMED_OUT = 1, FORGET_NO_HOST, TRUST_TIMED_OUT, TRUST_REFUSED };
+enum { FORGET_TIMED_OUT = 1, FORGET_NO_HOST, FORGET_ENDED, TRUST_TIMED_OUT, TRUST_REFUSED, TRUST_ENDED };
 
 static void forget_toast_cb(void *arg)
 {
     intptr_t why = (intptr_t)arg;
-    str_id_t t = why == FORGET_TIMED_OUT ? STR_SES_FORGET_RECONNECTING : why == TRUST_TIMED_OUT ? STR_SES_TRUST_WAITING
-               : why == TRUST_REFUSED ? STR_SES_TRUST_REFUSED : STR_LINK_NO_HOST;
+    str_id_t t = why == FORGET_TIMED_OUT ? STR_SES_FORGET_RECONNECTING : why == FORGET_ENDED ? STR_SES_FORGET_ENDED
+               : why == TRUST_TIMED_OUT ? STR_SES_TRUST_WAITING : why == TRUST_REFUSED ? STR_SES_TRUST_REFUSED
+               : why == TRUST_ENDED ? STR_SES_TRUST_ENDED : STR_LINK_NO_HOST;
     strlcpy(s_forget_toast, tr(t), sizeof(s_forget_toast));
     ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
     ui_settings_refill();   /* Settings › Host's key rows follow (nothing when Settings isn't shown) */
@@ -274,7 +275,7 @@ static void forget_check(void)
     s_forget_seen = n;
     snprintf(s_forget_toast, sizeof(s_forget_toast), "%s %s", tr(STR_SES_NEW_KEY_PINNED), fp);
     ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
-    ui_settings_refill();   /* the pinned fingerprint replaces the Trust or Forget row */
+    ui_settings_key_pinned();   /* the pinned fingerprint replaces the Trust or Forget row; the focus isn't on Forget */
 }
 
 static void forget_done_cb(void *arg) { (void)arg; forget_check(); }
@@ -285,18 +286,21 @@ static void run_forget(void)
     esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
     ESP_LOGI(TAG, "forget host key: %s %s", esp_err_to_name(e), fp);
     if (e == ESP_OK) { ui_async(forget_done_cb, NULL); return; }
-    ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? FORGET_TIMED_OUT : FORGET_NO_HOST));
+    ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? FORGET_TIMED_OUT
+                                                 : e == ESP_ERR_INVALID_RESPONSE ? FORGET_ENDED : FORGET_NO_HOST));
 }
 
-/* Trust this key (polish 1): a forget that pins only the key the user confirmed. INVALID_STATE here is a Host
-   with a pin (or a carry source) after all, or no Host: the confirm was for a state that has gone. */
+/* Trust this key (polish 1): a forget that pins only the key the user confirmed. NOT_ALLOWED: a pin or a carry source
+   is there after all; INVALID_RESPONSE: it ended without a pin (expired, another Host, a pin appeared); INVALID_STATE:
+   no Host. Nothing is called trusted before a key is pinned (fix round 1, M2). */
 static void run_trust(const char *want)
 {
     char fp[80];
     esp_err_t e = cc_link_trust_host_key(want, fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
     ESP_LOGI(TAG, "trust host key %s: %s %s", want, esp_err_to_name(e), fp);
     if (e == ESP_OK) { ui_async(forget_done_cb, NULL); return; }
-    ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? TRUST_TIMED_OUT : TRUST_REFUSED));
+    ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? TRUST_TIMED_OUT : e == ESP_ERR_NOT_ALLOWED ? TRUST_REFUSED
+                                                 : e == ESP_ERR_INVALID_RESPONSE ? TRUST_ENDED : FORGET_NO_HOST));
 }
 
 static void run_job(const job_t *j)
