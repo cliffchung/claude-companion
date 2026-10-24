@@ -450,7 +450,9 @@ void ui_prompt(const char *title, const char *placeholder, const char *initial, 
     ui_btn(row, UI_BTN_PRIMARY, tr(STR_OK), prompt_ok_cb, c);
     softkbd_attach_textarea(ta, ov);
     /* Enter in the one-line field presses OK: the keyboard sink (and the soft keyboard's Enter) sends it READY.
-       Added after the soft keyboard's handler, which hides that keyboard first. */
+       Added after the soft keyboard's handler, so that keyboard is hidden (and freed) before OK deletes the prompt;
+       the soft keyboard's key handler, still on the stack, checks it wasn't freed before touching it again
+       (ui_softkbd.c send_special, fix round 1 M6). */
     lv_obj_add_event_cb(ta, prompt_ok_cb, LV_EVENT_READY, c);
     lv_obj_add_state(ta, LV_STATE_FOCUSED);
 }

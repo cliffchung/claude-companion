@@ -22,19 +22,24 @@ typedef struct {
 
 static kbd_t *s_kbd = NULL;
 static lv_obj_t *s_attached_ta = NULL;
+static unsigned s_kbd_gen;   /* bumped when a keyboard is freed: a key whose injection freed it touches it no more */
 
 static void rebuild(kbd_t *k);
 
 static void send_char(kbd_t *k, uint32_t cp)
 {
     key_event_t ev = { .type = KEY_EV_CHAR, .cp = cp, .mods = (k->ctrl ? MOD_CTRL : 0) | (k->alt ? MOD_ALT : 0) };
+    unsigned gen = s_kbd_gen;
     keyboard_inject(&ev);
+    if (gen != s_kbd_gen) return;   /* the key closed the keyboard (fix round 1, M6): k is freed */
     if (k->ctrl || k->alt || (k->shift && !k->sym)) { k->ctrl = k->alt = false; if (k->shift) k->shift = false; rebuild(k); }
 }
 static void send_special(kbd_t *k, special_key_t sk)
 {
     key_event_t ev = { .type = KEY_EV_SPECIAL, .key = sk, .mods = (k->ctrl ? MOD_CTRL : 0) | (k->alt ? MOD_ALT : 0) };
-    keyboard_inject(&ev);
+    unsigned gen = s_kbd_gen;
+    keyboard_inject(&ev);   /* Enter in a one-line field: READY hides this keyboard, and a prompt's OK closes it */
+    if (gen != s_kbd_gen) return;   /* fix round 1, M6: k was freed meanwhile */
     if (k->ctrl || k->alt) { k->ctrl = k->alt = false; rebuild(k); }
 }
 
@@ -112,7 +117,7 @@ static void rebuild(kbd_t *k)
 static void kbd_delete_cb(lv_event_t *e)
 {
     (void)e;
-    if (s_kbd) { for (int r = 0; r < 4; r++) free_keys(s_kbd->rows[r]); lv_free(s_kbd); s_kbd = NULL; }
+    if (s_kbd) { for (int r = 0; r < 4; r++) free_keys(s_kbd->rows[r]); lv_free(s_kbd); s_kbd = NULL; s_kbd_gen++; }
 }
 
 lv_obj_t *softkbd_create(lv_obj_t *parent)
