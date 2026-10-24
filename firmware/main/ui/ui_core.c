@@ -453,6 +453,9 @@ void ui_prompt(const char *title, const char *placeholder, const char *initial, 
 }
 
 typedef struct { ui_menu_cb_t cb; void *ud; lv_obj_t *ov; } menu_ctx_t;
+/* M1 (final review): the open picker that has no current row (current < 0). Its first Enter or Space only lands on a
+   row, so a stray Enter never picks row 0 (the Host picker would switch the Host). */
+static lv_obj_t *s_fresh_picker;
 static void menu_item_cb(lv_event_t *e)
 {
     menu_ctx_t *c = lv_event_get_user_data(e);
@@ -468,6 +471,7 @@ static void menu_ov_cb(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_CLICKED || lv_event_get_code(e) == LV_EVENT_CANCEL) {
         if (lv_event_get_target_obj(e) == c->ov) lv_obj_delete(c->ov);
     } else if (lv_event_get_code(e) == LV_EVENT_DELETE) {
+        if (s_fresh_picker == c->ov) s_fresh_picker = NULL;
         free(c);
     }
 }
@@ -496,6 +500,7 @@ static lv_obj_t *sheet_rows(const char *title, const char *const *items, int cou
         else if (i < 32 && (red >> i) & 1u) ui_text_tone(lv_obj_get_child(r, 0), UI_TONE_RED);
         if (i == current) { cur = r; lv_obj_add_flag(r, UI_KEYBOARD_FIRST); }
     }
+    if (radio && !cur) s_fresh_picker = ov;
     if (cur) {
         lv_obj_update_layout(box);
         lv_obj_scroll_to_view(cur, LV_ANIM_OFF);
@@ -742,6 +747,7 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
     }
     if ((ev->type == KEY_EV_SPECIAL && ev->key == SK_ENTER) ||
         (ev->type == KEY_EV_CHAR && ev->cp == ' ' && !ev->mods)) {
+        if (!had_focus && modal && modal == s_fresh_picker) return true;   /* M1: lands on the first row only */
         if (lv_obj_has_flag(obj, LV_OBJ_FLAG_CHECKABLE)) {
             if (lv_obj_has_state(obj, LV_STATE_CHECKED)) lv_obj_remove_state(obj, LV_STATE_CHECKED);
             else lv_obj_add_state(obj, LV_STATE_CHECKED);
@@ -851,7 +857,7 @@ bool ui_async(lv_async_cb_t fn, void *arg)
     if (!a) return false;
     a->fn = fn; a->arg = arg;
     bool ok = false;
-    if (lvgl_port_lock(0)) {
+    if (lvgl_port_lock(UI_ASYNC_LOCK_MS)) {   /* never forever (I2) */
         ok = lv_async_call(async_trampoline, a) == LV_RESULT_OK;
         lvgl_port_unlock();
     }

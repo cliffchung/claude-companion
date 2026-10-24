@@ -53,7 +53,7 @@ def generate():
            for name, raw in re.findall(r'#define LV_SYMBOL_(\w+)\s+"([^"]+)"', symbols) if '\\x' in raw}
     cps.update({k: chr(cp) for k, cp in EXTRA_CPS.items()})
     entries = sorted((ord(cps[k]), k, bytes.fromhex(v)) for k,v in ICONS.items())
-    for scale in (2,4):
+    for scale in (2,):   # 16 px only: the 32 px set went with the launcher tiles (Plan 4 final review M5)
         side = 8*scale
         name = f'font_icons{side}'
         bitmap=[]; descriptors=['    {0},']

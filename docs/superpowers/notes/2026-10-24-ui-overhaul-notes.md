@@ -990,3 +990,31 @@ creds-on-SD and others); 95 new ones carry the Sessions, overlay, pill, boot, sl
   `sessions` console verb reads the last poll, not this list, so it still lists everything. A hidden row is
   finished, so it can never need you: no needs-you count changes.
 - `idf.py size`: image 7,252,587 B; DIRAM 190,008 B.
+
+**Final review fixes (I1, I2, M1, M2, M5).**
+- I1: `ssh_client_stop` waits for a callback in flight. Every `on_data`, `on_state` and `on_hostkey` call runs
+  inside a gate (`ssh/cb_gate.c`, pure, host-tested with pthreads: `detached` + `busy`, under `s_live_mux`). Stop
+  detaches, waits up to 3 s, then sets `stop` (last: ssh_task frees the client once it sees it) and returns whether
+  no callback is left. `GONE()` also reads `detached`. `scr_delete_cb` sets `closing` and cancels the host-key
+  question in one locked step before the stop, and keeps (leaks) its hand-off buffers if the stop timed out. The
+  only callback that touches the LVGL lock while counted is `on_hostkey` (via `ui_async`, now bounded at 1 s, and
+  skipped when the question was already cancelled), so the LVGL task's wait in stop can't deadlock. The P4C-10 step
+  order (`hf_conn_steps`, deny check first) is unchanged.
+- I2: `notify()` is never called with `s_ctl` held. `start_locked` sets a due flag; `tailscale_start` and
+  `tailscale_on_wifi` notify after `ctl_unlock`; the stop worker's restart is covered by its notify after the loop.
+  New lint rule `notify-under-lock` (ui_lint.py, net/tailscale.c) flags a notify() in a `*_locked` function or
+  between `ctl_lock()` and `ctl_unlock()`; on a6b3b29's tailscale.c it reports lines 230, 235, 238. MicroLink fires
+  its state and peer callbacks from its own tasks with no MicroLink lock held.
+- I2 backstop and M2: `ui_async` takes the LVGL lock with a 1 s bound (`UI_ASYNC_LOCK_MS`) and returns false on a
+  timeout. `panel_ts_ev` and `peers_ev` clear their queued flag on failure, as `ts_ev` already did. Preview
+  `network-live` and `settings-sub peers` time out one event's lock (`pv_lvgl_lock_fails`) and check the next event
+  still updates (RED before: the error never shown; "Peers stopped following Tailscale").
+- M1: a picker opened with no current row (`ui_picker` with -1, `ui_menu`) takes its first Enter or Space as a move
+  onto its first row only; a second Enter, or a move then Enter, picks. Preview `keyboard` and `picker-fresh` (Host
+  picker with a console-only Host name; time zone picker with a custom rule): RED before, "a bare Enter on the Host
+  picker switched the Host (to "Desk")".
+- M5: removed `font_icons32` (and `FONT_ICON`), `font_clock192` (and their generator lines), `esp_http_server` from
+  main's PRIV_REQUIRES (MicroLink still requires it for its own config server) and `CONFIG_LV_USE_QRCODE`. The FATFS
+  long-file-name settings stay (controller ruling). Flash and RAM: no change (image 7,253,147 B before and after
+  M5, DIRAM 190,008 B): `--gc-sections` was already dropping all of it. The gain is build time and source size.
+- `idf.py size`: image 7,253,147 B; DIRAM 190,008 B.

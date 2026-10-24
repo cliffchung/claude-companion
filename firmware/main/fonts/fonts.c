@@ -31,7 +31,6 @@ const lv_font_t *FONT_BODY = &s_px24;
 const lv_font_t *FONT_TITLE = &s_px36b;
 const lv_font_t *FONT_MONO = &g_term_font;
 lv_font_t g_term_font;
-const lv_font_t *FONT_ICON = &font_icons32;
 
 void fonts_init(void)
 {

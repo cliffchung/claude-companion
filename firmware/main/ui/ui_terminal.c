@@ -174,7 +174,8 @@ static bool on_hostkey(const char *host, int port, const char *fp, bool changed,
     xSemaphoreGive(c->lock);
     if (gone) hk_put(r);   /* no screen to hold its reference */
     hk_put(old);
-    if (gone || !ui_async(hk_show, r)) {   /* never shown: no UI reference, and no wait */
+    /* cancelled already (the screen went just now): don't wait on the LVGL lock the closing screen holds */
+    if (gone || r->cancelled || !ui_async(hk_show, r)) {   /* never shown: no UI reference, and no wait */
         hk_answer(r, 2);
         hk_put(r);
     }
@@ -454,27 +455,34 @@ static void pump_cb(lv_timer_t *t)
 static void scr_delete_cb(lv_event_t *e)
 {
     term_ctx_t *c = lv_event_get_user_data(e);
+    /* A host-key question still open: answer "no" first, so ssh_task wakes before ssh_client_stop waits for its
+       callback (I1). closing is set in the same locked step on_hostkey reads, so a question that comes later sees
+       it and doesn't wait. The semaphore is freed by the last reference, never here under a waiter. */
+    xSemaphoreTake(c->lock, portMAX_DELAY);
     c->closing = true;
+    hk_req_t *r = c->hk_req;
+    c->hk_req = NULL;
+    xSemaphoreGive(c->lock);
+    if (r) { r->cancelled = true; hk_answer(r, 2); hk_put(r); }
     keyboard_clear_sink(c);
     /* left some other way (e.g. navigation home): still tell the owner */
     if (c->cmd_mode && !c->cmd_done && c->on_close) { c->cmd_done = true; c->on_close(c->close_ctx); }
     if (c->timer) lv_timer_delete(c->timer);
     if (c->bar_timer) lv_timer_delete(c->bar_timer);   /* armed when the screen died */
-    if (c->ssh) { ssh_client_stop(c->ssh); c->ssh = NULL; }
-    /* A host-key question still open: answer "no" so ssh_task wakes, and drop the screen's reference. The
-       semaphore is freed by the last reference, never here under a waiter. */
-    xSemaphoreTake(c->lock, portMAX_DELAY);
-    hk_req_t *r = c->hk_req;
-    c->hk_req = NULL;
-    xSemaphoreGive(c->lock);
-    if (r) { r->cancelled = true; hk_answer(r, 2); hk_put(r); }
+    /* Waits for a callback in flight on ssh_task (I1); none touches the LVGL lock unbounded, so this can't deadlock. */
+    bool idle = !c->ssh || ssh_client_stop(c->ssh);
+    c->ssh = NULL;
     ssh_active(c, false);
-    /* term view frees itself with the object; vt after */
+    /* term view frees itself with the object; vt after (the callbacks never touch either) */
     vt_destroy(c->vt);
+    if (s_ctx == c) s_ctx = NULL;
+    if (!idle) {   /* a callback is stuck in it: leak the hand-off state rather than free it under the callback */
+        ESP_LOGE(TAG, "an SSH callback is still running: its buffers stay allocated");
+        return;
+    }
     free(c->rx);
     free(c->tail);
     vSemaphoreDelete(c->lock);
-    if (s_ctx == c) s_ctx = NULL;
     free(c);
 }
 

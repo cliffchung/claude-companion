@@ -24,6 +24,9 @@ Prints one "<file>:<line>: <rule>" per problem and exits 1 if there are any. Rul
   ui-alias             UI_BG, UI_CARD, UI_CARD_HI, UI_ACCENT, UI_ACCENT2, UI_DANGER, UI_WARN, UI_TEXT,
                        UI_MUTED or ui_button_colored, word-bounded, anywhere under firmware/main
   unused-str           an X(ID, ...) entry in i18n/i18n.h whose STR_ID no code under firmware/main uses
+  notify-under-lock    net/tailscale.c: a notify() call (the UI's event slot, which reaches ui_async and the LVGL
+                       lock) while s_ctl is held: in a *_locked function, or after ctl_lock() and before its
+                       ctl_unlock() (a block that unlocks and returns leaves the lock held after it). Final review I2.
 """
 import os
 import re
@@ -56,6 +59,10 @@ ALIAS_RE = re.compile(r"\b(?:UI_BG|UI_CARD|UI_CARD_HI|UI_ACCENT|UI_ACCENT2|UI_DA
 I18N_H = os.path.join("i18n", "i18n.h")
 STR_ENTRY_RE = re.compile(r"^X\((\w+),", re.MULTILINE)
 STR_USE_RE = re.compile(r"\bSTR_(\w+)")
+
+TS_C = os.path.join("net", "tailscale.c")
+TS_TOKEN_RE = re.compile(r"\bctl_lock\s*\(\s*\)|\bctl_unlock\s*\(\s*\)|\bnotify\s*\(\s*\)|\breturn\b|[{}]")
+FUNC_NAME_RE = re.compile(r"(\w+)\s*\([^;{}()]*\)\s*$")
 
 HEX_ACCESSOR_HOMES = {os.path.join(UI, "ui_comp.c"), os.path.join(UI, "ui_tokens.c"), os.path.join(UI, "ui_tokens.h")}
 COLOR_ACCESSOR_HOMES = {os.path.join(UI, "ui_comp.c"), os.path.join(UI, "ui_comp.h")}
@@ -159,8 +166,42 @@ def literal_args(code, literals, macros=frozenset()):
     return found
 
 
+def notify_under_lock(code):
+    """Offsets of notify() calls made with s_ctl held (rule notify-under-lock)."""
+    found = []
+    held = 0
+    blocks = []   # per open brace: (held when it opened, returned inside it)
+    for m in TS_TOKEN_RE.finditer(code):
+        t = m.group(0)
+        if t == "{":
+            if not blocks:   # a function body: a *_locked one runs with the lock held
+                f = FUNC_NAME_RE.search(code, 0, m.start())
+                held = 1 if f and f.group(1).endswith("_locked") else 0
+            blocks.append([held, False])
+        elif t == "}":
+            if blocks:
+                opened, returned = blocks.pop()
+                if returned:
+                    held = opened   # that path left; the one that goes on still holds what it held
+            if not blocks:
+                held = 0
+        elif t == "return":
+            if blocks:
+                blocks[-1][1] = True
+        elif t.startswith("ctl_lock"):
+            held += 1
+        elif t.startswith("ctl_unlock"):
+            held = max(0, held - 1)
+        elif blocks and held:
+            found.append(m.start())
+    return found
+
+
 def lint_file(rel, text, macros=frozenset()):
     problems = set()
+    if rel == TS_C:
+        for offset in notify_under_lock(split_source(text)[0]):
+            problems.add((line_of(text, offset), "notify-under-lock"))
     in_ui = rel.split(os.sep, 1)[0] == UI
     for m in ALIAS_RE.finditer(text):
         problems.add((line_of(text, m.start()), "ui-alias"))

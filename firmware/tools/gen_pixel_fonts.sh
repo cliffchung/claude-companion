@@ -21,7 +21,3 @@ for NAME in font_px24 font_px20; do
 done
 $LVFC --font "$FONT" -r '0x20-0x7E' --symbols "$SYMS" --size 36 --bpp 1 --format lvgl \
   --lv-font-name font_px36b --lv-include lvgl.h --no-kerning --no-prefilter -o "$OUT/font_px36b.c"
-
-# Standby clock: only eleven glyphs, 16x the original pixel grid.
-$LVFC --font "$FONT" -r '0x30-0x39,0x3A' --size 192 --bpp 1 --format lvgl \
-  --lv-font-name font_clock192 --lv-include lvgl.h --no-kerning --no-prefilter -o "$OUT/font_clock192.c"

@@ -502,7 +502,7 @@ static void panel_ts_ev(void *user)
     (void)user;
     if (s_ts_queued) return;
     s_ts_queued = true;
-    ui_async(panel_ts_async, NULL);
+    if (!ui_async(panel_ts_async, NULL)) s_ts_queued = false;   /* never posted: the next event tries again (M2) */
 }
 static void ts_rows_deleted(lv_event_t *e)
 {
@@ -811,7 +811,7 @@ static void peers_ev(void *user)
     (void)user;
     if (s_peers_queued) return;
     s_peers_queued = true;
-    ui_async(peers_async, NULL);
+    if (!ui_async(peers_async, NULL)) s_peers_queued = false;   /* never posted: the next event tries again (M2) */
 }
 static void refresh_cb(lv_event_t *e) { (void)e; sub_refill(); }
 

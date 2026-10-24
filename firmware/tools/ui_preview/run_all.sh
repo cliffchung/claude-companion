@@ -53,6 +53,7 @@ PV_ENV="PREVIEW_KEY=0"; PV_ENV2="PREVIEW_CLICK=Forget this device on the tailnet
 for v in networks advanced peers; do run settings-sub "$v"; done
 run settings-sub peers deleted-event
 run network-live
+run picker-fresh
 run net-sub-open
 runv "PREVIEW_HOST=0" settings-sub networks   # join a saved network with no Host set (the device gate's no-Host leg)
 run keyboard-settings

@@ -79,7 +79,10 @@ const char *ui_basename(const char *path);
 void ui_lock(void);
 void ui_unlock(void);
 /* Run fn on the LVGL task (safe from other tasks). False when it couldn't be queued (no memory, or the LVGL lock
-   wasn't free): fn will not run, so a caller that handed over arg still owns it. */
+   wasn't free within UI_ASYNC_LOCK_MS): fn will not run, so a caller that handed over arg still owns it, and a caller
+   that set a "queued" flag clears it. The wait is bounded (I2) so a task holding a lock the LVGL task waits on can
+   never hang both: it drops one update instead. */
+#define UI_ASYNC_LOCK_MS 1000
 bool ui_async(lv_async_cb_t fn, void *arg);
 /* Delete the timer automatically when obj (usually the screen) is deleted. */
 void ui_timer_bind(lv_timer_t *t, lv_obj_t *obj);

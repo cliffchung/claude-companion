@@ -150,5 +150,36 @@ class LintTests(unittest.TestCase):
         self.assertEqual(self.rules(ui_lint.lint(main)), ["mac-word", "mac-word"])
 
 
+    # I2 (final review): the Tailscale event callback reaches ui_async (the LVGL lock), and the LVGL task takes s_ctl.
+    TS = os.path.join("net", "tailscale.c")
+
+    def test_notify_under_ctl_flagged(self):
+        main = self.tree({self.TS: (
+            "static void notify(void) {}\n"
+            "static bool start_locked(void)\n{\n    notify();\n    return true;\n}\n"
+            "void a(void)\n{\n    ctl_lock();\n    notify();\n    ctl_unlock();\n}\n")})
+        problems = ui_lint.lint(main)
+        self.assertEqual(self.rules(problems), ["notify-under-lock", "notify-under-lock"])
+        self.assertTrue(problems[0].startswith(self.TS + ":4:"))
+        self.assertTrue(problems[1].startswith(self.TS + ":10:"))
+
+    def test_notify_after_unlock_passes(self):
+        main = self.tree({self.TS: (
+            "void a(void)\n{\n    ctl_lock();\n    bool d = x;\n    ctl_unlock();\n    if (d) notify();\n}\n"
+            "/* notify() in a comment */\n"
+            "static void notify_later(void) { s = true; }\n"
+            "static bool start_locked(void) { notify_later(); return true; }\n")})
+        self.assertEqual(ui_lint.lint(main), [])
+
+    def test_notify_after_an_early_unlock_return_still_locked(self):
+        # "if (x) { ctl_unlock(); return; }" leaves the lock held on the path that goes on
+        main = self.tree({self.TS: (
+            "void a(void)\n{\n    ctl_lock();\n    if (x) { ctl_unlock(); return; }\n    notify();\n    ctl_unlock();\n"
+            "    notify();\n}\n")})
+        problems = ui_lint.lint(main)
+        self.assertEqual(self.rules(problems), ["notify-under-lock"])
+        self.assertTrue(problems[0].startswith(self.TS + ":5:"))
+
+
 if __name__ == "__main__":
     unittest.main()

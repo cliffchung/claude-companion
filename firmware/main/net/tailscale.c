@@ -68,7 +68,14 @@ static bool rebind_if_live(microlink_t *ml)
     return live;
 }
 
+/* Calls the UI's slot, whose handler posts to the LVGL task (ui_async, which takes the LVGL lock). Never call it
+   with s_ctl held (I2): the LVGL task takes s_ctl (ml_get, tailscale_set_enabled), so the two could wait on each
+   other. A step under s_ctl sets s_notify_due (notify_later) and its caller notifies after ctl_unlock. */
 static void notify(void) { if (s_cb) s_cb(s_cb_user); }
+static bool s_notify_due;   /* ctl held */
+static void notify_later(void) { s_notify_due = true; }
+/* ctl held: whether a notify is owed, cleared */
+static bool notify_due_locked(void) { bool d = s_notify_due; s_notify_due = false; return d; }
 
 /* ctl held */
 static bool reap_locked(void)
@@ -120,6 +127,7 @@ static void worker_task(void *arg)
         /* cleared in the same locked step that saw the result (N1): a switch-off after this point
            sees no worker and starts a new one for its instance */
         if (done || i == 599) s_worker = NULL;
+        (void)notify_due_locked();   /* the notify after the loop covers it, outside s_ctl (I2) */
         ctl_unlock();
         if (!done) vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -227,15 +235,15 @@ static bool start_locked(void)
     };
     if (!s_ml) {
         s_ml = microlink_init(&cfg);
-        if (!s_ml) { strlcpy(s_err, "microlink_init failed", sizeof(s_err)); s_state = TS_ERROR; notify(); return false; }
+        if (!s_ml) { strlcpy(s_err, "microlink_init failed", sizeof(s_err)); s_state = TS_ERROR; notify_later(); return false; }
         microlink_set_state_callback(s_ml, on_state, NULL);
         microlink_set_peer_callback(s_ml, on_peer, NULL);
     }
     esp_err_t e = microlink_start(s_ml);
-    if (e != ESP_OK) { snprintf(s_err, sizeof(s_err), "start failed: %s", esp_err_to_name(e)); s_state = TS_ERROR; notify(); return false; }
+    if (e != ESP_OK) { snprintf(s_err, sizeof(s_err), "start failed: %s", esp_err_to_name(e)); s_state = TS_ERROR; notify_later(); return false; }
     s_started = true;
     s_state = wifi_mgr_is_connected() ? TS_CONNECTING : TS_WAIT_WIFI;
-    notify();
+    notify_later();
     return true;
 }
 
@@ -243,7 +251,9 @@ bool tailscale_start(void)
 {
     ctl_lock();
     bool ok = start_locked();
+    bool due = notify_due_locked();
     ctl_unlock();
+    if (due) notify();   /* outside s_ctl (I2) */
     return ok;
 }
 
@@ -276,7 +286,9 @@ void tailscale_on_wifi(bool connected)
     if (connected && !s_started) start_locked();
     else if (connected && !s_fast_resume) microlink_rebind(s_ml);
     else if (connected) ESP_LOGI(TAG, "Wi-Fi back: fast resume, no rebind (the check-in handshakes first)");
+    bool due = notify_due_locked();
     ctl_unlock();
+    if (due) notify();   /* outside s_ctl (I2) */
 }
 
 void tailscale_set_fast_resume(bool on) { s_fast_resume = on; }

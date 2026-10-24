@@ -105,6 +105,7 @@ const char *tailscale_vpn_ip(void) { return tailscale_state() == TS_CONNECTED ? 
    PREVIEW_TS=3: TS_ERROR. PREVIEW_SD=0: no card; PREVIEW_SD=nofile: a card without the key file. */
 #define PREVIEW_TS_KEY "tskey-auth-preview-NOTAREALKEY-0123456789"
 static ts_event_cb_t s_ts_cb; static void *s_ts_cb_user; static int s_ts_cb_sets;
+int pv_lvgl_lock_fails;   /* stubs/esp_lvgl_port.h: the next N LVGL lock takes time out */
 void tailscale_set_event_cb(ts_event_cb_t cb, void *user) { s_ts_cb = cb; s_ts_cb_user = user; s_ts_cb_sets++; }
 const char *tailscale_last_error(void) { return env_int("PREVIEW_TS", 2) == 3 ? "Auth key expired: enter a new one" : ""; }
 bool tailscale_home_derp_code(char *out, size_t cap) { snprintf(out, cap, "%s", tailscale_state() == TS_CONNECTED ? "sea" : ""); return out[0] != 0; }
@@ -248,7 +249,7 @@ bool tailscale_resolve(const char *host, char *ip, size_t cap) { (void)host; if 
    (10.20.30.40, an address the link doesn't know) is the Host reached another way and presents the Host's key. Any
    other start connects at once, except that with s_ssh_autoclose (the Sessions cases) a take-over ends at once, as
    the old terminal stub's did. Bytes sent are kept in s_ssh_sent. */
-struct ssh_client { ssh_data_cb_t data; ssh_state_cb_t state; void *user; };
+struct ssh_client { ssh_data_cb_t data; ssh_state_cb_t state; ssh_hostkey_cb_t hk; void *user; };
 static int s_term_opens, s_term_idx = -1, s_ssh_stops;
 static bool s_ssh_autoclose = true;
 static char s_ssh_sent[256]; static size_t s_ssh_sent_n;
@@ -256,7 +257,7 @@ static ssh_client_t *s_ssh_live;
 static const uint8_t k_pv_host_key[32] = { 0xAB, 0xAB, 0xAB, 0xAB, 1, 2, 3, 4 };
 ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data, ssh_state_cb_t state, ssh_hostkey_cb_t hk, void *user) {
     ssh_client_t *c = calloc(1, sizeof(*c));
-    c->data = data; c->state = state; c->user = user;
+    c->data = data; c->state = state; c->hk = hk; c->user = user;
     s_ssh_live = c;
     /* "newkey-box" (192.168.1.61) has no pin: ssh_task asks through the host-key callback. The preview is one thread
        and its semaphores never block, so the callback returns before anyone answers (as a cancelled request). */
@@ -285,7 +286,18 @@ void ssh_client_send(ssh_client_t *c, const uint8_t *d, size_t n) {
     if (s_ssh_sent_n + n < sizeof(s_ssh_sent)) { memcpy(s_ssh_sent + s_ssh_sent_n, d, n); s_ssh_sent_n += n; s_ssh_sent[s_ssh_sent_n] = 0; }
 }
 void ssh_client_resize(ssh_client_t *c, int cols, int rows) { (void)c; (void)cols; (void)rows; }
-void ssh_client_stop(ssh_client_t *c) { s_ssh_stops++; if (s_ssh_live == c) s_ssh_live = NULL; free(c); }
+/* I1: the real stop waits for a callback in flight on ssh_task. Model one of each finishing inside that wait: the
+   screen's context must still be whole here (ASan catches a free before the stop), and a host-key question asked
+   now must see the screen closing and answer "no". */
+bool ssh_client_stop(ssh_client_t *c) {
+    s_ssh_stops++;
+    c->data((const uint8_t *)"~", 1, c->user);
+    c->state(SSH_ST_CLOSED, NULL, c->user);
+    if (c->hk && c->hk("192.168.1.61", 22, "PreviewInFlight", false, c->user)) { printf("check: FAIL a host-key question in flight during the stop was trusted\n"); exit(1); }
+    if (s_ssh_live == c) s_ssh_live = NULL;
+    free(c);
+    return true;
+}
 int ssh_client_exit_status(ssh_client_t *c) { (void)c; return 0; }
 /* The remote side writes (the pump draws it on its next run). */
 static void pv_ssh_feed(const char *t) { assert(s_ssh_live); s_ssh_live->data((const uint8_t *)t, strlen(t), s_ssh_live->user); }
@@ -374,7 +386,8 @@ bool cc_link_set_lan_fallback(const char *ip) { (void)ip; return true; }
 const char *cc_link_lan_fallback(char *o, size_t cap) { snprintf(o, cap, "192.168.77.20"); return o; }
 int cc_poll_failures(bool *too_big) { if (too_big) *too_big = false; return 0; }
 const char *cc_settings_claude_path(char *o, size_t cap) { snprintf(o, cap, "~/.local/bin/claude"); return o; }
-const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "%s", pv_host() ? "studio-host" : ""); return o; }
+static const char *s_pv_server_name;   /* picker-fresh: a name no entry has (set from the console only) */
+const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "%s", s_pv_server_name ? s_pv_server_name : pv_host() ? "studio-host" : ""); return o; }
 int cc_settings_server(void) { return pv_host() ? 0 : -1; }
 static int s_set_server_calls; static char s_set_server_name[48];
 void cc_link_set_server(const char *n) { s_set_server_calls++; snprintf(s_set_server_name, sizeof(s_set_server_name), "%s", n ? n : ""); }
@@ -547,6 +560,13 @@ static void keyboard_check(void) {
     press_key(SK_ENTER,0,false); assert(keyboard_pick==1);
     keyboard_pick=-2; ui_picker("picker",acts,2,1,keyboard_picked,NULL);
     press_key(SK_DOWN,0,false); press_key(SK_UP,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==0);
+    /* M1 (final review): a picker with no current row: a bare Enter (or Space) only lands on the first row */
+    keyboard_pick=-2; ui_picker("picker",acts,2,-1,keyboard_picked,NULL);
+    press_key(SK_ENTER,0,false); assert(keyboard_pick==-2 && ui_keyboard_owns_input());
+    press_key(SK_ENTER,0,false); assert(keyboard_pick==0);   /* the row it now shows focused */
+    keyboard_pick=-2; ui_menu("menu",acts,2,keyboard_picked,NULL);
+    { key_event_t sp={.type=KEY_EV_CHAR,.cp=' '}; ui_keyboard_route(&sp,false); } assert(keyboard_pick==-2);
+    press_key(SK_DOWN,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==1);
     /* T10-8 stays: a confirm's first control is Cancel, so Enter alone cancels */
     keyboard_answer=0; ui_confirm_ex("test",NULL,"Go",false,keyboard_confirmed,NULL);
     press_key(SK_ENTER,0,false); assert(keyboard_answer==-1);
@@ -1409,6 +1429,37 @@ static bool network_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *panel, const ch
 }
 
 /* network-live (I1): Status, Peers and the switch follow Tailscale events in place; the slot goes with the panel. */
+/* picker-fresh (M1): the Host picker when the saved Host names no entry (`companion server <name>`), and the time
+   zone picker with a custom rule: a bare Enter changes nothing (no Host switch, so no lost pin carry-over and no
+   deny-list growth), and a deliberate pick still works. */
+static int picker_fresh_case(lv_display_t *d) {
+    const char *name = "picker-fresh";
+    preview_sessions_load();
+    s_pv_server_name = "console-only-name";
+    ui_nav_home(); step(d, 200);
+    ui_settings_open(UI_SET_HOST); step(d, 200);
+    lv_obj_t *s = lv_screen_active();
+    { lv_obj_t *row = row_labeled(settings_panel(s), "Host"); assert(row); lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 200); }
+    if (sheet_rows("Host") < 3) { printf("check %s: FAIL no Host picker\n", name); return 1; }
+    int calls = s_set_server_calls;
+    press_key(SK_ENTER, 0, false); step(d, 200);
+    if (s_set_server_calls != calls || sheet_rows("Host") < 3) { printf("check %s: FAIL a bare Enter on the Host picker switched the Host (to \"%s\")\n", name, s_set_server_name); return 1; }
+    int r = pv_run_checks(d, s, "picker-fresh-host", false, 0);
+    press_key(SK_ESC, 0, false); step(d, 200);
+    s_pv_server_name = NULL;
+    strcpy(g_settings.tz_rule, "XYZ-3");   /* a custom rule: no preset row is current */
+    ui_settings_open(UI_SET_DISPLAY); step(d, 200);
+    s = lv_screen_active();
+    { lv_obj_t *row = row_labeled(settings_panel(s), "Time zone"); assert(row); lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 200); }
+    if (sheet_rows("Time zone") < 2) { printf("check %s: FAIL no time zone picker\n", name); return 1; }
+    press_key(SK_ENTER, 0, false); step(d, 200);
+    if (strcmp(g_settings.tz_rule, "XYZ-3")) { printf("check %s: FAIL a bare Enter on the time zone picker set \"%s\"\n", name, g_settings.tz_rule); return 1; }
+    press_key(SK_DOWN, 0, false); press_key(SK_ENTER, 0, false); step(d, 200);   /* a deliberate pick */
+    if (!strcmp(g_settings.tz_rule, "XYZ-3")) { printf("check %s: FAIL a deliberate pick didn't apply\n", name); return 1; }
+    printf("%s: a bare Enter on a picker with no current row picks nothing (Host, time zone); a move then Enter picks\n", name);
+    return r;
+}
+
 static int network_live_case(lv_display_t *d) {
     setenv("PREVIEW_TS", "1", 1);
     g_settings.ts_enable = 1;
@@ -1428,6 +1479,10 @@ static int network_live_case(lv_display_t *d) {
     }
     assert(!strcmp(lv_label_get_text(peers), "2 online"));
     assert(s_peer_reads - reads <= 4);   /* three events, one update (two peer walks: Status and Peers) */
+    /* M2 (I2's bounded wait): an event whose ui_async times out is dropped, and the next one still updates */
+    pv_lvgl_lock_fails = 1;
+    s_ts_cb(s_ts_cb_user); step(d, 200);
+    if (pv_lvgl_lock_fails) { printf("check network-live: FAIL the event didn't post\n"); return 1; }
     setenv("PREVIEW_TS", "3", 1);
     s_ts_cb(s_ts_cb_user); step(d, 200);
     if (strcmp(lv_label_get_text(v), "Auth key expired: enter a new one") ||
@@ -1567,6 +1622,11 @@ static int settings_sub_case(lv_display_t *d, const char *sub, const char *varia
     reads = s_peer_reads;
     s_ts_cb(s_ts_cb_user); s_ts_cb(s_ts_cb_user); step(d, 200);   /* two events: one re-read, on the LVGL task */
     assert(s_peer_reads == reads + 1);
+    pv_lvgl_lock_fails = 1;   /* M2: this event's ui_async times out (I2): dropped */
+    s_ts_cb(s_ts_cb_user); step(d, 200);
+    reads = s_peer_reads;
+    s_ts_cb(s_ts_cb_user); step(d, 200);
+    if (pv_lvgl_lock_fails || s_peer_reads != reads + 1) { printf("check %s: FAIL Peers stopped following Tailscale after a failed ui_async\n", name); return 1; }
     if (!strcmp(variant, "deleted-event")) {
         ts_event_cb_t old = s_ts_cb; void *old_user = s_ts_cb_user;
         ui_nav_back(); step(d, 200);
@@ -2490,6 +2550,7 @@ int main(int argc,char **argv) {
     if (!strcmp(name,"settings")) return settings_case(d, argc>2 ? atoi(argv[2]) : 0);
     if (!strcmp(name,"keyboard-settings")) return keyboard_settings_case(d);
     if (!strcmp(name,"network-live")) return network_live_case(d);
+    if (!strcmp(name,"picker-fresh")) return picker_fresh_case(d);
     if (!strcmp(name,"net-sub-open")) return net_sub_open_case(d);
     if (!strcmp(name,"terminal")) return terminal_case(d, argc>2 ? argv[2] : "");
     if (!strcmp(name,"takeover")) return takeover_case(d, argc>2 ? argv[2] : "");

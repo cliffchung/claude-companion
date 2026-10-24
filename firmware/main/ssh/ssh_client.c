@@ -21,6 +21,7 @@
 #include "ssh/device_key.h"
 #include "sys/link_guard.h"
 #include "servers/host_rules.h"
+#include "ssh/cb_gate.h"
 #include "storage/sd.h"
 #include "i18n/i18n.h"
 
@@ -42,6 +43,7 @@ struct ssh_client {
     volatile bool kill;     /* C1: the link is going down: close now (the owner still holds c) */
     volatile bool closed;   /* the session is disconnected and freed (the object may still live) */
     bool sd_held;           /* B6: ssh_task holds the SD card for this entry's key file (sd_mount) */
+    cb_gate_t gate;         /* I1: every callback runs inside it; ssh_client_stop waits for the one in flight */
 };
 
 /* C1: the live clients, so a path that takes the link down can close them first (the SSH Terminal and the
@@ -63,13 +65,31 @@ static void live_del(ssh_client_t *c)
     for (int i = 0; i < LIVE_MAX; i++) if (s_live[i] == c) s_live[i] = NULL;
     taskEXIT_CRITICAL(&s_live_mux);
 }
-#define GONE(c) ((c)->stop || (c)->kill)
+#define GONE(c) ((c)->stop || (c)->kill || (c)->gate.detached)
+
+/* I1: the callback gate, under s_live_mux (a callback itself runs outside it). */
+static void gate_lock(void *ctx) { (void)ctx; taskENTER_CRITICAL(&s_live_mux); }
+static void gate_unlock(void *ctx) { (void)ctx; taskEXIT_CRITICAL(&s_live_mux); }
+static void gate_nap(void *ctx, int ms) { (void)ctx; vTaskDelay(pdMS_TO_TICKS(ms)); }
+static const cb_gate_ops_t s_gate_ops = { gate_lock, gate_unlock, gate_nap, NULL };
+/* How long ssh_client_stop waits for a callback in flight. The owner's callbacks hold their own short lock, or wait
+   in ui_async for the LVGL lock (bounded, UI_ASYNC_LOCK_MS, 1 s) and then for a host-key answer the owner cancels
+   before it stops: so 3 s is never reached unless something is stuck, and then the owner keeps its context. */
+#define STOP_WAIT_MS 3000
 
 static void set_state(ssh_client_t *c, ssh_state_t st, const char *msg)
 {
     c->state = st;
     if (msg) strlcpy(c->err, msg, sizeof(c->err));
+    if (!cb_gate_enter(&c->gate, &s_gate_ops)) return;   /* the owner stopped: nobody to tell */
     if (c->state_cb) c->state_cb(st, msg, c->user);
+    cb_gate_exit(&c->gate, &s_gate_ops);
+}
+static void deliver(ssh_client_t *c, const uint8_t *d, int n)
+{
+    if (!cb_gate_enter(&c->gate, &s_gate_ops)) return;
+    if (c->data_cb) c->data_cb(d, (size_t)n, c->user);
+    cb_gate_exit(&c->gate, &s_gate_ops);
 }
 
 /* ---- known hosts in NVS: key = 16-char hex of sha256(host:port), value = 32-byte key hash ---- */
@@ -294,9 +314,11 @@ static int verify_host(ssh_client_t *c)
     if (r == KH_PIN_ERROR) { ESP_LOGE(TAG, "host key pin for %s:%d unreadable; not connecting", c->p.host, c->p.port); return -2; }
     if (!kh_needs_answer(r)) return -1;
     set_state(c, SSH_ST_HOSTKEY, fp);
-    /* read once: ssh_client_stop clears it, and no callback means nobody to ask (reject) */
-    ssh_hostkey_cb_t cb = c->hostkey_cb;
+    /* inside the gate (I1): a stopped owner isn't asked, and no callback means nobody to ask (reject) */
+    bool in = cb_gate_enter(&c->gate, &s_gate_ops);
+    ssh_hostkey_cb_t cb = in ? c->hostkey_cb : NULL;
     bool answer = cb && !GONE(c) && cb(c->p.host, c->p.port, fp, r == KH_CHANGED, c->user);
+    if (in) cb_gate_exit(&c->gate, &s_gate_ops);
     if (kh_accept(r, cb != NULL, answer) && !GONE(c) && ssh_known_host_trust(c->session, c->p.host, c->p.port)) return 0;
     return -1;
 }
@@ -494,10 +516,10 @@ static void ssh_task(void *arg)
         if (c->resize_pending) { c->resize_pending = false; ssh_channel_change_pty_size(c->channel, c->new_cols, c->new_rows); }
         /* incoming (stdout + stderr) */
         int r = ssh_channel_read_nonblocking(c->channel, buf, 4096, 0);
-        if (r > 0) { if (c->data_cb) c->data_cb(buf, r, c->user); did = true; }
+        if (r > 0) { deliver(c, buf, r); did = true; }
         else if (r == SSH_ERROR) break;
         int r2 = ssh_channel_read_nonblocking(c->channel, buf, 4096, 1);
-        if (r2 > 0) { if (c->data_cb) c->data_cb(buf, r2, c->user); did = true; }
+        if (r2 > 0) { deliver(c, buf, r2); did = true; }
         if (!did) {
             /* wait for socket activity or tx data */
             ssh_channel chans[2] = { c->channel, NULL }, outch[2];
@@ -587,11 +609,15 @@ void ssh_client_resize(ssh_client_t *c, int cols, int rows)
     c->p.cols = cols; c->p.rows = rows;
 }
 
-void ssh_client_stop(ssh_client_t *c)
+bool ssh_client_stop(ssh_client_t *c)
 {
-    if (!c) return;
-    c->state_cb = NULL; c->data_cb = NULL; c->hostkey_cb = NULL;
-    c->stop = true;
+    if (!c) return true;
+    /* I1: no callback starts after the detach, and the one in flight finishes before this returns. A connect or an
+       auth in progress sees GONE and bails, as it does for stop. */
+    bool idle = cb_gate_detach_wait(&c->gate, &s_gate_ops, STOP_WAIT_MS);
+    if (!idle) ESP_LOGE(TAG, "a callback is still running after %d ms: its owner keeps its context", STOP_WAIT_MS);
+    c->stop = true;   /* last: ssh_task frees c once it sees this, so nothing here reads c after it */
+    return idle;
 }
 
 ssh_state_t ssh_client_state(ssh_client_t *c) { return c ? c->state : SSH_ST_IDLE; }

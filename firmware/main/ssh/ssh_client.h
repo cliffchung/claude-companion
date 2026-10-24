@@ -33,7 +33,11 @@ ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh
                                ssh_hostkey_cb_t hostkey_cb, void *user);
 void ssh_client_send(ssh_client_t *c, const uint8_t *data, size_t len);
 void ssh_client_resize(ssh_client_t *c, int cols, int rows);
-void ssh_client_stop(ssh_client_t *c);        /* async; object freed by the task */
+/* Detaches the callbacks and waits (bounded, 3 s) for one in flight on the SSH task to return; the session then closes
+   and the task frees the object. True: no callback runs again, so their user context may be freed. False: one is
+   still running (stuck), so the caller must not free that context. Never call it while holding a lock a callback
+   takes. */
+bool ssh_client_stop(ssh_client_t *c);
 ssh_state_t ssh_client_state(ssh_client_t *c);
 const char *ssh_client_error(ssh_client_t *c);
 /* Command mode: the remote exit status once the state is CLOSED, or -1 if unknown. */

@@ -7,14 +7,11 @@ extern "C" {
 /* MaruMinya from the repository TTF, rasterized on exact 12px multiples.
  * Legacy C names are retained: font_px20 now uses the same 24px/2x grid
  * for readable secondary text. Missing CJK glyphs fall back to Noto. */
-LV_FONT_DECLARE(font_clock192);
 LV_FONT_DECLARE(font_px20);
 LV_FONT_DECLARE(font_px24);
 LV_FONT_DECLARE(font_px36b);
 LV_FONT_DECLARE(font_cjk);
 LV_FONT_DECLARE(font_icons16);
-LV_FONT_DECLARE(font_icons32);
-extern const lv_font_t *FONT_ICON;
 
 /* Fixed roles (spec §8.3). Font selection lives here and in ui_comp only. */
 extern const lv_font_t *FONT_SMALL;   /* label role: font_px20 */
