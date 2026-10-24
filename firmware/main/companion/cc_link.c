@@ -997,7 +997,7 @@ static bool late(const req_t *r)
 static esp_err_t do_paste(req_t *r)
 {
     if (r->err && r->err_cap) r->err[0] = 0;
-    /* `claude attach` wakes a stopped session, so check it is still live right now,
+    /* `claude attach` wakes a stopped session, so a paste checks it is still live right now,
        not as of the last poll. */
     int n = refresh(r->deadline_us);
     if (n < 0) {
@@ -1012,8 +1012,9 @@ static esp_err_t do_paste(req_t *r)
         strlcpy(r->err, "no such session", r->err_cap);
         return ESP_ERR_NOT_FOUND;
     }
-    /* A stopped entry stays listed (often still "done") but has no pid. */
-    if (hit->state == CC_ENDED || !hit->live || !hit->background) {
+    /* A stopped entry stays listed (often still "done") but has no pid. Open (REQ_CHECK) may wake it:
+       `claude attach` starts it again. Typing into one still needs it running. */
+    if (!hit->background || (r->type != REQ_CHECK && (hit->state == CC_ENDED || !hit->live))) {
         strlcpy(r->err, hit->background ? "session has stopped" : "not a background session", r->err_cap);
         return ESP_ERR_NOT_FOUND;
     }

@@ -430,10 +430,13 @@ bool ui_sessions_forget_host_key(void)
 /* ------------------------------------------------------------------ helpers */
 
 static const cc_session_t *selected(void) { return (s_n > 0 && s_sel >= 0 && s_sel < s_n) ? &s_items[s_sel] : NULL; }
+/* Quick answers need a running session; Open takes any background session, because `claude attach`
+   starts a stopped or finished one again (as agent view does). */
 static bool actionable(const cc_session_t *s)
 {
     return s && s->background && s->id[0] && s->live && s->state != CC_ENDED;
 }
+static bool openable(const cc_session_t *s) { return s && s->background && s->id[0]; }
 
 static note_t *note_find(const char *key)
 {
@@ -627,12 +630,12 @@ static void pane_update(void)
     set_text(s_meta, meta);
     ui_state_pill_set(s_pill, s);
     bool interactive = !s->background;
-    bool act = actionable(s);
+    bool act = actionable(s), open = openable(s);
     bool field = field_visible(s);
     note_t *n = note_of(s);
     bool changed = set_shown(s_logbox, !interactive);
     changed |= set_shown(s_answer_row, field);
-    changed |= set_shown(s_action_row, act);
+    changed |= set_shown(s_action_row, open);
     set_shown(s_send, field);
     /* the info line: interactive sessions (B3), and background ones that can't be acted on */
     const char *info = NULL;
@@ -640,7 +643,7 @@ static void pane_update(void)
     if (interactive) info = tr(STR_SES_INTERACTIVE);
     else if (!act) {
         if (n && n->kind == NOTE_ERROR) { info = n->text; ic = TC_RED; }
-        else info = tr(STR_SES_STOPPED);
+        else info = tr(STR_SES_STOPPED_OPEN);
     }
     changed |= set_shown(s_info, info != NULL);
     if (info) { set_text(s_info, info); set_colour(s_info, ic); }
@@ -701,7 +704,7 @@ static void row_click_cb(lv_event_t *e)
     if (moved) return;   /* the row shows another session now: the tap does nothing */
     if (i == s_sel) {
         const cc_session_t *s = selected();
-        if (actionable(s)) { sessions_open_selected(); render(); }
+        if (openable(s)) { sessions_open_selected(); render(); }
         return;
     }
     select_index(i);
@@ -763,7 +766,7 @@ static void post_action(job_type_t type, const cc_session_t *s, const char *t)
 static void sessions_open_selected(void)
 {
     const cc_session_t *s = selected();
-    if (!actionable(s) || s_inert == 1) return;
+    if (!openable(s) || s_inert == 1) return;
     post_action(JOB_CHECK, s, NULL);   /* the terminal opens when the check passes */
 }
 
@@ -779,7 +782,7 @@ static void open_now(const cc_session_t *s)
 {
     char claude[64], cmd[192];
     /* the session as of the latest poll must still be one we may open */
-    if (!actionable(s)) { note_set(s, NOTE_ERROR, tr(STR_SES_HAS_STOPPED)); return; }
+    if (!openable(s)) { note_set(s, NOTE_ERROR, tr(STR_SES_CANT_OPEN)); return; }
     int idx = cc_settings_server();
     if (idx < 0 || !cc_cmd_attach(cc_settings_claude_path(claude, sizeof(claude)), s->id, cmd, sizeof(cmd))) {
         note_set(s, NOTE_ERROR, tr(STR_SES_CANT_OPEN));
@@ -795,7 +798,7 @@ static void open_now(const cc_session_t *s)
 static void enter_pressed(void)
 {
     const cc_session_t *s = selected();
-    if (!actionable(s) || s_act_pending || s_inert == 1) return;
+    if (!openable(s) || s_act_pending || s_inert == 1) return;
     if (field_visible(s) && draft()[0]) { post_action(JOB_PASTE, s, draft()); return; }
     sessions_open_selected();   /* an empty field (or an open-to-answer note) opens it */
 }

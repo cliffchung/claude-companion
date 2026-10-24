@@ -330,7 +330,7 @@ X(SES_NO_OUTPUT, "No output to show") \
 X(SES_NO_OUTPUT_YET, "No output yet") \
 X(SES_INTERACTIVE, "Running in a terminal on the Host. Start sessions with claude --bg to open them here.") \
 X(SES_ON_HOST, "on Host") \
-X(SES_STOPPED, "This session has stopped.") \
+X(SES_STOPPED_OPEN, "This session has stopped. Open it to start it again.") \
 X(SES_TYPE_ANSWER, "Type an answer\xe2\x80\xa6") \
 X(SES_TYPE_MESSAGE, "Type a message\xe2\x80\xa6") \
 X(SES_SENT, "Sent \xe2\x9c\x93") \
@@ -340,7 +340,6 @@ X(SES_PICKS_OPTION, "picks an option") \
 X(SES_STILL_WORKING, "Still working on the last request") \
 X(SES_SENDING, "Sending\xe2\x80\xa6") \
 X(SES_OPENING, "Opening\xe2\x80\xa6") \
-X(SES_HAS_STOPPED, "Session has stopped") \
 X(SES_CANT_OPEN, "Can't open: set up the Host in Settings \xe2\x80\xba Host") \
 X(SES_NOT_CONNECTED, "Not connected to the Host") \
 X(SES_FORGET_RECONNECTING, "Old key forgotten; reconnecting\xe2\x80\xa6") \
