@@ -88,6 +88,12 @@ void settings_save(void);
 /* The Plan 2 power settings (pw_*, kbd_needs_light, kbd_dark_light) back to their defaults; the time zone stays. */
 void settings_power_defaults(void);
 void settings_reset_defaults(void);
+/* Every field's default (what settings_reset_defaults puts in g_settings). */
+void settings_defaults(app_settings_t *out);
+/* Settings › About › Reset settings: settings_reset_scope against the defaults, saved, then the brightness,
+   the keyboard light and the power settings applied. Wi-Fi, the hosts, the pins, Tailscale and the time
+   zone stay. */
+void settings_reset_user(void);
 
 /* Generic small NVS helpers used by other modules. */
 bool nvs_get_blob_alloc(const char *ns, const char *key, void **out, size_t *len);

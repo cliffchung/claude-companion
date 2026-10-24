@@ -22,6 +22,7 @@ static lv_style_t s_pill, s_pill_working;
 static lv_style_t s_row, s_row_sel, s_session_geom, s_srow_geom, s_skeleton;
 /* bars */
 static lv_style_t s_dot_on, s_dot_off, s_scrim, s_spinner_main, s_spinner_ind, s_pressed_destructive;
+static lv_style_t s_green_text, s_red_text, s_mono, s_rail, s_swatch, s_chip_destructive;
 static lv_style_t s_title, s_bar, s_side_bottom, s_side_top, s_banner_muted, s_banner_red, s_section;
 /* the LVGL widgets the screens create directly (theme layer) */
 static lv_style_t s_w_button, s_w_field, s_w_track, s_w_on, s_w_knob_off, s_w_knob_on, s_w_knob;
@@ -61,7 +62,8 @@ void ui_comp_init(void)
                           &s_pill, &s_pill_working, &s_row, &s_row_sel, &s_session_geom, &s_srow_geom, &s_skeleton,
                           &s_dot_on, &s_dot_off, &s_scrim, &s_spinner_main, &s_spinner_ind, &s_pressed_destructive,
                           &s_title, &s_bar, &s_side_bottom, &s_side_top, &s_banner_muted, &s_banner_red, &s_section,
-                          &s_w_button, &s_w_field, &s_w_track, &s_w_on, &s_w_knob_off, &s_w_knob_on, &s_w_knob };
+                          &s_w_button, &s_w_field, &s_w_track, &s_w_on, &s_w_knob_off, &s_w_knob_on, &s_w_knob,
+                          &s_green_text, &s_red_text, &s_mono, &s_rail, &s_swatch, &s_chip_destructive };
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
 
     lv_style_set_bg_color(&s_bg, HEX(UI_TK_BG));
@@ -139,6 +141,7 @@ void ui_comp_init(void)
     lv_style_set_outline_pad(&s_row_sel, 0);
     lv_style_set_outline_color(&s_row_sel, HEX(UI_TK_FG));
     lv_style_set_outline_opa(&s_row_sel, LV_OPA_50);
+    lv_style_set_bg_opa(&s_row_sel, LV_OPA_COVER);   /* a rail row is transparent until selected */
     lv_style_set_height(&s_session_geom, UI_TK_SESSION_ROW_H);
     lv_style_set_pad_left(&s_session_geom, 0);
     lv_style_set_pad_right(&s_session_geom, UI_TK_GAP_M);
@@ -151,6 +154,24 @@ void ui_comp_init(void)
     lv_style_set_radius(&s_skeleton, UI_TK_RADIUS);
 
     lv_style_set_text_font(&s_title, FONT_TITLE);
+    lv_style_set_text_color(&s_green_text, HEX(UI_TK_GREEN));
+    lv_style_set_text_color(&s_red_text, HEX(UI_TK_RED));
+    lv_style_set_text_font(&s_mono, FONT_MONO);
+    /* the Settings rail: 72 px rows, radius 12, transparent until selected */
+    lv_style_set_height(&s_rail, UI_TK_RAIL_ROW_H);
+    lv_style_set_radius(&s_rail, UI_TK_RADIUS);
+    lv_style_set_pad_hor(&s_rail, 20);
+    lv_style_set_text_color(&s_rail, HEX(UI_TK_FG));
+    lv_style_set_text_font(&s_rail, FONT_BODY);
+    flex_row(&s_rail, UI_TK_GAP_M);
+    lv_style_set_width(&s_swatch, 24);
+    lv_style_set_height(&s_swatch, 24);
+    lv_style_set_radius(&s_swatch, LV_RADIUS_CIRCLE);
+    lv_style_set_bg_opa(&s_swatch, LV_OPA_COVER);
+    lv_style_set_bg_opa(&s_chip_destructive, LV_OPA_TRANSP);
+    lv_style_set_border_color(&s_chip_destructive, HEX(UI_TK_RED));
+    lv_style_set_border_width(&s_chip_destructive, 1);
+    lv_style_set_text_color(&s_chip_destructive, HEX(UI_TK_RED));
     /* dialogs: the radio dots, the scrim, the busy spinner; destructive keeps its red when pressed */
     lv_style_set_width(&s_dot_on, 20);
     lv_style_set_height(&s_dot_on, 20);
@@ -764,6 +785,63 @@ lv_obj_t *ui_section_header(lv_obj_t *parent, const char *t)
     lv_obj_add_style(l, &s_section, 0);
     return l;
 }
+
+lv_obj_t *ui_srow_chip(lv_obj_t *row, const char *t, bool destructive)
+{
+    lv_obj_t *c = plain(row);
+    lv_obj_add_style(c, &s_chip, 0);
+    if (destructive) lv_obj_add_style(c, &s_chip_destructive, 0);
+    lv_obj_set_width(c, LV_SIZE_CONTENT);
+    text(c, t, NULL, NULL);
+    return c;
+}
+
+lv_obj_t *ui_rail_row(lv_obj_t *parent, const char *label, lv_event_cb_t cb, void *ud)
+{
+    lv_obj_t *r = lv_obj_create(parent);
+    lv_obj_remove_style_all(r);
+    lv_obj_add_style(r, &s_rail, 0);
+    lv_obj_add_style(r, &s_pressed, LV_STATE_PRESSED);
+    lv_obj_set_width(r, LV_PCT(100));
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(r, (UI_TK_HIT - UI_TK_RAIL_ROW_H) / 2);
+    lv_obj_t *l = text(r, label, NULL, NULL);
+    lv_obj_set_size(l, 1, lv_font_get_line_height(FONT_BODY));
+    lv_obj_set_flex_grow(l, 1);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    if (cb) lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, ud);
+    return r;
+}
+
+lv_obj_t *ui_swatch(lv_obj_t *parent, uint32_t rgb)
+{
+    lv_obj_t *d = plain(parent);
+    lv_obj_add_style(d, &s_swatch, 0);
+    lv_obj_set_style_bg_color(d, HEX(rgb), 0);   /* one colour per swatch */
+    return d;
+}
+
+/* ---------------------------------------------------------------- text */
+static void tone_apply(lv_obj_t *l, ui_tone_t tone)
+{
+    lv_obj_remove_style(l, &s_muted, 0);
+    lv_obj_remove_style(l, &s_green_text, 0);
+    lv_obj_remove_style(l, &s_red_text, 0);
+    if (tone == UI_TONE_MUTED) lv_obj_add_style(l, &s_muted, 0);
+    else if (tone == UI_TONE_GREEN) lv_obj_add_style(l, &s_green_text, 0);
+    else if (tone == UI_TONE_RED) lv_obj_add_style(l, &s_red_text, 0);
+}
+
+lv_obj_t *ui_text(lv_obj_t *parent, const char *t, ui_tone_t tone, bool small)
+{
+    lv_obj_t *l = text(parent, t, NULL, small ? &s_label : NULL);
+    tone_apply(l, tone);
+    return l;
+}
+
+void ui_text_tone(lv_obj_t *label, ui_tone_t tone) { if (label) tone_apply(label, tone); }
+void ui_text_mono(lv_obj_t *label) { if (label) lv_obj_add_style(label, &s_mono, 0); }
+lv_obj_t *ui_title(lv_obj_t *parent, const char *t) { return text(parent, t, NULL, &s_title); }
 
 lv_obj_t *ui_footnote(lv_obj_t *parent, const char *t)
 {

@@ -306,3 +306,63 @@ were stopped, the selection moved to the row at the same position (§5.1 rule). 
 64-byte USB packets on 130–150 KB frames ("length mismatch"); 1 in 3 to 1 in 20 tries succeed (tooling, not changed).
 Screenshots with real session names are in the scratchpad only. Final state: test sessions stopped, `ts off`,
 `power set defaults`, DHCP (static off), Host link connected on the LAN.
+
+## Task 7: Settings shell, and Host, Power, Keyboard light, Display & time, About
+
+**Shape.** One screen: `ui_header` ("← Sessions", "Settings", the shared vitals; no timer of its own), a 320 px rail
+of six 72 px `ui_rail_row`s (transparent until selected: panel-2 with a 50 % fg outline) and one scrolling panel
+with a `FONT_TITLE` heading. A rail click cleans and refills the one panel (`panel_fill`); the screen object stays
+(the preview asserts the body has exactly two children, the rail and the panel, and the same screen after every
+click). Ctrl+P lands on the last used section, Host after a boot (RAM only); `ui_settings_open(s)` is what the
+Sessions banners call (No Wi-Fi → Network; Host settings and Set up host → Host). The only extra timer is the 2 s
+Diagnostics refresh, bound to its label, so a collapse or a section change deletes it.
+
+**Device gate (Tailscale off, LAN Host link).**
+
+| Check | Result | |
+|---|---|---|
+| `ui heapmin` over `key ctrl p` (Sessions → Settings › Host) | internal min **141,675 B** (gate 66,560) | pass |
+| … then each section by rail (keys): Network / Power / Keyboard light / Display & time / About | min **157,295 / 158,791 / 161,223 / 164,483 / 163,943 B** | pass |
+| `key ctrl p` after a boot | lands on Host (screenshot) | pass |
+| Power by rail, `key esc`, `key ctrl p` | lands on Power (screenshot) | pass |
+| Host › Public key › Show vs `sshkey` | the sheet's line and `@@PUBKEY` agree past 50 characters (`ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEPUBKEY0…`) | pass |
+| `power set dim 600`, About › Reset settings › Reset | `power settings` dim=30 off=120; `clock` tz=PST8PDT,M3.2.0,M11.1.0 unchanged; keyboard light bright 0 → 20 (its default); Host link, pin and fallback unchanged | pass |
+| `key layout jis`, `key layout stock` | `key layout: jis`, then `stock` | pass |
+| `ota url <url with ?token>`, `ota url`, `ota url none` | `ota url: https://updates.example.com/…?<masked>`; `none` | pass |
+| About › Diagnostics expanded, `ui timers` | one 2000 ms timer; collapsed: none | pass |
+| Host › Forget on the device | not pressed (ruling): the preview drives it against the stub | PENDING |
+| `idf.py size` (Task 6 → Task 7) | image 7,227,251 → 7,236,475 B (+9,224); DIRAM 188,144 → 188,352 B (+208) | |
+
+User state recorded before the reset and put back after it: brightness 80, keyboard light mode 0 bright 0 rgb
+0080ff needs-you 1 dark 5 (`key light 0 0 0080ff 1 5`), layout stock, OTA URL none. Final state: test session
+stopped, `ts off`, `power set defaults`, DHCP, Host link connected on the LAN.
+
+**Rulings and deviations:**
+- T7-1: the Host row shows the entry's address (§5.7), and until Task 9's host form the Address row shows
+  `user@address[:port]` and opens `ui_hosts_create`. With no entry the Host row reads the configured name or "Not set".
+- T7-2: action rows keep the whole row as the hit target (§5.6); their chips ("Forget", "Sync now") are drawn by
+  `ui_srow_chip` and are not controls of their own (a `ui_chip` is a bar control and would fail P4C-5 in a 64 px
+  body row).
+- T7-3: Network keeps the Plan 3 rows unchanged, the fallback address included, until Task 8 (C14); the Host
+  section also has Fallback address (§5.7). `settings 1` and `keyboard-settings` (which ends on Network) keep
+  `PV_SKIP_TARGETS`; every other settings case runs with no skips.
+- T7-4: short dialog buttons (T4 carry, P4C-5): `dialog_buttons` pads the row 8 px sideways as well as up and down,
+  so the end button's 80 px hit area is never clipped by the row. `targets-clip` asserts it on an OK alert and on a
+  one-letter confirm whose button sits at its 64 px minimum (it fails, 72x80, with the padding removed).
+- T7-5: the touch check counts a control's hit area (coords + ext click) when it decides a scrolled container shows
+  it only in part. A row a scroll leaves at the panel's edge (`settings 2 PREVIEW_SCROLL=400`: Hibernate after at
+  y 652, its 8 px below cut off) is checked once scrolled into view, where LVGL keeps it inside the 24 px padding.
+- T7-6: the footer hint is `ui_keyboard_hint(label)` in ui_core: shown while the last input was a key (set in
+  `ui_keyboard_route`), hidden on a pointer press (an indev `LV_EVENT_PRESSED` callback). No timer. It sits at the
+  bottom of the rail. The Ctrl+Tab "UI: Tab / Enter / Esc" / "SSH input" toasts are gone (Task 10 gives Terminal the
+  same hint).
+- T7-7: keyboard order is tree order: the back chip, the six rail rows, then the panel's rows. From a fresh
+  screen the second Down reaches rail row 0. Enter on a rail row refills the panel and keeps the focus on the rail.
+- T7-8: `settings_reset_user` resets through `settings_reset_scope`, then `power_settings_defaults()` (which now
+  notifies the power task, so the ladder takes the default timings at once) and the brightness.
+- T7-9: console read forms added for the restore rule: `key layout` (no argument prints it), `key light [<mode>
+  <bright> <rrggbb> [<needs> <dark>]]`, `ui brightness [5..100]` and `ota url` (prints the masked value).
+- T7-10: Diagnostics reads the Wi-Fi channel once when it opens (an SDIO RPC) and the cached RSSI on each 2 s tick.
+  The IDF line shows `esp_get_idf_version()`, which is a git hash on this checkout.
+- T7-11 (T6 N1): a Sessions row clears its press key on `LV_EVENT_PRESS_LOST` too.
+- The public key row reads "ssh-ed25519 … claude-companion · Show": the key's comment up to its '@'.

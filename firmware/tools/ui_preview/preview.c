@@ -3,8 +3,11 @@
 #include "ui/ui_boot.h"
 #include "ui/ui_comp.h"
 #include "ui/ui_sessions.h"
+#include "ui/ui_settings.h"
+#include "ssh/device_key.h"
 #include "ui/hotkeys.h"
 #include "checks.h"
+#include "src/misc/lv_timer_private.h"
 #include "ui/ui_softkbd.h"
 #include "settings/settings.h"
 #include "net/tailscale.h"
@@ -22,8 +25,16 @@
 #include <string.h>
 #include <time.h>
 app_settings_t g_settings;
+static int env_int(const char *n, int d);
 void settings_save(void) {}
 void settings_reset_defaults(void) {}
+static int s_reset_user_calls;
+void settings_reset_user(void) { s_reset_user_calls++; }
+#define PREVIEW_PUBKEY "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPreviewOnlyNotARealKey0123456789abcdefghijklmnop claude-companion@tab5"
+esp_err_t device_key_pubkey_line(char *out, size_t cap) { snprintf(out, cap, "%s", PREVIEW_PUBKEY); return ESP_OK; }
+int wifi_mgr_channel(void) { return 6; }
+uint32_t sysinfo_uptime_s(void) { return 5025; }
+bool sysinfo_charging(void) { return env_int("PREVIEW_CHG", 0) != 0; }
 bool g_ssh_session_active=false;
 const char *sysinfo_power_src_text(void) { return "USB-C"; }
 const char *wifi_mgr_ssid(void) { return "Clientre Wi-Fi"; }
@@ -60,6 +71,10 @@ void power_kbd_light_refresh(void) {}
 /* power owner: the preview is always Active */
 bool power_setting_set(const char *name, int n) { (void)name; (void)n; return true; }
 bool hibernate_supported(void) { return false; }
+int power_cfg(power_cfg_t c) {
+    return c == PCFG_RADIO_OFF ? g_settings.pw_radio_off : c == PCFG_RADIO_AFTER ? g_settings.pw_radio_off_min
+         : c == PCFG_CHECKIN ? g_settings.pw_checkin_min : g_settings.pw_hibernate_checkin_min;
+}
 power_boot_t hibernate_boot_kind(void) { return POWER_BOOT_NORMAL; }
 void power_hold(power_hold_t h, bool on) { (void)h; (void)on; }
 uint32_t power_wake_seq(void) { return s_rc_preview || s_stale_preview ? 1 : 0; }
@@ -572,7 +587,19 @@ static int targets_clip_case(lv_display_t *d) {
     lv_obj_update_layout(scr); lv_refr_now(d);
     int bars = pv_touch_targets(scr, why, sizeof(why));
     printf("targets-clip: bars -> %s\n", bars ? why : "ok");
-    if (!clipped || bars) { printf("check targets-clip: FAIL\n"); return 1; }
+    /* T4 carry: a dialog's short end button (OK, Forget) keeps its 80 px hit area inside the button row */
+    ui_alert("Short", "An alert's only button is OK.");
+    lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
+    int ok_btn = pv_touch_targets(lv_layer_top(), why, sizeof(why));
+    printf("targets-clip: dialog OK -> %s\n", ok_btn ? why : "ok");
+    lv_obj_clean(lv_layer_top());
+    /* the shortest label: the end button at its 64 px minimum width, so only the row's own padding gives it 80 */
+    ui_confirm_ex("A one-letter action", NULL, "Y", true, NULL, NULL);
+    lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
+    int forget_btn = pv_touch_targets(lv_layer_top(), why, sizeof(why));
+    printf("targets-clip: dialog 64 px end button -> %s\n", forget_btn ? why : "ok");
+    lv_obj_clean(lv_layer_top());
+    if (!clipped || bars || ok_btn || forget_btn) { printf("check targets-clip: FAIL\n"); return 1; }
     printf("check targets-clip: ok\n");
     return 0;
 }
@@ -916,6 +943,190 @@ static int sessions_case(lv_display_t *d, const char *v) {
     return pv_run_checks(d, s, name, needs, 0);
 }
 
+/* ------------------------------------------------------------ settings */
+static const char *const k_rail_names[UI_SET_COUNT] = { "Host", "Network", "Power", "Keyboard light", "Display & time", "About" };
+/* A shown label with text t whose right edge is left of x. */
+static lv_obj_t *find_label_before(lv_obj_t *o, const char *t, int32_t x) {
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return NULL;
+    if (lv_obj_check_type(o, &lv_label_class) && !strcmp(lv_label_get_text(o), t)) {
+        lv_area_t a; lv_obj_get_coords(o, &a);
+        if (a.x2 < x) return o;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *r = find_label_before(lv_obj_get_child(o, i), t, x);
+        if (r) return r;
+    }
+    return NULL;
+}
+static lv_obj_t *rail_row(lv_obj_t *scr, int i) {
+    lv_obj_update_layout(scr);
+    lv_obj_t *l = find_label_before(scr, k_rail_names[i], UI_TK_RAIL_W);
+    return l ? lv_obj_get_parent(l) : NULL;
+}
+static lv_obj_t *settings_panel(lv_obj_t *scr) { return lv_obj_get_child(lv_obj_get_child(scr, 1), 1); }
+static int timers_with_period(uint32_t ms) {
+    int n = 0;
+    for (lv_timer_t *t = lv_timer_get_next(NULL); t; t = lv_timer_get_next(t)) n += t->period == ms;
+    return n;
+}
+/* The first clickable object at or above the shown label t under o. */
+static lv_obj_t *find_clickable_shown(lv_obj_t *o, const char *t) {
+    lv_obj_t *l = find_label(o, t, false);
+    while (l && !lv_obj_has_flag(l, LV_OBJ_FLAG_CLICKABLE)) l = lv_obj_get_parent(l);
+    return l;
+}
+static void slug(char *out, size_t cap, const char *t) {
+    size_t n = 0;
+    for (; *t && n + 1 < cap; t++) out[n++] = (*t >= 'A' && *t <= 'Z') ? (char)(*t + 32) : (*t >= 'a' && *t <= 'z') || (*t >= '0' && *t <= '9') ? *t : '-';
+    out[n] = 0;
+}
+
+static int settings_case(lv_display_t *d, int section) {
+    assert(section >= 0 && section < UI_SET_COUNT);
+    const char *click = env_str("PREVIEW_CLICK", "");
+    int scroll = env_int("PREVIEW_SCROLL", 0);
+    char name[64], sl[32];
+    slug(sl, sizeof(sl), click);
+    if (click[0]) snprintf(name, sizeof(name), "settings-%d-%s", section, sl);
+    else if (scroll) snprintf(name, sizeof(name), "settings-%d-scroll-%d", section, scroll);
+    else snprintf(name, sizeof(name), "settings-%d", section);
+    preview_sessions_load();
+    ui_nav_home(); step(d,200);
+    ui_nav_push(ui_settings_create, NULL); step(d,200);
+    lv_obj_t *s = lv_screen_active();
+    assert(ui_nav_is_top(ui_settings_create));
+    /* Real click events through every rail row: one panel, refilled; the same screen object (B2) */
+    for (int i = 0; i < UI_SET_COUNT; i++) {
+        lv_obj_t *r = rail_row(s, i);
+        assert(r);
+        lv_obj_send_event(r, LV_EVENT_CLICKED, NULL); step(d,200);
+        assert(lv_screen_active() == s);
+        lv_obj_t *body = lv_obj_get_child(s, 1);
+        assert(lv_obj_get_child_count(body) == 2);   /* the rail and the one panel: nothing hidden behind it */
+        lv_obj_t *title = lv_obj_get_child(settings_panel(s), 0);
+        assert(title && !strcmp(lv_label_get_text(title), k_rail_names[i]));
+        assert(row_selected(r));
+        for (int j = 0; j < UI_SET_COUNT; j++) if (j != i) assert(!row_selected(rail_row(s, j)));
+    }
+    lv_obj_send_event(rail_row(s, section), LV_EVENT_CLICKED, NULL); step(d,200);
+    assert(lv_screen_active() == s);
+    lv_obj_t *panel = settings_panel(s);
+    if (scroll) {
+        lv_obj_update_layout(s);
+        lv_obj_scroll_by(panel, 0, -scroll, LV_ANIM_OFF);
+        lv_obj_update_layout(s); step(d,100);
+    }
+    if (click[0]) {
+        lv_obj_t *c = find_clickable_shown(panel, click);
+        if (!c) { printf("check %s: FAIL no row \"%s\"\n", name, click); return 1; }
+        lv_obj_scroll_to_view(c, LV_ANIM_OFF);
+        lv_obj_send_event(c, LV_EVENT_CLICKED, NULL); step(d,200);
+    }
+    lv_obj_t *top = lv_layer_top();
+    int r = 0;
+    if (section == UI_SET_HOST && !strcmp(click, "Public key")) {
+        lv_obj_t *k = find_label(top, "ssh-ed25519 ", true);
+        assert(k && !strcmp(lv_label_get_text(k), PREVIEW_PUBKEY));   /* the whole line, wrapped */
+        assert(lv_obj_get_style_text_font(k, 0) == FONT_MONO);
+        assert(find_label(top, "Add this line to ~/.ssh/authorized_keys on each host this Tab5 signs in to.", false));
+    } else if (section == UI_SET_HOST && !strcmp(click, "Forget")) {
+        assert(find_label(top, "Forget this host's key?", false));
+        assert(find_label(top, "Only do this if the host's SSH key changed. The Tab5 will trust the next key it sees.", false));
+        r |= pv_run_checks(d, s, name, false, 0);   /* the confirm: wrapped title, fit, every button's 80 px hit */
+        lv_obj_t *ok = find_clickable_shown(top, "Forget");
+        assert(ok && s_forget_calls == 0);
+        lv_obj_send_event(ok, LV_EVENT_CLICKED, NULL); step(d,200);
+        if (s_forget_calls != 1) { printf("check %s: FAIL forget called %d times\n", name, s_forget_calls); r = 1; }
+        lv_obj_clean(top);
+        return r;
+    } else if (section == UI_SET_ABOUT && !strcmp(click, "Reset settings")) {
+        assert(find_label(top, "Reset settings?", false));
+        assert(find_label_has(top, "keeps the time zone", 0));
+        r |= pv_run_checks(d, s, name, false, 0);
+        lv_obj_t *ok = find_clickable_shown(top, "Reset");
+        assert(ok);
+        lv_obj_send_event(ok, LV_EVENT_CLICKED, NULL); step(d,200);
+        if (s_reset_user_calls != 1) { printf("check %s: FAIL reset called %d times\n", name, s_reset_user_calls); r = 1; }
+        assert(lv_screen_active() == s);
+        lv_obj_clean(top);
+        return r;
+    } else if (section == UI_SET_ABOUT && !strcmp(click, "Diagnostics")) {
+        if (timers_with_period(2000) != 1) { printf("check %s: FAIL %d 2 s timers expanded\n", name, timers_with_period(2000)); return 1; }
+        assert(find_label_has(panel, "Last reset: power-on", 0));
+        r |= pv_run_checks(d, s, name, false, 0);   /* idle: a refresh with nothing changed redraws nothing */
+        step(d, 2100);
+        lv_obj_send_event(find_clickable_shown(panel, "Diagnostics"), LV_EVENT_CLICKED, NULL); step(d,200);
+        if (timers_with_period(2000) != 0) { printf("check %s: FAIL a 2 s timer after collapsing\n", name); r = 1; }
+        assert(!find_label_has(panel, "Last reset", 0));
+        /* expanded again, then another section: the timer goes with the panel */
+        lv_obj_send_event(find_clickable_shown(panel, "Diagnostics"), LV_EVENT_CLICKED, NULL); step(d,200);
+        assert(timers_with_period(2000) == 1);
+        lv_obj_send_event(rail_row(s, UI_SET_HOST), LV_EVENT_CLICKED, NULL); step(d,200);
+        if (timers_with_period(2000) != 0) { printf("check %s: FAIL a 2 s timer after leaving About\n", name); r = 1; }
+        return r;
+    } else if (section == UI_SET_ABOUT && !strcmp(click, "Reboot")) {
+        /* the short-label confirm: its end button keeps an 80 px hit area (pv_run_checks below) */
+        assert(find_label(top, "Reboot now?", false) && find_clickable_shown(top, "Reboot"));
+    } else if (section == UI_SET_KBD && !strcmp(click, "Colour")) {
+        lv_obj_t *t = find_label(top, "Colour", false);
+        assert(t);
+        lv_obj_t *sheet = lv_obj_get_parent(t);
+        int rows = (int)lv_obj_get_child_count(sheet) - 1;
+        if (rows != 7) { printf("check %s: FAIL %d colour rows\n", name, rows); return 1; }
+        assert(find_label(sheet, "Keyboard's own", false) && find_label(sheet, "Cyan", false));
+        assert(!find_label(sheet, "#", true));   /* drawn, never hex */
+        int amber = pv_amber_pixels(s);
+        if (amber) { printf("check %s: FAIL %d amber pixels in the colour picker\n", name, amber); return 1; }
+    } else if (section == UI_SET_POWER && scroll) {
+        lv_obj_t *h = find_label(panel, "Battery saver", false);
+        assert(h);
+        lv_area_t a, p; lv_obj_get_coords(h, &a); lv_obj_get_coords(panel, &p);
+        if (a.y1 < p.y1 || a.y2 > p.y2) { printf("check %s: FAIL Battery saver at %d-%d, the panel %d-%d\n", name, (int)a.y1, (int)a.y2, (int)p.y1, (int)p.y2); return 1; }
+    } else if (section == UI_SET_HOST && !click[0]) {
+        assert(!find_label(s, "(macOS)", true));
+        assert(find_label(panel, "\xe2\x97\x8f connected over home Wi-Fi", false));
+        assert(find_label(panel, "ssh-ed25519 \xe2\x80\xa6 claude-companion \xc2\xb7 Show", false));
+        for (lv_obj_t *o = rail_row(s, 0); o; o = NULL) assert(lv_obj_get_height(o) == UI_TK_RAIL_ROW_H);
+        lv_obj_t *rail = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
+        assert(lv_obj_get_width(rail) == UI_TK_RAIL_W);
+    } else if (click[0] || scroll) {
+        printf("preview: no assertions for settings %d with PREVIEW_CLICK=\"%s\" PREVIEW_SCROLL=%d\n", section, click, scroll);
+    }
+    /* C14: Network keeps its Plan 3 rows (under 64 px) until Task 8 rebuilds it */
+    r |= pv_run_checks(d, s, name, false, section == UI_SET_NETWORK ? PV_SKIP_TARGETS : 0);
+    lv_obj_clean(top);
+    return r;
+}
+
+/* No sink on Settings: the arrows move the focus through ui_keyboard_route's no-sink path (no Ctrl+Tab); the
+   footer hint shows while a key was used last; Esc goes back to Sessions. */
+static int keyboard_settings_case(lv_display_t *d) {
+    preview_sessions_load();
+    ui_nav_home(); step(d,200);
+    ui_settings_open(UI_SET_HOST); step(d,200);
+    lv_obj_t *s = lv_screen_active();
+    assert(ui_nav_is_top(ui_settings_create) && !preview_have_sink);
+    lv_obj_t *r0 = rail_row(s, 0), *r1 = rail_row(s, 1);
+    int n = 0;
+    while (!lv_obj_has_state(r0, LV_STATE_FOCUS_KEY) && n < 4) { press_key(SK_DOWN, 0, false); step(d,50); n++; }
+    if (!lv_obj_has_state(r0, LV_STATE_FOCUS_KEY)) { printf("check keyboard-settings: FAIL rail row 0 never focused\n"); return 1; }
+    lv_obj_t *hint = find_label(s, "\xe2\x86\x91\xe2\x86\x93 move \xc2\xb7 Enter choose \xc2\xb7 Esc back", false);
+    assert(hint && !lv_obj_has_flag(hint, LV_OBJ_FLAG_HIDDEN));
+    press_key(SK_DOWN, 0, false); step(d,50);
+    if (!lv_obj_has_state(r1, LV_STATE_FOCUS_KEY)) { printf("check keyboard-settings: FAIL Down did not reach rail row 1\n"); return 1; }
+    press_key(SK_ENTER, 0, false); step(d,100);
+    assert(lv_screen_active() == s && !strcmp(lv_label_get_text(lv_obj_get_child(settings_panel(s), 0)), "Network"));
+    assert(lv_obj_has_state(r1, LV_STATE_FOCUS_KEY));   /* the focus stays on the rail */
+    int r = pv_run_checks(d, s, "keyboard-settings", false, PV_SKIP_TARGETS);   /* Network: C14 */
+    press_key(SK_ESC, 0, false); step(d,200);
+    if (!ui_nav_is_top(ui_sessions_create)) { printf("check keyboard-settings: FAIL Esc did not go back\n"); return 1; }
+    /* Ctrl+P again lands on the last used section, Network */
+    ui_nav_push(ui_settings_create, NULL); step(d,200);
+    assert(!strcmp(lv_label_get_text(lv_obj_get_child(settings_panel(lv_screen_active()), 0)), "Network"));
+    printf("keyboard-settings: rail row 0 after %d Down, then Down to row 1\n", n);
+    return r;
+}
+
 int main(int argc,char **argv) {
     lv_init();
     int w=1280, h=720;
@@ -926,6 +1137,13 @@ int main(int argc,char **argv) {
     g_settings.brightness=58;
     g_settings.term_line_height=32;
     g_settings.kbd_dark_light=5;   /* PT24 default: "Low" */
+    /* the Plan 2 power defaults (settings_power_defaults), so Settings › Power shows real values */
+    g_settings.pw_dim_s=30; g_settings.pw_off_s=120; g_settings.pw_sleep_on_usb=1; g_settings.pw_wake_needs_you=1;
+    g_settings.kbd_needs_light=1; g_settings.pw_radio_off_min=20; g_settings.pw_checkin_min=5;
+    g_settings.pw_deep_idle_min=60; g_settings.pw_hibernate_h=2; g_settings.pw_hibernate_checkin_min=15;
+    g_settings.ss_disable_in_ssh=1; g_settings.kbd_led_bright=20;
+    g_settings.kbd_led_rgb[0]=0x00; g_settings.kbd_led_rgb[1]=0x80; g_settings.kbd_led_rgb[2]=0xFF;
+    strcpy(g_settings.tz_rule, "PST8PDT,M3.2.0,M11.1.0");
     const char *name = argc>1 ? argv[1] : "";
     /* Exercise splash before font runtime copies or the application UI exist. */
     if (!strcmp(name,"boot")) {
@@ -983,32 +1201,8 @@ int main(int argc,char **argv) {
     }
     if (!strcmp(name,"sessions")) return sessions_case(d, argc>2 ? argv[2] : "live");
     if (!strcmp(name,"ctrlk")) return sessions_case(d, "ctrlk");
-    if (!strcmp(name,"settings")) {
-        unsigned category = argc>2 ? (unsigned)atoi(argv[2]) : 0;
-        assert(category < 7);
-        preview_sessions_load();
-        ui_nav_home(); step(d,200);
-        ui_nav_push(ui_settings_create, NULL); step(d,200);
-        lv_obj_t *s = lv_screen_active();
-        /* Real click events through every rail entry: one visible panel, the same screen object. */
-        for (unsigned i = 0; i < 7; i++) {
-            lv_obj_t *before = s;
-            lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
-            lv_obj_send_event(lv_obj_get_child(nav, i), LV_EVENT_CLICKED, NULL);
-            step(d,200);
-            s = lv_screen_active();
-            assert(s == before); /* a rail click must not rebuild the screen */
-            lv_obj_t *deck = lv_obj_get_child(lv_obj_get_child(s, 1), 1);
-            for (unsigned j = 0; j < 7; j++)
-                assert(lv_obj_has_flag(lv_obj_get_child(deck, j), LV_OBJ_FLAG_HIDDEN) == (j != i));
-        }
-        lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
-        lv_obj_send_event(lv_obj_get_child(nav, category), LV_EVENT_CLICKED, NULL);
-        step(d,200);
-        assert(lv_screen_active() == s);
-        char n[16]; snprintf(n, sizeof(n), "settings-%u", category);
-        return pv_run_checks(d, s, n, false, PV_SKIP_AMBER|PV_SKIP_TARGETS);
-    }
+    if (!strcmp(name,"settings")) return settings_case(d, argc>2 ? atoi(argv[2]) : 0);
+    if (!strcmp(name,"keyboard-settings")) return keyboard_settings_case(d);
     fprintf(stderr, "preview: unknown case %s\n", argc>1 ? argv[1] : "(none)");
     return 2;
 }

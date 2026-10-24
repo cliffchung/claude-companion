@@ -24,6 +24,11 @@ typedef struct {
 uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len);
 /* The blob settings_save writes. */
 cfg_blob_t settings_blob_make(const app_settings_t *s);
+/* Settings › About › Reset settings (spec §5.12, U3): every pw_* field, ss_disable_in_ssh, the keyboard light
+   (kbd_led_mode, kbd_led_bright, kbd_led_rgb, kbd_needs_light, kbd_dark_light) and brightness take their value
+   from defaults. Every other field is kept: Wi-Fi, the Host and the Terminal hosts, the pins, Tailscale, the
+   time zone, the key layout, the OTA URL. */
+void settings_reset_scope(app_settings_t *s, const app_settings_t *defaults);
 
 #ifdef __cplusplus
 }

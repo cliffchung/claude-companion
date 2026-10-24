@@ -33,3 +33,31 @@ cfg_blob_t settings_blob_make(const app_settings_t *s)
     cfg_blob_t b = { .magic = CFG_MAGIC, .version = CFG_VERSION, .s = *s };
     return b;
 }
+
+void settings_reset_scope(app_settings_t *s, const app_settings_t *d)
+{
+    if (!s || !d) return;
+    /* power (Plan 2): pw_dim_s through pw_hibernate_checkin_min, which hold the two needs-you light fields too */
+    s->pw_dim_s = d->pw_dim_s;
+    s->pw_off_s = d->pw_off_s;
+    s->pw_sleep_on_usb = d->pw_sleep_on_usb;
+    s->pw_wake_lift = d->pw_wake_lift;
+    s->pw_wake_needs_you = d->pw_wake_needs_you;
+    s->pw_radio_off = d->pw_radio_off;
+    s->pw_radio_off_min = d->pw_radio_off_min;
+    s->pw_checkin_min = d->pw_checkin_min;
+    s->pw_light_sleep = d->pw_light_sleep;
+    s->pw_deep_idle_min = d->pw_deep_idle_min;
+    s->pw_hibernate_h = d->pw_hibernate_h;
+    s->pw_hibernate_checkin_h = d->pw_hibernate_checkin_h;
+    s->pw_hibernate_checkin_min = d->pw_hibernate_checkin_min;
+    s->ss_disable_in_ssh = d->ss_disable_in_ssh;
+    /* the keyboard light */
+    s->kbd_led_mode = d->kbd_led_mode;
+    s->kbd_led_bright = d->kbd_led_bright;
+    memcpy(s->kbd_led_rgb, d->kbd_led_rgb, sizeof(s->kbd_led_rgb));
+    s->kbd_needs_light = d->kbd_needs_light;
+    s->kbd_dark_light = d->kbd_dark_light;
+    /* display */
+    s->brightness = d->brightness;
+}

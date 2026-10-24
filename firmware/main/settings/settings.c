@@ -10,6 +10,8 @@
 #include "companion/cc_cmd.h"
 #include "sys/vitals.h"
 #include "sys/power_rules.h"
+#include "sys/power.h"
+#include "bsp/m5stack_tab5.h"
 
 static const char *TAG = "settings";
 #define NS "app"
@@ -18,68 +20,84 @@ static const char *TAG = "settings";
 
 app_settings_t g_settings;
 
-void settings_power_defaults(void)
+static void power_defaults(app_settings_t *s)
 {
-    g_settings.pw_dim_s = 30;
-    g_settings.pw_off_s = 120;
-    g_settings.pw_sleep_on_usb = 1;
-    g_settings.pw_wake_needs_you = 1;
-    g_settings.kbd_needs_light = 1;
-    g_settings.kbd_dark_light = PR_DARK_LIGHT_DEFAULT;   /* PT24 */
-    g_settings.pw_radio_off = 0;
-    g_settings.pw_radio_off_min = 20;
-    g_settings.pw_checkin_min = 5;
-    g_settings.pw_light_sleep = 0;
-    g_settings.pw_deep_idle_min = 60;
-    g_settings.pw_hibernate_h = 2;
-    g_settings.pw_hibernate_checkin_h = 0;      /* reserved */
-    g_settings.pw_hibernate_checkin_min = 15;   /* PT16, PT18 */
+    s->pw_dim_s = 30;
+    s->pw_off_s = 120;
+    s->pw_sleep_on_usb = 1;
+    s->pw_wake_needs_you = 1;
+    s->kbd_needs_light = 1;
+    s->kbd_dark_light = PR_DARK_LIGHT_DEFAULT;   /* PT24 */
+    s->pw_radio_off = 0;
+    s->pw_radio_off_min = 20;
+    s->pw_checkin_min = 5;
+    s->pw_light_sleep = 0;
+    s->pw_deep_idle_min = 60;
+    s->pw_hibernate_h = 2;
+    s->pw_hibernate_checkin_h = 0;      /* reserved */
+    s->pw_hibernate_checkin_min = 15;   /* PT16, PT18 */
 }
 
-static void plan2_defaults(void)
+void settings_power_defaults(void) { power_defaults(&g_settings); }
+
+static void plan2_defaults(app_settings_t *s)
 {
-    strcpy(g_settings.tz_rule, TZ_DEFAULT);
-    settings_power_defaults();
+    strcpy(s->tz_rule, TZ_DEFAULT);
+    power_defaults(s);
 }
 
-void settings_reset_defaults(void)
+void settings_defaults(app_settings_t *out)
 {
-    memset(&g_settings, 0, sizeof(g_settings));
-    g_settings.rotation = 1;            /* reserved (Plan 4): the display is always ROTATION_90 */
-    g_settings.brightness = 80;
-    g_settings.ss_enable = 1;
-    g_settings.ss_idle_min = 5;
-    g_settings.ss_switch_min = 1;
-    g_settings.ss_disable_in_ssh = 1;
-    strcpy(g_settings.ss_wallpaper_dir, "");
-    g_settings.ss_elem_x[0] = 40;  g_settings.ss_elem_y[0] = 40;   /* clock */
-    g_settings.ss_elem_x[1] = 40;  g_settings.ss_elem_y[1] = 160;  /* date */
-    g_settings.ss_elem_x[2] = 40;  g_settings.ss_elem_y[2] = 220;  /* battery */
-    g_settings.ss_elem_x[3] = 40;  g_settings.ss_elem_y[3] = 270;  /* network */
-    for (int i = 0; i < 4; i++) g_settings.ss_elem_color[i] = 0xFFFFFF;
-    g_settings.utc_offset_min = 9 * 60;
-    g_settings.kbd_led_mode = 0;
-    g_settings.kbd_led_bright = 20;
-    g_settings.kbd_led_rgb[0] = 0; g_settings.kbd_led_rgb[1] = 128; g_settings.kbd_led_rgb[2] = 255;
-    g_settings.creds_on_sd = 0;
-    g_settings.term_cursor_style = 0;
-    g_settings.term_cursor_blink = 0;   /* B1: a steady cursor, no idle redraw */
-    g_settings.term_line_height = UI_TK_TERM_LINE_H;
+    memset(out, 0, sizeof(*out));
+    out->rotation = 1;            /* reserved (Plan 4): the display is always ROTATION_90 */
+    out->brightness = 80;
+    out->ss_enable = 1;
+    out->ss_idle_min = 5;
+    out->ss_switch_min = 1;
+    out->ss_disable_in_ssh = 1;
+    out->ss_elem_x[0] = 40;  out->ss_elem_y[0] = 40;   /* clock */
+    out->ss_elem_x[1] = 40;  out->ss_elem_y[1] = 160;  /* date */
+    out->ss_elem_x[2] = 40;  out->ss_elem_y[2] = 220;  /* battery */
+    out->ss_elem_x[3] = 40;  out->ss_elem_y[3] = 270;  /* network */
+    for (int i = 0; i < 4; i++) out->ss_elem_color[i] = 0xFFFFFF;
+    out->utc_offset_min = 9 * 60;
+    out->kbd_led_mode = 0;
+    out->kbd_led_bright = 20;
+    out->kbd_led_rgb[0] = 0; out->kbd_led_rgb[1] = 128; out->kbd_led_rgb[2] = 255;
+    out->creds_on_sd = 0;
+    out->term_cursor_style = 0;
+    out->term_cursor_blink = 0;   /* B1: a steady cursor, no idle redraw */
+    out->term_line_height = UI_TK_TERM_LINE_H;
     /* Plan 4: one look, no themes. The terminal palette comes from the tokens. */
-    g_settings.term_fg = UI_TK_TERM_FG;
-    g_settings.term_bg = UI_TK_TERM_BG;
-    g_settings.term_cursor = UI_TK_TERM_CURSOR;
-    memcpy(g_settings.term_ansi, ui_tk_term_ansi, sizeof(g_settings.term_ansi));
-    g_settings.term_font = 0;
-    g_settings.volume = 60;
-    g_settings.ota_url[0] = 0;           /* no update manifest yet */
-    g_settings.ssh_bell = 1;
-    g_settings.ts_enable = 0;
-    g_settings.ts_direct = 0;
-    strcpy(g_settings.ts_device_name, "claude-companion");
-    g_settings.companion_server[0] = 0;
-    strcpy(g_settings.claude_path, "~/.local/bin/claude");
-    plan2_defaults();
+    out->term_fg = UI_TK_TERM_FG;
+    out->term_bg = UI_TK_TERM_BG;
+    out->term_cursor = UI_TK_TERM_CURSOR;
+    memcpy(out->term_ansi, ui_tk_term_ansi, sizeof(out->term_ansi));
+    out->term_font = 0;
+    out->volume = 60;
+    out->ota_url[0] = 0;           /* no update manifest yet */
+    out->ssh_bell = 1;
+    out->ts_enable = 0;
+    out->ts_direct = 0;
+    strcpy(out->ts_device_name, "claude-companion");
+    out->companion_server[0] = 0;
+    strcpy(out->claude_path, "~/.local/bin/claude");
+    plan2_defaults(out);
+}
+
+void settings_reset_defaults(void) { settings_defaults(&g_settings); }
+
+void settings_reset_user(void)
+{
+    app_settings_t *d = malloc(sizeof(*d));   /* about 1.5 KB: not on the LVGL task's stack */
+    if (!d) return;
+    settings_defaults(d);
+    settings_reset_scope(&g_settings, d);
+    free(d);
+    settings_save();
+    bsp_display_brightness_set(g_settings.brightness);
+    power_kbd_light_refresh();
+    power_settings_defaults();   /* the power task takes the reset timings now; ends any console test value */
 }
 
 void settings_init(void)
@@ -109,7 +127,7 @@ void settings_init(void)
             /* v17 added companion_server and claude_path at the end: defaults stand. */
             /* v18 added the Plan 2 fields at the end. The old blob's tail padding may have
                landed on them, so set them all, whatever the old UTC offset was. */
-            if (old_version <= 17) plan2_defaults();
+            if (old_version <= 17) plan2_defaults(&g_settings);
             /* v19 added pw_hibernate_checkin_min (PT16): an existing device gets the default */
             if (old_version <= 18) g_settings.pw_hibernate_checkin_min = 15;
             /* v20 (PT24) reuses kbd_off_cap's byte (a battery Off cap, default 100 = none) as kbd_dark_light:

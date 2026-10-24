@@ -172,7 +172,7 @@ X(TH_ANSI, "ANSI palette") \
 X(TH_RESET, "Reset to the preset") \
 X(SET_KBD_LED, "Keyboard LED") \
 X(SET_KBD_LED_BRIGHT, "LED brightness") \
-X(SET_KBD_NEEDS_LIGHT, "Keyboard light shows needs-you") \
+X(SET_KBD_NEEDS_LIGHT, "Show needs-you on keyboard") \
 X(SET_KBD_STATUS, "Keyboard: %s") \
 X(SET_KBD_LAYOUT, "Keyboard layout") \
 X(KBD_LAYOUT_STOCK, "As printed") \
@@ -261,7 +261,84 @@ X(TS_FORGET_Q, "Remove node keys? You will need a new auth key.") \
 X(TS_ADD_SERVER, "Add as SSH server") \
 X(TS_NOTE, "Unofficial client (MicroLink). Hostnames are resolved from the peer list; connections may relay via DERP.") \
 X(PUBLIC_IP, "Public IP") \
-X(QUERYING, "querying...")
+X(QUERYING, "querying...") \
+X(SET_HOST, "Host") \
+X(SET_KBD_LIGHT, "Keyboard light") \
+X(SET_DISPLAY_TIME, "Display & time") \
+X(SET_BACK_SESSIONS, "Sessions") \
+X(SET_KEY_HINT, "\xe2\x86\x91\xe2\x86\x93 move \xc2\xb7 Enter choose \xc2\xb7 Esc back") \
+X(SET_ADD_HOST, "Add host\xe2\x80\xa6") \
+X(SET_NOT_SET, "Not set") \
+X(SET_ADDRESS, "Address") \
+X(SET_LINK, "Link") \
+X(SET_LINK_UP_LAN, "connected over home Wi-Fi") \
+X(SET_LINK_UP_TS, "connected over Tailscale") \
+X(SET_FALLBACK, "Fallback address") \
+X(SET_FALLBACK_BAD, "Use a home network address like 192.168.1.50, or leave it empty") \
+X(SET_CLAUDE_PATH, "Claude path on host") \
+X(SET_CLAUDE_PATH_BAD, "Use only letters, digits and _ . / ~ - (1 to 63 characters)") \
+X(SET_HOST_KEY, "Host key") \
+X(SET_NO_PIN, "No key pinned yet") \
+X(SET_FORGET, "Forget") \
+X(SET_FORGET_Q, "Forget this host's key?") \
+X(SET_FORGET_BODY, "Only do this if the host's SSH key changed. The Tab5 will trust the next key it sees.") \
+X(SET_BUSY, "Busy, try again") \
+X(SET_DEVICE_KEY, "This device's key") \
+X(SET_PUBLIC_KEY, "Public key") \
+X(SET_SHOW, "Show") \
+X(SET_HIDE, "Hide") \
+X(SET_KEY_UNREADABLE, "The device key can't be read") \
+X(SET_DEVICE_KEY_NOTE, "Add this line to ~/.ssh/authorized_keys on each host this Tab5 signs in to.") \
+X(SET_HOST_NOTE, "The host is one of your SSH hosts. The Tab5 lists its Claude Code sessions and runs claude from this path.") \
+X(SET_PW_SCREEN, "Screen") \
+X(SET_PW_DIM, "Dim after") \
+X(SET_PW_OFF, "Screen off after") \
+X(SET_PW_SLEEP_USB, "Sleep on USB power") \
+X(SET_PW_SSH_AWAKE, "Stay awake in Terminal") \
+X(SET_PW_SCREEN_NOTE, "Any key or touch wakes the screen. The key or touch that wakes it is not passed on.") \
+X(SET_PW_WAKE, "Wake") \
+X(SET_PW_WAKE_NEEDS, "Wake when a session needs you") \
+X(SET_PW_WAKE_NOTE, "A session that needs you turns the screen back on.") \
+X(SET_PW_SAVER, "Battery saver") \
+X(SET_PW_RADIO_OFF, "Radio off") \
+X(SET_PW_RADIO_AFTER, "Radio off after") \
+X(SET_PW_CHECKIN, "Check in every") \
+X(SET_PW_DEEP, "Deep idle after") \
+X(SET_PW_HIB, "Hibernate after") \
+X(SET_PW_HIB_CHECKIN, "Hibernate check-in every") \
+X(SET_PW_SAVER_NOTE, "Radio off, Deep idle and Hibernate apply on battery only. With Radio off the Tab5 turns Wi-Fi off while the screen is off and checks in with your Host at the set interval; Hibernate checks in too.") \
+X(SET_NEVER, "Never") \
+X(SET_NOT_AVAILABLE, "not available yet") \
+X(SET_KBD_CONNECTED, "Connected") \
+X(SET_KBD_USB, "USB keyboard") \
+X(SET_KBD_NONE, "Not connected") \
+X(SET_COLOUR, "Colour") \
+X(SET_KBD_OWN, "Keyboard's own") \
+X(SET_CUSTOM, "Custom") \
+X(SET_NEEDS_YOU, "Needs you") \
+X(SET_DARK_LIGHT, "Brightness when the screen is dark") \
+X(SET_DARK_LOWEST, "Lowest 2 %") \
+X(SET_DARK_LOW, "Low 5 %") \
+X(SET_DARK_MEDIUM, "Medium 15 %") \
+X(SET_KBD_NOTE, "Amber on the keyboard always means a session needs you.") \
+X(SET_TZ, "Time zone") \
+X(SET_TZ_CUSTOM, "Custom (console)") \
+X(SET_CLOCK, "Clock") \
+X(SET_SYNC_NOW, "Sync now") \
+X(SET_SYNCING, "Syncing the clock\xe2\x80\xa6") \
+X(SET_NO_WIFI, "Wi-Fi not connected") \
+X(SET_CLOCK_NOTE, "The clock also syncs each time Wi-Fi connects.") \
+X(SET_VERSION, "Version") \
+X(SET_CREDITS, "Credits") \
+X(SET_CREDIT_CLIENTRE, "Based on Clientre 5 by Mozgi512 (MIT)") \
+X(SET_CREDIT_LIBSSH, "SSH by libssh (LGPL-2.1)") \
+X(SET_DIAGNOSTICS, "Diagnostics") \
+X(SET_RESET_SETTINGS, "Reset settings") \
+X(SET_RESET_Q, "Reset settings?") \
+X(SET_RESET, "Reset") \
+X(SET_RESET_BODY, "Power, keyboard light and display brightness go back to their defaults. Wi-Fi networks, the Host and the Terminal hosts, the host-key pins, the Tailscale identity and auth key, and the device key stay. It also keeps the time zone.") \
+X(SET_RESET_NOTE, "Reset settings puts power, the keyboard light and brightness back to their defaults.") \
+X(SET_RESET_DONE, "Settings reset")
 
 typedef enum {
 #define X(id, en) STR_##id,

@@ -1,273 +1,223 @@
+/* Settings (spec §5.6–§5.12). One screen: the header, a 320 px rail of six sections and one scrolling
+ * panel. Only the visible section is built (B2 RAM): a rail click cleans and refills the panel, never the
+ * screen. The only timer of its own is the 2 s Diagnostics refresh, which exists only while About ›
+ * Diagnostics is expanded and goes with the panel. */
+#include "ui_settings.h"
 #include "sys/link_down.h"
 #include "ui.h"
 #include "ui_comp.h"
 #include "ui_softkbd.h"
+#include "ui_sessions.h"
 #include "settings/settings.h"
+#include "settings/kbd_colour.h"
 #include "sys/sysinfo.h"
-#include "input/keyboard.h"
 #include "sys/power.h"
 #include "sys/vitals.h"
+#include "input/keyboard.h"
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
 #include "net/fast_rules.h"
-#include "storage/sd.h"
-#include "companion/cc_link.h"
 #include "net/tailscale.h"
-#include "ui_sessions.h"
+#include "companion/cc_link.h"
+#include "ssh/device_key.h"
 #include "bsp/m5stack_tab5.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
+#include "esp_chip_info.h"
+#include "esp_idf_version.h"
+#include "esp_app_desc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-static void bright_cb(lv_event_t *e)
-{
-    int v = lv_slider_get_value(lv_event_get_target_obj(e));
-    if (v < 5) v = 5;
-    g_settings.brightness = v;
-    bsp_display_brightness_set(v);
-    if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save();
-}
-
-static void ntp_cb(lv_event_t *e)
-{
-    (void)e;
-    if (!wifi_mgr_is_connected()) { ui_toast(tr(STR_WIFI_NOT_CONNECTED)); return; }
-    sysinfo_start_sntp();
-    ui_toast(tr(STR_PLEASE_WAIT));
-}
-
-static void kbd_layout_menu_cb(int i, void *ud)
-{
-    (void)ud;
-    if (i < 0 || i >= KBD_LAYOUT_COUNT || i == g_settings.kbd_layout) return;
-    g_settings.kbd_layout = i;
-    settings_save();
-    keyboard_set_layout(i);
-    ui_nav_refresh();
-}
-static void kbd_layout_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *items[KBD_LAYOUT_COUNT] = { tr(STR_KBD_LAYOUT_STOCK), tr(STR_KBD_LAYOUT_JIS) };
-    ui_menu(tr(STR_SET_KBD_LAYOUT), items, KBD_LAYOUT_COUNT, kbd_layout_menu_cb, NULL);
-}
-
-static void led_bright_cb(lv_event_t *e)
-{
-    int v = lv_slider_get_value(lv_event_get_target_obj(e));
-    g_settings.kbd_led_bright = v;
-    power_kbd_light_refresh();
-    if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save();
-}
-static void led_mode_cb(lv_event_t *e)
-{
-    g_settings.kbd_led_mode = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
-    settings_save();
-    power_kbd_light_refresh();
-}
-static void led_needs_cb(lv_event_t *e)
-{
-    g_settings.kbd_needs_light = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
-    settings_save();
-    power_kbd_light_refresh();
-}
-/* No gold or orange: amber on the keyboard means needs-you (pr_rgb_amber_like) */
-static const uint32_t s_led_presets[] = { 0x0080FF, 0xFFFFFF, 0xFF4040, 0x40FF40, 0xFF40FF, 0x00FFFF };
-static void led_color_menu_cb(int i, void *ud)
-{
-    (void)ud; if (i < 0) return;
-    uint32_t c = s_led_presets[i];
-    g_settings.kbd_led_rgb[0] = c >> 16; g_settings.kbd_led_rgb[1] = (c >> 8) & 255; g_settings.kbd_led_rgb[2] = c & 255;
-    g_settings.kbd_led_mode = 1;
-    power_kbd_light_refresh();
-    settings_save(); ui_nav_refresh();
-}
-static void led_color_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *items[] = { "Blue", "White", "Red", "Green", "Magenta", "Cyan" };
-    ui_menu(tr(STR_SET_KBD_LED), items, 6, led_color_menu_cb, NULL);
-}
-
-static void creds_sd_cb(lv_event_t *e)
-{
-    bool want = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
-    if (!server_store_set_on_sd(want)) ui_toast(tr(STR_CREDS_NO_SD));
-    ui_nav_refresh();
-}
-static void creds_reload_cb(lv_event_t *e)
-{
-    (void)e;
-    server_store_reload();
-    ui_toastf("%s: %d", tr(STR_SERVERS), server_store_count());
-}
-static void reboot_yes(bool yes, void *ud) { (void)ud; if (yes) link_down_restart("Settings reboot"); }
-static void reboot_cb(lv_event_t *e) { (void)e; ui_confirm(tr(STR_REBOOT), tr(STR_REBOOT_Q), reboot_yes, NULL); }
-static void about_cb(lv_event_t *e) { (void)e; char b[400]; snprintf(b, sizeof(b), "v%s\n%s", sysinfo_app_version(), tr(STR_ABOUT_TEXT)); ui_alert(tr(STR_ABOUT), b); }
-
-/* Power: the ladder's timings, wakes and the time zone (Plan 2). Menus of presets; the values go
-   through power_setting_set, so they get the console's clamps. */
-typedef struct { const char *title, *name, *unit; const int *opts; int n; } pw_menu_t;
-static const int k_dim_opts[] = { 10, 15, 30, 60, 120, 300, 600 };
-static const int k_off_opts[] = { 20, 30, 60, 120, 300, 600, 1800, 3600 };
-static const int k_deep_opts[] = { 0, 15, 30, 60, 120, 240, 480, 720 };
-static const int k_hib_opts[] = { 0, 1, 2, 4, 8, 12, 24, 48 };
-static const int k_radio_after_opts[] = { 5, 10, 20, 30, 60, 120, 240 };
-static const int k_checkin_opts[] = { 1, 2, 5, 10, 15, 30, 60 };
-static const int k_hib_checkin_opts[] = { 0, 15, 30, 60, 120, 240, 480, 720 };
 #define N_OPTS(a) ((int)(sizeof(a) / sizeof(a[0])))
-static const pw_menu_t k_pw_dim = { "Dim after (s)", "dim", "s", k_dim_opts, N_OPTS(k_dim_opts) };
-static const pw_menu_t k_pw_off = { "Screen off after (s)", "off", "s", k_off_opts, N_OPTS(k_off_opts) };
-static const pw_menu_t k_pw_deep = { "Deep idle after (min)", "deep-idle", "min", k_deep_opts, N_OPTS(k_deep_opts) };
-static const pw_menu_t k_pw_hib = { "Hibernate after (h)", "hibernate", "h", k_hib_opts, N_OPTS(k_hib_opts) };
-static const pw_menu_t k_pw_radio_after = { "Radio off after (min)", "radio-after", "min", k_radio_after_opts, N_OPTS(k_radio_after_opts) };
-static const pw_menu_t k_pw_checkin = { "Check in every (min)", "checkin", "min", k_checkin_opts, N_OPTS(k_checkin_opts) };
-static const pw_menu_t k_pw_hib_checkin = { "Hibernate check-in every (min)", "hib-checkin", "min", k_hib_checkin_opts,
-                                            N_OPTS(k_hib_checkin_opts) };
 
-static void pw_value(const pw_menu_t *m, int v, char *buf, size_t cap)
-{
-    if (v == 0 && m->opts[0] == 0) snprintf(buf, cap, "Off");
-    else snprintf(buf, cap, "%d %s", v, m->unit);
-}
-static void pw_menu_cb(int i, void *ud)
-{
-    const pw_menu_t *m = ud;
-    if (i < 0 || i >= m->n) return;
-    power_setting_set(m->name, m->opts[i]);
-    ui_nav_refresh();
-}
-static void pw_row_cb(lv_event_t *e)
-{
-    const pw_menu_t *m = lv_event_get_user_data(e);
-    char items[16][32];   /* ui_menu's buttons copy the labels */
-    const char *ptrs[16];
-    for (int i = 0; i < m->n && i < 16; i++) {
-        pw_value(m, m->opts[i], items[i], sizeof(items[i]));
-        ptrs[i] = items[i];
-    }
-    ui_menu(m->title, ptrs, m->n < 16 ? m->n : 16, pw_menu_cb, (void *)m);
-}
-static void pw_row(lv_obj_t *parent, const pw_menu_t *m, int v, const char *override)
-{
-    char buf[40];
-    pw_value(m, v, buf, sizeof(buf));
-    ui_setting_row(parent, m->title, override ? override : buf, pw_row_cb, (void *)m);
-}
-static void pw_switch_cb(lv_event_t *e)
-{
-    const char *name = lv_event_get_user_data(e);
-    power_setting_set(name, lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
-}
-/* PT24: the needs-you amber's brightness with the screen dark */
-static const struct { const char *name; int pct; } k_dark_light[] = {
-    { "Lowest", PR_DARK_LIGHT_LOWEST }, { "Low", PR_DARK_LIGHT_LOW }, { "Medium", PR_DARK_LIGHT_MEDIUM },
+static ui_set_section_t s_section;   /* the last used section: Host after a boot (RAM only) */
+static lv_obj_t *s_panel;            /* the one panel of the current Settings screen */
+static lv_obj_t *s_rail[UI_SET_COUNT];
+static bool s_diag_open;             /* About › Diagnostics expanded */
+
+static const str_id_t k_section_names[UI_SET_COUNT] = {
+    STR_SET_HOST, STR_SET_NETWORK, STR_SET_POWER, STR_SET_KBD_LIGHT, STR_SET_DISPLAY_TIME, STR_ABOUT,
 };
-static const char *dark_light_label(char *buf, size_t cap)
-{
-    for (int i = 0; i < N_OPTS(k_dark_light); i++)
-        if (g_settings.kbd_dark_light == k_dark_light[i].pct) return k_dark_light[i].name;
-    snprintf(buf, cap, "%u%%", g_settings.kbd_dark_light);   /* set from the console */
-    return buf;
-}
-static void dark_light_menu_cb(int i, void *ud)
-{
-    (void)ud;
-    if (i < 0 || i >= N_OPTS(k_dark_light)) return;
-    power_setting_set("dark-light", k_dark_light[i].pct);
-    ui_nav_refresh();
-}
-static void dark_light_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *items[N_OPTS(k_dark_light)];
-    for (int i = 0; i < N_OPTS(k_dark_light); i++) items[i] = k_dark_light[i].name;
-    ui_menu("Needs-you light when dark", items, N_OPTS(k_dark_light), dark_light_menu_cb, NULL);
-}
-static void ssh_awake_cb(lv_event_t *e)
-{
-    g_settings.ss_disable_in_ssh = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
-    settings_save();
-}
-static void tz_menu_cb(int i, void *ud)
+
+static void panel_fill(void);
+static void refill(void) { if (s_panel) panel_fill(); }
+
+/* ------------------------------------------------------------------ Host */
+static char s_host_names[SERVER_MAX][48];
+static const char *s_host_ptrs[SERVER_MAX + 2];
+static int s_host_n;
+
+static void host_pick_cb(int i, void *ud)
 {
     (void)ud;
-    if (i < 0 || !vitals_tz_presets[i].rule) return;
-    strlcpy(g_settings.tz_rule, vitals_tz_presets[i].rule, sizeof(g_settings.tz_rule));
-    settings_save();
-    sysinfo_apply_timezone();
-    ui_nav_refresh();
-}
-static void tz_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *ptrs[16];
-    int n = 0;
-    while (vitals_tz_presets[n].label && n < 16) { ptrs[n] = vitals_tz_presets[n].label; n++; }
-    ui_menu("Time zone", ptrs, n, tz_menu_cb, NULL);
-}
-static const char *tz_label(void)
-{
-    for (int i = 0; vitals_tz_presets[i].label; i++)
-        if (strcmp(vitals_tz_presets[i].rule, g_settings.tz_rule) == 0) return vitals_tz_presets[i].label;
-    return g_settings.tz_rule;
+    if (i < 0) return;
+    if (i < s_host_n) cc_link_set_server(s_host_names[i]);
+    else if (i == s_host_n) { ui_nav_push(ui_hosts_create, NULL); return; }   /* Add host…: the host form is Task 9 */
+    else cc_link_set_server("");
+    refill();
 }
 
-/* Companion: which of the SSH servers is the Mac, and where `claude` lives on it. */
-static char s_server_names[SERVER_MAX + 1][48];
-static const char *s_server_ptrs[SERVER_MAX + 1];
-static void companion_mac_menu_cb(int i, void *ud)
-{
-    (void)ud;
-    int n = server_store_count();
-    if (i < 0 || i > n) return;
-    cc_link_set_server(i < n ? s_server_names[i] : "");
-    ui_nav_refresh();
-}
-static void companion_mac_cb(lv_event_t *e)
+static void host_cb(lv_event_t *e)
 {
     (void)e;
-    int n = server_store_count();
+    int n = server_store_count(), cur = -1;
     if (n > SERVER_MAX) n = SERVER_MAX;
+    char want[48];
+    cc_settings_server_name(want, sizeof(want));
     for (int i = 0; i < n; i++) {
         const server_t *s = server_store_get(i);
-        strlcpy(s_server_names[i], s ? s->name : "?", sizeof(s_server_names[i]));
-        s_server_ptrs[i] = s_server_names[i];
+        strlcpy(s_host_names[i], s ? s->name : "?", sizeof(s_host_names[i]));
+        s_host_ptrs[i] = s_host_names[i];
+        if (want[0] && cur < 0 && !strcmp(want, s_host_names[i])) cur = i;
     }
-    strlcpy(s_server_names[n], "None", sizeof(s_server_names[n]));
-    s_server_ptrs[n] = s_server_names[n];
-    ui_menu("Mac", s_server_ptrs, n + 1, companion_mac_menu_cb, NULL);
+    s_host_n = n;
+    s_host_ptrs[n] = tr(STR_SET_ADD_HOST);
+    s_host_ptrs[n + 1] = tr(STR_NONE);
+    if (!want[0]) cur = n + 1;
+    ui_picker(tr(STR_SET_HOST), s_host_ptrs, n + 2, cur, host_pick_cb, NULL);
 }
-static void companion_path_prompt_cb(const char *v, void *ud)
+
+static void address_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_hosts_create, NULL); }   /* the host form: Task 9 */
+
+static void fallback_prompt_cb(const char *v, void *ud)
 {
     (void)ud;
     if (!v) return;
-    if (!cc_link_set_claude_path(v)) { ui_toast("Use only letters, digits and _ . / ~ - (1 to 63 characters)"); return; }
-    ui_nav_refresh();
+    if (!cc_link_set_lan_fallback(v)) { ui_toast(tr(STR_SET_FALLBACK_BAD)); return; }
+    refill();
 }
-static void companion_path_cb(lv_event_t *e)
+static void fallback_cb(lv_event_t *e)
+{
+    (void)e;
+    char cur[16];
+    ui_prompt(tr(STR_SET_FALLBACK), "192.168.1.50", cc_link_lan_fallback(cur, sizeof(cur)), false, fallback_prompt_cb, NULL);
+}
+
+static void path_prompt_cb(const char *v, void *ud)
+{
+    (void)ud;
+    if (!v) return;
+    if (!cc_link_set_claude_path(v)) { ui_toast(tr(STR_SET_CLAUDE_PATH_BAD)); return; }
+    refill();
+}
+static void path_cb(lv_event_t *e)
 {
     (void)e;
     char cur[64];
-    ui_prompt("Claude path", "~/.local/bin/claude", cc_settings_claude_path(cur, sizeof(cur)), false, companion_path_prompt_cb, NULL);
+    ui_prompt(tr(STR_SET_CLAUDE_PATH), "~/.local/bin/claude", cc_settings_claude_path(cur, sizeof(cur)), false,
+              path_prompt_cb, NULL);
 }
 
-static void companion_forget_yes(bool yes, void *ud)
+static void forget_yes(bool yes, void *ud)
 {
     (void)ud;
-    if (!yes) return;
-    if (!ui_sessions_forget_host_key()) ui_toast("Busy, try again");
+    if (yes && !ui_sessions_forget_host_key()) ui_toast(tr(STR_SET_BUSY));
 }
-static void companion_forget_cb(lv_event_t *e)
+static void forget_cb(lv_event_t *e)
 {
     (void)e;
-    ui_confirm("Forget Mac host key?",
-               "Only do this if your Mac's SSH host key changed. The Tab5 will trust the next key it sees.",
-               companion_forget_yes, NULL);
+    ui_confirm_ex(tr(STR_SET_FORGET_Q), tr(STR_SET_FORGET_BODY), tr(STR_SET_FORGET), true, forget_yes, NULL);
 }
 
+static void pubkey_cb(lv_event_t *e)
+{
+    (void)e;
+    char line[160];
+    if (device_key_pubkey_line(line, sizeof(line)) != ESP_OK) { ui_toast(tr(STR_SET_KEY_UNREADABLE)); return; }
+    ui_sheet_text(tr(STR_SET_DEVICE_KEY), line, tr(STR_SET_DEVICE_KEY_NOTE));
+}
+
+/* "ssh-ed25519 … claude-companion · Show": the key type, then the comment up to its '@'. */
+static void pubkey_short(char *out, size_t cap)
+{
+    char line[160];
+    if (device_key_pubkey_line(line, sizeof(line)) != ESP_OK) { strlcpy(out, tr(STR_SET_KEY_UNREADABLE), cap); return; }
+    char *type_end = strchr(line, ' ');
+    char *comment = type_end ? strchr(type_end + 1, ' ') : NULL;
+    if (type_end) *type_end = 0;
+    if (comment) {
+        comment++;
+        char *at = strchr(comment, '@');
+        if (at) *at = 0;
+    }
+    snprintf(out, cap, "%s \xe2\x80\xa6 %s \xc2\xb7 %s", line, comment ? comment : "", tr(STR_SET_SHOW));
+}
+
+/* Link: "● connected over home Wi-Fi" in green or the reason in red, then the path and the watch state. */
+static void link_row(lv_obj_t *p)
+{
+    lv_obj_t *r = ui_srow(p, UI_ROW_INFO, tr(STR_SET_LINK), NULL, NULL, NULL);
+    lv_obj_delete(ui_srow_value(r));
+    lv_obj_t *col = lv_obj_create(r);
+    lv_obj_remove_style_all(col);
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(col, LV_PCT(65), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    char path[40], b[CC_STATUS_MAX + 8], w[96];
+    bool up = cc_link_connected();
+    bool tailnet = cc_link_mac_path(path, sizeof(path)) && !strncmp(path, "tailnet", 7);
+    if (up) snprintf(b, sizeof(b), "\xe2\x97\x8f %s", tr(tailnet ? STR_SET_LINK_UP_TS : STR_SET_LINK_UP_LAN));
+    else cc_link_status_text(b, sizeof(b));
+    lv_obj_t *l1 = ui_text(col, b, up ? UI_TONE_GREEN : UI_TONE_RED, true);
+    lv_obj_t *l2 = ui_text(col, "", UI_TONE_MUTED, true);
+    snprintf(b, sizeof(b), "%s \xc2\xb7 %s", path, cc_watch_status_text(w, sizeof(w)));
+    lv_label_set_text(l2, b);
+    lv_obj_t *ls[2] = { l1, l2 };
+    for (int i = 0; i < 2; i++) {
+        lv_obj_set_width(ls[i], LV_PCT(100));
+        lv_obj_set_style_text_align(ls[i], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_label_set_long_mode(ls[i], LV_LABEL_LONG_MODE_WRAP);
+    }
+}
+
+static void fill_host(lv_obj_t *p)
+{
+    char name[48], v[160];
+    cc_settings_server_name(name, sizeof(name));
+    int idx = cc_settings_server();
+    const server_t *s = idx >= 0 ? server_store_get(idx) : NULL;
+    ui_srow(p, UI_ROW_NAV, tr(STR_SET_HOST), s ? s->host : name[0] ? name : tr(STR_SET_NOT_SET), host_cb, NULL);
+    if (s) {
+        if (s->port && s->port != 22) snprintf(v, sizeof(v), "%s@%s:%d", s->user, s->host, s->port);
+        else snprintf(v, sizeof(v), "%s@%s", s->user, s->host);
+        ui_srow(p, UI_ROW_NAV, tr(STR_SET_ADDRESS), v, address_cb, NULL);
+    }
+    link_row(p);
+    char fb[16];
+    cc_link_lan_fallback(fb, sizeof(fb));
+    ui_srow(p, UI_ROW_VALUE, tr(STR_SET_FALLBACK), fb[0] ? fb : tr(STR_NONE), fallback_cb, NULL);
+    ui_srow(p, UI_ROW_VALUE, tr(STR_SET_CLAUDE_PATH), cc_settings_claude_path(v, sizeof(v)), path_cb, NULL);
+
+    ui_section_header(p, tr(STR_SET_HOST_KEY));
+    char fp[80];
+    if (cc_link_pinned_fingerprint(fp, sizeof(fp))) {
+        /* the whole fingerprint, wrapped, to compare with ssh-keygen -lf on the host */
+        lv_obj_t *r = ui_srow(p, UI_ROW_ACTION, fp, NULL, forget_cb, NULL);
+        lv_obj_t *l = lv_obj_get_child(r, 0);
+        ui_text_mono(l);
+        ui_text_tone(l, UI_TONE_MUTED);
+        lv_obj_set_height(l, LV_SIZE_CONTENT);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_set_style_min_height(r, UI_TK_ROW_H, 0);
+        lv_obj_set_style_pad_ver(r, UI_TK_GAP_S, 0);
+        lv_obj_set_height(r, LV_SIZE_CONTENT);
+        ui_srow_chip(r, tr(STR_SET_FORGET), true);
+    } else {
+        ui_srow(p, UI_ROW_INFO, tr(STR_SET_NO_PIN), NULL, NULL, NULL);
+    }
+
+    ui_section_header(p, tr(STR_SET_DEVICE_KEY));
+    pubkey_short(v, sizeof(v));
+    ui_srow(p, UI_ROW_ACTION, tr(STR_SET_PUBLIC_KEY), v, pubkey_cb, NULL);
+    ui_footnote(p, tr(STR_SET_HOST_NOTE));
+}
+
+/* --------------------------------------------------------------- Network */
+/* Plan 3's rows, unchanged until Task 8 rebuilds them in ui_settings_net.c. */
 static void ts_switch_cb(lv_event_t *e)
 {
     bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
@@ -275,25 +225,12 @@ static void ts_switch_cb(lv_event_t *e)
     ui_toast(on ? (tailscale_stopping() ? "Tailscale on: starts when it has finished turning off"
                   : wifi_mgr_is_connected() ? "Tailscale on: connecting" : "Tailscale on: starts with Wi-Fi")
                 : (tailscale_stopping() ? "Turning Tailscale off\xe2\x80\xa6" : "Tailscale off"));
-    ui_nav_refresh();
+    refill();
 }
 static void ts_details_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_tailscale_create, NULL); }
 static void wifi_networks_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_wifi_create, NULL); }
-static void mac_fallback_prompt_cb(const char *v, void *ud)
-{
-    (void)ud;
-    if (!v) return;
-    if (!cc_link_set_lan_fallback(v)) { ui_toast("Use a home network address like 192.168.1.50, or leave it empty"); return; }
-    ui_nav_refresh();
-}
-static void mac_fallback_cb(lv_event_t *e)
-{
-    (void)e;
-    char cur[16];
-    ui_prompt("Host fallback address", "192.168.1.50", cc_link_lan_fallback(cur, sizeof(cur)), false, mac_fallback_prompt_cb, NULL);
-}
 
-/* Plan 3 Task 3: Network > Wi-Fi advanced, the optional static address (off by default) */
+/* Plan 3 Task 3: the optional static address (off by default) */
 static void sip_text(char *out, size_t cap)
 {
     wifi_static_ip_t s;
@@ -315,14 +252,14 @@ static void sip_prompt_cb(const char *v, void *ud)
         /* review N2: a failed save leaves the static address on: say so, and don't show it as off */
         if (!wifi_mgr_static_ip_set(NULL)) { ui_toast("Static address not changed (not saved)"); return; }
         ui_toast("Static address off: DHCP from the next join");
-        ui_nav_refresh();
+        refill();
         return;
     }
     sip_t p;
     if (!sip_parse(v, &p)) { ui_toast("Use address/prefix gateway [dns], like 192.168.1.50/24 192.168.1.1"); return; }
     wifi_static_ip_t s = { .on = 1, .ip = p.ip, .mask = p.mask, .gw = p.gw, .dns = p.dns };
     ui_toast(wifi_mgr_static_ip_set(&s) ? "Static address on from the next join" : "Static address refused");
-    ui_nav_refresh();
+    refill();
 }
 static void sip_cb(lv_event_t *e)
 {
@@ -332,193 +269,493 @@ static void sip_cb(lv_event_t *e)
     ui_prompt("Static address (empty = DHCP)", "192.168.1.50/24 192.168.1.1", cur, false, sip_prompt_cb, NULL);
 }
 
-static lv_obj_t *slider_row(lv_obj_t *parent, const char *label, int min, int max, int val, lv_event_cb_t cb)
-{
-    lv_obj_t *card = ui_card(parent);
-    ui_label(card, label, FONT_BODY, UI_TEXT);
-    lv_obj_t *s = lv_slider_create(card);
-    lv_obj_set_width(s, LV_PCT(96));
-    lv_obj_set_style_margin_all(s, 8, 0);
-    lv_slider_set_range(s, min, max);
-    lv_slider_set_value(s, val, LV_ANIM_OFF);
-    lv_obj_add_event_cb(s, cb, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(s, cb, LV_EVENT_RELEASED, NULL);
-    return s;
-}
-
-/* Keep the selected category when returning from a nested setting. Each panel
- * has its own scroll area beside the category menu. */
-static unsigned s_category;
-static const str_id_t s_categories[] = {
-    STR_SET_SYSTEM, STR_SET_NETWORK, STR_SET_DISPLAY, STR_SET_POWER, STR_SET_INPUT,
-    STR_SET_SECURITY, STR_ABOUT
-};
-/* Only the visible category is built: LVGL's small objects land in internal RAM, which TLS and
-   the Wi-Fi link need, and the dashboard is built before Settings is freed when going home. */
-static void panel_fill(lv_obj_t *c, unsigned category)
+void ui_settings_fill_network(lv_obj_t *c)
 {
     char buf[128];
-    switch (category) {
-    case 0: {
-        time_t now = time(NULL); struct tm tm; localtime_r(&now, &tm);
-        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-        ui_setting_row(c, tr(STR_SET_NTP), buf, ntp_cb, NULL);
-        ui_section_title(c, "Companion");
-        char mac[48], cpath[64];
-        cc_settings_server_name(mac, sizeof(mac));
-        ui_setting_row(c, "Mac", mac[0] ? mac : "Not set", companion_mac_cb, NULL);
-        ui_setting_row(c, "Claude path", cc_settings_claude_path(cpath, sizeof(cpath)), companion_path_cb, NULL);
-        ui_setting_row(c, "Forget Mac host key", "", companion_forget_cb, NULL);
-        /* the whole fingerprint, to compare with ssh-keygen -lf on the Mac (a row value truncates) */
-        char pinned[80], line[100];
-        if (cc_link_pinned_fingerprint(pinned, sizeof(pinned))) snprintf(line, sizeof(line), "Pinned key: %s", pinned);
-        else strlcpy(line, "Pinned key: none", sizeof(line));
-        ui_label(c, line, FONT_SMALL, UI_MUTED);
-        ui_label(c, "The Mac is one of your SSH servers. The Tab5 lists its Claude Code sessions and runs claude from this path.", FONT_SMALL, UI_MUTED);
-        break;
+    ui_switch_row(c, "Tailscale", tailscale_enabled(), ts_switch_cb, NULL);
+    snprintf(buf, sizeof(buf), "%s%s%s", tailscale_state_text(), tailscale_vpn_ip()[0] ? " " : "", tailscale_vpn_ip());
+    ui_label(c, tailscale_enabled() ? buf : "Off: MicroLink doesn't run, and check-ins don't wait on a tunnel.", FONT_SMALL, UI_MUTED);
+    ui_setting_row(c, "Tailscale details", "Auth key, device name, control host", ts_details_cb, NULL);
+    char fb[16], path[40];
+    cc_link_lan_fallback(fb, sizeof(fb));
+    ui_setting_row(c, "Host fallback address", fb[0] ? fb : "None", fallback_cb, NULL);
+    cc_link_mac_path(path, sizeof(path));
+    snprintf(buf, sizeof(buf), "Host link: %s", path);
+    ui_label(c, buf, FONT_SMALL, UI_MUTED);
+    ui_label(c, "The Host link uses your home network. The fallback address is used when the Host's name "
+                "doesn't resolve. Devices reachable only over Tailscale need the switch on.", FONT_SMALL, UI_MUTED);
+    /* P4-9 bridge until Task 8 rebuilds Network: the old Wi-Fi screen lost its launcher tile */
+    ui_setting_row(c, "Wi-Fi networks", wifi_mgr_is_connected() ? wifi_mgr_ssid() : tr(STR_WIFI_NOT_CONNECTED),
+                   wifi_networks_cb, NULL);
+    ui_section_title(c, "Wi-Fi advanced");
+    char sip[64];
+    sip_text(sip, sizeof(sip));
+    ui_setting_row(c, "Static address", sip[0] ? sip : "Off (DHCP)", sip_cb, NULL);
+    ui_label(c, "Off by default. Set it only to an address your router won't hand to another device. It is used on "
+                "every Wi-Fi network, so turn it off before joining another one.", FONT_SMALL, UI_MUTED);
+}
+
+/* ----------------------------------------------------------------- Power */
+/* Menus of presets; the values go through power_setting_set, so they get the console's clamps. */
+typedef struct { str_id_t title; const char *name; char unit; const int *opts; int n; str_id_t zero; } pw_menu_t;
+static const int k_dim_opts[] = { 10, 15, 30, 60, 120, 300, 600 };
+static const int k_off_opts[] = { 20, 30, 60, 120, 300, 600, 1800, 3600 };
+static const int k_deep_opts[] = { 0, 15, 30, 60, 120, 240, 480, 720 };
+static const int k_hib_opts[] = { 0, 1, 2, 4, 8, 12, 24, 48 };
+static const int k_radio_after_opts[] = { 5, 10, 20, 30, 60, 120, 240 };
+static const int k_checkin_opts[] = { 1, 2, 5, 10, 15, 30, 60 };
+static const int k_hib_checkin_opts[] = { 0, 15, 30, 60, 120, 240, 480, 720 };
+static const pw_menu_t k_pw_dim = { STR_SET_PW_DIM, "dim", 's', k_dim_opts, N_OPTS(k_dim_opts), STR_SET_NEVER };
+static const pw_menu_t k_pw_off = { STR_SET_PW_OFF, "off", 's', k_off_opts, N_OPTS(k_off_opts), STR_SET_NEVER };
+static const pw_menu_t k_pw_deep = { STR_SET_PW_DEEP, "deep-idle", 'm', k_deep_opts, N_OPTS(k_deep_opts), STR_SET_NEVER };
+static const pw_menu_t k_pw_hib = { STR_SET_PW_HIB, "hibernate", 'h', k_hib_opts, N_OPTS(k_hib_opts), STR_SET_NEVER };
+static const pw_menu_t k_pw_radio_after = { STR_SET_PW_RADIO_AFTER, "radio-after", 'm', k_radio_after_opts,
+                                            N_OPTS(k_radio_after_opts), STR_SET_NEVER };
+static const pw_menu_t k_pw_checkin = { STR_SET_PW_CHECKIN, "checkin", 'm', k_checkin_opts, N_OPTS(k_checkin_opts),
+                                        STR_SET_NEVER };
+static const pw_menu_t k_pw_hib_checkin = { STR_SET_PW_HIB_CHECKIN, "hib-checkin", 'm', k_hib_checkin_opts,
+                                            N_OPTS(k_hib_checkin_opts), STR_OFF };
+
+/* "30 s", "2 min", "1 h", or the menu's word for 0 ("Never", "Off") */
+static void pw_value(const pw_menu_t *m, int v, char *buf, size_t cap)
+{
+    int s = m->unit == 's' ? v : m->unit == 'm' ? v * 60 : v * 3600;
+    if (v == 0) snprintf(buf, cap, "%s", tr(m->zero));
+    else if (s < 60 || s % 60) snprintf(buf, cap, "%d s", s);
+    else if (s % 3600 == 0) snprintf(buf, cap, "%d h", s / 3600);
+    else snprintf(buf, cap, "%d min", s / 60);
+}
+static int pw_current(const pw_menu_t *m)
+{
+    return m == &k_pw_dim ? g_settings.pw_dim_s : m == &k_pw_off ? g_settings.pw_off_s
+         : m == &k_pw_deep ? g_settings.pw_deep_idle_min : m == &k_pw_hib ? g_settings.pw_hibernate_h
+         : m == &k_pw_radio_after ? power_cfg(PCFG_RADIO_AFTER) : m == &k_pw_checkin ? power_cfg(PCFG_CHECKIN)
+         : power_cfg(PCFG_HIB_CHECKIN);
+}
+static void pw_menu_cb(int i, void *ud)
+{
+    const pw_menu_t *m = ud;
+    if (i < 0 || i >= m->n) return;
+    power_setting_set(m->name, m->opts[i]);
+    refill();
+}
+static void pw_row_cb(lv_event_t *e)
+{
+    const pw_menu_t *m = lv_event_get_user_data(e);
+    char items[16][24];   /* the picker's rows copy the labels */
+    const char *ptrs[16];
+    int n = m->n < 16 ? m->n : 16, cur = -1, v = pw_current(m);
+    for (int i = 0; i < n; i++) {
+        pw_value(m, m->opts[i], items[i], sizeof(items[i]));
+        ptrs[i] = items[i];
+        if (m->opts[i] == v) cur = i;
     }
-    case 1: {
-        /* Plan 3 Task 1: the sticky Tailscale switch, and the Mac link's LAN fallback */
-        ui_switch_row(c, "Tailscale", tailscale_enabled(), ts_switch_cb, NULL);
-        snprintf(buf, sizeof(buf), "%s%s%s", tailscale_state_text(), tailscale_vpn_ip()[0] ? " " : "", tailscale_vpn_ip());
-        ui_label(c, tailscale_enabled() ? buf : "Off: MicroLink doesn't run, and check-ins don't wait on a tunnel.", FONT_SMALL, UI_MUTED);
-        ui_setting_row(c, "Tailscale details", "Auth key, device name, control host", ts_details_cb, NULL);
-        char fb[16], path[40];
-        cc_link_lan_fallback(fb, sizeof(fb));
-        ui_setting_row(c, "Host fallback address", fb[0] ? fb : "None", mac_fallback_cb, NULL);
-        cc_link_mac_path(path, sizeof(path));
-        snprintf(buf, sizeof(buf), "Host link: %s", path);
-        ui_label(c, buf, FONT_SMALL, UI_MUTED);
-        ui_label(c, "The Host link uses your home network. The fallback address is used when the Host's name "
-                    "doesn't resolve. Devices reachable only over Tailscale need the switch on.", FONT_SMALL, UI_MUTED);
-        /* P4-9 bridge until Task 8 rebuilds Network: the old Wi-Fi screen lost its launcher tile */
-        ui_setting_row(c, "Wi-Fi networks", wifi_mgr_is_connected() ? wifi_mgr_ssid() : tr(STR_WIFI_NOT_CONNECTED),
-                       wifi_networks_cb, NULL);
-        ui_section_title(c, "Wi-Fi advanced");
-        char sip[64];
-        sip_text(sip, sizeof(sip));
-        ui_setting_row(c, "Static address", sip[0] ? sip : "Off (DHCP)", sip_cb, NULL);
-        ui_label(c, "Off by default. Set it only to an address your router won't hand to another device. It is used on "
-                    "every Wi-Fi network, so turn it off before joining another one.", FONT_SMALL, UI_MUTED);
-        break;
+    ui_picker(tr(m->title), ptrs, n, cur, pw_menu_cb, (void *)m);
+}
+static void pw_row(lv_obj_t *p, const pw_menu_t *m, const char *override)
+{
+    char buf[24];
+    pw_value(m, pw_current(m), buf, sizeof(buf));
+    ui_srow(p, UI_ROW_VALUE, tr(m->title), override ? override : buf, pw_row_cb, (void *)m);
+}
+static void pw_switch_cb(lv_event_t *e)
+{
+    const char *name = lv_event_get_user_data(e);
+    power_setting_set(name, lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+}
+static void ssh_awake_cb(lv_event_t *e)
+{
+    g_settings.ss_disable_in_ssh = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    settings_save();
+}
+#define ON(x) ((x) ? "1" : NULL)   /* a switch row starts on with a non-empty value */
+
+static void fill_power(lv_obj_t *p)
+{
+    ui_section_header(p, tr(STR_SET_PW_SCREEN));
+    pw_row(p, &k_pw_dim, NULL);
+    pw_row(p, &k_pw_off, NULL);
+    ui_srow(p, UI_ROW_SWITCH, tr(STR_SET_PW_SLEEP_USB), ON(g_settings.pw_sleep_on_usb), pw_switch_cb, (void *)"sleep-usb");
+    ui_srow(p, UI_ROW_SWITCH, tr(STR_SET_PW_SSH_AWAKE), ON(g_settings.ss_disable_in_ssh), ssh_awake_cb, NULL);
+    ui_footnote(p, tr(STR_SET_PW_SCREEN_NOTE));
+    ui_section_header(p, tr(STR_SET_PW_WAKE));
+    ui_srow(p, UI_ROW_SWITCH, tr(STR_SET_PW_WAKE_NEEDS), ON(g_settings.pw_wake_needs_you), pw_switch_cb, (void *)"needs-wake");
+    ui_footnote(p, tr(STR_SET_PW_WAKE_NOTE));
+    ui_section_header(p, tr(STR_SET_PW_SAVER));
+    ui_srow(p, UI_ROW_SWITCH, tr(STR_SET_PW_RADIO_OFF), ON(power_cfg(PCFG_RADIO_OFF)), pw_switch_cb, (void *)"radio-off");
+    pw_row(p, &k_pw_radio_after, NULL);
+    pw_row(p, &k_pw_checkin, NULL);
+    pw_row(p, &k_pw_deep, NULL);
+    pw_row(p, &k_pw_hib, hibernate_supported() ? NULL : tr(STR_SET_NOT_AVAILABLE));
+    pw_row(p, &k_pw_hib_checkin, NULL);
+    ui_footnote(p, tr(STR_SET_PW_SAVER_NOTE));
+}
+
+/* -------------------------------------------------------- Keyboard light */
+static const char *colour_label(void)
+{
+    int i = kbd_colour_index(g_settings.kbd_led_mode, g_settings.kbd_led_rgb);
+    return i == 0 ? tr(STR_SET_KBD_OWN) : i > 0 ? kbd_swatches[i - 1].label : tr(STR_SET_CUSTOM);
+}
+static void colour_pick_cb(int i, void *ud)
+{
+    (void)ud;
+    if (i < 0) return;
+    kbd_colour_apply(i, &g_settings.kbd_led_mode, g_settings.kbd_led_rgb);
+    settings_save();
+    power_kbd_light_refresh();
+    refill();
+}
+static void colour_cb(lv_event_t *e)
+{
+    (void)e;
+    const char *items[1 + KBD_SWATCH_COUNT];
+    items[0] = tr(STR_SET_KBD_OWN);
+    for (int i = 0; i < KBD_SWATCH_COUNT; i++) items[1 + i] = kbd_swatches[i].label;
+    lv_obj_t *sheet = ui_picker(tr(STR_SET_COLOUR), items, 1 + KBD_SWATCH_COUNT,
+                                kbd_colour_index(g_settings.kbd_led_mode, g_settings.kbd_led_rgb), colour_pick_cb, NULL);
+    /* the swatches are drawn, never shown as hex: the rows follow the title in item order */
+    for (int i = 0; i < KBD_SWATCH_COUNT; i++) {
+        lv_obj_t *row = lv_obj_get_child(sheet, 2 + i);
+        if (row) lv_obj_move_to_index(ui_swatch(row, kbd_swatches[i].rgb), 1);
     }
-    case 2: {
-        slider_row(c, tr(STR_SET_BRIGHTNESS), 5, 100, g_settings.brightness, bright_cb);
-        break;
+}
+static void led_bright_live_cb(lv_event_t *e)
+{
+    g_settings.kbd_led_bright = (uint8_t)lv_slider_get_value(lv_event_get_target_obj(e));
+    power_kbd_light_refresh();
+}
+static void led_bright_cb(lv_event_t *e)
+{
+    led_bright_live_cb(e);
+    settings_save();
+}
+static void needs_light_cb(lv_event_t *e)
+{
+    g_settings.kbd_needs_light = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    settings_save();
+    power_kbd_light_refresh();
+}
+/* PT24: the needs-you amber's brightness with the screen dark */
+static const struct { str_id_t name; int pct; } k_dark_light[] = {
+    { STR_SET_DARK_LOWEST, PR_DARK_LIGHT_LOWEST }, { STR_SET_DARK_LOW, PR_DARK_LIGHT_LOW },
+    { STR_SET_DARK_MEDIUM, PR_DARK_LIGHT_MEDIUM },
+};
+static int dark_light_index(void)
+{
+    for (int i = 0; i < N_OPTS(k_dark_light); i++)
+        if (g_settings.kbd_dark_light == k_dark_light[i].pct) return i;
+    return -1;
+}
+static void dark_light_pick_cb(int i, void *ud)
+{
+    (void)ud;
+    if (i < 0 || i >= N_OPTS(k_dark_light)) return;
+    power_setting_set("dark-light", k_dark_light[i].pct);
+    power_kbd_light_refresh();
+    refill();
+}
+static void dark_light_cb(lv_event_t *e)
+{
+    (void)e;
+    const char *items[N_OPTS(k_dark_light)];
+    for (int i = 0; i < N_OPTS(k_dark_light); i++) items[i] = tr(k_dark_light[i].name);
+    ui_picker(tr(STR_SET_DARK_LIGHT), items, N_OPTS(k_dark_light), dark_light_index(), dark_light_pick_cb, NULL);
+}
+
+static str_id_t kbd_state(void)
+{
+    return keyboard_present() ? STR_SET_KBD_CONNECTED : keyboard_usb_present() ? STR_SET_KBD_USB : STR_SET_KBD_NONE;
+}
+
+static void fill_kbd(lv_obj_t *p)
+{
+    ui_srow(p, UI_ROW_INFO, tr(STR_KEYBOARD), tr(kbd_state()), NULL, NULL);
+    ui_srow(p, UI_ROW_VALUE, tr(STR_SET_COLOUR), colour_label(), colour_cb, NULL);
+    lv_obj_t *r = ui_srow_slider(p, tr(STR_SET_BRIGHTNESS), 0, 100, g_settings.kbd_led_bright, led_bright_cb, NULL);
+    lv_obj_add_event_cb(ui_srow_value(r), led_bright_live_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    ui_section_header(p, tr(STR_SET_NEEDS_YOU));
+    ui_srow(p, UI_ROW_SWITCH, tr(STR_SET_KBD_NEEDS_LIGHT), ON(g_settings.kbd_needs_light), needs_light_cb, NULL);
+    char pct[16];
+    int di = dark_light_index();
+    if (di < 0) snprintf(pct, sizeof(pct), "%u %%", g_settings.kbd_dark_light);   /* set from the console */
+    ui_srow(p, UI_ROW_VALUE, tr(STR_SET_DARK_LIGHT), di >= 0 ? tr(k_dark_light[di].name) : pct, dark_light_cb, NULL);
+    ui_footnote(p, tr(STR_SET_KBD_NOTE));
+}
+
+/* --------------------------------------------------------- Display & time */
+static void bright_live_cb(lv_event_t *e)
+{
+    int v = lv_slider_get_value(lv_event_get_target_obj(e));
+    if (v < 5) v = 5;
+    g_settings.brightness = (uint8_t)v;
+    bsp_display_brightness_set(v);
+}
+static void bright_cb(lv_event_t *e)
+{
+    bright_live_cb(e);
+    settings_save();   /* saved on release */
+}
+static void tz_pick_cb(int i, void *ud)
+{
+    (void)ud;
+    if (i < 0 || !vitals_tz_presets[i].rule) return;
+    strlcpy(g_settings.tz_rule, vitals_tz_presets[i].rule, sizeof(g_settings.tz_rule));
+    settings_save();
+    sysinfo_apply_timezone();
+    refill();
+}
+static int tz_index(void)
+{
+    for (int i = 0; vitals_tz_presets[i].label; i++)
+        if (!strcmp(vitals_tz_presets[i].rule, g_settings.tz_rule)) return i;
+    return -1;
+}
+static void tz_cb(lv_event_t *e)
+{
+    (void)e;
+    const char *ptrs[16];
+    int n = 0;
+    while (n < 16 && vitals_tz_presets[n].label) { ptrs[n] = vitals_tz_presets[n].label; n++; }
+    ui_picker(tr(STR_SET_TZ), ptrs, n, tz_index(), tz_pick_cb, NULL);
+}
+static void sntp_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!wifi_mgr_is_connected()) { ui_toast(tr(STR_SET_NO_WIFI)); return; }
+    sysinfo_start_sntp();
+    ui_toast(tr(STR_SET_SYNCING));
+}
+
+static void fill_display(lv_obj_t *p)
+{
+    lv_obj_t *r = ui_srow_slider(p, tr(STR_SET_BRIGHTNESS), 5, 100, g_settings.brightness, bright_cb, NULL);
+    lv_obj_add_event_cb(ui_srow_value(r), bright_live_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    int tz = tz_index();
+    ui_srow(p, UI_ROW_VALUE, tr(STR_SET_TZ), tz >= 0 ? vitals_tz_presets[tz].label : tr(STR_SET_TZ_CUSTOM), tz_cb, NULL);
+    char buf[24];
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm);
+    r = ui_srow(p, UI_ROW_ACTION, tr(STR_SET_CLOCK), buf, sntp_cb, NULL);
+    ui_srow_chip(r, tr(STR_SET_SYNC_NOW), false);
+    ui_footnote(p, tr(STR_SET_CLOCK_NOTE));
+}
+
+/* ----------------------------------------------------------------- About */
+static const char *reset_name(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external pin";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_USB: return "USB";
+    default: return "other";
     }
-    case 3: {
-        pw_row(c, &k_pw_dim, g_settings.pw_dim_s, NULL);
-        pw_row(c, &k_pw_off, g_settings.pw_off_s, NULL);
-        ui_switch_row(c, "Sleep on USB power", g_settings.pw_sleep_on_usb, pw_switch_cb, (void *)"sleep-usb");
-        ui_switch_row(c, "Wake when a session needs you", g_settings.pw_wake_needs_you, pw_switch_cb, (void *)"needs-wake");
-        ui_switch_row(c, tr(STR_SET_KBD_NEEDS_LIGHT), g_settings.kbd_needs_light, led_needs_cb, NULL);
-        char dl[8];
-        ui_setting_row(c, "Needs-you light when dark", dark_light_label(dl, sizeof(dl)), dark_light_cb, NULL);
-        ui_switch_row(c, "Stay awake in SSH Terminal", g_settings.ss_disable_in_ssh, ssh_awake_cb, NULL);
-        ui_setting_row(c, "Time zone", tz_label(), tz_cb, NULL);
-        ui_switch_row(c, "Radio off", g_settings.pw_radio_off, pw_switch_cb, (void *)"radio-off");
-        pw_row(c, &k_pw_radio_after, g_settings.pw_radio_off_min, NULL);
-        pw_row(c, &k_pw_checkin, g_settings.pw_checkin_min, NULL);
-        pw_row(c, &k_pw_deep, g_settings.pw_deep_idle_min, NULL);
-        pw_row(c, &k_pw_hib, g_settings.pw_hibernate_h, hibernate_supported() ? NULL : "(not available yet)");
-        pw_row(c, &k_pw_hib_checkin, g_settings.pw_hibernate_checkin_min, NULL);
-        ui_label(c, "Radio off, Deep idle and Hibernate apply on battery only. With Radio off the Tab5 turns Wi-Fi off "
-                    "while the screen is off and checks in with your Mac at the set interval; Hibernate checks in too. "
-                    "Any key or touch wakes the screen; the key or touch that wakes it is not passed on.", FONT_SMALL, UI_MUTED);
-        break;
+}
+
+static int s_diag_channel;   /* read once when Diagnostics opens (an SDIO RPC), not every 2 s */
+
+static void diag_text(char *b, size_t cap)
+{
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    power_info_t pw = sysinfo_power();
+    char ip[20] = "", up[16];
+    if (wifi_mgr_is_connected()) wifi_mgr_get_ip4(ip, sizeof(ip));
+    ui_format_duration(up, sizeof(up), sysinfo_uptime_s());
+    size_t ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t n = 0;
+    n += snprintf(b + n, cap - n, "Chip: ESP32-P4 rev %d.%d \xc2\xb7 IDF %s\n", chip.revision / 100, chip.revision % 100,
+                  esp_get_idf_version());
+    if (n >= cap) return;
+    n += snprintf(b + n, cap - n, "Internal: %u KB free, min %u KB, largest %u KB\n",
+                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                  (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+    if (n >= cap) return;
+    n += snprintf(b + n, cap - n, "PSRAM: %u.%u MB free\n", (unsigned)(ps >> 20), (unsigned)((ps & 0xFFFFF) * 10 >> 20));
+    if (n >= cap) return;
+    float ma = pw.current_a * 1000.0f;
+    if (pw.valid)
+        n += snprintf(b + n, cap - n, "Battery: %.2f V, %d mA, %.2f W, %s\n", (double)pw.bus_v, (int)ma,
+                      (double)(pw.bus_v * (pw.current_a < 0 ? -pw.current_a : pw.current_a)),
+                      sysinfo_charging() ? "charging" : "not charging");
+    else n += snprintf(b + n, cap - n, "Battery: no reading\n");
+    if (n >= cap) return;
+    if (ip[0]) n += snprintf(b + n, cap - n, "Wi-Fi: %d dBm, channel %d, %s\n", sysinfo_rssi_cached(), s_diag_channel, ip);
+    else n += snprintf(b + n, cap - n, "Wi-Fi: not connected\n");
+    if (n >= cap) return;
+    snprintf(b + n, cap - n, "Tailscale: %s\nKeyboard: %s\nUptime: %s\nLast reset: %s", tailscale_state_text(),
+             tr(kbd_state()), up, reset_name(esp_reset_reason()));
+}
+
+static void diag_tick(lv_timer_t *t)
+{
+    lv_obj_t *l = lv_timer_get_user_data(t);
+    char b[512];
+    diag_text(b, sizeof(b));
+    if (strcmp(lv_label_get_text(l), b)) lv_label_set_text(l, b);   /* a write redraws: only on a change */
+}
+
+static void diag_cb(lv_event_t *e)
+{
+    (void)e;
+    s_diag_open = !s_diag_open;
+    if (s_diag_open) s_diag_channel = wifi_mgr_is_connected() ? wifi_mgr_channel() : 0;
+    refill();
+}
+
+static void reboot_yes(bool yes, void *ud) { (void)ud; if (yes) link_down_restart("Settings reboot"); }
+static void reboot_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_confirm_ex(tr(STR_REBOOT_Q), NULL, tr(STR_REBOOT), false, reboot_yes, NULL);
+}
+static void reset_yes(bool yes, void *ud)
+{
+    (void)ud;
+    if (!yes) return;
+    settings_reset_user();
+    ui_toast(tr(STR_SET_RESET_DONE));
+    refill();
+}
+static void reset_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_confirm_ex(tr(STR_SET_RESET_Q), tr(STR_SET_RESET_BODY), tr(STR_SET_RESET), true, reset_yes, NULL);
+}
+
+static void fill_about(lv_obj_t *p)
+{
+    char v[96];
+    snprintf(v, sizeof(v), "%s \xc2\xb7 %s", sysinfo_app_version(), esp_app_get_description()->date);
+    ui_srow(p, UI_ROW_INFO, tr(STR_SET_VERSION), v, NULL, NULL);
+    ui_section_header(p, tr(STR_SET_CREDITS));
+    ui_footnote(p, tr(STR_SET_CREDIT_CLIENTRE));
+    ui_footnote(p, tr(STR_SET_CREDIT_LIBSSH));
+    ui_section_header(p, tr(STR_SET_SYSTEM));
+    ui_srow(p, UI_ROW_NAV, tr(STR_SET_DIAGNOSTICS), tr(s_diag_open ? STR_SET_HIDE : STR_SET_SHOW), diag_cb, NULL);
+    if (s_diag_open) {
+        char b[512];
+        diag_text(b, sizeof(b));
+        lv_obj_t *l = ui_text(p, b, UI_TONE_FG, true);
+        lv_obj_set_width(l, LV_PCT(100));
+        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_set_style_pad_hor(l, 20, 0);
+        /* refreshed every 2 s only while expanded: the timer goes with the label (a collapse or a section change
+           cleans the panel), and LVGL is paused while the screen is off */
+        ui_timer_bind(lv_timer_create(diag_tick, 2000, l), l);
     }
-    case 4: {
-        ui_label(c, tr(STR_GESTURE_NOTE), FONT_SMALL, UI_MUTED);
-        snprintf(buf, sizeof(buf), tr(STR_SET_KBD_STATUS), keyboard_present() ? tr(STR_PRESENT) : (keyboard_usb_present() ? "USB" : tr(STR_ABSENT)));
-        ui_label(c, buf, FONT_SMALL, UI_MUTED);
-        ui_setting_row(c, tr(STR_SET_KBD_LAYOUT),
-                       tr(g_settings.kbd_layout == KBD_LAYOUT_JIS ? STR_KBD_LAYOUT_JIS : STR_KBD_LAYOUT_STOCK),
-                       kbd_layout_cb, NULL);
-        if (g_settings.kbd_layout != KBD_LAYOUT_STOCK) ui_label(c, tr(STR_SET_KBD_LAYOUT_NOTE), FONT_SMALL, UI_MUTED);
-        ui_switch_row(c, tr(STR_SET_KBD_LED), g_settings.kbd_led_mode, led_mode_cb, NULL);
-        slider_row(c, tr(STR_SET_KBD_LED_BRIGHT), 0, 100, g_settings.kbd_led_bright, led_bright_cb);
-        snprintf(buf, sizeof(buf), "#%02X%02X%02X", g_settings.kbd_led_rgb[0], g_settings.kbd_led_rgb[1], g_settings.kbd_led_rgb[2]);
-        lv_obj_t *lc = ui_setting_row(c, tr(STR_SET_KBD_LED), buf, led_color_cb, NULL);
-        lv_obj_set_style_text_color(lv_obj_get_user_data(lc), UI_TEXT, 0);
-        break;
-    }
-    case 5: {
-        ui_switch_row(c, tr(STR_CREDS_ON_SD), g_settings.creds_on_sd, creds_sd_cb, NULL);
-        ui_label(c, tr(STR_CREDS_NOTE), FONT_SMALL, UI_MUTED);
-        if (g_settings.creds_on_sd) ui_setting_row(c, tr(STR_CREDS_RELOAD), "", creds_reload_cb, NULL);
-        break;
-    }
-    case 6: {
-        snprintf(buf, sizeof(buf), "v%s", sysinfo_app_version());
-        ui_setting_row(c, tr(STR_ABOUT), buf, about_cb, NULL);
-        ui_button_colored(c, tr(STR_REBOOT), UI_DANGER, reboot_cb, NULL);
-        break;
-    }
+    ui_srow(p, UI_ROW_ACTION, tr(STR_REBOOT), NULL, reboot_cb, NULL);
+    lv_obj_t *r = ui_srow(p, UI_ROW_ACTION, tr(STR_SET_RESET_SETTINGS), NULL, reset_cb, NULL);
+    ui_text_tone(lv_obj_get_child(r, 0), UI_TONE_RED);
+    ui_footnote(p, tr(STR_SET_RESET_NOTE));
+}
+
+/* ----------------------------------------------------------------- shell */
+static void panel_fill(void)
+{
+    lv_obj_clean(s_panel);   /* the Diagnostics timer, if any, goes with its label */
+    lv_obj_scroll_to_y(s_panel, 0, LV_ANIM_OFF);
+    ui_title(s_panel, tr(k_section_names[s_section]));
+    switch (s_section) {
+    case UI_SET_HOST: fill_host(s_panel); break;
+    case UI_SET_NETWORK: ui_settings_fill_network(s_panel); break;
+    case UI_SET_POWER: fill_power(s_panel); break;
+    case UI_SET_KBD: fill_kbd(s_panel); break;
+    case UI_SET_DISPLAY: fill_display(s_panel); break;
+    case UI_SET_ABOUT: fill_about(s_panel); break;
     default: break;
     }
 }
 
-static void panel_clear(lv_obj_t *panel, unsigned category)
+static void rail_cb(lv_event_t *e)
 {
-    lv_obj_clean(panel);
-    ui_section_title(panel, tr(s_categories[category]));
+    ui_set_section_t next = (ui_set_section_t)(uintptr_t)lv_event_get_user_data(e);
+    if (next >= UI_SET_COUNT || next == s_section) return;
+    ui_srow_set_selected(s_rail[s_section], false);
+    ui_srow_set_selected(s_rail[next], true);
+    s_section = next;
+    s_diag_open = false;
+    panel_fill();
 }
 
-static void category_cb(lv_event_t *e)
+static void screen_deleted(lv_event_t *e)
 {
-    unsigned next = (unsigned)(uintptr_t)lv_event_get_user_data(e);
-    if (next >= sizeof(s_categories) / sizeof(s_categories[0]) || next == s_category) return;
-    lv_obj_t *nav = lv_obj_get_parent(lv_event_get_current_target_obj(e));
-    lv_obj_t *deck = lv_obj_get_child(lv_obj_get_parent(nav), 1);
-    unsigned previous = s_category;
-    lv_obj_add_flag(lv_obj_get_child(deck, previous), LV_OBJ_FLAG_HIDDEN);
-    panel_clear(lv_obj_get_child(deck, previous), previous);
-    panel_fill(lv_obj_get_child(deck, next), next);
-    lv_obj_remove_flag(lv_obj_get_child(deck, next), LV_OBJ_FLAG_HIDDEN);
-    ui_srow_set_selected(lv_obj_get_child(nav, previous), false);
-    ui_srow_set_selected(lv_obj_get_child(nav, next), true);
-    s_category = next;
-}
-static lv_obj_t *settings_panel(lv_obj_t *deck, unsigned category)
-{
-    lv_obj_t *panel = ui_card(deck);
-    lv_obj_set_size(panel, LV_PCT(100), LV_PCT(100));
-    lv_obj_add_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(panel, LV_DIR_VER);
-    if (category != s_category) lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
-    ui_section_title(panel, tr(s_categories[category]));
-    return panel;
+    (void)e;
+    s_panel = NULL;
+    memset(s_rail, 0, sizeof(s_rail));
 }
 
 lv_obj_t *ui_settings_create(void *arg)
 {
     (void)arg;
+    s_diag_open = false;   /* Diagnostics starts collapsed */
     lv_obj_t *scr = ui_screen_base();
-    ui_topbar(scr, tr(STR_SETTINGS), true);
-    lv_obj_t *body = ui_content(scr);
+    lv_obj_add_event_cb(scr, screen_deleted, LV_EVENT_DELETE, NULL);
+    ui_header(scr, tr(STR_SETTINGS), tr(STR_SET_BACK_SESSIONS));
+    lv_obj_t *body = lv_obj_create(scr);
+    lv_obj_remove_style_all(body);
+    lv_obj_remove_flag(body, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(body, 0, UI_TK_HEADER_H);
+    lv_obj_set_size(body, LV_PCT(100), lv_display_get_vertical_resolution(NULL) - UI_TK_HEADER_H);
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(body, UI_TK_GAP_M, 0);
-    lv_obj_remove_flag(body, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *nav = ui_card(body);
-    lv_obj_set_width(nav, LV_PCT(24));
-    lv_obj_set_style_min_width(nav, 212, 0);
-    lv_obj_set_height(nav, LV_PCT(100));
-    lv_obj_add_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(nav, LV_DIR_VER);
-    for (unsigned i = 0; i < sizeof(s_categories) / sizeof(s_categories[0]); i++) {
-        /* the rail: nav rows, the selection in panel-2 with a 50 % fg outline (no hue) */
-        lv_obj_t *r = ui_srow(nav, UI_ROW_NAV, tr(s_categories[i]), NULL, category_cb, (void *)(uintptr_t)i);
-        lv_obj_set_height(r, UI_TK_RAIL_ROW_H);
-        ui_srow_set_selected(r, i == s_category);
+
+    /* the rail: 320 px, six 72 px rows; the selection is panel-2 with a 50 % fg outline, no hue */
+    lv_obj_t *rail = lv_obj_create(body);
+    lv_obj_remove_style_all(rail);
+    lv_obj_remove_flag(rail, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(rail, UI_TK_RAIL_W, LV_PCT(100));
+    lv_obj_set_style_pad_top(rail, UI_TK_GAP_M, 0);
+    lv_obj_set_style_pad_bottom(rail, UI_TK_GAP_M, 0);
+    lv_obj_set_style_pad_left(rail, UI_TK_MARGIN, 0);
+    lv_obj_set_style_pad_right(rail, UI_TK_GAP_S, 0);
+    lv_obj_set_style_pad_row(rail, UI_TK_GAP_S, 0);
+    lv_obj_set_style_border_side(rail, LV_BORDER_SIDE_RIGHT, 0);
+    lv_obj_set_style_border_width(rail, 1, 0);
+    lv_obj_set_style_border_color(rail, lv_color_hex(UI_TK_LINE), 0);
+    lv_obj_set_flex_flow(rail, LV_FLEX_FLOW_COLUMN);
+    for (int i = 0; i < UI_SET_COUNT; i++) {
+        s_rail[i] = ui_rail_row(rail, tr(k_section_names[i]), rail_cb, (void *)(uintptr_t)i);
+        ui_srow_set_selected(s_rail[i], i == (int)s_section);
     }
-    lv_obj_t *deck = lv_obj_create(body);
-    lv_obj_remove_style_all(deck);
-    lv_obj_set_height(deck, LV_PCT(100));
-    lv_obj_set_flex_grow(deck, 1);
-    lv_obj_remove_flag(deck, LV_OBJ_FLAG_SCROLLABLE);
-    for (unsigned i = 0; i < sizeof(s_categories) / sizeof(s_categories[0]); i++) {
-        lv_obj_t *c = settings_panel(deck, i);
-        if (i == s_category) panel_fill(c, i);
-    }
+    lv_obj_t *spacer = lv_obj_create(rail);
+    lv_obj_remove_style_all(spacer);
+    lv_obj_remove_flag(spacer, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_width(spacer, 1);
+    lv_obj_set_flex_grow(spacer, 1);
+    /* "↑↓ move · Enter choose · Esc back" while the keyboard is in use (spec §5.13) */
+    lv_obj_t *hint = ui_text(rail, tr(STR_SET_KEY_HINT), UI_TONE_MUTED, true);
+    lv_obj_set_width(hint, LV_PCT(100));
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_MODE_WRAP);
+    ui_keyboard_hint(hint);
+
+    /* the panel: a title heading and 64 px rows; it scrolls when the section doesn't fit */
+    s_panel = lv_obj_create(body);
+    lv_obj_remove_style_all(s_panel);
+    lv_obj_remove_flag(s_panel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_height(s_panel, LV_PCT(100));
+    lv_obj_set_flex_grow(s_panel, 1);
+    lv_obj_set_style_pad_ver(s_panel, UI_TK_GAP_L, 0);
+    lv_obj_set_style_pad_hor(s_panel, 32, 0);
+    lv_obj_set_style_pad_row(s_panel, UI_TK_GAP_S, 0);
+    lv_obj_set_flex_flow(s_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(s_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_panel, LV_DIR_VER);
+    panel_fill();
     return scr;
+}
+
+void ui_settings_open(ui_set_section_t s)
+{
+    if (s < UI_SET_COUNT) s_section = s;
+    ui_nav_push(ui_settings_create, NULL);
 }

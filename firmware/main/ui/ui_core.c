@@ -488,7 +488,10 @@ static lv_obj_t *dialog_buttons(lv_obj_t *box)
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, UI_TK_GAP_M, 0);
-    lv_obj_set_style_pad_ver(row, (UI_TK_HIT - UI_TK_TARGET) / 2, 0);   /* the buttons' 80 px hit area fits */
+    /* the buttons' 80 px hit area fits inside the row each way: a short end button (OK, Forget) keeps its
+       right-hand 8 px (P4C-5; LVGL clips a child's hit area at its parent) */
+    lv_obj_set_style_pad_ver(row, (UI_TK_HIT - UI_TK_TARGET) / 2, 0);
+    lv_obj_set_style_pad_hor(row, (UI_TK_HIT - UI_TK_TARGET) / 2, 0);
     return row;
 }
 
@@ -517,6 +520,20 @@ void ui_confirm(const char *title, const char *text, ui_confirm_cb_t cb, void *u
 }
 
 static void alert_ok_cb(lv_event_t *e) { lv_obj_delete(lv_event_get_user_data(e)); }
+
+void ui_sheet_text(const char *title, const char *mono_text, const char *note)
+{
+    lv_obj_t *ov = modal_overlay();
+    lv_obj_t *box = modal_box(ov, title);
+    lv_obj_set_width(box, LV_PCT(70));
+    lv_obj_t *m = ui_text(box, mono_text, UI_TONE_FG, false);
+    ui_text_mono(m);
+    lv_obj_set_width(m, LV_PCT(100));
+    lv_label_set_long_mode(m, LV_LABEL_LONG_MODE_WRAP);
+    if (note) dialog_body(box, note);
+    ui_btn(dialog_buttons(box), UI_BTN_PRIMARY, tr(STR_OK), alert_ok_cb, ov);
+    lv_obj_add_event_cb(ov, alert_ok_cb, LV_EVENT_CANCEL, ov);
+}
 void ui_alert(const char *title, const char *text)
 {
     lv_obj_t *ov = modal_overlay();
@@ -583,7 +600,7 @@ static void menu_ov_cb(lv_event_t *e)
 }
 
 /* A sheet of 64 px radio rows; the current one has an fg dot, the others a line ring. */
-void ui_picker(const char *title, const char *const *items, int count, int current, ui_menu_cb_t cb, void *ud)
+lv_obj_t *ui_picker(const char *title, const char *const *items, int count, int current, ui_menu_cb_t cb, void *ud)
 {
     lv_obj_t *ov = modal_overlay();
     lv_obj_t *box = modal_box(ov, title);
@@ -607,6 +624,7 @@ void ui_picker(const char *title, const char *const *items, int count, int curre
         lv_obj_update_layout(box);
         lv_obj_scroll_to_view(cur, LV_ANIM_OFF);
     }
+    return box;
 }
 
 void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_t cb, void *user_data)
@@ -637,6 +655,38 @@ void ui_busy_close(lv_obj_t *busy) { if (busy) lv_obj_delete(busy); }
  * dynamically populated lists and hidden settings panels without stale groups.
  * Only the topmost modal is reachable while a dialog is open. */
 static lv_obj_t *s_keyboard_focus;
+
+/* The footer hint (spec §5.13): shown while the last input was a key, hidden by a touch. No timer. */
+static lv_obj_t *s_key_hint;
+static bool s_key_last;
+
+static void key_hint_show(bool on)
+{
+    if (!s_key_hint || on != lv_obj_has_flag(s_key_hint, LV_OBJ_FLAG_HIDDEN)) return;
+    if (on) lv_obj_remove_flag(s_key_hint, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(s_key_hint, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void key_hint_deleted(lv_event_t *e)
+{
+    if (lv_event_get_target_obj(e) == s_key_hint) s_key_hint = NULL;
+}
+
+void ui_keyboard_hint(lv_obj_t *label)
+{
+    s_key_hint = label;
+    if (!label) return;
+    lv_obj_add_event_cb(label, key_hint_deleted, LV_EVENT_DELETE, NULL);
+    if (s_key_last) lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void indev_pressed_cb(lv_event_t *e)
+{
+    (void)e;
+    s_key_last = false;
+    key_hint_show(false);
+}
 
 static bool has_handler(lv_obj_t *obj, lv_event_code_t code)
 {
@@ -720,14 +770,15 @@ static void keyboard_walk(lv_obj_t *obj, keyboard_walk_t *walk)
 bool ui_keyboard_route(const key_event_t *ev, bool terminal)
 {
     lv_display_trigger_activity(NULL);
+    s_key_last = true;
+    key_hint_show(true);
     lv_obj_t *modal = keyboard_modal();
     if (!terminal) s_keyboard_terminal_ui = false;
     /* The Sessions Ctrl+K overlay: every key, Ctrl+Tab included, goes to its sink, which closes it. */
     if (terminal && !modal && ui_sessions_keys_overlay_shown()) { s_keyboard_terminal_ui = false; return false; }
     if (terminal && !modal && ev->type == KEY_EV_SPECIAL && ev->key == SK_TAB && (ev->mods & MOD_CTRL)) {
         s_keyboard_terminal_ui = !s_keyboard_terminal_ui;
-        keyboard_focus_set(NULL);
-        ui_toast(s_keyboard_terminal_ui ? "UI: Tab / Enter / Esc" : "SSH input");
+        keyboard_focus_set(NULL);   /* no toast: the footer hint shows the keys (spec §5.13) */
         if (!s_keyboard_terminal_ui) return true;
     } else if (terminal && !modal && !s_keyboard_terminal_ui) return false;
 
@@ -952,5 +1003,8 @@ void ui_init(void)
     }
     for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in))
         if (lv_indev_get_type(in) == LV_INDEV_TYPE_POINTER)
+        {
             lv_indev_add_event_cb(in, indev_gesture_cb, LV_EVENT_GESTURE, NULL);
+            lv_indev_add_event_cb(in, indev_pressed_cb, LV_EVENT_PRESSED, NULL);
+        }
 }

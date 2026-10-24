@@ -128,6 +128,78 @@ static void test_settings_addresses_terminated(void)
     TEST_ASSERT_EQUAL_CHAR(0, out.mac_ts_ip[sizeof(out.mac_ts_ip) - 1]);
 }
 
+/* ---- Reset settings (spec §5.12, U3): power, keyboard light and display brightness; the rest stays ---- */
+static app_settings_t reset_defaults(void)
+{
+    app_settings_t d;
+    uint8_t *p = (uint8_t *)&d;
+    for (size_t i = 0; i < sizeof(d); i++) p[i] = (uint8_t)(i * 13 + 101);   /* differs from patterned() */
+    d.pw_dim_s = 30;
+    d.kbd_led_bright = 20;
+    d.brightness = 80;
+    return d;
+}
+
+static void test_reset_scope_resets_power_light_brightness(void)
+{
+    app_settings_t s = patterned(), d = reset_defaults();
+    s.pw_dim_s = 600;
+    s.kbd_led_bright = 90;
+    s.brightness = 30;
+    settings_reset_scope(&s, &d);
+    TEST_ASSERT_EQUAL_UINT16(d.pw_dim_s, s.pw_dim_s);
+    TEST_ASSERT_EQUAL_UINT8(d.kbd_led_bright, s.kbd_led_bright);
+    TEST_ASSERT_EQUAL_UINT8(d.brightness, s.brightness);
+    TEST_ASSERT_EQUAL_UINT16(d.pw_off_s, s.pw_off_s);
+    TEST_ASSERT_EQUAL_UINT8(d.pw_sleep_on_usb, s.pw_sleep_on_usb);
+    TEST_ASSERT_EQUAL_UINT8(d.pw_wake_needs_you, s.pw_wake_needs_you);
+    TEST_ASSERT_EQUAL_UINT8(d.pw_radio_off, s.pw_radio_off);
+    TEST_ASSERT_EQUAL_UINT16(d.pw_radio_off_min, s.pw_radio_off_min);
+    TEST_ASSERT_EQUAL_UINT16(d.pw_checkin_min, s.pw_checkin_min);
+    TEST_ASSERT_EQUAL_UINT16(d.pw_deep_idle_min, s.pw_deep_idle_min);
+    TEST_ASSERT_EQUAL_UINT8(d.pw_hibernate_h, s.pw_hibernate_h);
+    TEST_ASSERT_EQUAL_UINT16(d.pw_hibernate_checkin_min, s.pw_hibernate_checkin_min);
+    TEST_ASSERT_EQUAL_UINT8(d.ss_disable_in_ssh, s.ss_disable_in_ssh);
+    TEST_ASSERT_EQUAL_UINT8(d.kbd_led_mode, s.kbd_led_mode);
+    TEST_ASSERT_EQUAL_MEMORY(d.kbd_led_rgb, s.kbd_led_rgb, 3);
+    TEST_ASSERT_EQUAL_UINT8(d.kbd_needs_light, s.kbd_needs_light);
+    TEST_ASSERT_EQUAL_UINT8(d.kbd_dark_light, s.kbd_dark_light);
+}
+
+static void test_reset_scope_keeps_identity_and_tz(void)
+{
+    app_settings_t s = patterned(), d = reset_defaults();
+    strcpy(s.claude_path, "~/bin/claude");
+    strcpy(s.mac_lan_ip, "192.168.1.50");
+    strcpy(s.ts_auth_key, "tskey-auth-preview");
+    strcpy(s.ts_device_name, "my-tab5");
+    strcpy(s.tz_rule, "JST-9");
+    strcpy(s.ota_url, "https://example.com/m.json");
+    s.kbd_layout = 1;
+    s.volume = 33;
+    const app_settings_t before = s;
+    settings_reset_scope(&s, &d);
+    TEST_ASSERT_EQUAL_STRING(before.companion_server, s.companion_server);
+    TEST_ASSERT_EQUAL_STRING("~/bin/claude", s.claude_path);
+    TEST_ASSERT_EQUAL_STRING("192.168.1.50", s.mac_lan_ip);
+    TEST_ASSERT_EQUAL_UINT8(before.ts_enable, s.ts_enable);
+    TEST_ASSERT_EQUAL_STRING("tskey-auth-preview", s.ts_auth_key);
+    TEST_ASSERT_EQUAL_STRING("my-tab5", s.ts_device_name);
+    TEST_ASSERT_EQUAL_STRING("JST-9", s.tz_rule);
+    TEST_ASSERT_EQUAL_UINT8(1, s.kbd_layout);
+    TEST_ASSERT_EQUAL_UINT8(33, s.volume);
+    TEST_ASSERT_EQUAL_STRING("https://example.com/m.json", s.ota_url);
+    /* and every byte outside the reset fields: put the reset fields back and the struct is unchanged */
+    s.brightness = before.brightness;
+    s.ss_disable_in_ssh = before.ss_disable_in_ssh;
+    s.kbd_led_mode = before.kbd_led_mode;
+    s.kbd_led_bright = before.kbd_led_bright;
+    memcpy(s.kbd_led_rgb, before.kbd_led_rgb, 3);
+    size_t a = offsetof(app_settings_t, pw_dim_s), b = offsetof(app_settings_t, mac_lan_ip);
+    memcpy((uint8_t *)&s + a, (const uint8_t *)&before + a, b - a);   /* pw_* .. pw_hibernate_checkin_min, the light pair */
+    TEST_ASSERT_EQUAL_MEMORY(&before, &s, sizeof(s));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -136,5 +208,7 @@ int main(void)
     RUN_TEST(test_settings_v21_keeps_tailscale_choice);
     RUN_TEST(test_settings_foreign_blob_keeps_defaults);
     RUN_TEST(test_settings_addresses_terminated);
+    RUN_TEST(test_reset_scope_resets_power_light_brightness);
+    RUN_TEST(test_reset_scope_keeps_identity_and_tz);
     return UNITY_END();
 }

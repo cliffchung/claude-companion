@@ -6,6 +6,11 @@
 #include "ui/ui.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
+#include "settings/settings.h"
+#include "sys/power.h"
+#include "sys/power_rules.h"
+#include "bsp/m5stack_tab5.h"
+#include <stdlib.h>
 #include "src/misc/lv_timer_private.h" /* LVGL 9.6 has no public period/last-run accessor. */
 
 /* `key <name>` and `key text <string>`: inject events into the same queue the
@@ -51,8 +56,60 @@ static int utf8_next(const unsigned char *s, uint32_t *cp)
     return 0;
 }
 
+/* `key layout [stock|jis]`: the keyboard layout (it left Settings in Plan 4). No argument prints it. */
+static int key_layout(int argc, char **argv)
+{
+    if (argc == 3) {
+        uint8_t l = strcmp(argv[2], "stock") == 0 ? KBD_LAYOUT_STOCK : strcmp(argv[2], "jis") == 0 ? KBD_LAYOUT_JIS : 0xFF;
+        if (l == 0xFF) { printf("usage: key layout [stock|jis]\n"); return 1; }
+        if (l != g_settings.kbd_layout) {
+            g_settings.kbd_layout = l;
+            settings_save();
+            keyboard_set_layout(l);
+        }
+    }
+    printf("key layout: %s\n", g_settings.kbd_layout == KBD_LAYOUT_JIS ? "jis" : "stock");
+    return 0;
+}
+
+/* `key light [<mode 0|1> <bright 0..100> <rrggbb> [<needs 0|1> <dark 2..100>]]`: the saved keyboard light, as
+   Settings › Keyboard light sets it; no argument prints it (a test records it here and puts it back). */
+static int key_light(int argc, char **argv)
+{
+    if (argc == 5 || argc == 7) {
+        char *end;
+        long mode = strtol(argv[2], &end, 10), bright = *end ? -1 : strtol(argv[3], &end, 10);
+        long rgb = (*end || strlen(argv[4]) != 6) ? -1 : strtol(argv[4], &end, 16);
+        long needs = 1, dark = g_settings.kbd_dark_light;
+        if (argc == 7) { needs = strtol(argv[5], NULL, 10); dark = strtol(argv[6], NULL, 10); }
+        if (*end || mode < 0 || mode > 1 || bright < 0 || bright > 100 || rgb < 0 || needs < 0 || needs > 1 ||
+            dark < 2 || dark > 100) {
+            printf("usage: key light [<mode 0|1> <bright 0..100> <rrggbb> [<needs 0|1> <dark 2..100>]]\n");
+            return 1;
+        }
+        if (pr_rgb_amber_like((uint32_t)rgb)) { printf("key light: amber means needs-you only\n"); return 1; }
+        g_settings.kbd_led_mode = (uint8_t)mode;
+        g_settings.kbd_led_bright = (uint8_t)bright;
+        g_settings.kbd_led_rgb[0] = (uint8_t)(rgb >> 16);
+        g_settings.kbd_led_rgb[1] = (uint8_t)(rgb >> 8);
+        g_settings.kbd_led_rgb[2] = (uint8_t)rgb;
+        if (argc == 7) { g_settings.kbd_needs_light = (uint8_t)needs; g_settings.kbd_dark_light = (uint8_t)dark; }
+        settings_save();
+        power_kbd_light_refresh();
+    } else if (argc != 2) {
+        printf("usage: key light [<mode 0|1> <bright 0..100> <rrggbb> [<needs 0|1> <dark 2..100>]]\n");
+        return 1;
+    }
+    printf("key light: mode=%u bright=%u rgb=%02x%02x%02x needs=%u dark=%u\n", g_settings.kbd_led_mode,
+           g_settings.kbd_led_bright, g_settings.kbd_led_rgb[0], g_settings.kbd_led_rgb[1], g_settings.kbd_led_rgb[2],
+           g_settings.kbd_needs_light, g_settings.kbd_dark_light);
+    return 0;
+}
+
 static int cmd_key(int argc, char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "layout") == 0 && argc <= 3) return key_layout(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "light") == 0) return key_light(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "text") == 0) {
         int sent = 0;
         for (int a = 2; a < argc; a++) {
@@ -91,7 +148,8 @@ static int cmd_key(int argc, char **argv)
     if (argc == 3 && strcmp(argv[1], "ctrl") == 0 && post_named(argv[2], MOD_CTRL, "ctrl+", &rc)) return rc;
     if (argc == 3 && strcmp(argv[1], "shift") == 0 && post_named(argv[2], MOD_SHIFT, "shift+", &rc)) return rc;
     if (argc == 2 && post_named(argv[1], 0, "", &rc)) return rc;
-    printf("usage: key <name> | key ctrl <char>|<name>|space | key shift <name> | key text <string> | key log on|off\n"
+    printf("usage: key <name> | key ctrl <char>|<name>|space | key shift <name> | key text <string> | key log on|off | "
+           "key layout [stock|jis] | key light [<mode> <bright> <rrggbb> [<needs> <dark>]]\n"
            "  names: up down left right enter esc tab backspace pgup pgdn home end\n");
     return 1;
 }
@@ -153,7 +211,18 @@ static int cmd_ui(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "refresh") == 0) { ui_async(ui_refresh_async, NULL); printf("ui: refresh\n"); return 0; }
     if (argc == 2 && strcmp(argv[1], "home") == 0) { ui_async(ui_home_async, NULL); printf("ui: home\n"); return 0; }
     if (argc == 2 && strcmp(argv[1], "settings") == 0) { ui_async(ui_settings_async, NULL); printf("ui: settings\n"); return 0; }
-    printf("usage: ui refresh | ui home | ui settings | ui heapmin start|stop | ui timers\n");
+    if (argc >= 2 && argc <= 3 && strcmp(argv[1], "brightness") == 0) {
+        if (argc == 3) {
+            int v = atoi(argv[2]);
+            if (v < 5 || v > 100) { printf("usage: ui brightness [5..100]\n"); return 1; }
+            g_settings.brightness = (uint8_t)v;
+            settings_save();
+            if (power_state() == PS_ACTIVE) bsp_display_brightness_set(v);
+        }
+        printf("ui brightness: %u\n", g_settings.brightness);
+        return 0;
+    }
+    printf("usage: ui refresh | ui home | ui settings | ui heapmin start|stop | ui timers | ui brightness [5..100]\n");
     return 1;
 }
 
@@ -161,14 +230,14 @@ void key_console_init(void)
 {
     const esp_console_cmd_t ui_cmd = {
         .command = "ui",
-        .help = "ui refresh: rebuild the current screen; ui home: go to Sessions; ui settings: open Settings; ui heapmin start|stop: internal RAM low over an action; ui timers: list LVGL timers",
+        .help = "ui refresh: rebuild the current screen; ui home: go to Sessions; ui settings: open Settings; ui heapmin start|stop: internal RAM low over an action; ui timers: list LVGL timers; ui brightness [n]: the saved display brightness",
         .hint = NULL,
         .func = cmd_ui,
     };
     debug_console_register(&ui_cmd);
     const esp_console_cmd_t cmd = {
         .command = "key",
-        .help = "Inject a key as if typed on the keyboard: <name>, ctrl <char>|<name>|space, shift <name>, text <string>; log on|off prints every decoded key",
+        .help = "Inject a key as if typed on the keyboard: <name>, ctrl <char>|<name>|space, shift <name>, text <string>; log on|off prints every decoded key; layout [stock|jis]; light [<mode> <bright> <rrggbb> [<needs> <dark>]]",
         .hint = NULL,
         .func = cmd_key,
     };

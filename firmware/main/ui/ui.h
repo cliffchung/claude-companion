@@ -35,6 +35,9 @@ typedef lv_obj_t *(*ui_screen_create_fn)(void *arg);
 void ui_init(void);
 bool ui_keyboard_route(const key_event_t *ev, bool terminal);
 bool ui_keyboard_owns_input(void);
+/* A screen's footer hint ("↑↓ move · Enter choose · Esc back"): ui_core shows it while the last input was a
+   key and hides it on a touch. One per screen; forgotten when the label is deleted. */
+void ui_keyboard_hint(lv_obj_t *label);
 
 /* Screen gestures. LVGL only walks up from the touched widget while every
  * object in between has LV_OBJ_FLAG_GESTURE_BUBBLE, which is brittle across

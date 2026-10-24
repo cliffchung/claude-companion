@@ -13,6 +13,7 @@
  * Focus 1). Amber is drawn only by the NEEDS YOU components in ui_comp. */
 #include "ui.h"
 #include "ui_sessions.h"
+#include "ui_settings.h"
 #include "ui_comp.h"
 #include "ui_softkbd.h"
 #include "ui/sessions_model.h"
@@ -686,6 +687,9 @@ static void row_pressed_cb(lv_event_t *e)
     if (i >= 0 && i < s_n) sm_key(&s_items[i], s_press_key, sizeof(s_press_key));
 }
 
+/* a press that slid off the row (a scroll) never ends in a click: forget it (T6 N1) */
+static void row_press_lost_cb(lv_event_t *e) { (void)e; s_press_key[0] = 0; }
+
 static void row_click_cb(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
@@ -1047,8 +1051,8 @@ static pr_cards_t cards_view(void)
                          power_wake_reason() == PW_NEEDS_YOU);
 }
 
-static void wifi_settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }   /* Task 7: › Network */
-static void host_settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }   /* Task 7: › Host */
+static void wifi_settings_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_NETWORK); }
+static void host_settings_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_HOST); }
 static void lowbat_dismiss_cb(lv_event_t *e) { (void)e; s_lowbat_dismiss = true; render(); }
 
 /* The banner's reason for an unreachable Host: cc_link's status text up to its parenthetical
@@ -1267,7 +1271,7 @@ static void chip_open_cb(lv_event_t *e) { (void)e; sessions_open_selected(); ren
 static void chip_terminal_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_hosts_create, NULL); }
 static void chip_settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }
 static void chip_keys_cb(lv_event_t *e) { (void)e; ui_sessions_keys_overlay(true); }
-static void set_up_host_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }   /* Task 7: › Host */
+static void set_up_host_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_HOST); }
 static void mic_cb(lv_event_t *e) { (void)e; voice_toast(); }
 
 /* A tap focuses the field; the soft keyboard is only a fallback with no physical keyboard. Its keys
@@ -1448,6 +1452,7 @@ lv_obj_t *ui_sessions_create(void *arg)
     for (int i = 0; i < MAX_ROWS; i++) {
         s_rows[i] = ui_session_row(s_list, row_click_cb, (void *)(intptr_t)i);
         lv_obj_add_event_cb(s_rows[i], row_pressed_cb, LV_EVENT_PRESSED, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(s_rows[i], row_press_lost_cb, LV_EVENT_PRESS_LOST, NULL);
         lv_obj_add_flag(s_rows[i], LV_OBJ_FLAG_HIDDEN);
     }
     /* loading: 3 skeleton rows where the list goes */

@@ -79,15 +79,33 @@ lv_obj_t *ui_srow_value(lv_obj_t *row);
 /* Selection on a rail or list of rows: panel-2 with a 50 % fg outline. */
 void ui_srow_set_selected(lv_obj_t *row, bool selected);
 lv_obj_t *ui_section_header(lv_obj_t *parent, const char *text);   /* label muted, 24 above, 8 below */
+/* A visual chip at the end of a row (Forget, Sync now): 48 px, radius 8, not a control of its own (the row is the
+ * hit target). Destructive: red text and a red border; otherwise panel-2. */
+lv_obj_t *ui_srow_chip(lv_obj_t *row, const char *text, bool destructive);
+/* A Settings rail row: 72 px, transparent until selected (ui_srow_set_selected), the whole row the hit target. */
+lv_obj_t *ui_rail_row(lv_obj_t *parent, const char *label, lv_event_cb_t cb, void *ud);
+/* A 24 px filled circle in rgb (a keyboard colour swatch; never amber). */
+lv_obj_t *ui_swatch(lv_obj_t *parent, uint32_t rgb);
 lv_obj_t *ui_footnote(lv_obj_t *parent, const char *text);         /* label muted, wrapped */
+
+/* ---- text ---- */
+typedef enum { UI_TONE_FG, UI_TONE_MUTED, UI_TONE_GREEN, UI_TONE_RED } ui_tone_t;
+/* A label in a tone: body, or the label role when small. */
+lv_obj_t *ui_text(lv_obj_t *parent, const char *text, ui_tone_t tone, bool small);
+void ui_text_tone(lv_obj_t *label, ui_tone_t tone);   /* replaces the label's tone */
+void ui_text_mono(lv_obj_t *label);                    /* FONT_MONO: fingerprints, keys */
+lv_obj_t *ui_title(lv_obj_t *parent, const char *text);   /* the title role (a panel heading) */
 
 /* ---- dialogs ---- */
 /* A sheet of 64 px radio rows with an fg dot on `current` (-1: none). cb(index, ud) on a choice;
  * Esc or a tap outside closes it without a call. */
-void ui_picker(const char *title, const char *const *items, int count, int current, ui_menu_cb_t cb, void *ud);
+lv_obj_t *ui_picker(const char *title, const char *const *items, int count, int current, ui_menu_cb_t cb, void *ud);
+/* (returns the sheet: its rows follow the title label in item order, so a caller can add a swatch to each) */
 /* The title wraps. Cancel is secondary; the action (NULL: OK) is primary, or destructive in red. */
 void ui_confirm_ex(const char *title, const char *body, const char *action, bool destructive,
                    ui_confirm_cb_t cb, void *ud);
+/* A sheet: the title, mono_text in fg mono wrapped in full (a key line), a muted note, then OK. */
+void ui_sheet_text(const char *title, const char *mono_text, const char *note);
 
 /* ---- states ---- */
 /* A muted centred line, and an optional primary button below it. */

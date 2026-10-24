@@ -162,11 +162,15 @@ static const char *ctrl_name(lv_obj_t *o, char *buf, size_t cap)
 }
 
 /* True when a scrollable ancestor (below the screen) that really overflows or is scrolled shows o only in
-   part, or not at all (review M5: a merely scrollable container clips like any other and is checked). */
+   part, or not at all (review M5: a merely scrollable container clips like any other and is checked). "o" here
+   is its hit area: a row that a scroll leaves at the viewport's edge, its 8 px of extra hit area cut off, is
+   checked once it is scrolled into view (LVGL's scroll-to-view keeps it inside the container's padding). */
 static bool scrolled_out(lv_obj_t *o)
 {
     lv_area_t a;
     lv_obj_get_coords(o, &a);
+    int32_t pad = o->spec_attr ? o->spec_attr->ext_click_pad : 0;
+    lv_area_increase(&a, pad, pad);
     for (lv_obj_t *p = lv_obj_get_parent(o); p && lv_obj_get_parent(p); p = lv_obj_get_parent(p)) {
         if (!lv_obj_has_flag(p, LV_OBJ_FLAG_SCROLLABLE)) continue;
         if (!lv_obj_get_scroll_top(p) && !lv_obj_get_scroll_bottom(p) && !lv_obj_get_scroll_left(p) &&
