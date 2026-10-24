@@ -1037,7 +1037,8 @@ void ui_host_row_note(lv_obj_t *row, const char *note, bool busy, const char *hi
     set_flag(t, LV_OBJ_FLAG_HIDDEN, !note && !busy && !lv_obj_has_state(row, LV_STATE_FOCUS_KEY));
 }
 
-lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, lv_event_cb_t cb, void *ud)
+lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, bool destructive, lv_event_cb_t cb,
+                              void *ud)
 {
     lv_obj_t *r = ui_srow(parent, UI_ROW_ACTION, fp, NULL, cb, ud);
     lv_obj_add_style(r, &s_srow_wrap, 0);
@@ -1047,7 +1048,7 @@ lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip
     lv_obj_add_style(l, &s_wrap_label, 0);
     tone_apply(l, UI_TONE_MUTED);
     lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
-    if (chip) ui_srow_chip(r, chip, true);
+    if (chip) ui_srow_chip(r, chip, destructive);
     return r;
 }
 

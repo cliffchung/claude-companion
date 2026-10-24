@@ -140,6 +140,22 @@ static void forget_cb(lv_event_t *e)
     ui_confirm_ex(tr(STR_SET_FORGET_Q), tr(STR_SET_FORGET_BODY), tr(STR_SET_FORGET), true, forget_yes, NULL);
 }
 
+/* Trust this key (polish 1): the key the Host presented on a first connect, which nothing pins or carries over. The
+   confirm shows it again with the command that prints the Host's own; only that key is pinned (cc_link_trust_host_key). */
+static char s_trust_fp[80];
+static char s_trust_body[320];
+static void trust_yes(bool yes, void *ud)
+{
+    (void)ud;
+    if (yes && !ui_sessions_trust_host_key(s_trust_fp)) ui_toast(tr(STR_SET_BUSY));
+}
+static void trust_cb(lv_event_t *e)
+{
+    (void)e;
+    snprintf(s_trust_body, sizeof(s_trust_body), tr(STR_SET_TRUST_BODY), s_trust_fp);
+    ui_confirm_ex(tr(STR_SET_TRUST_Q), s_trust_body, tr(STR_SET_TRUST_ACTION), false, trust_yes, NULL);
+}
+
 static void pubkey_cb(lv_event_t *e)
 {
     (void)e;
@@ -214,7 +230,11 @@ static void fill_host(lv_obj_t *p)
     char fp[80];
     if (cc_link_pinned_fingerprint(fp, sizeof(fp))) {
         /* the whole fingerprint, wrapped, to compare with ssh-keygen -lf on the host */
-        ui_srow_fingerprint(p, fp, tr(STR_SET_FORGET), forget_cb, NULL);
+        ui_srow_fingerprint(p, fp, tr(STR_SET_FORGET), true, forget_cb, NULL);
+    } else if (cc_link_unknown_host_key(s_trust_fp, sizeof(s_trust_fp))) {
+        /* first run: the link refused a key nothing pins; never trusted without the user's confirm */
+        ui_srow_fingerprint(p, s_trust_fp, tr(STR_SET_TRUST), false, trust_cb, NULL);
+        ui_footnote(p, tr(STR_SET_NEW_KEY_SEEN));
     } else {
         ui_srow(p, UI_ROW_INFO, tr(STR_SET_NO_PIN), NULL, NULL, NULL);
     }

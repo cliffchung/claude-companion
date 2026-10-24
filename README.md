@@ -238,28 +238,23 @@ in [Authorize the Tab5's key](#authorize-the-tab5s-key).
 
 The Tab5 pins each SSH server's host key and refuses a key that changes. On the home network it
 does **not** trust an unknown Host key by itself: the first connection is refused, and the
-Sessions banner (and Settings › Host › **Link**) shows the key it saw:
-
-```
-new host key SHA256:... for 192.168.1.50; forget the old key in Settings › Host to trust it
-```
-
-Check that fingerprint on the Host:
+Sessions banner reads "The Host has a new host key. Check and trust it in Settings › Host."
+Tap **Host settings** on the banner. Settings › Host › **Host key** shows the fingerprint the Host
+presented, with **Trust this key**. Before you trust it, check that fingerprint on the Host:
 
 ```sh
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-If it matches, tell the Tab5 to trust the next key it sees. While no key is pinned yet, Settings ›
-Host shows "No key pinned yet" and has no Forget button, so use the serial console:
+If it matches, choose **Trust this key**; the confirm shows the fingerprint again. Choose
+**Trust**: the link reconnects and pins that key, and only that key (if the Host presents a
+different one, it is refused and shown in its place). The toast reads "New host key pinned:
+SHA256:...". From then on Settings › Host › Host key shows the pinned fingerprint, with a
+**Forget** button for when the Host's key really changes. A *changed* key is never offered for
+trust: see [Troubleshooting](#10-troubleshooting).
 
-```
-tab5> companion hostkey forget
-New host key pinned: SHA256:...
-```
-
-The link reconnects and pins that key. From then on Settings › Host › **Host key** shows the pinned
-fingerprint, with a **Forget** button for when the Host's key really changes.
+The serial console does the same with `companion hostkey forget`, which pins whatever key the Host
+presents next, so check the fingerprint first.
 
 When the link is up, Settings › Host › Link reads "● connected over home Wi-Fi" and your sessions
 appear on the Sessions screen.
@@ -340,7 +335,7 @@ Ctrl+P (or the footer's **⌃P Settings**) opens Settings. It has six sections:
 
 | Section | What's in it |
 |---|---|
-| **Host** | Which saved SSH host is the Host, its address and sign-in (the host form), the link status, the fallback address, the Claude path, the pinned host key (with Forget), and this device's public key (Show). |
+| **Host** | Which saved SSH host is the Host, its address and sign-in (the host form), the link status, the fallback address, the Claude path, the pinned host key (with Forget; on first use, the key the Host presented, with Trust this key), and this device's public key (Show). |
 | **Network** | Wi-Fi: the current network, Networks (saved, available, Join other…) and Advanced › Static address. Tailscale: the switch, status, auth key, device name, control server, connection mode, peers, and Forget this device on the tailnet. |
 | **Power** | Screen: Dim after, Screen off after, Sleep on USB power, Stay awake in Terminal. Wake: Wake when a session needs you. Battery saver: Radio off, Radio off after, Check in every, Deep idle after, Hibernate after, Hibernate check-in every. |
 | **Keyboard light** | Whether a keyboard is connected; its colour (Keyboard's own, or a swatch; Blue is the default) and brightness; Show needs-you on keyboard; Brightness when the screen is dark (2, 5 or 15 %). |
@@ -523,13 +518,13 @@ address, so a failed name lookup doesn't stop the link.
 Check that Remote Login is still on.
 
 **"<name> refused the device key".** The public key line isn't in `~/.ssh/authorized_keys`, or its
-`from=` doesn't include the address the Tab5 connects from (for example, a tailnet-only line from
-`authorize_device_key.sh` while the Tab5 is on the LAN). Check the file permissions too.
+`from=` doesn't include the address the Tab5 connects from (for example, a line with only
+`100.64.0.0/10` while the Tab5 is on the LAN). Check the file permissions too.
 
-**"new host key SHA256:… for …; forget the old key in Settings › Host to trust it".** Expected on
-the first connection over the home network: see
-[Trust the Host's host key](#trust-the-hosts-host-key). If it appears later, the Host's key has
-changed: find out why before you forget the old one.
+**"The Host has a new host key. Check and trust it in Settings › Host."** Expected on the first
+connection over the home network, while no key is pinned: see
+[Trust the Host's host key](#trust-the-hosts-host-key). The console's `companion status` shows the
+same refusal as "new host key SHA256:… for <address>; check and trust it in Settings › Host".
 
 **"host key changed for …; not connecting".** The Host presented a different key from the pinned
 one. If you know why (a reinstall, a new machine), compare the fingerprint with
@@ -643,7 +638,8 @@ Use a Debug build: a Release build of the preview crashes in one case. The cases
   or after 30 minutes. The Tab5 closes its SSH sessions before Wi-Fi goes down, before it sleeps,
   and before it restarts.
 - **Host keys are pinned.** The Host link never trusts an unknown key on the home network without
-  you (see [first boot](#trust-the-hosts-host-key)) and refuses a changed key. Terminal hosts ask
+  you (see [first boot](#trust-the-hosts-host-key)): Trust this key pins only the fingerprint you
+  confirmed, and only while no key is pinned. It refuses a changed key. Terminal hosts ask
   before trusting a new key and warn on a changed one.
 - **No secrets in logs.** The Tailscale auth key is never logged or shown, and the console's key
   log masks typed characters.

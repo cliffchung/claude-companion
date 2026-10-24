@@ -18,8 +18,12 @@ bool ui_sessions_selected_center(int32_t *x, int32_t *y);
    finished later by a reconnect is toasted by the Sessions tick (P4-3). LVGL task; false if the
    worker can't take it now. */
 bool ui_sessions_forget_host_key(void);
+/* Settings › Host › Trust this key (polish 1): runs cc_link_trust_host_key(fp) on the Sessions worker, toasted as a
+   forget is. LVGL task; false if the worker can't take it now. */
+bool ui_sessions_trust_host_key(const char *fp);
 /* Why the Host link is down, in Host words with no "(retry in Ns)": "No Host set up", "Can't reach <name>. Is it
-   awake?" or cc_link's failure up to its parenthetical. The Sessions banner and Settings › Host › Link use it. */
+   awake?", "The Host has a new host key. Check and trust it in Settings › Host." or cc_link's failure up to its
+   parenthetical. The Sessions banner and Settings › Host › Link use it. */
 void ui_sessions_link_down_text(char *out, size_t cap);
 #define FORGET_TOAST_MS 6000   /* long enough to read the fingerprint */
 /* Debug (`companion takeover <id>`): selects the row with this id and opens it as Ctrl+O does, only

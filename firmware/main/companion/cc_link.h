@@ -25,7 +25,7 @@ bool cc_link_connected(void);
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
    "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Host set up", where <failure>
    is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting",
-   "new host key SHA256:... for <ip>; forget the old key in Settings › Host to trust it" (a LAN address with no key to carry over),
+   "new host key SHA256:... for <ip>; check and trust it in Settings › Host" (a LAN address with no key to carry over),
    "Host not found at <host> (set its fallback address in Settings › Host)" (the name doesn't resolve, no fallback),
    "Host not at <fallback> (fallback for <host>)" (the name didn't resolve and the fallback doesn't answer),
    "no Host entry named '<name>' (Settings › Host)", "<name> refused the device key" or CC_LINK_TS_OFF_TEXT. */
@@ -54,6 +54,16 @@ esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms);
    the forgets done so far (it only grows) and copies the key the last one pinned; the UI polls
    it and toasts "New host key pinned: SHA256:..." when it grows. Safe from any task. */
 uint32_t cc_link_forget_done(char *fp_out, size_t fp_cap);
+/* First-run trust from the screen (polish 1). True when the last connect was refused because the Host presented
+   a key that nothing pins or carries over (KHA_REFUSE_UNKNOWN), with that key's "SHA256:..." in fp_out. A changed
+   key (CHANGED, a key unlike the carry source, an unreadable pin) is never reported here. Safe from any task. */
+bool cc_link_unknown_host_key(char *fp_out, size_t fp_cap);
+/* Trusts the key with fingerprint fp ("SHA256:...", the one cc_link_unknown_host_key showed and the user
+   confirmed): the same pending forget as cc_link_forget_host_key, with the same results and toast, except that it
+   erases no pin and the connect it starts pins only a key whose fingerprint is fp (kh_forget_applies); any other
+   key is refused as unknown and the trust stays pending for fp. ESP_ERR_INVALID_STATE when no Host is set up, a
+   key is already pinned for it, or fp isn't a fingerprint. Blocks: never call it from the LVGL task. */
+esp_err_t cc_link_trust_host_key(const char *fp, char *fp_out, size_t fp_cap, int timeout_ms);
 /* The fingerprint now pinned for the Host ("SHA256:..."), false if none or unreadable. Reads
    NVS: fine from the LVGL task, but not every frame. */
 bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap);

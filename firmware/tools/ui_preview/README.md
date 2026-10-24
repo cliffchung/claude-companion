@@ -47,7 +47,7 @@ skipped by the touch check (it is checked once scrolled into view).
 
 The stubs take their state from the environment: `PREVIEW_FIXTURE` (a file in
 `test/host/fixtures`, or `loading` / `none`), `PREVIEW_WIFI=0`, `PREVIEW_HOST=0`,
-`PREVIEW_FAIL=notfound`, `PREVIEW_BAT=<percent>`, `PREVIEW_CHG=1`, `PREVIEW_LOG=long`; the
+`PREVIEW_FAIL=notfound`, `PREVIEW_FAIL=newkey` (first run: an unknown key with Trust this key, and with `PREVIEW_CLICK=Trust this key` its confirm), `PREVIEW_BAT=<percent>`, `PREVIEW_CHG=1`, `PREVIEW_LOG=long`; the
 `sessions` cases set them themselves.
 
 `run_all.sh $PV` runs every case and converts each `.ppm` to `$PV/png/<name>.png` with `sips`.

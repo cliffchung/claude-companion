@@ -105,9 +105,11 @@ void ui_host_row_dot(lv_obj_t *row, int dot);
 /* The trailing label: note in red (a connect failure), or busy (a spinner and note muted); NULL and !busy goes back
  * to hint on focus. */
 void ui_host_row_note(lv_obj_t *row, const char *note, bool busy, const char *hint);
-/* A Host key row: the whole fingerprint in mono, muted and wrapped (at least 64 px), and a drawn destructive chip
- * (chip, NULL for none); the whole row is the hit target. Settings › Host and the host form. */
-lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, lv_event_cb_t cb, void *ud);
+/* A Host key row: the whole fingerprint in mono, muted and wrapped (at least 64 px), and a drawn chip (chip, NULL for
+ * none; destructive for Forget, plain for Trust this key); the whole row is the hit target. Settings › Host and the
+ * host form. */
+lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, bool destructive, lv_event_cb_t cb,
+                              void *ud);
 /* "+ Add host": 72 px, a line border, muted text; the whole row is the hit target. */
 lv_obj_t *ui_add_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *ud);
 /* A ui_chip (or a banner's action chip) in the primary style: fg fill, bg text (Save, Turn on). */

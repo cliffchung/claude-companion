@@ -78,6 +78,40 @@ static void test_action_never_trusts_more(void)
                 }
 }
 
+/* ---- kh_forget_applies: a forget takes any key, a trust from the screen only the confirmed one ---- */
+
+static void test_forget_applies_any_key(void)
+{
+    TEST_ASSERT_TRUE(kh_forget_applies(true, NULL, "SHA256:abc"));
+    TEST_ASSERT_TRUE(kh_forget_applies(true, "", "SHA256:abc"));
+}
+
+static void test_trust_applies_only_to_the_confirmed_key(void)
+{
+    TEST_ASSERT_TRUE(kh_forget_applies(true, "SHA256:abc", "SHA256:abc"));
+    TEST_ASSERT_FALSE(kh_forget_applies(true, "SHA256:abc", "SHA256:abd"));
+    TEST_ASSERT_FALSE(kh_forget_applies(true, "SHA256:abc", "SHA256:ab"));
+    TEST_ASSERT_FALSE(kh_forget_applies(true, "SHA256:abc", ""));
+    TEST_ASSERT_FALSE(kh_forget_applies(true, "SHA256:abc", NULL));
+}
+
+static void test_nothing_pending_never_applies(void)
+{
+    TEST_ASSERT_FALSE(kh_forget_applies(false, NULL, "SHA256:abc"));
+    TEST_ASSERT_FALSE(kh_forget_applies(false, "SHA256:abc", "SHA256:abc"));
+}
+
+/* A trust that doesn't apply leaves an unknown LAN key refused as unknown, and a changed one as changed. */
+static void test_trust_mismatch_keeps_the_refusal(void)
+{
+    bool f = kh_forget_applies(true, "SHA256:abc", "SHA256:xyz");
+    TEST_ASSERT_EQUAL(KHA_REFUSE_UNKNOWN, kh_carry_action(KH_UNKNOWN, false, f, KHS_NONE));
+    TEST_ASSERT_EQUAL(KHA_REFUSE_CHANGED, kh_carry_action(KH_UNKNOWN, false, f, KHS_DIFFERENT));
+    TEST_ASSERT_EQUAL(KHA_NORMAL, kh_carry_action(KH_CHANGED, false, f, KHS_NONE));
+    f = kh_forget_applies(true, "SHA256:abc", "SHA256:abc");
+    TEST_ASSERT_EQUAL(KHA_PIN_NEW, kh_carry_action(KH_UNKNOWN, false, f, KHS_NONE));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -89,5 +123,9 @@ int main(void)
     RUN_TEST(test_tailnet_pin_equal_pins_silently);
     RUN_TEST(test_tailnet_pin_differs_refuses);
     RUN_TEST(test_no_tailnet_pin_is_unknown);
+    RUN_TEST(test_forget_applies_any_key);
+    RUN_TEST(test_trust_applies_only_to_the_confirmed_key);
+    RUN_TEST(test_nothing_pending_never_applies);
+    RUN_TEST(test_trust_mismatch_keeps_the_refusal);
     return UNITY_END();
 }
