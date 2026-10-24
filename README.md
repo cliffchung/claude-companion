@@ -255,7 +255,9 @@ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 If it matches, choose **Trust this key**; the confirm shows the fingerprint again. Choose
 **Trust**: the link reconnects and pins that key, and only that key (if the Host presents a
 different one, it is refused and shown in its place). The toast reads "New host key pinned:
-SHA256:...". From then on Settings › Host › Host key shows the pinned fingerprint, with a
+SHA256:...". Until then nothing is trusted: the request ends without pinning anything after 2
+minutes, on a switch to another Host or an edit of its address, or when a key is pinned for the
+Host some other way. From then on Settings › Host › Host key shows the pinned fingerprint, with a
 **Forget** button for when the Host's key really changes. A *changed* key is never offered for
 trust: see [Troubleshooting](#10-troubleshooting).
 

@@ -20,6 +20,14 @@ kha_t kh_carry_action(kh_result_t lan, bool tailnet_addr, bool forget_pending, k
     }
 }
 
+bool kh_trust_allowed(const kh_pin_t *pins, int n, bool carry_for_entry, bool same_entry, bool expired)
+{
+    if (carry_for_entry || !same_entry || expired || n < 0 || (n > 0 && !pins)) return false;
+    for (int i = 0; i < n; i++)
+        if (pins[i] != KH_PIN_NONE) return false;
+    return true;
+}
+
 bool kh_forget_applies(bool pending, const char *expect_fp, const char *met_fp)
 {
     if (!pending) return false;

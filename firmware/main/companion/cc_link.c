@@ -97,6 +97,10 @@ static int s_pin_port;
 static uint32_t s_forget_req, s_forget_ack, s_forget_done;
 static char s_forget_fp[80];           /* the key that connect pinned */
 static char s_forget_expect[80];       /* a trust from the screen: the only key it pins ("" for a forget) */
+static char s_forget_entry[128];       /* the trust's Host entry host string: another Host or an edit ends it (I2) */
+static int64_t s_forget_deadline_us;   /* the trust expires then (KH_TRUST_TTL_MS, I2) */
+static uint32_t s_forget_cancelled;    /* the request a cancel ended: its waiter gets ESP_ERR_INVALID_RESPONSE */
+static uint32_t s_forget_pins;         /* forgets and trusts that pinned a key (cc_link_forget_done) */
 static char s_unknown_fp[80];          /* the unknown key the last connect refused (cc_link_unknown_host_key) */
 static volatile bool s_forget;         /* the task tears down and reconnects now */
 /* The pin carry-over's source (fix round 1, M1): the key the link last met on the Host entry's
@@ -109,6 +113,8 @@ static carry_t s_carry;
 static hc_cache_t s_hc;   /* the host cache (fast check-in) */
 static char s_lan_last[16];            /* the last LAN address the Host's name resolved to (M2) */
 static void carry_store(const carry_t *c);
+#define PIN_TARGETS 8
+static int pin_targets(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS], bool resolve);
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 
@@ -166,6 +172,29 @@ static struct {                             /* for cc_watch_status_text, under s
    read the settings directly and the status is "no Host set up". */
 static void lock(void) { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
+
+/* Fix round 1 (I2), under s_lock. A pending forget or trust: asked for and torn down for, not yet done. */
+static bool forget_pending_locked(void) { return s_forget_done != s_forget_req && s_forget_ack == s_forget_req; }
+static bool trust_pending_locked(void) { return s_forget_done != s_forget_req && s_forget_expect[0]; }
+/* Ends a pending forget or trust without pinning anything; its waiter gets ESP_ERR_INVALID_RESPONSE. */
+static void forget_cancel_locked(void)
+{
+    if (s_forget_done == s_forget_req) return;
+    s_forget_cancelled = s_forget_req;
+    s_forget_done = s_forget_req;
+    s_forget_expect[0] = 0;
+    s_forget_entry[0] = 0;
+    s_forget_deadline_us = 0;
+}
+/* trust_only: a plain forget is left pending (it erased the pins itself; a Host switch ends both). */
+static void forget_cancel(bool trust_only, const char *why)
+{
+    lock();
+    bool had = trust_only ? trust_pending_locked() : s_forget_done != s_forget_req;
+    if (had) forget_cancel_locked();
+    unlock();
+    if (had) ESP_LOGW(TAG, "%s: cancelled (%s)", trust_only ? "trust host key" : "forget host key", why);
+}
 static int64_t now_us(void) { return esp_timer_get_time(); }
 static int64_t s_last_ok_ms;   /* esp_timer ms of the last successful result, 0 = none */
 
@@ -313,6 +342,7 @@ void cc_link_set_server(const char *name)
     s_pin_host[0] = 0;   /* the old Host's address: a forget must not erase its pin */
     s_ok_host[0] = 0;    /* M6 */
     if (other) s_lan_last[0] = 0;
+    if (other) forget_cancel_locked();   /* I2: a forget or trust was for the old Host, never the new one */
     unlock();
     if (other) carry_store(NULL);   /* another Host: the old one's key must not carry over (L3) */
     settings_save();
@@ -443,7 +473,17 @@ static void set_fail(cc_link_fail_t f, const char *text)
     lock();
     s_fail = f;
     strlcpy(s_fail_text, f != CC_LINK_FAIL_NONE && text ? text : "", sizeof(s_fail_text));
-    s_unknown_fp[0] = 0;   /* only the refusal of an unknown key sets it again, after this */
+    s_unknown_fp[0] = 0;   /* only set_fail_unknown sets it */
+    unlock();
+}
+/* The refusal of an unknown key: the failure and its fingerprint under one lock, so no reader sees one without
+   the other (fix round 1, M4). */
+static void set_fail_unknown(const char *text, const char *fp)
+{
+    lock();
+    s_fail = CC_LINK_FAIL_HOSTKEY;
+    strlcpy(s_fail_text, text, sizeof(s_fail_text));
+    strlcpy(s_unknown_fp, fp, sizeof(s_unknown_fp));
     unlock();
 }
 
@@ -491,6 +531,34 @@ static void carry_store(const carry_t *c)
         else nvs_erase_key_ns("cc", "carry");
     }
     if (ip_new) settings_save();
+    if (c->host[0]) forget_cancel(true, "a carry source appeared");   /* I2 */
+}
+
+/* Whether the pending trust may still be applied (I2): kh_trust_allowed over every pin target's pin (no lookup),
+   the carry source, the entry the trust was asked for and its deadline. The link task, outside s_lock. */
+static bool trust_still_allowed(const char *entry_host)
+{
+    char hosts[PIN_TARGETS][128]; int ports[PIN_TARGETS];
+    kh_pin_t pins[PIN_TARGETS];
+    int n = pin_targets(hosts, ports, false);
+    uint8_t h[32];
+    for (int i = 0; i < n; i++) pins[i] = ssh_known_host_hash(hosts[i], ports[i], h);
+    lock();
+    bool carry = s_carry.host[0] && strcmp(s_carry.host, entry_host) == 0;
+    bool same = strcmp(s_forget_entry, entry_host) == 0;
+    bool expired = now_us() >= s_forget_deadline_us;
+    unlock();
+    return kh_trust_allowed(pins, n, carry, same, expired);
+}
+
+/* A pin the connect just wrote (KHA_PIN_NEW, KHA_PIN_SILENT): its key joins the P4C-10 deny-list now, before the
+   device key's auth (which can still fail on a first run), so a Terminal entry reaching the Host by an alias is
+   refused from this moment (fix round 1, I1). A pin by another path than the trust ends a pending trust (I2). */
+static void pinned_now(kh_result_t kh, const uint8_t *met, ssh_session s, bool by_forget)
+{
+    if (kh != KH_OK) return;
+    if (met) { ssh_host_keys_add(met); ssh_host_key_type_note(s); }
+    if (!by_forget) forget_cancel(true, "a pin appeared");
 }
 
 /* The Host's address (L2): a literal IPv4 as it is; a tailnet name through MagicDNS (Tailscale up);
@@ -681,11 +749,16 @@ lookup:
     }
     bool tnet = tailscale_is_tailnet_ip(host);
     carry_t c;
+    /* a pending trust is checked again here, not only when it was asked for (I2): it expires, it is for this
+       entry only, and a pin or carry source that appeared meanwhile ends it */
+    lock();
+    bool trusting = forget_pending_locked() && s_forget_expect[0];
+    unlock();
+    if (trusting && !trust_still_allowed(entry_host)) forget_cancel(true, "no longer allowed at this connect");
     lock();
     /* the user's Forget host key: the next connect pins the key it meets as new; a trust from the screen only
        the key the user confirmed */
-    bool forget_pending = kh_forget_applies(s_forget_done != s_forget_req && s_forget_ack == s_forget_req,
-                                            s_forget_expect, fp);
+    bool forget_pending = kh_forget_applies(forget_pending_locked(), s_forget_expect, fp);
     c = s_carry;
     unlock();
     khs_t src = KHS_NONE;
@@ -705,10 +778,12 @@ lookup:
         /* first contact over the tailnet, or after the user's forget, with no screen to ask on */
         ESP_LOGW(TAG, "pinning new host key for %s:%d %s", host, port, fp);
         kh = ssh_known_host_trust(s, host, port) ? KH_OK : KH_ERROR;
+        pinned_now(kh, have_met ? met : NULL, s, forget_pending);
         break;
     case KHA_PIN_SILENT:
         kh = ssh_known_host_trust(s, host, port) ? KH_OK : KH_ERROR;
         if (kh == KH_OK) ESP_LOGW(TAG, "kh: carried tailnet pin to %s (from %s) %s", host, c.ip, fp);
+        pinned_now(kh, have_met ? met : NULL, s, false);
         break;
     case KHA_REFUSE_CHANGED:
         ESP_LOGE(TAG, "kh: %s's key %s differs from the tailnet key of %s", host, fp, c.ip);
@@ -721,9 +796,8 @@ lookup:
         ESP_LOGE(TAG, "kh: new host key for %s:%d %s, and no tailnet key to carry; not connecting", host, port, fp);
         /* the fingerprint, to compare with ssh-keygen -lf on the Host before forgetting (M3) */
         snprintf(why, sizeof(why), "new host key %s for %s; check and trust it in Settings \xe2\x80\xba Host", fp, host);
-        set_fail(CC_LINK_FAIL_HOSTKEY, why);
+        set_fail_unknown(why, fp);   /* Settings › Host offers to trust it (polish 1) */
         lock();
-        strlcpy(s_unknown_fp, fp, sizeof(s_unknown_fp));   /* Settings › Host offers to trust it (polish 1) */
         s_pin_host[0] = 0;   /* M1 */
         s_ok_host[0] = 0;
         unlock();
@@ -791,12 +865,14 @@ lookup:
     set_fail(CC_LINK_FAIL_NONE, NULL);
     lock();
     /* a pending forget is done by the first connect after the task's teardown (a trust: one that met its key) */
-    bool forget_done = kh_forget_applies(s_forget_done != s_forget_req && s_forget_ack == s_forget_req,
-                                         s_forget_expect, fp);
+    bool forget_done = kh_forget_applies(forget_pending_locked(), s_forget_expect, fp);
     if (forget_done) {
         s_forget_done = s_forget_req;
+        s_forget_pins++;
         strlcpy(s_forget_fp, fp, sizeof(s_forget_fp));
         s_forget_expect[0] = 0;
+        s_forget_entry[0] = 0;
+        s_forget_deadline_us = 0;
     }
     s_poll_fails = 0;
     s_poll_too_big = false;
@@ -1766,7 +1842,6 @@ int cc_poll_snapshot(cc_session_t *out, int cap)
    fallback LAN address, the last LAN address the name resolved to, (resolve: a fresh lookup of the
    name now, which can block for seconds) and, last, the address the link last tried. Deduplicated.
    Returns how many it filled (0: no Host set up). */
-#define PIN_TARGETS 8
 static int add_target(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS], int n, const char *h, int port)
 {
     if (!h || !h[0] || n >= PIN_TARGETS) return n;
@@ -1835,19 +1910,22 @@ static esp_err_t forget_run(const char *expect, char *fp_out, size_t fp_cap, int
     char hosts[PIN_TARGETS][128]; int ports[PIN_TARGETS];
     int n = pin_targets(hosts, ports, true);   /* every LAN and tailnet pin, resolved now (M2) */
     if (n == 0) return ESP_ERR_INVALID_STATE;
+    char entry[128] = "";
     if (expect) {
-        /* a trust only adds a pin where there is none: it never replaces one, nor one it can't read (a changed
-           key keeps its refusal) */
-        uint8_t h[32];
-        for (int i = 0; i < n; i++)
-            if (ssh_known_host_hash(hosts[i], ports[i], h) != KH_PIN_NONE) return ESP_ERR_INVALID_STATE;
-        /* nor over a carry source for this entry: a key unlike it is a changed key, refused as today */
+        /* a trust only adds a pin where there is none: never over one, nor one it can't read, nor over a carry
+           source for this entry (a key unlike it is a changed key, refused as today); checked again when it is
+           applied (trust_still_allowed, I2) */
         int ci = cc_settings_server();
         const server_t *sv = ci >= 0 ? server_store_get(ci) : NULL;
+        if (!sv) return ESP_ERR_INVALID_STATE;
+        strlcpy(entry, sv->host, sizeof(entry));
+        kh_pin_t pins[PIN_TARGETS];
+        uint8_t h[32];
+        for (int i = 0; i < n; i++) pins[i] = ssh_known_host_hash(hosts[i], ports[i], h);
         lock();
-        bool carry = sv && s_carry.host[0] && strcmp(s_carry.host, sv->host) == 0;
+        bool carry = s_carry.host[0] && strcmp(s_carry.host, entry) == 0;
         unlock();
-        if (carry) return ESP_ERR_INVALID_STATE;
+        if (!kh_trust_allowed(pins, n, carry, true, false)) return ESP_ERR_NOT_ALLOWED;
     } else {
         for (int i = 0; i < n; i++) ssh_known_host_forget(hosts[i], ports[i]);
         carry_store(NULL);   /* the old key is no longer trusted: nothing carries it over */
@@ -1856,6 +1934,8 @@ static esp_err_t forget_run(const char *expect, char *fp_out, size_t fp_cap, int
     lock();
     s_ok_host[0] = 0;    /* M6: the forgotten key's address is no take-over target */
     strlcpy(s_forget_expect, expect ? expect : "", sizeof(s_forget_expect));
+    strlcpy(s_forget_entry, entry, sizeof(s_forget_entry));
+    s_forget_deadline_us = expect ? now_us() + (int64_t)KH_TRUST_TTL_MS * 1000 : 0;
     uint32_t want = ++s_forget_req;
     unlock();
     s_forget = true;
@@ -1866,8 +1946,10 @@ static esp_err_t forget_run(const char *expect, char *fp_out, size_t fp_cap, int
     for (;;) {
         lock();
         bool done = (int32_t)(s_forget_done - want) >= 0;
-        if (done && fp_out && fp_cap) strlcpy(fp_out, s_forget_fp, fp_cap);
+        bool cancelled = done && s_forget_cancelled == want;
+        if (done && !cancelled && fp_out && fp_cap) strlcpy(fp_out, s_forget_fp, fp_cap);
         unlock();
+        if (cancelled) { r = ESP_ERR_INVALID_RESPONSE; break; }   /* I2: ended without a pin */
         if (done) { r = ESP_OK; break; }
         if (now_us() >= end) { r = ESP_ERR_TIMEOUT; break; }   /* stays pending: cc_link_forget_done */
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -1884,7 +1966,7 @@ esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms)
 esp_err_t cc_link_trust_host_key(const char *fp, char *fp_out, size_t fp_cap, int timeout_ms)
 {
     if (fp_out && fp_cap) fp_out[0] = 0;
-    if (!fp || strncmp(fp, "SHA256:", 7) != 0 || !fp[7] || strlen(fp) >= sizeof(s_forget_expect)) return ESP_ERR_INVALID_STATE;
+    if (!fp || strncmp(fp, "SHA256:", 7) != 0 || !fp[7] || strlen(fp) >= sizeof(s_forget_expect)) return ESP_ERR_NOT_ALLOWED;
     return forget_run(fp, fp_out, fp_cap, timeout_ms);
 }
 
@@ -1900,7 +1982,7 @@ bool cc_link_unknown_host_key(char *fp_out, size_t fp_cap)
 uint32_t cc_link_forget_done(char *fp_out, size_t fp_cap)
 {
     lock();
-    uint32_t n = s_forget_done;
+    uint32_t n = s_forget_pins;
     if (fp_out && fp_cap) strlcpy(fp_out, s_forget_fp, fp_cap);
     unlock();
     return n;

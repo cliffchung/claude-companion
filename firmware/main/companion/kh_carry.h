@@ -38,6 +38,13 @@ kha_t kh_carry_action(kh_result_t lan, bool tailnet_addr, bool forget_pending, k
    key: any other is refused as unknown, as if nothing were pending, and its own fingerprint is shown to check. */
 bool kh_forget_applies(bool pending, const char *expect_fp, const char *met_fp);
 
+/* Whether a trust from the screen may be asked for, or applied at a connect (fix round 1, I2): only while none of
+   the Host's n addresses has a pin (found, or unreadable: never re-pinned over), there is no carry source for the
+   entry, the trust is for the entry as it is now (same_entry: its host string unchanged, the same Host) and its
+   deadline hasn't passed. Otherwise the connect refuses an unknown or changed key as it would with no trust. */
+#define KH_TRUST_TTL_MS 120000   /* a pending trust expires after 2 minutes */
+bool kh_trust_allowed(const kh_pin_t *pins, int n, bool carry_for_entry, bool same_entry, bool expired);
+
 #ifdef __cplusplus
 }
 #endif
