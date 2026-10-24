@@ -14,6 +14,7 @@ bool term_view_fit(term_view_t *tv, int *cols, int *rows);
 void term_view_refresh(term_view_t *tv);      /* invalidate dirty rows */
 void term_view_set_colors(term_view_t *tv, lv_color_t fg, lv_color_t bg);
 typedef enum { TERM_CURSOR_BLOCK = 0, TERM_CURSOR_UNDERLINE = 1, TERM_CURSOR_BAR = 2 } term_cursor_t;
+/* A blinking cursor runs a 550 ms timer; blink false (the default, B1) runs none. */
 void term_view_set_cursor(term_view_t *tv, term_cursor_t style, bool blink, lv_color_t color);
 int  term_view_cell_w(term_view_t *tv);
 int  term_view_cell_h(term_view_t *tv);

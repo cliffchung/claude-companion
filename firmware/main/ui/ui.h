@@ -21,8 +21,8 @@ extern "C" {
 #define UI_WARN        UI_ACCENT2
 #define UI_TEXT        lv_color_hex(UI_TK_FG)
 #define UI_MUTED       lv_color_hex(UI_TK_MUTED)
-/* Shims for the deleted theme engine (ruling C5), used by ui_terminal.c until Task 10 (ui_wifi.c and
- * ui_tailscale.c went in Task 8); Task 12 removes them. A zero radius (bars) stays square. */
+/* Shims for the deleted theme engine (ruling C5). No users since Task 10 (ui_terminal.c moved to ui_comp);
+ * Task 12 removes them. A zero radius (bars) stays square. */
 #define ui_theme_pad(design)     (design)
 #define ui_theme_radius(design)  ((design) ? UI_TK_RADIUS : 0)
 #define ui_theme_pixel()         true
@@ -119,9 +119,10 @@ lv_obj_t *ui_terminal_create(void *arg);         /* arg: server index */
 /* The SSH Terminal refuses the companion's Host (no login shell there) with this toast: the Terminal footnote's
    first sentence. */
 #define TERM_COMPANION_REFUSED tr(STR_HOSTS_NOT_LISTED)
-/* Full-screen terminal running one command on a pty exec channel (never a login shell).
-   Ctrl+] (or Ctrl+Q) leaves without sending anything; on_close runs once when the terminal closes. */
-void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx);
+/* Full-screen terminal running one command on a pty exec channel (never a login shell); title (the session's
+   name) heads its session bar. "← Leave", Ctrl+] or Ctrl+Q leaves without sending anything; on_close runs once
+   when the terminal closes. */
+void ui_terminal_open_command(int server_idx, const char *cmd, const char *title, void (*on_close)(void *ctx), void *ctx);
 bool ui_terminal_is_top(void);                   /* either terminal is the current screen */
 lv_obj_t *ui_sessions_create(void *arg);         /* home: the Host's Claude Code sessions (ui_sessions.h) */
 bool ui_sessions_keys_overlay_shown(void);       /* the Sessions Ctrl+K overlay is up */

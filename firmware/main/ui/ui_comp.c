@@ -24,7 +24,7 @@ static lv_style_t s_row, s_row_sel, s_session_geom, s_srow_geom, s_skeleton, s_s
 static lv_style_t s_dot_on, s_dot_off, s_scrim, s_spinner_main, s_spinner_ind, s_pressed_destructive;
 static lv_style_t s_green_text, s_red_text, s_mono, s_rail, s_swatch, s_chip_destructive;
 static lv_style_t s_host_geom, s_host_line, s_host_dot, s_dot_green, s_dot_line, s_add_row;
-static lv_style_t s_host_col, s_host_hint, s_host_fail, s_srow_wrap, s_wrap_label;
+static lv_style_t s_host_col, s_host_hint, s_host_fail, s_srow_wrap, s_wrap_label, s_dot_red, s_dot_muted;
 static lv_style_t s_title, s_bar, s_side_bottom, s_side_top, s_banner_muted, s_banner_red, s_section;
 /* the LVGL widgets the screens create directly (theme layer) */
 static lv_style_t s_w_button, s_w_field, s_w_track, s_w_on, s_w_knob_off, s_w_knob_on, s_w_knob;
@@ -68,7 +68,7 @@ void ui_comp_init(void)
                           &s_w_button, &s_w_field, &s_w_track, &s_w_on, &s_w_knob_off, &s_w_knob_on, &s_w_knob,
                           &s_green_text, &s_red_text, &s_mono, &s_rail, &s_swatch, &s_chip_destructive,
                           &s_host_geom, &s_host_line, &s_host_dot, &s_dot_green, &s_dot_line, &s_add_row,
-                          &s_host_col, &s_host_hint, &s_host_fail, &s_srow_wrap, &s_wrap_label };
+                          &s_host_col, &s_host_hint, &s_host_fail, &s_srow_wrap, &s_wrap_label, &s_dot_red, &s_dot_muted };
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
 
     lv_style_set_bg_color(&s_bg, HEX(UI_TK_BG));
@@ -178,6 +178,8 @@ void ui_comp_init(void)
     lv_style_set_bg_opa(&s_host_dot, LV_OPA_COVER);
     lv_style_set_bg_color(&s_dot_green, HEX(UI_TK_GREEN));
     lv_style_set_bg_color(&s_dot_line, HEX(UI_TK_LINE));
+    lv_style_set_bg_color(&s_dot_red, HEX(UI_TK_RED));
+    lv_style_set_bg_color(&s_dot_muted, HEX(UI_TK_MUTED));
     lv_style_set_layout(&s_host_col, LV_LAYOUT_FLEX);
     lv_style_set_flex_flow(&s_host_col, LV_FLEX_FLOW_COLUMN);
     lv_style_set_pad_row(&s_host_col, 4);
@@ -938,6 +940,35 @@ void ui_host_row_dot(lv_obj_t *row, int dot)
     lv_obj_remove_style(d, &s_dot_line, 0);
     if (dot >= 0) lv_obj_add_style(d, dot ? &s_dot_green : &s_dot_line, 0);
     set_flag(d, LV_OBJ_FLAG_HIDDEN, dot < 0);
+}
+
+/* ------------------------------------------------------- session bar */
+lv_obj_t *ui_session_bar(lv_obj_t *scr)
+{
+    lv_obj_t *b = bar(scr, UI_TK_SESSION_BAR_H, &s_side_bottom);
+    lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 0);
+    return b;
+}
+
+lv_obj_t *ui_dot(lv_obj_t *parent)
+{
+    lv_obj_t *d = plain(parent);
+    lv_obj_add_style(d, &s_host_dot, 0);
+    ui_dot_tone(d, UI_TONE_MUTED);
+    return d;
+}
+
+void ui_dot_tone(lv_obj_t *dot, ui_tone_t tone)
+{
+    if (!dot) return;
+    if (tone != UI_TONE_GREEN && tone != UI_TONE_RED) tone = UI_TONE_MUTED;
+    uintptr_t want = (uintptr_t)tone + 1;
+    if ((uintptr_t)lv_obj_get_user_data(dot) == want) return;   /* a set with the same tone does nothing */
+    lv_obj_set_user_data(dot, (void *)want);
+    lv_obj_remove_style(dot, &s_dot_green, 0);
+    lv_obj_remove_style(dot, &s_dot_red, 0);
+    lv_obj_remove_style(dot, &s_dot_muted, 0);
+    lv_obj_add_style(dot, tone == UI_TONE_GREEN ? &s_dot_green : tone == UI_TONE_RED ? &s_dot_red : &s_dot_muted, 0);
 }
 
 void ui_host_row_note(lv_obj_t *row, const char *note, bool busy, const char *hint)

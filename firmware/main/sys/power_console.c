@@ -38,7 +38,7 @@ static int usage(void)
            "power go active|dim|off|radio-off|deep-idle|hibernate | "
            "power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate|radio-off|radio-after|checkin|hib-checkin <n> | "
            "power checkin [rebind] | power checkin hibernate [keep|nokeep] [usb] [chain <n>] [exp <mask>] | power checkins | power phases [clear] | "
-           "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch | "
+           "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch [<x> <y>] | "
            "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s> | backstop [<s> <n>] | probe <s> <n>] | power boot | "
            "power rails | power rail speaker|camera|usb|ext5v on|off | power imu [suspend]\n");
     return 1;
@@ -219,7 +219,13 @@ static int cmd_power(int argc, char **argv)
         return 0;
     } else if (strcmp(argv[1], "sim") == 0 && argc >= 3) {
         int n;
-        if (strcmp(argv[2], "touch") == 0 && argc == 3) { power_sim_touch(); return 0; }
+        if (strcmp(argv[2], "touch") == 0 && argc == 3) { power_sim_touch(-1, -1); return 0; }
+        if (strcmp(argv[2], "touch") == 0 && argc == 5) {   /* at a point: the terminal's top tap zone (Task 10) */
+            int x, y;
+            if (!parse_int(argv[3], &x) || !parse_int(argv[4], &y) || x < 0 || y < 0) return usage();
+            power_sim_touch(x, y);
+            return 0;
+        }
         if (strcmp(argv[2], "battery") == 0 && argc == 4) {
             if (strcmp(argv[3], "off") == 0) { power_sim_battery(-1); printf("sim battery: off\n"); return 0; }
             if (!parse_int(argv[3], &n) || n < 0 || n > 100) return usage();
@@ -335,7 +341,7 @@ void power_console_init(void)
         .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort | "
                 "light [test bind|user|reprobe|raw m b r g b] | go <state> | set <name> <n> | set defaults | settings | "
                 "checkin [rebind] | checkin hibernate [keep|nokeep] | checkins | "
-                "sim battery <pct|off> | sim idle <s> | sim touch | touch | wakes | hib ... | boot | rails | rail <n> on|off | imu",
+                "sim battery <pct|off> | sim idle <s> | sim touch [x y] | touch | wakes | hib ... | boot | rails | rail <n> on|off | imu",
         .func = cmd_power,
     };
     debug_console_register(&cmd);

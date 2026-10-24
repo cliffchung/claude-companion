@@ -672,3 +672,76 @@ Final state: `ts off`, `power set defaults`, DHCP, Host link connected on the LA
 - Boot log: `cc_link: host keys: N known for the Host` after the migration (a count). Device after the flash: "host
   keys: 1 known for the Host", link connected on the LAN, booted unaided after `idf.py flash`; final state as found.
 - `idf.py size`: image 7,251,867 B; DIRAM 189,824 B.
+
+## Task 10: session bar for the take-over and the SSH session
+
+**Shape.** `ui_terminal.c` keeps the pty pipeline and loses the hot zones, the 21-key side column, the status strip
+with the red X, the long-press menu and the "Ctrl+] to leave" toast. One session bar (`ui_session_bar`, new in
+ui_comp: 56 px, panel, a 1 px line under it) lies over the top of the terminal: "← Leave", the name (the session's
+for a take-over, the entry's for SSH), a 12 px link dot (`ui_dot` / `ui_dot_tone`, new), the state text, "⌨" (no
+physical keyboard only), then the chips Esc, Tab, ^C, ↑ and ↓. Palette: `UI_TK_TERM_FG/BG`, `ui_tk_term_ansi`, a
+steady block cursor in `UI_TK_TERM_CURSOR`, `fonts_set_term_line_height(UI_TK_TERM_LINE_H)` at open. Nothing reads the
+saved terminal colours, cursor style or blink any more. Timers: the 16 ms pump (made at open, deleted in
+`scr_delete_cb`) and the bar's 3 s one-shot (deleted in `scr_delete_cb` if armed). No blink timer exists unless a
+caller asks for a blinking cursor (`term_view_set_cursor`), and none does.
+
+**Device gate (Tab5, LAN Host link, Tailscale off; test session `companion-test-t10` only).** Three flashes in
+one session (the last two for the `power sim touch x y` verb below).
+
+| Check | Result | |
+|---|---|---|
+| `ui heapmin` over `companion takeover` (≥ 60 s) then `key ctrl ]` | min **92,699 B** (85 s, with ^K/^T), 102,575 B (≈110 s), **93,771 B** (60 s, with the taps and Review Focus 2); largest 63,488 B | ≥ 40,960 B: pass |
+| `ui timers`, take-over open | 16 ms pump and 10 ms drain running; 3 × 16 ms LVGL paused; the 3000 ms one-shot only while the bar shows; no 550 ms, no 300 ms, no 30 s | pass |
+| `ui timers` after `key ctrl ]` | no running 16 ms timer (only paused ones); the 3000 ms toast, 300 ms tick and 30 s vitals of Sessions | pass |
+| `key ctrl k`, `key ctrl t` in the take-over | no overlay, no Terminal list (screenshots); ^K proved by `key text blue`, Left × 2, `key ctrl k`: the prompt read "bl"; ^T shows nothing in a session with no todos | pass (^T: sent, no visible Host effect) |
+| The bar at open | screenshot: ← Leave, companion-test-t10, green dot, Esc Tab ^C ↑ ↓ (no ⌨: keyboard present); hidden by the next screenshot | pass |
+| Top-zone tap | `power sim touch 640 400`: no 3000 ms timer; `power sim touch 640 20`: the 3000 ms one-shot armed and the bar shown (screenshot), the prompt still empty (no byte sent) | pass |
+| Review Focus 2 | `power go off`, `power sim touch 640 20` (in the top zone), `power wakes`: `touch swallowed=1`; state active, the pump still running, no 3000 ms timer (no bar), terminal open with the prompt empty (screenshot) | pass |
+| SSH to a non-Host box: `key ctrl ]` confirm, disconnect | not run (P4C-8): preview `ssh` | PENDING |
+| Boot after flashing | flashes 1 and 2 booted unaided; flash 3 stayed silent until an esptool RTS reset (`esptool.py --after hard_reset read_mac`) | note |
+| `idf.py size` (Task 9 fix round 3 → Task 10) | image 7,251,867 → 7,251,555 B (−312); DIRAM 189,824 → 189,944 B (+120) | |
+
+Final state: LAN Host link connected, `ts off`, `power set defaults`, DHCP, brightness 80 and keyboard light
+`0 0 0080ff 1 5` (as found), test session stopped. Screenshots in the scratchpad `shots10/` only. No navigation key
+was sent while Sessions showed (P4C-9); the take-over was opened with `companion takeover` only.
+
+**Rulings and deviations:**
+- T10-1: the bar stays up while the session connects ("Connecting…", muted, dot muted) and the 3 s starts when the
+  session is live; §5.2's "3 s when the session opens" counts from the connect. A lost link keeps it up the same way.
+- T10-2: "link lost" is Wi-Fi down, or for a take-over the Host link down (`cc_link_connected`). The pump reads both on
+  each run and writes only on a change (no new timer). Dot: green live, red lost, muted connecting.
+- T10-3: the bar lies over the terminal; showing or hiding it resizes nothing (no window-size change reaches the
+  remote side). While shown it covers the top 56 px (under two rows).
+- T10-4: ↑ and ↓ are two chips, one key each. The chips send through `term_keys_encode` and skip `hk_takeover`; a
+  chip press re-arms the 3 s. No key shows the bar (§5.2).
+- T10-5: "⌨" is `LV_SYMBOL_KEYBOARD` from the icon fallback (U+2328 isn't in the faces). It toggles the soft keyboard
+  and the terminal shrinks above it.
+- T10-6: the top-80 px tap is LV_EVENT_RELEASED on the terminal within the tap slop, not CLICKED: a CLICKED handler
+  makes the full-screen terminal a control in the touch check, overlapping the chips. The check is unchanged. Touch
+  never sends a byte.
+- T10-7: an SSH session that ends goes back to Terminal at once. SSH_ST_ERROR notes the reason in red on the host's
+  row (`ui_hosts_note_failure`, as Task 9: the Host-key refusal and B6's key file included) and toasts "Disconnected
+  from <host>" only if the session had been live; CLOSED toasts and goes back. The old screen kept a red "[SSH
+  connection failed …]" line until the user left. Preview `terminal fail` now asserts the refused session returns to
+  Terminal by itself.
+- T10-8: "Disconnect from <host>?" has no body and a primary (not destructive) Disconnect, like Settings › Network's
+  Wi-Fi disconnect. Enter on the fresh dialog is Cancel (the shared confirm's first control), so an accidental Ctrl+]
+  then Enter keeps the session; Tab, Tab, Enter disconnects. Deviation from the brief's device line "`key enter`
+  disconnects" (that leg is PENDING anyway).
+- T10-9: the confirm's answer reads `s_ctx`, not a pointer it was given: if the session ended while it was up, the
+  answer does nothing.
+- T10-10: no back guard on the terminal: only Leave and Ctrl+] ask. A console `ui home` or a `ui_nav_back` from code
+  still closes an SSH session directly.
+- T10-11: `ui_terminal_open_command` takes the session's name (`title`) for the bar; Sessions passes `s->name`.
+- T10-12: term_view drew Claude's salmon mascot blocks in the saved foreground (the old "Orange EL" preset 0). Gone:
+  Claude Code's colours are drawn as sent, and term_view reads no settings.
+- T10-13: `fonts_init` still sets the terminal line height from `term_line_height` at boot (a size, not a colour); the
+  terminal sets `UI_TK_TERM_LINE_H` at open, and Task 11's migration sets the field to 32.
+- T10-14: `power sim touch [<x> <y>]` (new form) presses at a screen point. Both forms now map the screen point to
+  the raw point LVGL rotates (`sim_raw_point`, ROTATION_90): the old form passed the selected card's screen
+  coordinates as raw ones, which only the wake tests used (a wake is swallowed wherever it lands).
+- T10-15: the preview builds the real `ui_terminal.c` and `term_keys.c` over a stub SSH client (FreeRTOS and
+  esp_timer stubs). The old terminal stub's P4C-10 gate moved into the stub's start. `sessions tap-resort` needs one
+  more step for the stub take-over to end (it ends at once, as the old stub's did, and now toasts "Session closed").
+- T10-16: strings with no users left are deleted: `TERM_MENU`, `TERM_CLEAR`, `TERM_SCROLL_END`, `TERM_HINT` (the
+  hot-zone hint) and `TERM_CLOSE_Q`. The terminal's toasts and banners are `STR_TERM_*`, saying "host".

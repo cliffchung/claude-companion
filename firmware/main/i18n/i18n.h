@@ -27,9 +27,6 @@ X(EDIT, "Edit") \
 X(CONNECT, "Connect") \
 X(PLAY, "Play") \
 X(PAUSE, "Pause") \
-X(TERM_MENU, "Terminal") \
-X(TERM_CLEAR, "Clear the screen") \
-X(TERM_SCROLL_END, "Jump to the newest line") \
 X(GESTURE_NOTE, "Swipe right to go back. Long-press a tile for its shortcut.") \
 X(SET_SECURITY, "Security") \
 X(CREDS_ON_SD, "Keep SSH servers on the TF card") \
@@ -63,7 +60,6 @@ X(SSH_CONN_FAILED, "SSH connection failed.") \
 X(SSH_AUTH_FAILED, "Authentication failed.") \
 X(SSH_HOSTKEY_NEW, "New host key. Trust and continue?") \
 X(SSH_HOSTKEY_CHANGED, "HOST KEY CHANGED! Possible attack. Continue?") \
-X(TERM_CLOSE_Q, "Disconnect SSH and return?") \
 X(KEYBOARD, "Keyboard") \
 X(PHYS_KBD_DETECTED, "Physical keyboard detected") \
 X(USB_DRIVE, "USB Drive") \
@@ -203,7 +199,6 @@ X(USB_FORMAT, "Format USB (FAT32)") \
 X(USB_FORMAT_WARN, "Formatting will erase all files on the USB drive.") \
 X(USB_FORMATTED, "USB drive formatted") \
 X(BATTERY_PCT, "Battery %d%%") \
-X(TERM_HINT, "Edges: top=status, left=controls, right=keyboard") \
 X(SOFT_KBD, "Soft Keyboard") \
 X(REBOOT, "Reboot") \
 X(REBOOT_Q, "Reboot now?") \
@@ -436,6 +431,24 @@ X(HOSTS_NOT_LISTED, "Your Claude host isn't listed here: its sessions are on the
 X(HOSTS_LEAVE_NOTE, "Ctrl+] leaves an SSH session.") \
 X(HOSTS_NO_WIFI, "No Wi-Fi") \
 X(HOSTS_GONE, "This host was removed") \
+X(TERM_LEAVE, "\xe2\x86\x90 Leave") \
+X(TERM_KEY_ESC, "Esc") \
+X(TERM_KEY_TAB, "Tab") \
+X(TERM_KEY_CTRL_C, "^C") \
+X(TERM_KEY_UP, "\xe2\x86\x91") \
+X(TERM_KEY_DOWN, "\xe2\x86\x93") \
+X(TERM_STILL_RUNNING, "Session still running on the host") \
+X(TERM_OPENING, "Opening the session on the host\xe2\x80\xa6") \
+X(TERM_OPENING_HINT, "Ctrl+] or \xe2\x86\x90 Leave returns to Sessions; the session keeps running.") \
+X(TERM_CONNECTING_TO, "Connecting to %s@%s:%d\xe2\x80\xa6") \
+X(TERM_SSH_HINT, "Ctrl+] or \xe2\x86\x90 Leave disconnects.") \
+X(TERM_DISCONNECT_Q, "Disconnect from %s?") \
+X(TERM_LINK_LOST, "Link lost, reconnecting\xe2\x80\xa6") \
+X(TERM_DISCONNECTED_FROM, "Disconnected from %s") \
+X(TERM_SESSION_CLOSED, "Session closed") \
+X(TERM_SESSION_ENDED, "The session ended (status %d)") \
+X(TERM_CANT_OPEN, "Can't open the session") \
+X(TERM_NOT_VERIFIED, "The Host link isn't verified yet; try again in a moment") \
 X(HF_TITLE_ADD, "Add host") \
 X(HF_TITLE_EDIT, "Edit host") \
 X(HF_BACK_TERMINAL, "Terminal") \

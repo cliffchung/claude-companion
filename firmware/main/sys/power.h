@@ -62,7 +62,8 @@ void power_settings_defaults(void);         /* every Plan 2 power setting back t
 void power_settings_text(char *buf, size_t cap);   /* name=value ... on one line */
 void power_sim_battery(int pct);            /* RAM only: pct >= 0 overrides battery_pct and on_battery; < 0 ends it */
 void power_sim_idle(int seconds);           /* moves last input (and off_since when Off) that far back */
-bool power_sim_touch(void);                 /* a press and release at the selected card, through a virtual pointer */
+/* A press and release through a virtual pointer: at x,y, or (x < 0) at the selected card (the screen centre without one). */
+bool power_sim_touch(int32_t x, int32_t y);
 void power_touch_text(char *buf, size_t cap);   /* "touch: poll on|off, reads=<n> errors=<n> last=..." */
 void power_wakes_print(void);               /* the last 8 wakes: "<seconds ago> <reason> swallowed=<n>" */
 void power_touch_poll_pause(bool pause);    /* bench: Off with the poll stopped */

@@ -5,6 +5,7 @@
 #include "ui/ui_sessions.h"
 #include "ui/ui_settings.h"
 #include "ssh/device_key.h"
+#include "ssh/ssh_client.h"
 #include "ui/hotkeys.h"
 #include "checks.h"
 #include "src/misc/lv_timer_private.h"
@@ -40,7 +41,6 @@ esp_err_t device_key_pubkey_line(char *out, size_t cap) { snprintf(out, cap, "%s
 int wifi_mgr_channel(void) { return 6; }
 uint32_t sysinfo_uptime_s(void) { return 5025; }
 bool sysinfo_charging(void) { return env_int("PREVIEW_CHG", 0) != 0; }
-bool g_ssh_session_active=false;
 const char *sysinfo_power_src_text(void) { return "USB-C"; }
 const char *wifi_mgr_ssid(void) { return "Clientre Wi-Fi"; }
 bool sd_is_mounted(void) { return true; }
@@ -162,7 +162,7 @@ bool fs_read_all(const char *path, char **out, size_t *len, size_t max) {
     *len = strlen(*out);
     return true;
 }
-bool keyboard_any_present(void) { return true; }
+bool keyboard_any_present(void) { return env_int("PREVIEW_KBD", 1) != 0; }   /* PREVIEW_KBD=0: touch only */
 void keyboard_inject(const key_event_t *ev) { (void)ev; }
 void esp_restart(void) {}
 void bsp_display_brightness_set(int v) {}
@@ -243,21 +243,50 @@ bool ssh_known_host_forget(const char *host, int port) {
     s_kh_pinned = false; return had;
 }
 bool tailscale_resolve(const char *host, char *ip, size_t cap) { (void)host; if (cap) ip[0] = 0; return false; }
-/* The SSH Terminal stub: as ssh_task, an interactive session whose server presents a key the link pinned for the Host
-   is refused (P4C-10). "alias-box" (10.20.30.40, an address the link doesn't know) is the Host reached another way:
-   it presents the Host's key. */
-static int s_term_opens, s_term_idx = -1;
+/* The SSH client under the real ui_terminal.c (Task 10). Each start is recorded. As ssh_task, an interactive session
+   whose server presents a key the link pinned for the Host is refused before it authenticates (P4C-10): "alias-box"
+   (10.20.30.40, an address the link doesn't know) is the Host reached another way and presents the Host's key. Any
+   other start connects at once, except that with s_ssh_autoclose (the Sessions cases) a take-over ends at once, as
+   the old terminal stub's did. Bytes sent are kept in s_ssh_sent. */
+struct ssh_client { ssh_data_cb_t data; ssh_state_cb_t state; void *user; };
+static int s_term_opens, s_term_idx = -1, s_ssh_stops;
+static bool s_ssh_autoclose = true;
+static char s_ssh_sent[256]; static size_t s_ssh_sent_n;
+static ssh_client_t *s_ssh_live;
 static const uint8_t k_pv_host_key[32] = { 0xAB, 0xAB, 0xAB, 0xAB, 1, 2, 3, 4 };
-lv_obj_t *ui_terminal_create(void *p) {
-    s_term_opens++; s_term_idx = (int)(intptr_t)p;
-    const server_t *e = server_store_get(s_term_idx);
-    uint8_t keys[HF_HOSTKEYS_MAX][32], met[32] = { 0x11, 0x22 };
-    int n = hf_hostkeys_add(keys, 0, k_pv_host_key);
-    if (e && !strcmp(e->host, "10.20.30.40")) memcpy(met, k_pv_host_key, 32);
-    hf_gate_t g = hf_shell_gate(true, HF_DENY_FOUND, met, (const uint8_t (*)[32])keys, n);   /* as ssh_task's first step */
-    if (g == HF_GATE_REFUSE_HOST) ui_hosts_note_failure(s_term_idx, tr(STR_HOSTS_NOT_LISTED));
-    return ui_screen_base();
+ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data, ssh_state_cb_t state, ssh_hostkey_cb_t hk, void *user) {
+    (void)hk;
+    ssh_client_t *c = calloc(1, sizeof(*c));
+    c->data = data; c->state = state; c->user = user;
+    s_ssh_live = c;
+    if (!p->cmd[0]) {
+        s_term_opens++; s_term_idx = -1;
+        for (int i = 0; i < server_store_count(); i++) {
+            const server_t *e = server_store_get(i);
+            if (e && !strcmp(e->host, p->host) && e->port == p->port) { s_term_idx = i; break; }
+        }
+        uint8_t keys[HF_HOSTKEYS_MAX][32], met[32] = { 0x11, 0x22 };
+        int n = hf_hostkeys_add(keys, 0, k_pv_host_key);
+        if (!strcmp(p->host, "10.20.30.40")) memcpy(met, k_pv_host_key, 32);
+        hf_gate_t g = hf_shell_gate(true, HF_DENY_FOUND, met, (const uint8_t (*)[32])keys, n);   /* ssh_task's first step */
+        if (g == HF_GATE_REFUSE_HOST) { state(SSH_ST_ERROR, tr(STR_HOSTS_NOT_LISTED), user); return c; }
+    }
+    state(SSH_ST_CONNECTING, NULL, user);
+    state(p->cmd[0] && s_ssh_autoclose ? SSH_ST_CLOSED : SSH_ST_CONNECTED, NULL, user);
+    return c;
 }
+void ssh_client_send(ssh_client_t *c, const uint8_t *d, size_t n) {
+    (void)c;
+    if (s_ssh_sent_n + n < sizeof(s_ssh_sent)) { memcpy(s_ssh_sent + s_ssh_sent_n, d, n); s_ssh_sent_n += n; s_ssh_sent[s_ssh_sent_n] = 0; }
+}
+void ssh_client_resize(ssh_client_t *c, int cols, int rows) { (void)c; (void)cols; (void)rows; }
+void ssh_client_stop(ssh_client_t *c) { s_ssh_stops++; if (s_ssh_live == c) s_ssh_live = NULL; free(c); }
+int ssh_client_exit_status(ssh_client_t *c) { (void)c; return 0; }
+/* The remote side writes (the pump draws it on its next run). */
+static void pv_ssh_feed(const char *t) { assert(s_ssh_live); s_ssh_live->data((const uint8_t *)t, strlen(t), s_ssh_live->user); }
+static void pv_ssh_state(ssh_state_t st, const char *msg) { assert(s_ssh_live); s_ssh_live->state(st, msg, s_ssh_live->user); }
+/* The address the link verified the Host on (the take-over connects there, L25). */
+bool cc_link_verified_address(char *out, size_t cap) { snprintf(out, cap, "192.168.77.20"); return true; }
 pr_src_t power_source(int *pct, bool *charging)
 {
     bool chg = env_int("PREVIEW_CHG", 0) != 0;
@@ -275,8 +304,6 @@ power_info_t sysinfo_power(void)
 static key_sink_t preview_sink; static bool preview_have_sink;   /* the sessions cases drive its key sink */
 void keyboard_set_sink(const key_sink_t *sink) { if (sink) { preview_sink = *sink; preview_have_sink = true; } else preview_have_sink = false; }
 void keyboard_clear_sink(void *user) { if (preview_have_sink && preview_sink.user == user) preview_have_sink = false; }
-void ui_terminal_open_command(int i, const char *c, void (*cb)(void *), void *ctx) { (void)i; (void)c; if (cb) cb(ctx); }
-bool ui_terminal_is_top(void) { return false; }   /* the preview builds no terminal screen yet */
 /* companion link: Sessions reads PREVIEW_FIXTURE (default agents_synthetic.json; "loading": no list yet;
    "none": an empty list) from the host test fixtures */
 static cc_session_t s_preview_sessions[16];
@@ -1016,9 +1043,11 @@ static int sessions_case(lv_display_t *d, const char *v) {
         lv_obj_send_event(r, LV_EVENT_CLICKED, NULL); step(d, 400);
         assert(s_check_calls == 0 && ui_nav_is_top(ui_sessions_create));
         assert(row_selected(row_named(s, sel)) && find_label_x(s, sel, 440));
-        /* a whole tap on the selected row still opens it (the check runs; the stub terminal closes at once) */
+        /* a whole tap on the selected row still opens it (the check runs; the stub session ends at once) */
         lv_obj_send_event(r, LV_EVENT_PRESSED, NULL);
         lv_obj_send_event(r, LV_EVENT_CLICKED, NULL); step(d, 400);
+        step(d, 50);   /* the take-over's pump sees the stub's end and goes back */
+        assert(!ui_terminal_is_top() && ui_nav_is_top(ui_sessions_create));
         assert(s_check_calls == 1);
         s = lv_screen_active();
     } else if (!strcmp(v, "resort-scroll")) {
@@ -1837,9 +1866,10 @@ static int terminal_case(lv_display_t *d, const char *v) {
         ui_nav_refresh(); step(d, 200);
         lv_obj_t *al = host_row(hosts_body(lv_screen_active()), "alias-box");
         if (!al) { printf("check %s: FAIL the alias isn't listed (the address check can't know it)\n", name); return 1; }
-        lv_obj_send_event(al, LV_EVENT_CLICKED, NULL); step(d, 200);
+        lv_obj_send_event(al, LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 50);
         if (s_term_opens != 2 || s_term_idx != s_preview_server_n - 1) { printf("check %s: FAIL the alias didn't connect\n", name); return 1; }
-        ui_nav_back(); step(d, 200);
+        /* Task 10: a session refused at connect goes back to Terminal by itself (the session bar swallows nothing) */
+        if (!ui_nav_is_top(ui_hosts_create)) { printf("check %s: FAIL the refused session didn't return to Terminal\n", name); return 1; }
         al = host_row(hosts_body(lv_screen_active()), "alias-box");
         lv_obj_t *an = host_note(al);
         if (!red(an) || strncmp(lv_label_get_text(an), "Your Claude host isn't listed here", 34)) {
@@ -2140,6 +2170,169 @@ static int keyboard_settings_case(lv_display_t *d) {
     return r;
 }
 
+/* ------------------------------------------------------------ take-over and SSH session (Task 10) */
+static int s_takeover_closed;
+static void takeover_closed_cb(void *ctx) { (void)ctx; s_takeover_closed++; }
+/* Timers under 300 ms that run, LVGL's own and the input devices' left out. */
+static int fast_timers(unsigned period) {
+    int n = 0;
+    lv_display_t *d = lv_display_get_default();
+    for (lv_timer_t *t = lv_timer_get_next(NULL); t; t = lv_timer_get_next(t)) {
+        if (t->paused || t == lv_display_get_refr_timer(d) || t == lv_anim_get_timer()) continue;
+        bool indev = false;
+        for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in)) if (t == lv_indev_get_read_timer(in)) indev = true;
+        if (!indev && t->period == period) n++;
+    }
+    return n;
+}
+/* The session bar: the bar that holds the "← Leave" chip. */
+static lv_obj_t *session_bar_of(lv_obj_t *scr) {
+    lv_obj_t *l = find_label(scr, "\xe2\x86\x90 Leave", false);
+    return l ? lv_obj_get_parent(lv_obj_get_parent(l)) : NULL;
+}
+/* As keyboard_dispatch: the UI's routing first (a modal takes every key), then the terminal's sink. */
+static void pv_key(key_event_t ev) {
+    if (!ui_keyboard_route(&ev, preview_have_sink) && preview_have_sink && !ui_keyboard_owns_input()) preview_sink.key(&ev, preview_sink.user);
+}
+static void tap(lv_display_t *d, lv_indev_t *in, int x, int y) {
+    pointer_move(in, x, y, true); pointer_move(in, x, y, false); step(d, 20);
+}
+static const char k_takeover_sample[] =
+    "\x1b[38;2;215;119;87m \xe2\x96\x90\xe2\x96\x9b\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x9c\xe2\x96\x8c\x1b[0m   Claude Code\r\n"
+    "\x1b[38;2;215;119;87m\xe2\x96\x9d\xe2\x96\x9c\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x9b\xe2\x96\x98\x1b[0m  \x1b[90m~/src/companion-test\x1b[0m\r\n\r\n"
+    "\x1b[1m\xe2\x8f\xba\x1b[0m What is your favourite colour?\r\n\r\n"
+    "\x1b[90m\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\x1b[0m\r\n"
+    "\x1b[90m\xe2\x94\x82\x1b[0m > \x1b[32mgreen\x1b[0m, \x1b[34mblue\x1b[0m or \x1b[31mred\x1b[0m\r\n";
+
+static int takeover_case(lv_display_t *d, const char *v) {
+    char name[48];
+    snprintf(name, sizeof(name), "takeover%s%s", v[0] ? "-" : "", v);
+    bool nokbd = !strcmp(v, "nokbd");
+    if (nokbd) setenv("PREVIEW_KBD", "0", 1);
+    lv_indev_t *in = lv_indev_create(); lv_indev_set_type(in, LV_INDEV_TYPE_POINTER); lv_indev_set_read_cb(in, pointer_read);
+    s_ssh_autoclose = false;
+    ui_nav_home(); step(d, 200);
+    ui_terminal_open_command(0, "~/.local/bin/claude attach 1a2b3c4d", "companion-test-colour", takeover_closed_cb, NULL);
+    step(d, 20);
+    lv_obj_t *s = lv_screen_active(), *bar = session_bar_of(s);
+    if (!ui_terminal_is_top() || !bar) { printf("check %s: FAIL no take-over with a session bar\n", name); return 1; }
+    pv_ssh_feed(k_takeover_sample); step(d, 20);
+    if (!obj_shown(bar) || !find_label(bar, "companion-test-colour", false)) { printf("check %s: FAIL the bar doesn't show Leave and the name\n", name); return 1; }
+    if (lv_obj_get_height(bar) != UI_TK_SESSION_BAR_H) { printf("check %s: FAIL the bar is %d px\n", name, (int)lv_obj_get_height(bar)); return 1; }
+    lv_obj_t *esc = find_clickable_shown(bar, "Esc");
+    assert(esc && lv_obj_get_height(esc) == UI_TK_BAR_CTRL && find_clickable_shown(bar, "Tab") && find_clickable_shown(bar, "^C") &&
+           find_clickable_shown(bar, "\xe2\x86\x91") && find_clickable_shown(bar, "\xe2\x86\x93"));
+    if ((find_clickable_shown(bar, LV_SYMBOL_KEYBOARD) != NULL) != nokbd) { printf("check %s: FAIL the keyboard chip with a keyboard %s\n", name, nokbd ? "absent" : "present"); return 1; }
+    if (fast_timers(550) || fast_timers(16) != 1) { printf("check %s: FAIL timers: blink %d, 16 ms %d\n", name, fast_timers(550), fast_timers(16)); return 1; }
+    if (pv_amber_pixels(s)) { printf("check %s: FAIL amber on the take-over\n", name); return 1; }
+    int r = pv_run_checks(d, s, name, false, 0);   /* the bar up: touch targets, fit, idle, timers (only the 16 ms pump) */
+    if (nokbd) {
+        click_label(d, bar, LV_SYMBOL_KEYBOARD);
+        if (!softkbd_visible() || lv_obj_get_height(lv_obj_get_child(s, 0)) >= 720) { printf("check %s: FAIL the keyboard chip\n", name); return 1; }
+        click_label(d, bar, LV_SYMBOL_KEYBOARD);
+        assert(!softkbd_visible());
+        return r;
+    }
+    step(d, 3100);
+    if (obj_shown(bar)) { printf("check %s: FAIL the bar is still up after 3 s\n", name); return 1; }
+    if (fast_timers(3000)) { printf("check %s: FAIL the hide timer is still armed\n", name); return 1; }
+    if (!strcmp(v, "idle")) {
+        unsigned px = pv_idle_pixels(d, 2000);
+        if (px) { printf("check %s: FAIL %u px redrawn with the bar hidden (a cursor blink?)\n", name, px); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        printf("%s: bar hidden after 3 s, 0 px redrawn over 2 s, no blink timer\n", name);
+        return r;
+    }
+    /* no key shows the bar, and every key goes to the Host */
+    size_t sent = s_ssh_sent_n;
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'a' }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'k', .mods = MOD_CTRL }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 't', .mods = MOD_CTRL }); step(d, 20);
+    if (obj_shown(bar) || s_ssh_sent_n != sent + 3 || memcmp(s_ssh_sent + sent, "a\x0b\x14", 3)) { printf("check %s: FAIL a key showed the bar or didn't reach the Host\n", name); return 1; }
+    if (lv_screen_active() != s || lv_obj_get_child_count(lv_layer_top())) { printf("check %s: FAIL Ctrl+K / Ctrl+T acted on the device\n", name); return 1; }
+    /* a tap low on the screen does nothing; a tap in the top 80 px shows the bar for 3 s; neither sends a byte */
+    tap(d, in, 640, 400);
+    if (obj_shown(bar)) { printf("check %s: FAIL a tap at y=400 showed the bar\n", name); return 1; }
+    tap(d, in, 640, 20);
+    if (!obj_shown(bar)) { printf("check %s: FAIL a tap at y=20 didn't show the bar\n", name); return 1; }
+    if (s_ssh_sent_n != sent + 3) { printf("check %s: FAIL a tap sent bytes\n", name); return 1; }
+    step(d, 3100);
+    assert(!obj_shown(bar));
+    tap(d, in, 640, 70);   /* under the bar, still in the 80 px zone */
+    assert(obj_shown(bar));
+    /* the chips send their bytes */
+    click_label(d, bar, "Esc"); click_label(d, bar, "Tab"); click_label(d, bar, "^C"); click_label(d, bar, "\xe2\x86\x91"); click_label(d, bar, "\xe2\x86\x93");
+    if (memcmp(s_ssh_sent + sent + 3, "\x1b\t\x03\x1b[A\x1b[B", 9)) { printf("check %s: FAIL the chips' bytes\n", name); return 1; }
+    /* link lost: the bar stays up, red; back: hides after 3 s */
+    setenv("PREVIEW_WIFI", "0", 1); step(d, 20);
+    if (!find_label(bar, "Link lost, reconnecting\xe2\x80\xa6", false)) { printf("check %s: FAIL no link-lost state\n", name); return 1; }
+    r |= pv_run_checks(d, s, "takeover-link-lost", false, 0);
+    step(d, 3100);
+    assert(obj_shown(bar));
+    setenv("PREVIEW_WIFI", "1", 1); step(d, 20);
+    assert(!find_label(bar, "Link lost, reconnecting\xe2\x80\xa6", false));
+    step(d, 3100);
+    assert(!obj_shown(bar));
+    /* Ctrl+] leaves at once: nothing sent, the toast, the owner told, the pump gone */
+    sent = s_ssh_sent_n;
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+    if (ui_terminal_is_top() || s_ssh_sent_n != sent || s_takeover_closed != 1) { printf("check %s: FAIL Ctrl+] didn't leave\n", name); return 1; }
+    if (!find_label(lv_layer_top(), "Session still running on the host", false)) { printf("check %s: FAIL no \"still running\" toast\n", name); return 1; }
+    if (fast_timers(16)) { printf("check %s: FAIL the 16 ms pump outlived the take-over\n", name); return 1; }
+    printf("%s: bar with Leave and the name, hidden after 3 s; y=20 and y=70 taps show it, y=400 and keys don't; chips send; Ctrl+] leaves\n", name);
+    return r;
+}
+
+static int ssh_case(lv_display_t *d, const char *v) {
+    (void)v;
+    const char *name = "ssh";
+    s_ssh_autoclose = false;
+    preview_store_init();
+    server_t box = { .name = "box", .host = "192.168.1.60", .port = 22, .user = "pi", .use_key = true, .keypath = "device" };
+    s_preview_servers[s_preview_server_n++] = box;
+    int idx = s_preview_server_n - 1;
+    ui_nav_home(); step(d, 200);
+    ui_nav_push(ui_hosts_create, NULL); step(d, 200);
+    ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx); step(d, 20);
+    lv_obj_t *s = lv_screen_active(), *bar = session_bar_of(s);
+    if (!ui_terminal_is_top() || !bar || !find_label(bar, "box", false)) { printf("check %s: FAIL no SSH session with a bar naming the host\n", name); return 1; }
+    pv_ssh_feed("pi@box:~ $ "); step(d, 20);
+    int r = pv_run_checks(d, s, name, false, 0);
+    /* Ctrl+] through the sink asks; while it asks, keys go to the dialog, never to the box */
+    size_t sent = s_ssh_sent_n;
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+    lv_obj_t *top = lv_layer_top();
+    if (!find_label(top, "Disconnect from box?", false) || !find_clickable_shown(top, "Disconnect")) { printf("check %s: FAIL no \"Disconnect from box?\"\n", name); return 1; }
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'x' }); pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'c', .mods = MOD_CTRL }); step(d, 20);
+    if (s_ssh_sent_n != sent) { printf("check %s: FAIL a key reached the box under the confirm\n", name); return 1; }
+    r |= pv_run_checks(d, s, "ssh-confirm", false, 0);
+    click_label(d, top, "Cancel");
+    if (!ui_terminal_is_top() || find_label(top, "Disconnect from box?", false)) { printf("check %s: FAIL Cancel didn't stay\n", name); return 1; }
+    /* Enter on the fresh dialog is Cancel (the shared confirm's first control): an accidental Ctrl+] then Enter keeps the session */
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 20);
+    assert(ui_terminal_is_top() && !find_label(top, "Disconnect from box?", false));
+    /* "← Leave" asks the same; Disconnect leaves */
+    click_label(d, bar, "\xe2\x86\x90 Leave");
+    assert(find_label(top, "Disconnect from box?", false));
+    int stops = s_ssh_stops;
+    click_label(d, top, "Disconnect");
+    if (ui_terminal_is_top() || !ui_nav_is_top(ui_hosts_create) || s_ssh_stops != stops + 1 || fast_timers(16)) { printf("check %s: FAIL Disconnect didn't leave\n", name); return 1; }
+    /* from the keyboard: Ctrl+], Tab, Tab, Enter disconnects */
+    ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB });
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 20);
+    if (ui_terminal_is_top() || !ui_nav_is_top(ui_hosts_create)) { printf("check %s: FAIL Tab, Tab, Enter didn't disconnect\n", name); return 1; }
+    /* the box ends the session: back to Terminal with a toast */
+    ui_nav_push(ui_terminal_create, (void *)(intptr_t)idx); step(d, 20);
+    pv_ssh_state(SSH_ST_CLOSED, NULL); step(d, 20);
+    if (!ui_nav_is_top(ui_hosts_create) || !find_label(top, "Disconnected from box", false)) { printf("check %s: FAIL the end didn't go back with a toast\n", name); return 1; }
+    s_preview_server_n--;
+    printf("%s: Ctrl+] asks \"Disconnect from box?\", keys stay out of the box, Cancel and Enter stay, Leave then Disconnect leaves, Tab Tab Enter leaves\n", name);
+    return r;
+}
+
 int main(int argc,char **argv) {
     lv_init();
     int w=1280, h=720;
@@ -2220,6 +2413,8 @@ int main(int argc,char **argv) {
     if (!strcmp(name,"network-live")) return network_live_case(d);
     if (!strcmp(name,"net-sub-open")) return net_sub_open_case(d);
     if (!strcmp(name,"terminal")) return terminal_case(d, argc>2 ? argv[2] : "");
+    if (!strcmp(name,"takeover")) return takeover_case(d, argc>2 ? argv[2] : "");
+    if (!strcmp(name,"ssh")) return ssh_case(d, argc>2 ? argv[2] : "");
     if (!strcmp(name,"hostform")) return hostform_case(d, argc>2 ? argv[2] : "new");
     if (!strcmp(name,"settings-sub")) return settings_sub_case(d, argc>2 ? argv[2] : "networks", argc>3 ? argv[3] : "");
     fprintf(stderr, "preview: unknown case %s\n", argc>1 ? argv[1] : "(none)");

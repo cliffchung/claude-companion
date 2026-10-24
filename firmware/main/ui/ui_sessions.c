@@ -790,7 +790,7 @@ static void open_now(const cc_session_t *s)
     ESP_LOGI(TAG, "opening %s", s->id);
     power_hold(POWER_HOLD_TAKEOVER, true);   /* a take-over never dims or sleeps */
     cc_poll_set_rate(15);   /* the watch keeps feeding the keyboard light; nothing redraws */
-    ui_terminal_open_command(idx, cmd, session_closed_cb, NULL);
+    ui_terminal_open_command(idx, cmd, s->name, session_closed_cb, NULL);
 }
 
 static void enter_pressed(void)

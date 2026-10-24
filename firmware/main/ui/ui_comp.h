@@ -121,6 +121,14 @@ void ui_text_tone(lv_obj_t *label, ui_tone_t tone);   /* replaces the label's to
 void ui_text_mono(lv_obj_t *label);                    /* FONT_MONO: fingerprints, keys */
 lv_obj_t *ui_title(lv_obj_t *parent, const char *text);   /* the title role (a panel heading) */
 
+/* ---- take-over and SSH session ---- */
+/* The session bar (spec §5.2): 56 px, panel, a 1 px line underneath, at the top of scr; a flex row 16 px apart,
+ * 24 px margins. Its chips (ui_chip) hit its full height. */
+lv_obj_t *ui_session_bar(lv_obj_t *scr);
+/* A 12 px link dot: UI_TONE_GREEN, UI_TONE_RED, or muted for any other tone. A set with the same tone does nothing. */
+lv_obj_t *ui_dot(lv_obj_t *parent);
+void ui_dot_tone(lv_obj_t *dot, ui_tone_t tone);
+
 /* ---- dialogs ---- */
 /* A sheet of 64 px radio rows with an fg dot on `current` (-1: none). cb(index, ud) on a choice;
  * Esc or a tap outside closes it without a call. */

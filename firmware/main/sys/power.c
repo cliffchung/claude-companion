@@ -1012,7 +1012,21 @@ static void vptr_read(lv_indev_t *indev, lv_indev_data_t *data)
     data->state = s_vstate;
 }
 
-bool power_sim_touch(void)
+/* LVGL turns a pointer's raw point into screen coordinates (lv_display_rotate_point); the virtual pointer reports
+   the raw point that lands on screen point x,y. W and H are the screen's (rotated) width and height. */
+static void sim_raw_point(int32_t x, int32_t y, lv_point_t *raw)
+{
+    lv_display_t *d = lv_display_get_default();
+    int32_t W = lv_display_get_horizontal_resolution(d), H = lv_display_get_vertical_resolution(d);
+    switch (lv_display_get_rotation(d)) {
+    case LV_DISPLAY_ROTATION_90:  raw->x = y;         raw->y = W - 1 - x; break;
+    case LV_DISPLAY_ROTATION_180: raw->x = W - 1 - x; raw->y = H - 1 - y; break;
+    case LV_DISPLAY_ROTATION_270: raw->x = H - 1 - y; raw->y = x;         break;
+    default:                      raw->x = x;         raw->y = y;         break;
+    }
+}
+
+bool power_sim_touch(int32_t x, int32_t y)
 {
     dlock(__LINE__);
     if (!s_vptr) {
@@ -1022,12 +1036,11 @@ bool power_sim_touch(void)
         lv_indev_set_mode(s_vptr, LV_INDEV_MODE_EVENT);   /* read only when asked below */
         lv_indev_add_event_cb(s_vptr, indev_cb, LV_EVENT_ALL, NULL);
     }
-    int32_t x, y;
-    if (!ui_sessions_selected_center(&x, &y)) {
+    if (x < 0 && !ui_sessions_selected_center(&x, &y)) {
         x = lv_display_get_horizontal_resolution(NULL) / 2;
         y = lv_display_get_vertical_resolution(NULL) / 2;
     }
-    s_vpt.x = x; s_vpt.y = y;
+    sim_raw_point(x, y, &s_vpt);   /* x,y are screen coordinates (the display is rotated) */
     s_vstate = LV_INDEV_STATE_PRESSED;
     lv_indev_read(s_vptr);
     s_vstate = LV_INDEV_STATE_RELEASED;
