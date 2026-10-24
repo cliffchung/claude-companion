@@ -419,7 +419,21 @@ X(HOSTS_CONNECT_FAILED, "Couldn't start the connection. Try again.") \
 X(HF_ERR_NO_ADDRESS, "Enter the host's address") \
 X(HF_ERR_NO_USER, "Enter a user") \
 X(HF_ERR_BAD_PORT, "The port is a number from 1 to 65535") \
-X(HF_ERR_IS_HOST, "That's the Host: its sessions are on the Sessions screen.")
+X(HF_ERR_IS_HOST, "That's the Host: its sessions are on the Sessions screen.") \
+X(VOICE_TOO_SHORT, "Too short. Press Ctrl+Space, speak, then press it again.") \
+X(VOICE_NO_SPEECH, "No speech heard. Try again closer to the Tab5.") \
+X(VOICE_BUSY, "Still transcribing\xe2\x80\xa6") \
+X(VOICE_NEEDS_FIELD, "Voice input works in a session's answer field") \
+X(VOICE_NO_WHISPER, "whisper-cli isn't on the Host at the Whisper path. See README \xe2\x80\xba Set up voice input.") \
+X(VOICE_NO_MODEL, "The whisper model isn't on the Host at the model path. See README \xe2\x80\xba Set up voice input.") \
+X(VOICE_BAD_MODEL, "The Host couldn't load the whisper model. Download it again (README \xe2\x80\xba Set up voice input).") \
+X(VOICE_CANT_RUN, "whisper-cli didn't run on the Host. Check the Whisper path in Settings \xe2\x80\xba Host.") \
+X(VOICE_AUDIO_BAD, "The Host couldn't read the recording. Try again.") \
+X(VOICE_FAILED, "Transcription failed on the Host. Try again.") \
+X(VOICE_TIMEOUT, "The Host took too long to transcribe. Try again.") \
+X(VOICE_LINK_LOST, "Lost the connection to the Host. Try again.") \
+X(VOICE_MIC_FAILED, "The microphone didn't start. Restart the Tab5 and try again.") \
+X(VOICE_NO_MEMORY, "Not enough memory to record. Restart the Tab5 and try again.")
 
 typedef enum {
 #define X(id, en) STR_##id,
