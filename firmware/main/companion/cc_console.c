@@ -10,7 +10,7 @@
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
 #include "ui/ui.h"
-#include "ui/ui_dashboard.h"
+#include "ui/ui_sessions.h"
 #include "net/ts_host.h"
 #include "net/fast_rules.h"
 #include "esp_netif.h"
@@ -54,9 +54,9 @@ static char s_takeover_id[16];
 static void takeover_async(void *arg)
 {
     (void)arg;
-    int r = ui_dashboard_open_test_session(s_takeover_id);
-    if (r == UI_DASH_TEST_NOT_SHOWING) printf("takeover: dashboard not showing\n");
-    else if (r != UI_DASH_TEST_OK) printf("takeover: no companion-test-* card %s on the dashboard\n", s_takeover_id);
+    int r = ui_sessions_open_test_session(s_takeover_id);
+    if (r == UI_SESS_TEST_NOT_SHOWING) printf("takeover: Sessions not showing\n");
+    else if (r != UI_SESS_TEST_OK) printf("takeover: no companion-test-* row %s on Sessions\n", s_takeover_id);
 }
 
 static int cmd_companion(int argc, char **argv)

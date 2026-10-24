@@ -1,0 +1,162 @@
+[
+ {
+  "pid": 20000,
+  "id": "b0000000",
+  "cwd": "/Users/me/code/api",
+  "kind": "background",
+  "startedAt": 1792700000000,
+  "sessionId": "b0000000-0000-4000-8000-000000000000",
+  "name": "auth-refactor",
+  "state": "blocked"
+ },
+ {
+  "pid": 20001,
+  "id": "b0000001",
+  "cwd": "/Users/me/code/web",
+  "kind": "background",
+  "startedAt": 1792700060000,
+  "sessionId": "b0000001-0001-4001-8001-000000000001",
+  "name": "deps-bump",
+  "state": "blocked"
+ },
+ {
+  "pid": 20002,
+  "id": "b0000002",
+  "cwd": "/Users/me/code/infra",
+  "kind": "background",
+  "startedAt": 1792700120000,
+  "sessionId": "b0000002-0002-4002-8002-000000000002",
+  "name": "release-gate",
+  "state": "blocked"
+ },
+ {
+  "pid": 20003,
+  "id": "b0000003",
+  "cwd": "/Users/me/code/ci",
+  "kind": "background",
+  "startedAt": 1792700180000,
+  "sessionId": "b0000003-0003-4003-8003-000000000003",
+  "name": "flaky-tests",
+  "state": "working"
+ },
+ {
+  "pid": 20004,
+  "id": "b0000004",
+  "cwd": "/Users/me/code/site",
+  "kind": "background",
+  "startedAt": 1792700240000,
+  "sessionId": "b0000004-0004-4004-8004-000000000004",
+  "name": "docs-pass",
+  "state": "working"
+ },
+ {
+  "pid": 20005,
+  "id": "b0000005",
+  "cwd": "/Users/me/code/api",
+  "kind": "background",
+  "startedAt": 1792700300000,
+  "sessionId": "b0000005-0005-4005-8005-000000000005",
+  "name": "api-pagination",
+  "state": "working"
+ },
+ {
+  "pid": 20006,
+  "id": "b0000006",
+  "cwd": "/Users/me/code/edge",
+  "kind": "background",
+  "startedAt": 1792700360000,
+  "sessionId": "b0000006-0006-4006-8006-000000000006",
+  "name": "cache-warmup",
+  "state": "working"
+ },
+ {
+  "pid": 20007,
+  "id": "b0000007",
+  "cwd": "/Users/me/code/web",
+  "kind": "background",
+  "startedAt": 1792700420000,
+  "sessionId": "b0000007-0007-4007-8007-000000000007",
+  "name": "lint-sweep",
+  "state": "working"
+ },
+ {
+  "pid": 20008,
+  "id": "b0000008",
+  "cwd": "/Users/me/code/db",
+  "kind": "background",
+  "startedAt": 1792700480000,
+  "sessionId": "b0000008-0008-4008-8008-000000000008",
+  "name": "schema-migrate",
+  "state": "working"
+ },
+ {
+  "pid": 20009,
+  "id": "b0000009",
+  "cwd": "/Users/me/code/api",
+  "kind": "background",
+  "startedAt": 1792700540000,
+  "sessionId": "b0000009-0009-4009-8009-000000000009",
+  "name": "perf-trace",
+  "state": "idle"
+ },
+ {
+  "pid": 20010,
+  "id": "b000000a",
+  "cwd": "/Users/me/code/web",
+  "kind": "background",
+  "startedAt": 1792700600000,
+  "sessionId": "b000000a-000a-400a-800a-00000000000a",
+  "name": "i18n-strings",
+  "state": "idle"
+ },
+ {
+  "pid": 20011,
+  "id": "b000000b",
+  "cwd": "/Users/me/code/ci",
+  "kind": "background",
+  "startedAt": 1792700660000,
+  "sessionId": "b000000b-000b-400b-800b-00000000000b",
+  "name": "ci-matrix",
+  "state": "idle"
+ },
+ {
+  "pid": 20012,
+  "id": "b000000c",
+  "cwd": "/Users/me/code/ops",
+  "kind": "background",
+  "startedAt": 1792700720000,
+  "sessionId": "b000000c-000c-400c-800c-00000000000c",
+  "name": "log-rotation",
+  "state": "idle"
+ },
+ {
+  "pid": 20013,
+  "id": "b000000d",
+  "cwd": "/Users/me/code/api",
+  "kind": "background",
+  "startedAt": 1792700780000,
+  "sessionId": "b000000d-000d-400d-800d-00000000000d",
+  "name": "release-notes",
+  "state": "done"
+ },
+ {
+  "pid": 20014,
+  "id": "b000000e",
+  "cwd": "/Users/me/code/web",
+  "kind": "background",
+  "startedAt": 1792700840000,
+  "sessionId": "b000000e-000e-400e-800e-00000000000e",
+  "name": "dead-code",
+  "state": "done"
+ },
+ {
+  "pid": 20015,
+  "id": "b000000f",
+  "cwd": "/Users/me/code/lab",
+  "kind": "background",
+  "startedAt": 1792700900000,
+  "sessionId": "b000000f-000f-400f-800f-00000000000f",
+  "name": "old-spike",
+  "state": "failed"
+ }
+]

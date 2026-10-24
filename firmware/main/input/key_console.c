@@ -161,7 +161,7 @@ void key_console_init(void)
 {
     const esp_console_cmd_t ui_cmd = {
         .command = "ui",
-        .help = "ui refresh: rebuild the current screen; ui home: go to the dashboard; ui settings: open Settings; ui heapmin start|stop: internal RAM low over an action; ui timers: list LVGL timers",
+        .help = "ui refresh: rebuild the current screen; ui home: go to Sessions; ui settings: open Settings; ui heapmin start|stop: internal RAM low over an action; ui timers: list LVGL timers",
         .hint = NULL,
         .func = cmd_ui,
     };

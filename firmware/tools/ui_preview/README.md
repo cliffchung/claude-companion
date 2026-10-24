@@ -1,7 +1,7 @@
 # Firmware UI preview
 
 A headless macOS renderer that compiles the actual LVGL, fonts, tokens, components (`ui_comp`),
-dashboard and settings sources at 1280 × 720. It uses mock hardware responses and stub screens for
+Sessions and settings sources at 1280 × 720. It uses mock hardware responses and stub screens for
 unrelated features. It does not connect to Wi-Fi, Tailscale or a device, and does not verify touch
 hardware, networking or display performance. Stub data only: never real sessions.
 
@@ -22,9 +22,9 @@ firmware/tools/ui_preview/run_all.sh "$PV"     # every case; PNGs in $PV/png
 | `boot` | The splash before `fonts_init()`/`ui_init()`: logo and name in fg, "Starting…" muted, on bg; no redraw once drawn; the hand-off deletes it |
 | `sleep` | The pre-Hibernate notice |
 | `nav` | Pushes Settings and a component gallery from home; each probe screen's create function asserts the previous screen is already deleted (P4-2). Writes `nav`, `picker` and `confirm` (a toast, the picker sheet and a destructive confirm over the gallery) |
-| `dashboard` | The old dashboard on the synthetic fixture (NEEDS YOU expected) |
+| `sessions <variant>` | Sessions (spec §5.1) on a host-test fixture (`PREVIEW_FIXTURE`, default `agents_synthetic.json`), one case per state: `live`, `selected-needs-you`, `working`, `loading`, `stale`, `reconnecting`, `no-wifi`, `not-found`, `no-host`, `empty`, `interactive`, `sent`, `low-battery`, `16`, `long`, `resort`, `keys`, `idle`, `forget`. Each asserts its own labels and behaviour (the re-sort keeps the selection and draft, Review Focus 1; `long` checks the CJK cell width and the wrap, Review Focus 3) before the checks |
+| `ctrlk` | The Ctrl+K shortcuts overlay over Sessions: two columns, nothing wrapped |
 | `settings <0..6>` | Clicks every rail entry (one visible panel, the same screen object), then shows that section |
-| `dashboard-reconnecting`, `dashboard-keys`, `settings-forget` | The reconnecting line, the Ctrl+K overlay and hotkeys, the forget-host-key confirm and toast |
 | `keyboard`, `gesture`, `art`, `terminal`, `glyphs` | Keyboard routing, touch gestures, terminal artwork and row spacing (assertions only); `glyphs` lists the symbols each font draws |
 
 ## Checks
@@ -41,8 +41,14 @@ Every screen case ends in `pv_run_checks` (`checks.c`), prints `check <name>: ok
 5. **Timers:** none under 300 ms (the pty pump excepted while a terminal is open), and the 300 ms
    tick only while Sessions is shown.
 
-`PV_SKIP_AMBER` and `PV_SKIP_TARGETS` exist only for the screens not rebuilt yet: the `dashboard*`
-and `settings*` cases pass them until Task 6 (Sessions) and Task 7 (Settings) rebuild those screens.
+`PV_SKIP_AMBER` and `PV_SKIP_TARGETS` exist only for the screens not rebuilt yet: the `settings*`
+cases pass them until Task 7 rebuilds Settings. A control a scrolled list shows only in part is
+skipped by the touch check (it is checked once scrolled into view).
+
+The stubs take their state from the environment: `PREVIEW_FIXTURE` (a file in
+`test/host/fixtures`, or `loading` / `none`), `PREVIEW_WIFI=0`, `PREVIEW_HOST=0`,
+`PREVIEW_FAIL=notfound`, `PREVIEW_BAT=<percent>`, `PREVIEW_CHG=1`, `PREVIEW_LOG=long`; the
+`sessions` cases set them themselves.
 
 `run_all.sh $PV` runs every case and converts each `.ppm` to `$PV/png/<name>.png` with `sips`.
 Compare the PNGs by eye with `docs/superpowers/specs/mockups/`. These are drawing checks on the

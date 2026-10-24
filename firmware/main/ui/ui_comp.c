@@ -4,6 +4,7 @@
  * (§11). Amber leaves this file only through the NEEDS YOU components. */
 #include "ui_comp.h"
 #include "ui_vitals.h"
+#include "ui/sessions_model.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -441,7 +442,7 @@ lv_obj_t *ui_header_needs_you(lv_obj_t *header)
 void ui_header_needs_you_set(lv_obj_t *label, int n)
 {
     if (!label) return;
-    if (n <= 0) { lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN); return; }
+    if (n <= 0) { if (!lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN)) lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN); return; }
     if (!lv_obj_has_flag(label, UI_NEEDS_YOU_PART)) {
         amber_styles(ui_needs_you_color());
         lv_obj_add_style(label, &s_amber_text, 0);
@@ -451,7 +452,7 @@ void ui_header_needs_you_set(lv_obj_t *label, int n)
     if (n == 1) snprintf(b, sizeof(b), "\xe2\x97\x8f 1 needs you");   /* ● */
     else snprintf(b, sizeof(b), "\xe2\x97\x8f %d need you", n);
     set_text(label, b);
-    lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
+    if (lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN)) lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);   /* a flag write redraws */
 }
 
 /* banner children: 0 the text, 1 the action chip (made on first use); user data: the kind + 1 */
@@ -522,19 +523,6 @@ lv_obj_t *ui_footer(lv_obj_t *scr)
 lv_obj_t *ui_footer_group(lv_obj_t *footer, bool right) { return lv_obj_get_child(footer, right ? 1 : 0); }
 
 /* ------------------------------------------------------------ sessions */
-/* Today's state-to-text mapping (ui_dashboard.c's pill_text), until Task 5's sm_pill_text (ruling C7). */
-static const char *pill_text(const cc_session_t *s)
-{
-    if (s->state == CC_NEEDS_YOU && !cc_session_needs_you(s)) return s->background ? "STOPPED" : "WAITING";
-    switch (s->state) {
-    case CC_NEEDS_YOU: return "NEEDS YOU";
-    case CC_WORKING:   return "WORKING";
-    case CC_IDLE:      return "IDLE";
-    case CC_DONE:      return "DONE";
-    default:           return "ENDED";
-    }
-}
-
 enum { PILL_MUTED = 1, PILL_WORKING, PILL_NEEDS };
 
 lv_obj_t *ui_state_pill(lv_obj_t *parent)
@@ -561,12 +549,13 @@ void ui_state_pill_set(lv_obj_t *pill, const cc_session_t *s)
         set_flag(pill, UI_NEEDS_YOU_PART, needs);
         lv_obj_set_user_data(pill, (void *)want);
     }
-    set_text(pill, pill_text(s));
+    set_text(pill, sm_pill_text(s));
 }
 
 /* session row children: 0 the amber edge, 1 the column (name, meta), 2 the pill.
- * Row user data: 1 | needs << 1 | selected << 2. The name label's user data: a hash of the full name
- * and the pill text (the pill's width sets the name's), 0 until the name has been fitted. */
+ * Row user data: 1 | needs << 1 | selected << 2. The name label's user data: a hash of the full name,
+ * the pill text (the pill's width sets the name's) and the name's laid-out width, so a row that
+ * changes width is cut again (T4 M12); 0 until the name has been fitted. */
 #define ROW_SET 1u
 #define ROW_NEEDS 2u
 #define ROW_SEL 4u
@@ -581,7 +570,6 @@ static uint32_t name_hash(const char *s)
 /* Sets t, cut to the label's width with "…" if it is wider. Returns false if the width isn't known yet. */
 static bool set_fitted(lv_obj_t *l, const char *t)
 {
-    lv_obj_update_layout(l);
     int32_t w = lv_obj_get_content_width(l);
     const lv_font_t *f = lv_obj_get_style_text_font(l, 0);
     lv_point_t sz;
@@ -664,7 +652,10 @@ void ui_session_row_set(lv_obj_t *row, const cc_session_t *s, bool selected, con
     ui_state_pill_set(pill, s);
     set_text(lv_obj_get_child(col, 1), meta);
     lv_obj_t *name = lv_obj_get_child(col, 0);
-    uint32_t h = name_hash(s->name) ^ name_hash(lv_label_get_text(pill));
+    lv_obj_update_layout(name);
+    uint32_t w = (uint32_t)lv_obj_get_content_width(name);
+    uint32_t h = (name_hash(s->name) ^ name_hash(lv_label_get_text(pill))) + w * 2654435761u;
+    if (!h) h = 1;
     if ((uint32_t)(uintptr_t)lv_obj_get_user_data(name) != h)
         lv_obj_set_user_data(name, (void *)(uintptr_t)(set_fitted(name, s->name) ? h : 0));
 }

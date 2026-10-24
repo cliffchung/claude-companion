@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ui/sessions_model.h"
+#include "term/vt.h"   /* vt_wcwidth (term/wcwidth.c): the terminal's cell widths */
 
 void sm_key(const cc_session_t *s, char *out, size_t cap)
 {
@@ -142,16 +143,39 @@ bool sm_lowbat_step(sm_lowbat_t *st, int pct, bool charging, bool dismiss)
 /* ------------------------------------------------------------ wrap */
 static bool is_cont(unsigned char c) { return (c & 0xC0) == 0x80; }
 
-/* Next wrapped row of the line [*p, end): returns its byte length and advances *p; *first is
-   true for a line's first row. Continuations carry a 2-cell indent (emitted by the caller). */
-static size_t next_row(const char **p, const char *end, int width)
+/* One UTF-8 character at *p (before end): its code point, and *p moves past it. */
+static uint32_t utf8_next(const char **p, const char *end)
+{
+    const unsigned char *s = (const unsigned char *)*p;
+    uint32_t cp = *s++;
+    int more = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : 0;
+    if (more) cp &= 0x3F >> more;
+    while (more-- && (const char *)s < end && is_cont(*s)) cp = (cp << 6) | (*s++ & 0x3F);
+    while ((const char *)s < end && is_cont(*s)) s++;   /* stray continuation bytes stay with it */
+    *p = (const char *)s;
+    return cp;
+}
+
+/* Next wrapped row of the line [*p, end), at most `width` cells: returns its byte length and advances
+   *p. A wide character (2 cells) that would overflow the row starts the next one; a row always takes at
+   least one character, so the wrap ends however narrow it is. cells(cp) is a character's width. */
+static int term_cells(uint32_t cp, void *ctx)
+{
+    (void)ctx;
+    return cp < 0x20 ? 1 : vt_wcwidth(cp);
+}
+
+static size_t next_row(const char **p, const char *end, int width, sm_cells_fn cells_of, void *ctx)
 {
     const char *s = *p;
-    int chars = 0;
-    while (s < end && chars < width) {
-        s++;
-        while (s < end && is_cont((unsigned char)*s)) s++;
-        chars++;
+    int cells = 0;
+    while (s < end) {
+        const char *q = s;
+        uint32_t cp = utf8_next(&q, end);
+        int w = cells_of(cp, ctx);
+        if (cells > 0 && cells + w > width) break;
+        cells += w;
+        s = q;
     }
     size_t len = (size_t)(s - *p);
     *p = s;
@@ -160,7 +184,7 @@ static size_t next_row(const char **p, const char *end, int width)
 
 /* One pass over the rows: counts them when out is NULL, else writes all but the first `skip`.
    Returns the rows seen/written, or -1 when out is too small. */
-static int wrap_pass(const char *in, int cols, int skip, char *out, size_t cap)
+static int wrap_pass(const char *in, int cols, int skip, char *out, size_t cap, sm_cells_fn fn, void *ctx)
 {
     const char *p = in, *stop = in + strlen(in);
     int count = 0, emitted = 0;
@@ -173,7 +197,7 @@ static int wrap_pass(const char *in, int cols, int skip, char *out, size_t cap)
         const char *q = p;
         bool first = true;
         do {
-            size_t len = next_row(&q, end, first ? cols : cols - 2);
+            size_t len = next_row(&q, end, first ? cols : cols - 2, fn, ctx);
             count++;
             if (out && count > skip) {
                 size_t ind = first ? 0 : 2;
@@ -193,16 +217,22 @@ static int wrap_pass(const char *in, int cols, int skip, char *out, size_t cap)
 
 int sm_wrap_tail(const char *in, int cols, int rows, char *out, size_t cap)
 {
+    return sm_wrap_tail_fn(in, cols, rows, out, cap, NULL, NULL);
+}
+
+int sm_wrap_tail_fn(const char *in, int cols, int rows, char *out, size_t cap, sm_cells_fn fn, void *ctx)
+{
+    if (!fn) fn = term_cells;
     if (!cap) return 0;
     out[0] = 0;
     if (!in || rows <= 0) return 0;
     if (cols < 3) cols = 3;
-    int total = wrap_pass(in, cols, 0, NULL, 0);
+    int total = wrap_pass(in, cols, 0, NULL, 0, fn, ctx);
     int skip = total > rows ? total - rows : 0;
     /* a short buffer drops the oldest rows first, never a row in the middle */
     for (;; skip++) {
         out[0] = 0;
-        int n = wrap_pass(in, cols, skip, out, cap);
+        int n = wrap_pass(in, cols, skip, out, cap, fn, ctx);
         if (n >= 0) return n;
     }
 }

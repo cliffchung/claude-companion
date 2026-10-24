@@ -1,0 +1,41 @@
+[
+ {
+  "pid": 20001,
+  "id": "b0000001",
+  "cwd": "/Users/me/code/a-repository-folder-name-that-is-sixty-three-characters-long-xx",
+  "kind": "background",
+  "startedAt": 1792700300000,
+  "sessionId": "b0000001-0001-4001-8001-000000000001",
+  "name": "a-session-name-with-no-spaces-at-all-that-runs-on-and-on-past-the-row-width-to-test-the-ellipsi",
+  "state": "working"
+ },
+ {
+  "pid": 20002,
+  "id": "b0000002",
+  "cwd": "/Users/me/code/レポジトリ",
+  "kind": "background",
+  "startedAt": 1792700200000,
+  "sessionId": "b0000002-0002-4002-8002-000000000002",
+  "name": "日本語のセッション名です長い名前のテスト",
+  "state": "idle"
+ },
+ {
+  "pid": 30003,
+  "cwd": "/Users/me/code/desk",
+  "kind": "interactive",
+  "startedAt": 1792700100000,
+  "sessionId": "c0000003-0003-4003-8003-000000000003",
+  "name": "desk-question",
+  "state": "blocked"
+ },
+ {
+  "pid": 20004,
+  "id": "b0000004",
+  "cwd": "/Users/me/code/site",
+  "kind": "background",
+  "startedAt": 1792700000000,
+  "sessionId": "b0000004-0004-4004-8004-000000000004",
+  "name": "docs-pass",
+  "state": "done"
+ }
+]

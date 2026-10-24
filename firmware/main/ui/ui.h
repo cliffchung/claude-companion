@@ -107,10 +107,8 @@ lv_obj_t *ui_terminal_create(void *arg);         /* arg: server index */
    Ctrl+] (or Ctrl+Q) leaves without sending anything; on_close runs once when the terminal closes. */
 void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx);
 bool ui_terminal_is_top(void);                   /* either terminal is the current screen */
-lv_obj_t *ui_dashboard_create(void *arg);        /* home: the Mac's Claude sessions */
-/* The dashboard's Ctrl+K shortcuts overlay (any key or a touch closes it). For the preview. */
-void ui_dashboard_keys_overlay(bool show);
-bool ui_dashboard_keys_overlay_shown(void);     /* up on the current dashboard */
+lv_obj_t *ui_sessions_create(void *arg);         /* home: the Host's Claude Code sessions (ui_sessions.h) */
+bool ui_sessions_keys_overlay_shown(void);       /* the Sessions Ctrl+K overlay is up */
 lv_obj_t *ui_wifi_create(void *arg);
 lv_obj_t *ui_settings_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);

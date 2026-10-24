@@ -13,7 +13,7 @@
 #include "storage/sd.h"
 #include "companion/cc_link.h"
 #include "net/tailscale.h"
-#include "ui_dashboard.h"
+#include "ui_sessions.h"
 #include "bsp/m5stack_tab5.h"
 #include "esp_system.h"
 #include <stdio.h>
@@ -258,7 +258,7 @@ static void companion_forget_yes(bool yes, void *ud)
 {
     (void)ud;
     if (!yes) return;
-    if (!ui_dashboard_forget_host_key()) ui_toast("Busy, try again");
+    if (!ui_sessions_forget_host_key()) ui_toast("Busy, try again");
 }
 static void companion_forget_cb(lv_event_t *e)
 {

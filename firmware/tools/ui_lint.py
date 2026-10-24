@@ -26,8 +26,6 @@ COMMAND_LITERAL_RE = re.compile(r"claude (attach|logs|agents|-p)")
 
 HEX_ACCESSOR_HOMES = {os.path.join(UI, "ui_comp.c"), os.path.join(UI, "ui_tokens.c"), os.path.join(UI, "ui_tokens.h")}
 COLOR_ACCESSOR_HOMES = {os.path.join(UI, "ui_comp.c"), os.path.join(UI, "ui_comp.h")}
-# Controller ruling C6: the old dashboard calls ui_needs_you_color() until Task 6 deletes it.
-COLOR_ACCESSOR_ALLOW = {os.path.join(UI, "ui_dashboard.c")}
 
 
 def split_source(text):
@@ -99,7 +97,7 @@ def lint_file(rel, text):
     if rel not in HEX_ACCESSOR_HOMES:
         for m in HEX_ACCESSOR_RE.finditer(code):
             problems.add((line_of(code, m.start()), "amber-accessor"))
-    if rel not in COLOR_ACCESSOR_HOMES and rel not in COLOR_ACCESSOR_ALLOW:
+    if rel not in COLOR_ACCESSOR_HOMES:
         for m in COLOR_ACCESSOR_RE.finditer(code):
             problems.add((line_of(code, m.start()), "amber-accessor"))
 

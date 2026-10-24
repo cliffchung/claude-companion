@@ -1,6 +1,7 @@
 #include "checks.h"
 #include "ui/ui.h"
 #include "ui/ui_comp.h"
+#include "ui/ui_sessions.h"
 #include "src/core/lv_obj_private.h"     /* ext_click_pad: LVGL has no public getter */
 #include "src/misc/lv_timer_private.h"   /* period: LVGL has no public getter */
 #include "src/misc/lv_event_private.h"   /* the event filter */
@@ -160,12 +161,28 @@ static const char *ctrl_name(lv_obj_t *o, char *buf, size_t cap)
     return buf;
 }
 
+/* True when a scrollable ancestor (below the screen) shows o only in part, or not at all. */
+static bool scrolled_out(lv_obj_t *o)
+{
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    for (lv_obj_t *p = lv_obj_get_parent(o); p && lv_obj_get_parent(p); p = lv_obj_get_parent(p)) {
+        if (!lv_obj_has_flag(p, LV_OBJ_FLAG_SCROLLABLE)) continue;
+        lv_area_t c;
+        lv_obj_get_coords(p, &c);
+        if (a.y1 < c.y1 || a.y2 > c.y2 || a.x1 < c.x1 || a.x2 > c.x2) return true;
+    }
+    return false;
+}
+
 /* P4C-5 (amends spec §8.1): a body control is >= 64 px visible with >= 80 px of hit area each way; a bar
  * control (UI_BAR_CONTROL) is >= 48 px visible, and its hit area is the bar's full height and >= 80 px wide. */
 int pv_touch_targets(lv_obj_t *root, char *why, size_t cap)
 {
     static lv_obj_t *c[MAX_CTRLS];
-    int n = collect_ctrls(root, c, 0);
+    int all = collect_ctrls(root, c, 0), n = 0;
+    for (int i = 0; i < all; i++)
+        if (!scrolled_out(c[i])) c[n++] = c[i];
     char nm[64], nm2[64];
     for (int i = 0; i < n; i++) {
         lv_area_t a, hit = hit_area(c[i]);
@@ -206,6 +223,25 @@ int pv_touch_targets(lv_obj_t *root, char *why, size_t cap)
                     ctrl_name(c[j], nm2, sizeof(nm2)), (int)(gap < 0 ? 0 : gap), UI_TK_GAP_S);
                 return 1;
             }
+        }
+    }
+    return 0;
+}
+
+int pv_bar_hits_clear(lv_obj_t *root, lv_obj_t *row, char *why, size_t cap)
+{
+    static lv_obj_t *c[MAX_CTRLS];
+    int n = collect_ctrls(root, c, 0);
+    lv_area_t r = hit_area(row), x;
+    char nm[64];
+    for (int i = 0; i < n; i++) {
+        if (!lv_obj_has_flag(c[i], UI_BAR_CONTROL)) continue;
+        lv_area_t h = hit_area(c[i]);
+        if (lv_area_get_width(&h) <= 0 || lv_area_get_height(&h) <= 0) continue;
+        if (lv_area_intersect(&x, &h, &r)) {
+            say(why, cap, "%s hits %d,%d-%d,%d, over the row's %d,%d-%d,%d", ctrl_name(c[i], nm, sizeof(nm)), (int)h.x1,
+                (int)h.y1, (int)h.x2, (int)h.y2, (int)r.x1, (int)r.y1, (int)r.x2, (int)r.y2);
+            return 1;
         }
     }
     return 0;
@@ -313,6 +349,17 @@ static lv_draw_buf_t *compose(lv_obj_t *scr)
     return base;
 }
 
+int pv_amber_pixels(lv_obj_t *scr)
+{
+    lv_obj_update_layout(scr);
+    lv_obj_update_layout(lv_layer_top());
+    lv_draw_buf_t *snap = compose(scr);
+    if (!snap) return -1;
+    int n = amber_count(scr, snap, false);
+    lv_draw_buf_destroy(snap);
+    return n;
+}
+
 static int write_ppm(const lv_draw_buf_t *snap, const char *path)
 {
     FILE *f = fopen(path, "wb");
@@ -356,7 +403,7 @@ int pv_run_checks(lv_display_t *d, lv_obj_t *scr, const char *name, bool needs_y
     }
     unsigned idle = pv_idle_pixels(d, 1000);
     if (idle) { printf("check %s: FAIL idle: %u px redrawn on a static screen\n", name, idle); fails++; }
-    bool sessions = ui_nav_is_top(ui_dashboard_create) && lv_screen_active() == scr;   /* Task 6: ui_sessions_create */
+    bool sessions = ui_nav_is_top(ui_sessions_create) && lv_screen_active() == scr;
     if (pv_timers(sessions, why, sizeof(why))) { printf("check %s: FAIL timers: %s\n", name, why); fails++; }
     char path[128];
     snprintf(path, sizeof(path), "%s.ppm", name);

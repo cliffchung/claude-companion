@@ -1,5 +1,5 @@
 #pragma once
-/* Sessions screen logic, pure (companion/cc_sessions.h only): row keys, selection and drafts that
+/* Sessions screen logic, pure (companion/cc_sessions.h and term/vt.h's vt_wcwidth only): row keys, selection and drafts that
  * follow a session across polls, the banner order, the low-battery rule and the log wrap.
  * Host-tested in firmware/test/host/test_sessions_model.c. */
 #include <stdbool.h>
@@ -42,8 +42,14 @@ typedef struct { bool armed, shown, dismissed; } sm_lowbat_t;   /* zero-initiali
    until a dismiss tap. Charging or above 15 % re-arms. pct < 0 never shows. */
 bool sm_lowbat_step(sm_lowbat_t *st, int pct, bool charging, bool dismiss);
 
-/* Wrap `in` to `cols` UTF-8 characters per row (continuations indented 2 cells), keep the newest
-   `rows` rows, joined by '\n' into out. Returns the row count. */
+/* Wrap `in` to `cols` 12 px cells per row (continuations indented 2 cells), keep the newest `rows`
+   rows, joined by '\n' into out. Returns the row count. A cell is the terminal's: vt_wcwidth gives 2
+   for CJK and other wide characters (FONT_MONO draws them 24 px wide), 0 for combining marks. */
 int sm_wrap_tail(const char *in, int cols, int rows, char *out, size_t cap);
+/* The same with each character's width in cells from fn(cp, ctx) (at least 0; NULL: the terminal's
+   rule above). Sessions passes FONT_MONO's own advances, since a label draws some TUI symbols wider
+   than the terminal's grid does. */
+typedef int (*sm_cells_fn)(uint32_t cp, void *ctx);
+int sm_wrap_tail_fn(const char *in, int cols, int rows, char *out, size_t cap, sm_cells_fn fn, void *ctx);
 /* The highest number of a trailing numbered list of at least 2 items (^\s*(❯\s*)?\d+\.), else 0. */
 int sm_tail_options(const char *tail);

@@ -227,3 +227,82 @@ New preview cases `targets-clip` (fails a clipped button, passes the real bars) 
 `softkbd_create` dropped its own size: `lv_obj_remove_style_all` must come first). `run_all.sh` fails on LVGL warnings.
 Deviation kept: dialog titles use the regular 24 px body face; the family has no bold 24 px face.
 Device after the fix: Settings › Network heapmin min 157,735 B.
+
+## Task 6: Sessions (master-detail)
+
+`ui_sessions.c` replaces `ui_dashboard.c`: a 440 px list with a constant pool of 16 `ui_session_row`s, a detail pane
+(title, log block, answer field + mic slot, Send/Open + note), header/banner/footer from `ui_comp`, all built once
+per visit and updated by setters on change from the 300 ms tick. Vitals: one shared 30 s timer in `ui_vitals.c`
+(created with the first cluster, deleted with the last); the link dot is `cc_link_connected()` green /
+`cc_link_failure()` red / muted, with the word "Host". The 500 ms `forget_poll_cb` is gone (P4-3, below).
+
+**Measured** (device: P4 flashed, Tailscale off, LAN Host link; preview at 1280 × 720):
+
+| Item | Value | Gate |
+|---|---|---|
+| Log block (§5.1 "about 62 × 10") | 62 cols × 9 rows (device log `sessions: log block: 62 cols x 9 rows`; preview: 750 px content = 62 cells) | |
+| `ts` on Sessions, > 2 min after boot, 2 test + about 10 real sessions (12 rows) | internal free 149,047 B, largest 63,488 B | ≥ 123,495 B (Task 1 dashboard): pass |
+| `ui heapmin` over `companion takeover` of a test session (~90 s) then `key ctrl ]` | min 98,727 B, largest 63,488, now 144,799 B | ≥ 40,960 B: pass |
+| `ui timers`, Sessions, screen on | 300 (tick), 30000 (vitals), 10 (key drain), 16 × 3 paused (LVGL) | only the 300 ms tick under 1 s; no 500 ms: pass |
+| `ui timers`, screen Off | every timer `paused=1`, the 30 s vitals timer included | B1: pass |
+| `ui timers`, take-over | 16 (pty pump), 550, 10, 16 × 3 paused; no 300, no 30000 | |
+| `ui timers`, after Ctrl+T / Ctrl+M (server list) | 2000, 10, 16 × 3 paused; Esc brings back the 300 ms tick | |
+| Review Focus 2: `power go off`, `power sim touch` | woke; `power wakes`: `touch swallowed=1`; no pump (the one new 16 ms timer is the sim pointer's paused event-mode read timer) | pass |
+| Review Focus 2: `power go off`, `key down` | `key swallowed=1`; the selection stayed on the test session (screenshot) | pass |
+| `key text abc`, then Ctrl+Space × 11 | the field still reads "abc"; toast "Voice input comes in a later update" | pass |
+| `key text 2`, `key enter` on the blocked test session | `sessions: answer d0000004: ESP_OK`; the session replied about "2" and asked again (WORKING only for a moment) | |
+| `power sim battery 14` | red banner "Battery 14 %. The Tab5 sleeps at 10 %." with [Dismiss] | pass |
+| `idf.py size` (Task 4 → Task 6) | image 7,217,227 → 7,227,251 B (+10,024); DIRAM 192,520 → 188,144 B (−4,376: the old dashboard's static text buffers and notes are PSRAM now) | |
+
+C25: the 16-row RAM budget is proven by the constant pool and the preview `sessions 16` (16 rows, row 16 inside the
+list after a scroll); the device run showed 12 rows. "Sent ✓" lasts 3 s and the device screenshot transfer is lossy
+(below), so on the device it rests on the log line; the preview `sessions sent` asserts it.
+
+**CJK and symbol widths (Review Focus 3, T5 carry).** In `FONT_MONO` U+65E5 advances 24 px (two 12 px cells), and so
+do several Claude Code TUI symbols when drawn by a label (… ← ↓ █ ░ ─ ╭ ⎿ ● ✽); ✓ advances 16 px. The terminal draws
+them in its own grid, so only the Sessions log label is affected. Rulings:
+- T6-1: `sm_wrap_tail` counts terminal cells (`vt_wcwidth`, moved unchanged from `vt.c` into the pure
+  `term/wcwidth.c`): wide characters take 2 and never split. `sm_wrap_tail_fn` takes a width function, and Sessions
+  passes the label's own glyph advances (`ceil(adv / 12)`), so the label never wraps a row again. The label is
+  content-sized, so a row the wrap got wrong is clipped by the block on the device and fails the preview fit check.
+  `sessions long` checks every row's pixel width against the block (a mutant using terminal cells fails: "log row 4 is
+  952 px, the block 750").
+
+**Rulings and deviations:**
+- T6-2: low battery is dismissed with a [Dismiss] chip. A whole-banner tap target would be a 48 px body control, which
+  fails §8.1 / P4C-5. Its input is `power_source()` (the rules' view, so `power sim battery` counts; USB re-arms).
+- T6-3: Stale shows only the "Updating…" banner (§5.1); the rows dim to 50 % and go inert for No Wi-Fi, Host
+  unreachable, Reconnecting and any time the link is down.
+- T6-4: Host unreachable shows `cc_link_status_text` cut at its first " (" and capitalised ("Host not found at
+  my-host.local"); down 30 s with no failure reason: "Can't reach <host>. Is it awake?"; failing polls: "Can't
+  load sessions from the host…"; too large: "Session list too large to load". A Radio-off wake counts as Wi-Fi
+  connecting, so it shows Reconnecting, never No Wi-Fi (P4-4).
+- T6-5: the footer chip reads "⌃T/⌃M Terminal" (the T3 minor: Ctrl+M named as the alias).
+- T6-6: the Ctrl+K sheet closes on a press, and the release is swallowed (`lv_indev_wait_release`), so the closing tap
+  never lands on a row. LVGL already drops that release when the pressed object is deleted; the call is kept as
+  belt-and-braces. Built on demand; its keys column is as wide as the widest key, so neither column wraps.
+- T6-7: C24 kept: Esc clears the draft and never leaves Sessions. Enter on an empty field opens the session.
+- T6-8: the detail title uses `body` (24 px); the family has no 26 px bold face. The repo and age sit on a muted line
+  under the title, because a long name wraps. B3 interactive panes show the age, not a clock time.
+- T6-9: the header count shows only with the list (not over "Set up host").
+- T6-10: the pill text comes from `sm_pill_text` (C7 closed); `ui_session_row_set` refits the name whenever the
+  name's laid-out width changes (T4 M12); `pv_bar_hits_clear` asserts that no bar control's hit area meets row 1's
+  (T4 re-review). The touch check skips controls that a scrolled list shows only in part.
+- T6-11: the textarea cursor is steady (`anim_duration` 0 on `LV_PART_CURSOR`): the default theme blinks it every
+  400 ms, which is an idle redraw. `sessions idle` holds 0 px redrawn over 2 s and again over 31 s (past a log
+  re-fetch, an age refresh and the vitals timer).
+- P4-3 (forget fold): `run_forget` posts its success through `ui_async`, and the toast is gated on
+  `cc_link_forget_done` changing, so a forget done in time toasts once on any screen and a late one is toasted by the
+  Sessions tick. The job only needs Sessions' worker, which lives for the app, so it finishes on any screen.
+- New fixture `agents_working.json` (no blocked session) for `sessions working`, besides `agents_16` and
+  `agents_long`.
+- `settings-forget` was deleted as the brief says; `sessions forget` covers the toast.
+
+**Device notes.** P4C-4: at boot the selection is row 0 of the first snapshot. On the first flash that was a real,
+stopped session (my test session didn't exist yet), and the selection followed it. I moved it with one `key up` onto my
+own test session (the first key was swallowed as a wake key). Nothing was sent or opened: Sessions fetched that row's
+log tail read-only, as the old dashboard did at boot. Later boots had a test session first. When the test sessions
+were stopped, the selection moved to the row at the same position (§5.1 rule). The device screenshot transfer drops
+64-byte USB packets on 130–150 KB frames ("length mismatch"); 1 in 3 to 1 in 20 tries succeed (tooling, not changed).
+Screenshots with real session names are in the scratchpad only. Final state: test sessions stopped, `ts off`,
+`power set defaults`, DHCP (static off), Host link connected on the LAN.

@@ -79,7 +79,7 @@ void ui_nav_back(void)
 void ui_nav_home(void)
 {
     s_depth = 1;
-    s_stack[0].create = ui_dashboard_create;   /* the sessions dashboard is home */
+    s_stack[0].create = ui_sessions_create;   /* Sessions is the only home */
     s_stack[0].arg = NULL;
     nav_show_top();
 }
@@ -722,8 +722,8 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
     lv_display_trigger_activity(NULL);
     lv_obj_t *modal = keyboard_modal();
     if (!terminal) s_keyboard_terminal_ui = false;
-    /* The dashboard's Ctrl+K overlay: every key, Ctrl+Tab included, goes to its sink, which closes it. */
-    if (terminal && !modal && ui_dashboard_keys_overlay_shown()) { s_keyboard_terminal_ui = false; return false; }
+    /* The Sessions Ctrl+K overlay: every key, Ctrl+Tab included, goes to its sink, which closes it. */
+    if (terminal && !modal && ui_sessions_keys_overlay_shown()) { s_keyboard_terminal_ui = false; return false; }
     if (terminal && !modal && ev->type == KEY_EV_SPECIAL && ev->key == SK_TAB && (ev->mods & MOD_CTRL)) {
         s_keyboard_terminal_ui = !s_keyboard_terminal_ui;
         keyboard_focus_set(NULL);

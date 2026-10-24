@@ -200,6 +200,7 @@ static void f_lowbat(sm_in_t *i) { i->low_battery_shown = true; }
 static void f_reconn(sm_in_t *i) { i->reconnecting = true; }
 static void f_waking(sm_in_t *i) { i->waking = true; }
 static void f_nolist(sm_in_t *i) { i->have_list = false; }
+static void f_down(sm_in_t *i) { i->link_up = false; i->down_ms = 1000; }   /* down within the grace */
 static void f_stale(sm_in_t *i) { i->stale = true; }
 static void f_empty(sm_in_t *i) { i->n = 0; }
 
@@ -212,7 +213,7 @@ static void test_banner_precedence(void)
     const row_t t[] = {
         { f_nowifi, SM_B_NO_WIFI }, { f_nohost, SM_B_NO_HOST }, { f_failed, SM_B_UNREACHABLE },
         { f_lowbat, SM_B_LOW_BATTERY }, { f_reconn, SM_B_RECONNECTING }, { f_nolist, SM_B_LOADING },
-        { f_stale, SM_B_STALE }, { f_empty, SM_B_EMPTY },
+        { f_down, SM_B_RECONNECTING }, { f_stale, SM_B_STALE }, { f_empty, SM_B_EMPTY },
     };
     int n = (int)(sizeof(t) / sizeof(t[0]));
     for (int a = 0; a < n; a++) {
@@ -229,6 +230,15 @@ static void test_banner_precedence(void)
     TEST_ASSERT_EQUAL(SM_B_RECONNECTING, with(f_waking));
     { sm_in_t x = ok(); f_down30(&x); f_lowbat(&x); f_nowifi(&x); f_connecting(&x);
       TEST_ASSERT_EQUAL(SM_B_UNREACHABLE, sm_banner(&x)); }
+}
+
+/* T5 re-review N1: a down link outranks a stale list (and an empty one): Reconnecting, not Updating. */
+static void test_banner_down_beats_stale(void)
+{
+    sm_in_t i = ok(); i.link_up = false; i.stale = true;
+    TEST_ASSERT_EQUAL(SM_B_RECONNECTING, sm_banner(&i));
+    i.n = 0;
+    TEST_ASSERT_EQUAL(SM_B_RECONNECTING, sm_banner(&i));
 }
 
 static void test_banner_wifi_connecting_is_not_no_wifi(void)
@@ -312,13 +322,39 @@ static void test_wrap_utf8_counts_chars(void)
     TEST_ASSERT_EQUAL_STRING("\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\n  \xc3\xa9", o);
 }
 
-static void test_wrap_cjk_three_byte(void)
+/* Review Focus 3 / T5 carry: CJK advances two 12 px cells in FONT_MONO (measured in the preview's
+   `sessions long`), so the wrap counts cells as the terminal does (vt_wcwidth), not characters. */
+static void test_wrap_cjk_counts_two_cells(void)
 {
     char o[128];
-    const char *in = "\xe3\x81\x82\xe3\x81\x84\xe3\x81\x86\xe3\x81\x88\xe3\x81\x8a";   /* 5 chars */
-    int n = sm_wrap_tail(in, 3, 10, o, sizeof(o));
-    TEST_ASSERT_EQUAL(3, n);
-    TEST_ASSERT_EQUAL_STRING("\xe3\x81\x82\xe3\x81\x84\xe3\x81\x86\n  \xe3\x81\x88\n  \xe3\x81\x8a", o);
+    const char *in = "\xe3\x81\x82\xe3\x81\x84\xe3\x81\x86\xe3\x81\x88\xe3\x81\x8a";   /* 5 chars, 10 cells */
+    TEST_ASSERT_EQUAL(2, sm_wrap_tail(in, 6, 10, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING("\xe3\x81\x82\xe3\x81\x84\xe3\x81\x86\n  \xe3\x81\x88\xe3\x81\x8a", o);
+    TEST_ASSERT_EQUAL(4, sm_wrap_tail(in, 5, 10, o, sizeof(o)));   /* 2 + 1 + 1 + 1: a wide char never splits */
+    TEST_ASSERT_EQUAL_STRING("\xe3\x81\x82\xe3\x81\x84\n  \xe3\x81\x86\n  \xe3\x81\x88\n  \xe3\x81\x8a", o);
+    /* narrow then wide: the wide one moves to the next row rather than overflow it */
+    TEST_ASSERT_EQUAL(2, sm_wrap_tail("ab\xe6\x97\xa5", 3, 10, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING("ab\n  \xe6\x97\xa5", o);
+    /* a row narrower than one wide char still takes one, so the wrap always ends */
+    TEST_ASSERT_EQUAL(3, sm_wrap_tail("\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5", 3, 10, o, sizeof(o)));
+}
+
+/* The Sessions log is an LVGL label, not the terminal grid: its glyph advances set the cells (device:
+   MaruMinya draws "\xe2\x96\x88" and "\xe2\x80\xa6" 24 px wide), so the screen passes its own width function. */
+static int three_for_w(uint32_t cp, void *ctx)
+{
+    (void)ctx;
+    return cp == 'w' ? 3 : 1;
+}
+
+static void test_wrap_cell_function(void)
+{
+    char o[64];
+    TEST_ASSERT_EQUAL(3, sm_wrap_tail_fn("wwww", 6, 10, o, sizeof(o), three_for_w, NULL));
+    TEST_ASSERT_EQUAL_STRING("ww\n  w\n  w", o);
+    TEST_ASSERT_EQUAL(1, sm_wrap_tail_fn("abcdef", 6, 10, o, sizeof(o), three_for_w, NULL));
+    /* NULL is the terminal's rule */
+    TEST_ASSERT_EQUAL(2, sm_wrap_tail_fn("ab\xe6\x97\xa5", 3, 10, o, sizeof(o), NULL, NULL));
 }
 
 static void test_wrap_short_buffer_drops_oldest(void)
@@ -363,6 +399,7 @@ int main(void)
     RUN_TEST(test_next_needs_you_wraps);
     RUN_TEST(test_pill_text_rules);
     RUN_TEST(test_banner_precedence);
+    RUN_TEST(test_banner_down_beats_stale);
     RUN_TEST(test_banner_wifi_connecting_is_not_no_wifi);
     RUN_TEST(test_banner_down_within_grace);
     RUN_TEST(test_lowbat_once_per_discharge);
@@ -370,7 +407,8 @@ int main(void)
     RUN_TEST(test_wrap_keeps_newest_rows);
     RUN_TEST(test_wrap_unbroken_line);
     RUN_TEST(test_wrap_utf8_counts_chars);
-    RUN_TEST(test_wrap_cjk_three_byte);
+    RUN_TEST(test_wrap_cjk_counts_two_cells);
+    RUN_TEST(test_wrap_cell_function);
     RUN_TEST(test_wrap_short_buffer_drops_oldest);
     RUN_TEST(test_wrap_crlf);
     RUN_TEST(test_tail_options);

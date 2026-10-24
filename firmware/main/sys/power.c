@@ -23,7 +23,7 @@
 #include "sys/checkin.h"
 #include "net/wifi_mgr.h"
 #include "ui/ui.h"
-#include "ui/ui_dashboard.h"
+#include "ui/ui_sessions.h"
 
 static const char *TAG = "power";
 
@@ -646,13 +646,13 @@ static void leave_dark(void)
     s_dark = false;
 }
 
-/* LVGL task: a needs-you wake goes to the dashboard. Built here, not on the power task's 4 KB
+/* LVGL task: a needs-you wake goes to Sessions. Built here, not on the power task's 4 KB
    stack: a screen build and the old screen's delete were sized for the LVGL task's 16 KB. */
 static void nav_home_async(void *arg)
 {
     (void)arg;
-    /* off the dashboard polling is slow; an SSH Terminal is left alone (it would close) */
-    if (!ui_nav_is_top(ui_dashboard_create) && !ui_terminal_is_top()) ui_nav_home();
+    /* off Sessions polling is slow; an SSH Terminal is left alone (it would close) */
+    if (!ui_nav_is_top(ui_sessions_create) && !ui_terminal_is_top()) ui_nav_home();
 }
 
 /* The wake. The state stays non-Active until the last step, so the drain keeps swallowing. */
@@ -666,7 +666,7 @@ static void do_wake(void)
     power_state_t target = why == PW_NEEDS_YOU ? PS_DIM : PS_ACTIVE;
     if (s_dark) leave_dark();
     bsp_display_brightness_set(target == PS_DIM ? pr_dim_brightness(g_settings.brightness) : g_settings.brightness);
-    /* before the dashboard can be built below: it reads these */
+    /* before Sessions can be built below: it reads these */
     s_wake_gen = cc_poll_generation();
     s_woke_from = from;
     s_last_reason = why;
@@ -1023,7 +1023,7 @@ bool power_sim_touch(void)
         lv_indev_add_event_cb(s_vptr, indev_cb, LV_EVENT_ALL, NULL);
     }
     int32_t x, y;
-    if (!ui_dashboard_selected_center(&x, &y)) {
+    if (!ui_sessions_selected_center(&x, &y)) {
         x = lv_display_get_horizontal_resolution(NULL) / 2;
         y = lv_display_get_vertical_resolution(NULL) / 2;
     }

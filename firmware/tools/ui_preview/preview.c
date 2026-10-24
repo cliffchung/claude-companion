@@ -2,6 +2,8 @@
 #include "term/term_view.h"
 #include "ui/ui_boot.h"
 #include "ui/ui_comp.h"
+#include "ui/ui_sessions.h"
+#include "ui/hotkeys.h"
 #include "checks.h"
 #include "ui/ui_softkbd.h"
 #include "settings/settings.h"
@@ -32,9 +34,15 @@ int sysinfo_rssi_cached(void) { return env_int("PREVIEW_RSSI", -60); }
 const char *sysinfo_app_version(void) { return "preview"; }
 void sysinfo_apply_timezone(void) {}
 void sysinfo_start_sntp(void) {}
-static bool s_rc_preview;   /* dashboard-reconnecting: woken from Radio off, Wi-Fi and the link not back yet */
-bool wifi_mgr_is_connected(void) { return !s_rc_preview; }
-bool wifi_mgr_is_connecting(void) { return false; }
+static bool s_rc_preview;   /* sessions reconnecting: woken from Radio off, Wi-Fi and the link not back yet */
+static bool s_stale_preview;   /* sessions stale: woken from Off, no poll result newer than the wake */
+static const char *env_str(const char *n, const char *d) { const char *e = getenv(n); return e && *e ? e : d; }
+/* PREVIEW_WIFI=0: no Wi-Fi. PREVIEW_HOST=0: no Host set. PREVIEW_FAIL=notfound: the Host's name doesn't resolve. */
+static bool pv_wifi(void) { return env_int("PREVIEW_WIFI", 1) != 0 && !s_rc_preview; }
+static bool pv_host(void) { return env_int("PREVIEW_HOST", 1) != 0; }
+static bool pv_notfound(void) { return !strcmp(env_str("PREVIEW_FAIL", ""), "notfound"); }
+bool wifi_mgr_is_connected(void) { return pv_wifi(); }
+bool wifi_mgr_is_connecting(void) { return s_rc_preview; }
 void wifi_mgr_get_ip4(char *b, size_t n) { snprintf(b,n,"192.168.1.25"); }
 void wifi_mgr_disconnect(void) {}
 /* Plan 3 surfaces Settings calls (the preview stopped linking at 8b94efb without them). */
@@ -54,9 +62,9 @@ bool power_setting_set(const char *name, int n) { (void)name; (void)n; return tr
 bool hibernate_supported(void) { return false; }
 power_boot_t hibernate_boot_kind(void) { return POWER_BOOT_NORMAL; }
 void power_hold(power_hold_t h, bool on) { (void)h; (void)on; }
-uint32_t power_wake_seq(void) { return s_rc_preview ? 1 : 0; }
-uint32_t power_wake_gen(void) { return s_rc_preview ? 1 : 0; }   /* no result newer than the wake: stale */
-power_state_t power_woke_from(void) { return s_rc_preview ? PS_RADIO_OFF : PS_ACTIVE; }
+uint32_t power_wake_seq(void) { return s_rc_preview || s_stale_preview ? 1 : 0; }
+uint32_t power_wake_gen(void) { return s_rc_preview || s_stale_preview ? 1 : 0; }   /* no result newer than the wake: stale */
+power_state_t power_woke_from(void) { return s_rc_preview ? PS_RADIO_OFF : s_stale_preview ? PS_OFF : PS_ACTIVE; }
 bool checkin_woke_parked(void) { return s_rc_preview; }
 power_wake_t power_wake_reason(void) { return PW_CONSOLE; }
 bool power_shield_up(void) { return false; }
@@ -81,27 +89,44 @@ void server_store_reload(void) {}
 int server_store_count(void) { return 3; }
 static server_t s_preview_server = { .name = "Mac", .host = "mac", .port = 22, .user = "me", .use_key = true };
 const server_t *server_store_get(int i) { return i >= 0 && i < 3 ? &s_preview_server : NULL; }
+pr_src_t power_source(int *pct, bool *charging)
+{
+    bool chg = env_int("PREVIEW_CHG", 0) != 0;
+    if (pct) *pct = env_int("PREVIEW_BAT", 52);
+    if (charging) *charging = chg;
+    return chg ? PR_SRC_USB : PR_SRC_BATTERY;
+}
 power_info_t sysinfo_power(void)
 {
     power_info_t p = { .percent = env_int("PREVIEW_BAT", 52), .valid = true };
     p.src = env_int("PREVIEW_CHG", 0) ? PWR_USB_CHARGING : PWR_BATTERY;
+    p.current_a = env_int("PREVIEW_CHG", 0) ? -0.5f : 0.2f;   /* vitals_charging reads the current (+ discharging) */
     return p;
 }
-static key_sink_t preview_sink; static bool preview_have_sink;   /* dashboard-keys drives dash_key */
+static key_sink_t preview_sink; static bool preview_have_sink;   /* the sessions cases drive its key sink */
 void keyboard_set_sink(const key_sink_t *sink) { if (sink) { preview_sink = *sink; preview_have_sink = true; } else preview_have_sink = false; }
 void keyboard_clear_sink(void *user) { if (preview_have_sink && preview_sink.user == user) preview_have_sink = false; }
 void ui_terminal_open_command(int i, const char *c, void (*cb)(void *), void *ctx) { (void)i; (void)c; if (cb) cb(ctx); }
 bool ui_terminal_is_top(void) { return false; }   /* the preview builds no terminal screen yet */
-/* companion link: the dashboard reads the synthetic agents fixture */
+/* companion link: Sessions reads PREVIEW_FIXTURE (default agents_synthetic.json; "loading": no list yet;
+   "none": an empty list) from the host test fixtures */
 static cc_session_t s_preview_sessions[16];
 static int s_preview_n = -1;
+static cc_sessions_cb_t s_poll_cb;
+static void *s_poll_ctx;
+static uint32_t s_poll_gen = 1;
 static void preview_sessions_load(void) {
-    FILE *f = fopen(FIXTURE_DIR "/agents_synthetic.json", "rb");
+    const char *fx = env_str("PREVIEW_FIXTURE", "agents_synthetic.json");
+    if (!strcmp(fx, "loading")) { s_preview_n = -1; return; }
+    if (!strcmp(fx, "none")) { s_preview_n = 0; return; }
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", FIXTURE_DIR, fx);
+    FILE *f = fopen(path, "rb");
     assert(f);
-    static char json[8192]; size_t n = fread(json, 1, sizeof(json) - 1, f); json[n] = 0; fclose(f);
+    static char json[16384]; size_t n = fread(json, 1, sizeof(json) - 1, f); json[n] = 0; fclose(f);
     s_preview_n = cc_sessions_parse(json, s_preview_sessions, 16);
     assert(s_preview_n > 0);
-    /* ages: started a few minutes before the preview clock */
+    /* ages: started a few minutes before the preview clock, in the parsed (sorted) order */
     int64_t now = (int64_t)time(NULL) * 1000;
     for (int i = 0; i < s_preview_n; i++) {
         s_preview_sessions[i].started_ms = now - (int64_t)(i + 1) * 7 * 60000;
@@ -109,41 +134,70 @@ static void preview_sessions_load(void) {
         if (s_preview_sessions[i].state != CC_DONE && s_preview_sessions[i].state != CC_ENDED) s_preview_sessions[i].live = true;
     }
 }
+/* The re-sort hook: a poll that moves session i to the end of the list. */
+static void preview_resort_to_last(int i) {
+    assert(i >= 0 && i < s_preview_n);
+    cc_session_t t = s_preview_sessions[i];
+    memmove(&s_preview_sessions[i], &s_preview_sessions[i + 1], sizeof(t) * (size_t)(s_preview_n - i - 1));
+    s_preview_sessions[s_preview_n - 1] = t;
+    s_poll_gen++;
+    if (s_poll_cb) s_poll_cb(s_preview_sessions, s_preview_n, s_poll_ctx);
+}
 int cc_poll_snapshot(cc_session_t *out, int cap) {
+    if (s_preview_n < 0) return -1;
     int n = s_preview_n < cap ? s_preview_n : cap;
     if (n > 0) memcpy(out, s_preview_sessions, sizeof(cc_session_t) * n);
     return n;
 }
-void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { (void)cb; (void)ctx; }
+void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { s_poll_cb = cb; s_poll_ctx = ctx; }
 void cc_poll_set_rate(int s) { (void)s; }
 void cc_poll_set_floor(int s) { (void)s; }
-uint32_t cc_poll_generation(void) { return 1; }
+uint32_t cc_poll_generation(void) { return s_poll_gen; }
 int64_t cc_poll_last_ok_ms(void) { return 1; }
 bool cc_link_busy(void) { return false; }
 void cc_link_watch_enable(bool on) { (void)on; }
 void cc_link_watch_test_fallback(void) {}
 const char *cc_watch_status_text(char *b, size_t cap) { snprintf(b, cap, "watch: on I=3s, last block 4s ago, heartbeat 12s ago"); return b; }
-bool cc_link_connected(void) { return !s_rc_preview; }
-const char *cc_link_status_text(char *b, size_t cap) { snprintf(b, cap, "connected Mac"); return b; }
-cc_link_fail_t cc_link_failure(void) { return CC_LINK_FAIL_NONE; }
+bool cc_link_connected(void) { return pv_wifi() && pv_host() && !pv_notfound(); }
+/* the device's own wording (cc_link.c), so the banner's cut is tested */
+const char *cc_link_status_text(char *b, size_t cap) {
+    if (pv_notfound()) snprintf(b, cap, "Host not found at my-host.local (set its address in Settings \xe2\x86\x92 Network) (retry in 12s)");
+    else snprintf(b, cap, cc_link_connected() ? "connected my-host" : "connecting to my-host");
+    return b;
+}
+cc_link_fail_t cc_link_failure(void) { return pv_notfound() ? CC_LINK_FAIL_NOT_FOUND : CC_LINK_FAIL_NONE; }
 bool cc_link_mac_address(char *o, size_t cap) { snprintf(o, cap, "100.101.102.103"); return true; }
 bool cc_link_mac_path(char *o, size_t cap) { snprintf(o, cap, "lan 192.168.1.50"); return true; }
 bool cc_link_set_lan_fallback(const char *ip) { (void)ip; return true; }
 const char *cc_link_lan_fallback(char *o, size_t cap) { snprintf(o, cap, "192.168.1.50"); return o; }
 int cc_poll_failures(bool *too_big) { if (too_big) *too_big = false; return 0; }
 const char *cc_settings_claude_path(char *o, size_t cap) { snprintf(o, cap, "~/.local/bin/claude"); return o; }
-const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "Mac"); return o; }
-int cc_settings_server(void) { return 0; }
+const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "%s", pv_host() ? "my-host" : ""); return o; }
+int cc_settings_server(void) { return pv_host() ? 0 : -1; }
 void cc_link_set_server(const char *n) { (void)n; }
 bool cc_link_set_claude_path(const char *p) { (void)p; return true; }
+/* PREVIEW_LOG=long: a 300-character line with no spaces, CJK and a numbered list (Review Focus 3). */
+static int s_paste_calls;
 esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, char *err, size_t ecap, int ms) {
     (void)cmd; (void)ms; if (ecap) err[0] = 0; if (st) *st = 0;
+    if (!strcmp(env_str("PREVIEW_LOG", ""), "long")) {
+        char line[301];
+        for (int i = 0; i < 300; i++) line[i] = (char)('a' + i % 26);
+        line[300] = 0;
+        snprintf(out, cap, "\xe2\x8f\xba Read src/%s.ts\r\n%s\r\n"
+                 "\xe2\x96\x91\xe2\x96\x91\xe2\x96\x88\xe2\x96\x88 \xe2\x80\xa6 \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 \xe2\x9c\x93 \xe2\x97\x8f \xe2\x86\x90 \xe2\x86\x93 46k tokens | [\xe2\x96\x88\xe2\x96\x88\xe2\x96\x91\xe2\x96\x91\xe2\x96\x91\xe2\x96\x91] 7%% reset | 51%% 3d 14h weekly reset \xe2\x80\xa6\r\n"
+                 "\xe2\x8f\xba \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x81\xae\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\xe3\x81\xa7\xe3\x81\x99\xe3\x80\x82"
+                 "\xe9\x95\xb7\xe3\x81\x84\xe8\xa1\x8c\xe3\x81\x8c\xe6\x8a\x98\xe3\x82\x8a\xe8\xbf\x94\xe3\x81\x95\xe3\x82\x8c\xe3\x82\x8b\xe3\x81\x8b"
+                 "\xe7\xa2\xba\xe8\xaa\x8d\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x81\xae\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\xe3\x81\xa7\xe3\x81\x99"
+                 "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x81\xae\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\xe3\x81\xa7\xe3\x81\x99\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x81\xae\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\r\n", line, line);
+        return ESP_OK;
+    }
     snprintf(out, cap, "\x1b[1m\xe2\x8f\xba\x1b[0m Read\x1b[1C3\x1b[1Cfiles\r\n  \xe2\x8e\xbf  src/main.c\r\n"
              "\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\r\n\xe2\x8f\xba Which colour should the theme use?\r\n"
-             "  1. Amber   2. Green\r\n\xe2\x9c\xbb Waiting for your answer\r\n\xe2\x9d\xaf\xc2\xa0\r\n");
+             "  1. Amber\r\n  2. Green\r\n  3. Blue\r\n");
     return ESP_OK;
 }
-esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; if (cap) err[0] = 0; return ESP_OK; }
+esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; s_paste_calls++; if (cap) err[0] = 0; return ESP_OK; }
 esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; if (cap) err[0] = 0; return ESP_OK; }
 static int s_forget_calls;
 #define PREVIEW_FP "SHA256:Xq3v9yPreviewFingerprintOnly0123456789abcd"
@@ -466,7 +520,7 @@ static int nav_case(lv_display_t *d) {
     ui_nav_push(probe_settings_create, NULL); step(d,100);
     assert(s_probe_runs == 1 && ui_nav_is_top(probe_settings_create));
     ui_nav_back(); step(d,100);
-    assert(ui_nav_is_top(ui_dashboard_create));
+    assert(ui_nav_is_top(ui_sessions_create));
     s_probe_prev = lv_screen_active();
     ui_nav_push(probe_gallery_create, NULL); step(d,100);
     assert(s_probe_runs == 2);
@@ -522,6 +576,317 @@ static int targets_clip_case(lv_display_t *d) {
     return 0;
 }
 
+/* ------------------------------------------------------------ sessions */
+static bool sink(key_event_t ev) { return preview_have_sink && preview_sink.key(&ev, preview_sink.user); }
+static bool sink_ch(uint32_t cp, uint8_t mods) { return sink((key_event_t){ .type = KEY_EV_CHAR, .cp = cp, .mods = mods }); }
+static bool sink_sk(special_key_t k) { return sink((key_event_t){ .type = KEY_EV_SPECIAL, .key = k }); }
+static void sink_text(const char *t) { for (; *t; t++) assert(sink_ch((uint8_t)*t, 0)); }
+static bool obj_shown(lv_obj_t *o) {
+    for (; o; o = lv_obj_get_parent(o)) if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return false;
+    return true;
+}
+/* The first shown object of class c under o. */
+static lv_obj_t *find_shown(lv_obj_t *o, const lv_obj_class_t *c) {
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return NULL;
+    if (lv_obj_check_type(o, c)) return o;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *r = find_shown(lv_obj_get_child(o, i), c);
+        if (r) return r;
+    }
+    return NULL;
+}
+/* A shown label with text t whose left edge is at or right of x (the detail pane starts at 440). */
+static lv_obj_t *find_label_x(lv_obj_t *o, const char *t, int32_t x) {
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return NULL;
+    if (lv_obj_check_type(o, &lv_label_class) && !strcmp(lv_label_get_text(o), t)) {
+        lv_area_t a; lv_obj_get_coords(o, &a);
+        if (a.x1 >= x) return o;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *r = find_label_x(lv_obj_get_child(o, i), t, x);
+        if (r) return r;
+    }
+    return NULL;
+}
+/* The session row whose (uncut) name label is t: a label left of the pane, in row > column > name. */
+static lv_obj_t *find_label_left(lv_obj_t *o, const char *t) {
+    if (lv_obj_check_type(o, &lv_label_class) && !strcmp(lv_label_get_text(o), t)) {
+        lv_area_t a; lv_obj_get_coords(o, &a);
+        if (a.x2 < 440) return o;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *r = find_label_left(lv_obj_get_child(o, i), t);
+        if (r) return r;
+    }
+    return NULL;
+}
+static lv_obj_t *row_named(lv_obj_t *scr, const char *t) {
+    lv_obj_t *l = find_label_left(scr, t);
+    return l ? lv_obj_get_parent(lv_obj_get_parent(l)) : NULL;
+}
+/* Shown skeleton rows: 72 px panel-2 placeholders with no children. */
+static int skeleton_rows(lv_obj_t *o) {
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return 0;
+    int n = 0;
+    if (!lv_obj_get_child_count(o) && lv_obj_get_height(o) == UI_TK_SESSION_ROW_H && !lv_obj_check_type(o, &lv_label_class) &&
+        lv_color_eq(lv_obj_get_style_bg_color(o, 0), lv_color_hex(UI_TK_PANEL2))) n++;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) n += skeleton_rows(lv_obj_get_child(o, i));
+    return n;
+}
+/* A shown label right of x whose text contains t. */
+static lv_obj_t *find_label_has(lv_obj_t *o, const char *t, int32_t x) {
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return NULL;
+    if (lv_obj_check_type(o, &lv_label_class) && strstr(lv_label_get_text(o), t)) {
+        lv_area_t a; lv_obj_get_coords(o, &a);
+        if (a.x1 >= x) return o;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *r = find_label_has(lv_obj_get_child(o, i), t, x);
+        if (r) return r;
+    }
+    return NULL;
+}
+static bool row_selected(lv_obj_t *row) { return row && lv_obj_get_style_outline_width(row, 0) == 2; }
+static const char *field_text(lv_obj_t *scr) {
+    lv_obj_t *ta = find_shown(scr, &lv_textarea_class);
+    return ta ? lv_textarea_get_text(ta) : NULL;
+}
+static int selected_index(lv_obj_t *list) {
+    for (uint32_t i = 0; i < lv_obj_get_child_count(list); i++)
+        if (obj_shown(lv_obj_get_child(list, i)) && row_selected(lv_obj_get_child(list, i))) return (int)i;
+    return -1;
+}
+
+static int sessions_case(lv_display_t *d, const char *v) {
+    char name[64];
+    snprintf(name, sizeof(name), !strcmp(v, "ctrlk") ? "ctrlk" : "sessions-%s", v);
+    bool needs = false;
+    if (!strcmp(v, "working")) setenv("PREVIEW_FIXTURE", "agents_working.json", 1);
+    if (!strcmp(v, "loading")) setenv("PREVIEW_FIXTURE", "loading", 1);
+    if (!strcmp(v, "empty")) setenv("PREVIEW_FIXTURE", "none", 1);
+    if (!strcmp(v, "16")) setenv("PREVIEW_FIXTURE", "agents_16.json", 1);
+    if (!strcmp(v, "long") || !strcmp(v, "interactive")) { setenv("PREVIEW_FIXTURE", "agents_long.json", 1); setenv("PREVIEW_LOG", "long", 1); }
+    if (!strcmp(v, "no-wifi")) setenv("PREVIEW_WIFI", "0", 1);
+    if (!strcmp(v, "no-host")) setenv("PREVIEW_HOST", "0", 1);
+    if (!strcmp(v, "not-found")) setenv("PREVIEW_FAIL", "notfound", 1);
+    if (!strcmp(v, "low-battery")) setenv("PREVIEW_BAT", "14", 1);
+    if (!strcmp(v, "reconnecting")) s_rc_preview = true;
+    if (!strcmp(v, "stale")) s_stale_preview = true;
+    preview_sessions_load();
+    ui_nav_home(); step(d, 400); step(d, 400);
+    assert(ui_nav_is_top(ui_sessions_create) && preview_have_sink);
+    lv_obj_t *s = lv_screen_active();
+    lv_obj_update_layout(s); lv_refr_now(d);
+    char why[256];
+    lv_obj_t *row0 = s_preview_n > 0 ? row_named(s, s_preview_sessions[0].name) : NULL;
+    lv_obj_t *list = row0 ? lv_obj_get_parent(row0) : NULL;
+    if (!strcmp(v, "live") || !strcmp(v, "selected-needs-you") || !strcmp(v, "resort") || !strcmp(v, "16")) needs = true;
+    if (!strcmp(v, "live")) {
+        assert(find_label(s, "\xe2\x97\x8f 2 need you", false));
+        assert(list && selected_index(list) == 0);
+        assert(find_label(s, "1\xe2\x80\x93" "3 picks an option", false));   /* the tail ends in a 3-item list */
+        /* review carry (T4 re-review): no bar control's hit area reaches the first row's */
+        if (pv_bar_hits_clear(s, row0, why, sizeof(why))) { printf("check %s: FAIL bar hits: %s\n", name, why); return 1; }
+    } else if (!strcmp(v, "selected-needs-you")) {
+        assert(sink_sk(SK_DOWN)); step(d, 400);
+        assert(selected_index(list) == 1 && cc_session_needs_you(&s_preview_sessions[1]));
+        assert(find_label_x(s, s_preview_sessions[1].name, 440));
+    } else if (!strcmp(v, "working")) {
+        if (pv_amber_pixels(s)) { printf("check %s: FAIL amber drawn with no session needing you\n", name); return 1; }
+        assert(!find_label(s, "\xe2\x97\x8f", true));
+    } else if (!strcmp(v, "loading")) {
+        assert(find_label(s, "Loading sessions\xe2\x80\xa6", false));
+        assert(skeleton_rows(s) == 3);
+    } else if (!strcmp(v, "stale")) {
+        assert(find_label(s, "Updating\xe2\x80\xa6", false));
+    } else if (!strcmp(v, "reconnecting")) {
+        assert(find_label(s, "Reconnecting to host\xe2\x80\xa6", false));
+        assert(!find_label(s, "No Wi-Fi", true));
+        assert(lv_obj_get_style_opa(list, 0) == LV_OPA_50);
+    } else if (!strcmp(v, "no-wifi")) {
+        assert(find_label(s, "No Wi-Fi", false) && find_clickable(s, "Wi-Fi settings"));
+        assert(lv_obj_get_style_opa(list, 0) == LV_OPA_50);
+        /* inert: a tap on another row selects nothing */
+        lv_obj_send_event(lv_obj_get_child(list, 1), LV_EVENT_CLICKED, NULL); step(d, 400);
+        assert(selected_index(list) == 0);
+        if (pv_bar_hits_clear(s, row0, why, sizeof(why))) { printf("check %s: FAIL bar hits: %s\n", name, why); return 1; }
+    } else if (!strcmp(v, "not-found")) {
+        assert(find_label(s, "Host not found at my-host.local", false) && find_clickable(s, "Host settings"));
+    } else if (!strcmp(v, "no-host")) {
+        lv_obj_t *b = find_clickable(s, "Set up host");
+        assert(b && obj_shown(b));
+        assert(!find_shown(s, &lv_textarea_class));
+        assert(!row0 || !obj_shown(row0));
+    } else if (!strcmp(v, "empty")) {
+        assert(find_label(s, "No sessions on this host. Start one with `claude --bg`.", false));
+    } else if (!strcmp(v, "interactive")) {
+        /* select the interactive blocked session */
+        int k = -1;
+        for (int i = 0; i < s_preview_n; i++) if (!s_preview_sessions[i].background && s_preview_sessions[i].state == CC_NEEDS_YOU) k = i;
+        assert(k >= 0);
+        for (int i = 0; i < k; i++) { assert(sink_sk(SK_DOWN)); step(d, 400); }
+        assert(selected_index(list) == k);
+        assert(find_label(s, "Interactive \xe2\x80\x94 answer it on the Host", false));
+        assert(!find_shown(s, &lv_textarea_class));
+        assert(find_label(s, "waiting on Host", false));
+        if (pv_amber_pixels(s)) { printf("check %s: FAIL amber on a session that can't need you\n", name); return 1; }
+    } else if (!strcmp(v, "sent")) {
+        assert(sink_ch('2', 0)); step(d, 400);
+        assert(!strcmp(field_text(s), "2"));
+        assert(sink_sk(SK_ENTER)); step(d, 400);
+        assert(s_paste_calls == 1);
+        assert(find_label(s, "Sent \xe2\x9c\x93", false));
+        assert(!strcmp(field_text(s), ""));   /* the draft is cleared after a send */
+    } else if (!strcmp(v, "low-battery")) {
+        assert(find_label(s, "Battery 14 %. The Tab5 sleeps at 10 %.", false));
+    } else if (!strcmp(v, "16")) {
+        int shown = 0;
+        for (uint32_t i = 0; i < lv_obj_get_child_count(list); i++) shown += obj_shown(lv_obj_get_child(list, i));
+        assert(shown == 16);
+        lv_obj_t *last = lv_obj_get_child(list, 15);
+        lv_obj_scroll_to_view(last, LV_ANIM_OFF);
+        lv_obj_update_layout(s);
+        lv_area_t a, l; lv_obj_get_coords(last, &a); lv_obj_get_coords(list, &l);
+        assert(a.y1 >= l.y1 && a.y2 <= l.y2);
+        step(d, 400);
+    } else if (!strcmp(v, "long")) {
+        /* the 95-character name: cut in its row, whole (wrapped) in the pane */
+        int k = -1;
+        for (int i = 0; i < s_preview_n; i++) if (strlen(s_preview_sessions[i].name) == 95) k = i;
+        assert(k >= 0);
+        for (int i = 0; i < k; i++) { assert(sink_sk(SK_DOWN)); step(d, 400); }
+        lv_obj_t *t = find_label_x(s, s_preview_sessions[k].name, 440);
+        assert(t && lv_obj_get_height(t) > lv_font_get_line_height(FONT_BODY));   /* wrapped */
+        assert(!find_label_x(s, s_preview_sessions[k].name, 0) || find_label_x(s, s_preview_sessions[k].name, 0) == t);
+        /* CJK in the mono log: confirm the cell width the wrap assumes (Review Focus 3, T5 carry) */
+        lv_font_glyph_dsc_t g;
+        assert(lv_font_get_glyph_dsc(FONT_MONO, &g, 0x65E5, 0) && !g.is_placeholder);
+        printf("sessions long: U+65E5 advances %u px in FONT_MONO (cell 12), 'M' %u px\n", (unsigned)g.adv_w,
+               (unsigned)lv_font_get_glyph_width(FONT_MONO, 'M', 0));
+        assert(g.adv_w == 24);   /* two cells: sm_wrap_tail counts it as 2 (vt_wcwidth) */
+        /* the glyphs a Claude Code log tail carries: each must advance as many 12 px cells as vt_wcwidth says */
+        static const uint32_t tui[] = { 0x2026, 0x2190, 0x2193, 0x23F5, 0x23FA, 0x2588, 0x2591, 0x2722, 0x2733, 0x2736,
+                                        0x273B, 0x273D, 0x276F, 0x00A0, 0x00B7, 0x2500, 0x256D, 0x23BF, 0x2713, 0x25CF };
+        for (unsigned i = 0; i < sizeof(tui) / sizeof(tui[0]); i++) {
+            lv_font_glyph_dsc_t t;
+            bool ok = lv_font_get_glyph_dsc(FONT_MONO, &t, tui[i], 0);
+            if (!ok || t.adv_w != 12 * (unsigned)vt_wcwidth(tui[i]))
+                printf("sessions long: U+%04X advances %u px (%s), vt_wcwidth %d\n", (unsigned)tui[i], (unsigned)t.adv_w,
+                       ok && !t.is_placeholder ? "drawn" : "missing", vt_wcwidth(tui[i]));
+        }
+        /* the CJK line and the 300-character one are in the block, and every row fits its width unwrapped */
+        lv_obj_t *log = find_label_has(s, "\xe6\x97\xa5\xe6\x9c\xac", 440);
+        assert(log && lv_obj_get_style_text_font(log, 0) == FONT_MONO);
+        assert(find_label_has(s, "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", 440) == log);
+        assert(find_label_has(s, "\xe2\x96\x88\xe2\x96\x88\xe2\x96\x91", 440) == log);   /* the TUI-symbol line */
+        int32_t w = lv_obj_get_content_width(lv_obj_get_parent(log)), rows = 0;   /* the block, not the label */
+        char line[512];
+        for (const char *p = lv_label_get_text(log); *p; ) {
+            const char *e = strchr(p, '\n');
+            size_t n = e ? (size_t)(e - p) : strlen(p);
+            snprintf(line, sizeof(line), "%.*s", (int)n, p);
+            lv_point_t sz;
+            lv_text_get_size(&sz, line, FONT_MONO, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            if (sz.x > w) { printf("check %s: FAIL log row %d is %d px, the block %d\n", name, (int)rows, (int)sz.x, (int)w); return 1; }
+            rows++;
+            p += n + (e ? 1 : 0);
+        }
+        assert(lv_obj_get_height(log) == rows * lv_font_get_line_height(FONT_MONO));   /* LVGL wrapped nothing more */
+        printf("sessions long: %d log rows, block %d px wide (%d cells)\n", (int)rows, (int)w, (int)(w / 12));
+    } else if (!strcmp(v, "resort")) {
+        /* Review Focus 1: select B, type, re-sort B to the end, tick */
+        const int b = 1;
+        char bname[96]; snprintf(bname, sizeof(bname), "%s", s_preview_sessions[b].name);
+        assert(sink_sk(SK_DOWN)); step(d, 400);
+        sink_text("abc"); step(d, 400);
+        preview_resort_to_last(b); step(d, 400);
+        lv_obj_update_layout(s);
+        assert(find_label_x(s, bname, 440));
+        assert(!strcmp(field_text(s), "abc"));
+        assert(row_selected(row_named(s, bname)) && selected_index(list) == s_preview_n - 1);
+    } else if (!strcmp(v, "keys")) {
+        assert(sink_ch('k', MOD_CTRL) && ui_sessions_keys_overlay_shown());
+        /* Ctrl+Tab is not taken by buttons mode while the overlay is up; the sink closes it */
+        key_event_t ct = { .type = KEY_EV_SPECIAL, .key = SK_TAB, .mods = MOD_CTRL };
+        assert(!ui_keyboard_route(&ct, true) && !ui_keyboard_owns_input());
+        assert(sink_ch('z', 0) && !ui_sessions_keys_overlay_shown());
+        assert(!strcmp(field_text(s), ""));   /* the closing key is eaten */
+        assert(sink_ch('t', MOD_CTRL)); step(d, 400);
+        assert(ui_nav_is_top(ui_hosts_create));
+        ui_nav_back(); step(d, 400);
+        assert(sink_ch('m', MOD_CTRL)); step(d, 400);
+        assert(ui_nav_is_top(ui_hosts_create));
+        ui_nav_back(); step(d, 400);
+        s = lv_screen_active();
+        sink_text("ab"); step(d, 400);
+        assert(!strcmp(field_text(s), "ab"));
+        assert(sink_sk(SK_ESC)); step(d, 400);
+        assert(ui_nav_is_top(ui_sessions_create) && !strcmp(field_text(s), ""));   /* Esc clears, never leaves */
+        sink_text("cd");
+        assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
+        assert(!strcmp(field_text(s), "cd"));   /* no space reaches the field */
+        assert(find_label(lv_layer_top(), HK_VOICE_TOAST, false));
+        step(d, 3100);
+        assert(sink_ch('p', MOD_CTRL)); step(d, 400);
+        assert(ui_nav_is_top(ui_settings_create));
+        ui_nav_back(); step(d, 400);
+        s = lv_screen_active();
+        assert(ui_nav_is_top(ui_sessions_create) && !strcmp(field_text(s), "cd"));   /* the draft outlives the visit */
+    } else if (!strcmp(v, "ctrlk")) {
+        assert(sink_ch('k', MOD_CTRL) && ui_sessions_keys_overlay_shown());
+        step(d, 100);
+        /* two columns, nothing wrapped */
+        lv_obj_t *t = find_label(s, "Keyboard shortcuts", false);
+        assert(t);
+        lv_obj_t *sheet = lv_obj_get_parent(t);
+        for (uint32_t i = 1; i < lv_obj_get_child_count(sheet); i++) {
+            lv_obj_t *r = lv_obj_get_child(sheet, i);
+            for (uint32_t j = 0; j < lv_obj_get_child_count(r); j++) {
+                lv_obj_t *l = lv_obj_get_child(r, j);
+                assert(lv_obj_get_height(l) <= lv_font_get_line_height(lv_obj_get_style_text_font(l, 0)));
+            }
+        }
+        int r = pv_run_checks(d, s, name, needs, 0);
+        /* a touch closes it on the press, and its release lands on nothing: a tap over the second row
+           neither selects nor opens it */
+        lv_indev_t *in = lv_indev_create(); lv_indev_set_type(in, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(in, pointer_read);
+        lv_area_t a; lv_obj_get_coords(lv_obj_get_child(list, 1), &a);
+        int px = (a.x1 + a.x2) / 2, py = (a.y1 + a.y2) / 2;
+        pointer_move(in, px, py, true); lv_timer_handler();
+        pointer_move(in, px, py, false); lv_timer_handler();
+        pointer_move(in, px, py, false); step(d, 400);
+        assert(!ui_sessions_keys_overlay_shown() && selected_index(list) == 0);
+        /* and a tap after it does select the row */
+        pointer_move(in, px, py, true); lv_timer_handler();
+        pointer_move(in, px, py, false); lv_timer_handler(); step(d, 400);
+        assert(selected_index(list) == 1);
+        lv_indev_delete(in);
+        return r;
+    } else if (!strcmp(v, "idle")) {
+        unsigned px = pv_idle_pixels(d, 2000);
+        if (px) { printf("check %s: FAIL idle: %u px redrawn\n", name, px); return 1; }
+        /* and past a log re-fetch (5 s), an age refresh (9 s) and the shared vitals timer (30 s) */
+        px = pv_idle_pixels(d, 31000);
+        if (px) { printf("check %s: FAIL idle over 31 s: %u px redrawn\n", name, px); return 1; }
+        if (pv_timers(true, why, sizeof(why))) { printf("check %s: FAIL timers: %s\n", name, why); return 1; }
+    } else if (!strcmp(v, "forget")) {
+        /* P4-3: a forget done in time toasts once, from its own result; the tick does not repeat it */
+        assert(ui_sessions_forget_host_key());
+        step(d, 100);
+        assert(find_label(lv_layer_top(), "New host key pinned: " PREVIEW_FP, false));
+        step(d, FORGET_TOAST_MS + 200);
+        assert(!find_label(lv_layer_top(), "New host key pinned: " PREVIEW_FP, false));
+        step(d, 1000);
+        assert(!find_label(lv_layer_top(), "New host key pinned", true));
+    } else {
+        fprintf(stderr, "preview: unknown sessions case %s\n", v);
+        return 2;
+    }
+    s = lv_screen_active();
+    return pv_run_checks(d, s, name, needs, 0);
+}
+
 int main(int argc,char **argv) {
     lv_init();
     int w=1280, h=720;
@@ -545,7 +910,7 @@ int main(int argc,char **argv) {
         int result=pv_run_checks(d,boot,"boot",false,0);
         lv_obj_add_event_cb(boot,boot_deleted_cb,LV_EVENT_DELETE,NULL);
         fonts_init(); ui_init(); ui_nav_home(); step(d,400);
-        assert(s_boot_deleted && ui_nav_is_top(ui_dashboard_create));   /* P4-2: the splash is deleted */
+        assert(s_boot_deleted && ui_nav_is_top(ui_sessions_create));   /* P4-2: the splash is deleted */
         puts("Early boot logo and handoff checks passed.");
         return result;
     }
@@ -587,82 +952,8 @@ int main(int argc,char **argv) {
         }
         return 0;
     }
-    if (!strcmp(name,"dashboard")) {
-        /* The live dashboard against the synthetic fixture; the first card is selected.
-           Not rebuilt until Task 6, so the amber scan and the target sizes are skipped. */
-        preview_sessions_load();
-        ui_nav_home(); step(d,400);
-        assert(ui_nav_is_top(ui_dashboard_create));
-        step(d,400);
-        return pv_run_checks(d,lv_screen_active(),"dashboard",true,PV_SKIP_AMBER|PV_SKIP_TARGETS);
-    }
-    if (!strcmp(name,"dashboard-reconnecting")) {
-        /* A key woke it from Radio off: "Reconnecting to Mac…" (muted) over the stale cards, not "No Wi-Fi". */
-        preview_sessions_load();
-        s_rc_preview = true;
-        ui_nav_home(); step(d,400);
-        assert(ui_nav_is_top(ui_dashboard_create));
-        step(d,400);
-        lv_obj_t *s=lv_screen_active();
-        lv_obj_update_layout(s); lv_refr_now(d);
-        assert(find_label(s,"Reconnecting to Mac\xe2\x80\xa6",false));
-        assert(!find_label(s,"No Wi-Fi",true));
-        return pv_run_checks(d,s,"dashboard-reconnecting",true,PV_SKIP_AMBER|PV_SKIP_TARGETS);
-    }
-    if (!strcmp(name,"settings-forget")) {
-        /* Settings -> Companion -> Forget Mac host key: the confirm, then the toast after OK. */
-        preview_sessions_load();
-        ui_nav_home(); step(d,400);
-        ui_nav_push(ui_settings_create,NULL); step(d,400);
-        lv_obj_t *s=lv_screen_active();
-        lv_obj_t *row=find_clickable(s,"Forget Mac host key");
-        assert(row);
-        lv_obj_send_event(row,LV_EVENT_CLICKED,NULL); step(d,400);
-        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
-        assert(find_label(s,"Pinned key: SHA256:OldPreviewKey",true));   /* the row shows the pinned key */
-        assert(find_label(lv_layer_top(),"Forget Mac host key?",false));
-        assert(find_label(lv_layer_top(),"Only do this if your Mac's SSH host key changed. The Tab5 will trust the next key it sees.",false));
-        int r = pv_run_checks(d,s,"settings-forget",false,PV_SKIP_AMBER|PV_SKIP_TARGETS);
-        assert(s_forget_calls==0);   /* nothing happens before Yes */
-        lv_obj_t *ok=find_clickable(lv_layer_top(),tr(STR_OK));
-        assert(ok);
-        lv_obj_send_event(ok,LV_EVENT_CLICKED,NULL); step(d,100); step(d,600);
-        assert(s_forget_calls==1);
-        assert(find_label(lv_layer_top(),"New Mac key pinned: " PREVIEW_FP,false));   /* from the poll */
-        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
-        r |= snapshot_top(lv_screen_active(),"settings-forget-toast.ppm");
-        puts("Settings forget host key: confirm, one request after OK, toast passed.");
-        return r;
-    }
-    if (!strcmp(name,"dashboard-keys")) {
-        /* The Ctrl+K shortcuts overlay over the dashboard, opened through the dashboard's own sink. */
-        preview_sessions_load();
-        ui_nav_home(); step(d,400);
-        assert(ui_nav_is_top(ui_dashboard_create) && preview_have_sink);
-        key_event_t k = { .type = KEY_EV_CHAR, .cp = 'k', .mods = MOD_CTRL };
-        assert(preview_sink.key(&k, preview_sink.user));
-        assert(ui_dashboard_keys_overlay_shown());
-        step(d,400);
-        int r = pv_run_checks(d,lv_screen_active(),"dashboard-keys",true,PV_SKIP_AMBER|PV_SKIP_TARGETS);
-        /* Ctrl+Tab is not taken by buttons mode while the overlay is up; the sink closes it */
-        key_event_t ct = { .type = KEY_EV_SPECIAL, .key = SK_TAB, .mods = MOD_CTRL };
-        assert(!ui_keyboard_route(&ct, true) && !ui_keyboard_owns_input());
-        key_event_t z = { .type = KEY_EV_CHAR, .cp = 'z' };
-        assert(preview_sink.key(&z, preview_sink.user));
-        assert(!ui_dashboard_keys_overlay_shown());
-        step(d,100);
-        assert(ui_nav_is_top(ui_dashboard_create));
-        /* Ctrl+P and Ctrl+M navigate (Settings, Terminal); Esc comes back */
-        key_event_t p = { .type = KEY_EV_CHAR, .cp = 'p', .mods = MOD_CTRL };
-        assert(preview_sink.key(&p, preview_sink.user)); step(d,400);
-        assert(ui_nav_is_top(ui_settings_create));
-        ui_nav_back(); step(d,400);
-        key_event_t m = { .type = KEY_EV_CHAR, .cp = 'm', .mods = MOD_CTRL };
-        assert(preview_have_sink && preview_sink.key(&m, preview_sink.user)); step(d,400);
-        assert(ui_nav_is_top(ui_hosts_create));
-        puts("Dashboard hotkeys: Ctrl+K overlay, any key closes it, Ctrl+P settings, Ctrl+M terminal passed.");
-        return r;
-    }
+    if (!strcmp(name,"sessions")) return sessions_case(d, argc>2 ? argv[2] : "live");
+    if (!strcmp(name,"ctrlk")) return sessions_case(d, "ctrlk");
     if (!strcmp(name,"settings")) {
         unsigned category = argc>2 ? (unsigned)atoi(argv[2]) : 0;
         assert(category < 7);
