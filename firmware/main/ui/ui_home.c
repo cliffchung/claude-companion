@@ -34,7 +34,8 @@ static void quick_wifi(void)
 static void quick_tailscale(void)
 {
     tailscale_set_enabled(!tailscale_enabled());
-    ui_toast(tr(tailscale_enabled() ? STR_ON : STR_OFF));
+    if (!tailscale_enabled() && tailscale_stopping()) ui_toast("Turning Tailscale off\xe2\x80\xa6");
+    else ui_toast(tr(tailscale_enabled() ? STR_ON : STR_OFF));
 }
 static void quick_appearance(void) { ui_nav_push(ui_appearance_create, NULL); }
 

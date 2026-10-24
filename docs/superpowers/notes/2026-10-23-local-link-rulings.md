@@ -18,3 +18,47 @@ Decisions made while executing Plan 3, each with what it costs if wrong. Overrul
 - Ruling L12 (Task 1): the settings blob's layout and its pure migration moved to `settings/settings_migrate.c` (`CFG_MAGIC`, `CFG_VERSION 21`, `cfg_blob_t`, `settings_blob_load`, `settings_blob_make`), so `test_settings_migrate` runs on the host; the steps that need ESP-IDF (theme, keyboard layout, Plan 2 defaults) stay in `settings_init`. The v20->21 step sets `ts_enable = 0` and clears both new address fields (the old blob's tail padding lands on `mac_lan_ip[0..1]`, which the test fills on purpose). It ran on the device: the switch was on under Plan 2 and read `ts: off` on the first boot of this build — costs nothing.
 - Ruling L13 (Task 1): `companion server-host <host> [fallback-ip|none]`: the fallback is optional (omitted keeps the current one, `none` clears it) and must be a private IPv4 address (10/8, 172.16/12, 192.168/16); the host is 1-127 printable characters without spaces. It writes the server entry through `server_store_update` and reconnects — costs nothing.
 - Ruling L14 (Task 1): `companion status` gains `path: <lan|tailnet ip|none> (fallback …; tailnet pin source …; Tailscale on|off)` as its last line; the brief's `cc_link_mac_path` returns `"lan <ip>"`, `"tailnet <ip>"` or `"none"` (none while not connected) — costs nothing.
+
+## Fix round 1 (review: a local review file (not kept))
+
+- Ruling L15 (I1, I3, M6, M11): **a switch-off detaches the instance in one locked step and never waits.** One section under `s_ctl` sets `s_ml = NULL`, publishes the instance as `s_zombie` and sets `s_stopping`. A short-lived worker task (`ts_stop`, 6 KB internal stack, created while the old instance still holds its RAM) then runs `microlink_stop` and frees the instance once no task or reference is left.
+  - **Callers:** the LVGL task and the console return at once. The UI toasts "Turning Tailscale off…", and the state text reads "Turning off".
+  - **Starting while the old instance isn't freed:** the start is refused ("Starting after the stop"), and the worker starts MicroLink itself after the free if the switch is on again by then.
+  - **Forget:** `tailscale_forget_node` holds starts off (`s_hold`) and waits up to 40 s for the free before the factory reset, and keeps the node keys if the free doesn't happen. Its UI call runs on its own task.
+  - **Rebinds:** both rebinds (the check-in's and the DERP switch's) and the Wi-Fi rebind re-check the switch under `s_ctl`.
+  - **`s_worker`** is cleared under `s_ctl`.
+  - **Cost if wrong:** after a slow stop, a switch-on starts up to ~30 s late.
+- Ruling L16 (I2): **a Mac that isn't found gets its own red reason, `CC_LINK_FAIL_NOT_FOUND`:**
+  - when the name doesn't resolve and there is no fallback: `Mac not found at <host> (set its address in Settings → Network)`;
+  - when the name didn't resolve and the fallback address doesn't answer: `Mac not at <fallback> (fallback for <host>)`.
+
+  The normal backoff stays. A name that resolves but doesn't answer is still the "is your Mac awake?" case. Cost if wrong: none.
+- Ruling L17 (M1): **the carry-over source is the key itself, not a pointer to a pin.** It is saved in NVS `cc`/`carry` as `{entry host, tailnet ip, SHA256 of the key}`.
+  - **When it is saved:** on every successful connect to a tailnet address, from the session's own server key.
+  - **When it moves:** `companion server-host` moves it to the new host. That is the only host edit it survives; after any other edit of the entry's host it no longer counts, and the connect is refused as unknown. Forget clears it, and so does picking another server as the Mac.
+  - `g_settings.mac_ts_ip` is kept as its address, for display and for Forget.
+  - **Why:** the terminal shares the address-keyed pins and can rewrite one for another device that later gets the same 100.x address.
+  - **Cost if wrong:** an NVS blob of 176 B.
+- Ruling L18 (M2): **Forget erases every pin the Mac could have:**
+  - the entry's host string;
+  - its MagicDNS address;
+  - the carry source's tailnet address;
+  - the fallback address;
+  - the last LAN address the name resolved to;
+  - a fresh lookup of the name made at forget time (it can block for seconds; Forget is never called on the LVGL task);
+  - the link's own address.
+
+  `PIN_TARGETS` is 7, with duplicates removed. Cost if wrong: about 900 B of stack in the forget caller.
+- Ruling L19 (M10): **the whole host-key decision of the link's connect is the pure `kh_carry_action`, which is host-tested.** Its inputs are the LAN pin result, whether the address is a tailnet one, whether a forget is pending, and the carry source (none, equal, different or error). Its outcomes are NORMAL, PIN_NEW, PIN_SILENT, REFUSE_CHANGED, REFUSE_UNKNOWN or PIN_ERROR. `connect_once` only acts on the outcome. A sweep test checks that nothing outside PIN_NEW and PIN_SILENT ever pins, and that PIN_SILENT needs an identical key. Cost if wrong: none.
+- Ruling L20 (M3, part): **the "new host key" refusal now carries the fingerprint**, for comparison with `ssh-keygen -lf`. *Skipped:* using the entry's previous LAN pin as a second carry source. The binding constraint allows a silent pin only against the tailnet pin, so a DHCP move after a Forget still needs another Forget. Cost if wrong: one extra Forget in that case.
+- Ruling L21 (M5): **a check-in that needed no tunnel is recorded as its own path.** It returns `TS_CHECKIN_SKIPPED`, named "lan", and is recorded as `lan` / `hib-lan`. The new paths are appended (8 and 9), so records already saved keep their meaning. Cost if wrong: none.
+- Ruling L22 (M8, M9): **two small fixes:**
+  - restoring a backup acts on the restored switch, through `tailscale_set_enabled`;
+  - dashboard readiness needs Wi-Fi only for a Mac that can't be on the tailnet, whatever the switch says.
+
+  Cost if wrong: none.
+- Ruling L23 (M7): **I measured the fragmentation instead of fixing it.**
+  - **The soak:** 10 on→off cycles, with the switch-off at 8, 14 or 20 s into the connect. The largest free internal block held steady at 31744 B through every cycle, and total free held at 139.7–145.9 KB. There were no crashes.
+  - **The start:** a fresh boot has 63488 B as its largest block. The first cycle takes it down to about 32 KB, and it stays there.
+  - *Skipped:* allocating MicroLink's task stacks once. That would be a larger change to the vendored code, and the measurement shows no slow decline.
+  - **Cost if wrong:** a later need for a single internal block over 31 KB after a Tailscale cycle would fail until a reboot or hibernate.

@@ -17,6 +17,7 @@
 #include "sys/sysinfo.h"
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
+#include "net/ts_host.h"
 #include "settings/settings.h"
 #include "sys/power.h"
 #include "sys/checkin.h"
@@ -997,7 +998,10 @@ static void update_status(void)
         /* The clock starts once the network could reach the Mac: Tailscale takes about a
            minute to register after boot, and that isn't the Mac's fault. */
         bool wifi = wifi_mgr_is_connected();
-        bool net = wifi && (!g_settings.ts_enable || tailscale_state() == TS_CONNECTED);
+        /* a LAN Mac needs Wi-Fi only, whatever the Tailscale switch says (M9) */
+        char mac[128];
+        bool lan_mac = cc_link_mac_address(mac, sizeof(mac)) && !ts_host_maybe_tailnet(mac);
+        bool net = wifi && (!g_settings.ts_enable || lan_mac || tailscale_state() == TS_CONNECTED);
         if (!net) s_down_since_ms = 0;
         else if (!s_down_since_ms) s_down_since_ms = now;
         if (reconnecting) {

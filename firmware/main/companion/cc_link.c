@@ -77,7 +77,7 @@ static char *s_json;                   /* poll buffer (PSRAM) */
 static char *s_screen;                 /* paste screen buffer (PSRAM) */
 static cc_session_t *s_parse;          /* task only: the newest parse (PSRAM) */
 static cc_link_fail_t s_fail;           /* why the last connect failed, other than reachability */
-static char s_fail_text[128];          /* its text for the status line */
+static char s_fail_text[160];          /* its text for the status line */
 static int s_poll_fails;               /* consecutive failed refreshes while connected */
 static bool s_poll_too_big;            /* the last refresh failed: output over JSON_CAP */
 static volatile int s_floor;           /* cc_poll_set_floor: overrides s_rate when > 0 */
@@ -92,6 +92,15 @@ static int s_pin_port;
 static uint32_t s_forget_req, s_forget_ack, s_forget_done;
 static char s_forget_fp[80];           /* the key that connect pinned */
 static volatile bool s_forget;         /* the task tears down and reconnects now */
+/* The pin carry-over's source (fix round 1, M1): the key the link last met on the Mac entry's
+   tailnet address, with the entry's host string at the time, in NVS ("cc"/"carry"), under s_lock.
+   It is the key itself, not a pointer to the address-keyed pin, which the terminal can rewrite for
+   another device; and it stops counting once the entry's host is edited anywhere but
+   cc_link_set_server_host. host[0] == 0: none. */
+typedef struct { char host[128]; char ip[16]; uint8_t hash[32]; } carry_t;
+static carry_t s_carry;
+static char s_lan_last[16];            /* the last LAN address the Mac's name resolved to (M2) */
+static void carry_store(const carry_t *c);
 
 static const int s_backoff[] = { 1, 2, 4, 8, 16, 30 };
 
@@ -229,11 +238,12 @@ bool cc_link_is_companion_server(int idx)
 void cc_link_set_server(const char *name)
 {
     lock();
-    if (strcmp(g_settings.companion_server, name ? name : "") != 0)
-        g_settings.mac_ts_ip[0] = 0;   /* another Mac: the old one's tailnet pin must not carry over (L3) */
+    bool other = strcmp(g_settings.companion_server, name ? name : "") != 0;
     strlcpy(g_settings.companion_server, name ? name : "", sizeof(g_settings.companion_server));
     s_pin_host[0] = 0;   /* the old Mac's address: a forget must not erase its pin */
+    if (other) s_lan_last[0] = 0;
     unlock();
+    if (other) carry_store(NULL);   /* another Mac: the old one's key must not carry over (L3) */
     settings_save();
     s_reconfig = true;
     kick();
@@ -364,6 +374,35 @@ static void set_fail(cc_link_fail_t f, const char *text)
     unlock();
 }
 
+static void carry_load(void)
+{
+    void *b = NULL; size_t n = 0;
+    if (nvs_get_blob_alloc("cc", "carry", &b, &n)) {
+        if (n == sizeof(carry_t)) memcpy(&s_carry, b, n);
+        free(b);
+    }
+    s_carry.host[sizeof(s_carry.host) - 1] = 0;
+    s_carry.ip[sizeof(s_carry.ip) - 1] = 0;
+}
+
+/* Saves the carry source (NULL clears it) and keeps g_settings.mac_ts_ip, its address, in step. */
+static void carry_store(const carry_t *c)
+{
+    carry_t z = { 0 };
+    if (!c) c = &z;
+    lock();
+    bool same = memcmp(&s_carry, c, sizeof(*c)) == 0;
+    s_carry = *c;
+    bool ip_new = strcmp(g_settings.mac_ts_ip, c->ip) != 0;
+    if (ip_new) strlcpy(g_settings.mac_ts_ip, c->ip, sizeof(g_settings.mac_ts_ip));
+    unlock();
+    if (!same) {
+        if (c->host[0]) nvs_set_blob_ns("cc", "carry", c, sizeof(*c));
+        else nvs_erase_key_ns("cc", "carry");
+    }
+    if (ip_new) settings_save();
+}
+
 /* The Mac's address (L2): a literal IPv4 as it is; a tailnet name through MagicDNS (Tailscale up);
    any other name through getaddrinfo, which asks mDNS for a .local name
    (CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES) and DNS for the rest; failing that, the fallback LAN
@@ -426,12 +465,21 @@ static bool connect_once(const char *name)
     }
     char ip[16];
     const char *how;
+    char entry_host[sizeof(host)];
+    strlcpy(entry_host, host, sizeof(entry_host));
     if (!mac_resolve(host, ip, sizeof(ip), &how)) {
         ESP_LOGW(TAG, "mac: %s doesn't resolve and there is no fallback address", host);
-        set_fail(CC_LINK_FAIL_NONE, NULL);   /* retried as unreachable */
+        snprintf(why, sizeof(why), "Mac not found at %s (set its address in Settings \xe2\x86\x92 Network)", host);
+        set_fail(CC_LINK_FAIL_NOT_FOUND, why);   /* I2; retried with the backoff */
         return false;
     }
+    bool via_fallback = strcmp(how, "fallback") == 0;
     if (strcmp(how, "ip") != 0) ESP_LOGI(TAG, "mac: %s -> %s (%s)", host, ip, how);
+    if (strcmp(how, "ip") != 0 && strcmp(how, "magicdns") != 0) {
+        lock();
+        strlcpy(s_lan_last, ip, sizeof(s_lan_last));
+        unlock();
+    }
     strlcpy(host, ip, sizeof(host));
     if (tailscale_is_tailnet_ip(host) && !tailscale_enabled()) {
         ESP_LOGW(TAG, "%s is a tailnet address and Tailscale is off; not connecting", host);
@@ -462,7 +510,11 @@ static bool connect_once(const char *name)
     ssh_options_set(s, SSH_OPTIONS_LOG_VERBOSITY, &verb);
     if (ssh_connect(s) != SSH_OK) {
         ESP_LOGW(TAG, "connect %s:%d failed: %s", host, port, ssh_get_error(s));
-        set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreachable */
+        if (via_fallback) {
+            /* the name didn't resolve and the fallback address doesn't answer: likely stale (I2) */
+            snprintf(why, sizeof(why), "Mac not at %s (fallback for %s)", host, entry_host);
+            set_fail(CC_LINK_FAIL_NOT_FOUND, why);
+        } else set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreachable */
         ssh_free(s);
         /* the stale-peer fix: MicroLink can report a peer up on a dead keypair (the Mac slept), so
            kick a fresh handshake now, before the backoff's next retry */
@@ -471,49 +523,50 @@ static bool connect_once(const char *name)
     }
     char fp[80];
     kh_result_t kh = ssh_known_host_check(s, host, port, fp, sizeof(fp));
-    bool unknown_lan = false;   /* a LAN address with no pin and nothing to carry: refused (L4) */
-    if (kh == KH_UNKNOWN && !tailscale_is_tailnet_ip(host)) {
-        char tsip[sizeof(g_settings.mac_ts_ip)];
-        lock();
-        strlcpy(tsip, g_settings.mac_ts_ip, sizeof(tsip));
-        /* the user's Forget Mac host key: the next connect pins the key it meets as new */
-        bool forget_pending = s_forget_done != s_forget_req && s_forget_ack == s_forget_req;
-        unlock();
-        if (!forget_pending) {
-            /* The pin carry-over (spec Goal 4): never trust on first use over the LAN */
-            kh_result_t t = tsip[0] && strcmp(tsip, host) != 0 ? ssh_known_host_check(s, tsip, port, NULL, 0) : KH_UNKNOWN;
-            if (t == KH_PIN_ERROR || t == KH_ERROR) kh = t;
-            else switch (kh_carry_decide(false, t == KH_OK || t == KH_CHANGED, t == KH_OK)) {
-            case KHC_PIN_SILENT:
-                if (ssh_known_host_trust(s, host, port)) {
-                    ESP_LOGW(TAG, "kh: carried tailnet pin to %s (from %s) %s", host, tsip, fp);
-                    kh = KH_OK;
-                } else kh = KH_ERROR;
-                break;
-            case KHC_REFUSE:
-                ESP_LOGE(TAG, "kh: %s's key %s differs from the tailnet pin of %s", host, fp, tsip);
-                kh = KH_CHANGED;
-                break;
-            default:
-                unknown_lan = true;
-                break;
-            }
+    bool tnet = tailscale_is_tailnet_ip(host);
+    carry_t c;
+    lock();
+    /* the user's Forget Mac host key: the next connect pins the key it meets as new */
+    bool forget_pending = s_forget_done != s_forget_req && s_forget_ack == s_forget_req;
+    c = s_carry;
+    unlock();
+    khs_t src = KHS_NONE;
+    if (kh == KH_UNKNOWN && !tnet && !forget_pending && c.host[0]) {
+        if (strcmp(c.host, entry_host) != 0) {
+            ESP_LOGW(TAG, "kh: the carry source is for '%s', the entry is now '%s': not used", c.host, entry_host);
+        } else {
+            uint8_t h[32];
+            src = !ssh_server_key_hash(s, h) ? KHS_ERROR : memcmp(h, c.hash, sizeof(h)) == 0 ? KHS_EQUAL : KHS_DIFFERENT;
         }
     }
-    if (unknown_lan) {
-        ESP_LOGE(TAG, "kh: new host key for %s:%d %s, and no tailnet pin to carry; not connecting", host, port, fp);
-        snprintf(why, sizeof(why), "new host key for %s; Forget Mac host key to trust it", host);
+    /* the whole decision is the pure kh_carry_action (host-tested); this only acts on it */
+    switch (kh_carry_action(kh, tnet, forget_pending, src)) {
+    case KHA_NORMAL:
+        break;
+    case KHA_PIN_NEW:
+        /* first contact over the tailnet, or after the user's forget, with no screen to ask on */
+        ESP_LOGW(TAG, "pinning new host key for %s:%d %s", host, port, fp);
+        kh = ssh_known_host_trust(s, host, port) ? KH_OK : KH_ERROR;
+        break;
+    case KHA_PIN_SILENT:
+        kh = ssh_known_host_trust(s, host, port) ? KH_OK : KH_ERROR;
+        if (kh == KH_OK) ESP_LOGW(TAG, "kh: carried tailnet pin to %s (from %s) %s", host, c.ip, fp);
+        break;
+    case KHA_REFUSE_CHANGED:
+        ESP_LOGE(TAG, "kh: %s's key %s differs from the tailnet key of %s", host, fp, c.ip);
+        kh = KH_CHANGED;
+        break;
+    case KHA_PIN_ERROR:
+        kh = KH_PIN_ERROR;
+        break;
+    case KHA_REFUSE_UNKNOWN:
+        ESP_LOGE(TAG, "kh: new host key for %s:%d %s, and no tailnet key to carry; not connecting", host, port, fp);
+        /* the fingerprint, to compare with ssh-keygen -lf on the Mac before forgetting (M3) */
+        snprintf(why, sizeof(why), "new host key %s for %s; Forget Mac host key to trust it", fp, host);
         set_fail(CC_LINK_FAIL_HOSTKEY, why);
         ssh_disconnect(s);
         ssh_free(s);
         return false;
-    }
-    if (kh == KH_UNKNOWN) {
-        /* First contact over the tailnet, or after the user's forget, with no screen to ask on:
-           pin it, like the terminal's default. */
-        ESP_LOGW(TAG, "pinning new host key for %s:%d %s", host, port, fp);
-        if (!ssh_known_host_trust(s, host, port)) kh = KH_ERROR;
-        else kh = KH_OK;
     }
     if (kh == KH_CHANGED) {
         snprintf(why, sizeof(why), "host key changed for %s; not connecting", host);
@@ -560,11 +613,14 @@ static bool connect_once(const char *name)
     }
     s_poll_fails = 0;
     s_poll_too_big = false;
-    /* remember the entry's tailnet address: its pin carries over when the entry moves to the LAN */
-    bool ts_new = tailscale_is_tailnet_ip(host) && strcmp(g_settings.mac_ts_ip, host) != 0;
-    if (ts_new) strlcpy(g_settings.mac_ts_ip, host, sizeof(g_settings.mac_ts_ip));
     unlock();
-    if (ts_new) settings_save();
+    if (tnet) {
+        /* remember the key met on the entry's tailnet address: it carries over when the entry moves to the LAN */
+        carry_t nc = { 0 };
+        strlcpy(nc.host, entry_host, sizeof(nc.host));
+        strlcpy(nc.ip, host, sizeof(nc.ip));
+        if (ssh_server_key_hash(s, nc.hash)) carry_store(&nc);
+    }
     if (forget_done) ESP_LOGW(TAG, "forget host key: new Mac key pinned: %s", fp);
     s_w_fallback_until_us = 0;   /* a fallback is retried on the next connect */
     memset(s_w_ends, 0, sizeof(s_w_ends));
@@ -1498,11 +1554,22 @@ int cc_poll_snapshot(cc_session_t *out, int cap)
 }
 
 /* The host:port pins the link and the terminal use for the companion's Mac: the entry's host
-   string itself, the entry's host after a MagicDNS lookup, the entry's remembered tailnet address
-   (the carry-over's source) and, last, the address the link last tried. Returns how many it
-   filled (0: no Mac set up). */
-#define PIN_TARGETS 4
-static int pin_targets(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS])
+   string itself, the entry's host after a MagicDNS lookup, the carry source's tailnet address, the
+   fallback LAN address, the last LAN address the name resolved to, (resolve: a fresh lookup of the
+   name now, which can block for seconds) and, last, the address the link last tried. Deduplicated.
+   Returns how many it filled (0: no Mac set up). */
+#define PIN_TARGETS 7
+static int add_target(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS], int n, const char *h, int port)
+{
+    if (!h || !h[0] || n >= PIN_TARGETS) return n;
+    for (int i = 0; i < n; i++)
+        if (ports[i] == port && strcmp(hosts[i], h) == 0) return n;
+    strlcpy(hosts[n], h, sizeof(hosts[n]));
+    ports[n] = port;
+    return n + 1;
+}
+
+static int pin_targets(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS], bool resolve)
 {
     char name[sizeof(g_settings.companion_server)];
     lock();
@@ -1511,19 +1578,39 @@ static int pin_targets(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS])
     int n = 0;
     int idx = name[0] ? server_index(name) : -1;
     const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
-    if (sv) {
-        int port = sv->port > 0 ? sv->port : 22;
-        strlcpy(hosts[n], sv->host, sizeof(hosts[n])); ports[n++] = port;
-        char ip[16];
-        if (tailscale_resolve(sv->host, ip, sizeof(ip))) { strlcpy(hosts[n], ip, sizeof(hosts[n])); ports[n++] = port; }
-    }
+    if (!sv) return 0;
+    int port = sv->port > 0 ? sv->port : 22;
+    char host[128];
+    strlcpy(host, sv->host, sizeof(host));
+    n = add_target(hosts, ports, n, host, port);
+    char ip[16];
+    if (tailscale_resolve(host, ip, sizeof(ip))) n = add_target(hosts, ports, n, ip, port);
+    char tsip[16], fb[16], last[16], pin[128];
+    int pin_port;
     lock();
-    if (sv && g_settings.mac_ts_ip[0] && strcmp(g_settings.mac_ts_ip, s_pin_host) != 0) {
-        strlcpy(hosts[n], g_settings.mac_ts_ip, sizeof(hosts[n]));
-        ports[n++] = sv->port > 0 ? sv->port : 22;
-    }
-    if (s_pin_host[0]) { strlcpy(hosts[n], s_pin_host, sizeof(hosts[n])); ports[n++] = s_pin_port; }
+    strlcpy(tsip, s_carry.ip[0] ? s_carry.ip : g_settings.mac_ts_ip, sizeof(tsip));
+    strlcpy(fb, g_settings.mac_lan_ip, sizeof(fb));
+    strlcpy(last, s_lan_last, sizeof(last));
+    strlcpy(pin, s_pin_host, sizeof(pin));
+    pin_port = s_pin_port;
     unlock();
+    n = add_target(hosts, ports, n, tsip, port);
+    n = add_target(hosts, ports, n, fb, port);
+    n = add_target(hosts, ports, n, last, port);
+    if (resolve) {
+        const char *how;
+        if (mac_resolve(host, ip, sizeof(ip), &how)) n = add_target(hosts, ports, n, ip, port);
+    }
+    if (pin[0]) {
+        /* last, so cc_link_debug_corrupt_host_key and the fingerprint lookup find the link's own pin */
+        for (int i = 0; i < n; i++)
+            if (ports[i] == pin_port && strcmp(hosts[i], pin) == 0) {
+                for (int j = i; j < n - 1; j++) { strlcpy(hosts[j], hosts[j + 1], sizeof(hosts[j])); ports[j] = ports[j + 1]; }
+                n--;
+                break;
+            }
+        n = add_target(hosts, ports, n, pin, pin_port);
+    }
     return n;
 }
 
@@ -1532,9 +1619,10 @@ esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms)
     if (fp_out && fp_cap) fp_out[0] = 0;
     if (!s_task || xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
     char hosts[PIN_TARGETS][128]; int ports[PIN_TARGETS];
-    int n = pin_targets(hosts, ports);
+    int n = pin_targets(hosts, ports, true);   /* every LAN and tailnet pin, resolved now (M2) */
     if (n == 0) return ESP_ERR_INVALID_STATE;
     for (int i = 0; i < n; i++) ssh_known_host_forget(hosts[i], ports[i]);
+    carry_store(NULL);   /* the old key is no longer trusted: nothing carries it over */
     lock();
     uint32_t want = ++s_forget_req;
     unlock();
@@ -1569,7 +1657,7 @@ bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap)
 {
     if (fp_out && fp_cap) fp_out[0] = 0;
     char hosts[PIN_TARGETS][128]; int ports[PIN_TARGETS];
-    int n = pin_targets(hosts, ports);
+    int n = pin_targets(hosts, ports, false);
     for (int i = n - 1; i >= 0; i--)   /* the link's own address first */
         if (ssh_known_host_fingerprint(hosts[i], ports[i], fp_out, fp_cap)) return true;
     return false;
@@ -1579,7 +1667,7 @@ esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)
 {
     if (host_out && host_cap) host_out[0] = 0;
     char hosts[PIN_TARGETS][128]; int ports[PIN_TARGETS];
-    int n = pin_targets(hosts, ports);
+    int n = pin_targets(hosts, ports, false);
     if (n == 0) return ESP_ERR_INVALID_STATE;
     /* the last target is the link's own pin when it has connected, else the resolved entry */
     if (!ssh_known_host_set_debug(hosts[n - 1], ports[n - 1])) return ESP_FAIL;
@@ -1703,15 +1791,31 @@ esp_err_t cc_link_set_server_host(const char *host, const char *fallback)
     unlock();
     if (!tsip[0] && tailscale_is_tailnet_ip(e.host)) strlcpy(tsip, e.host, sizeof(tsip));
     if (!tsip[0]) tailscale_resolve(e.host, tsip, sizeof(tsip));
+    /* the carry source moves with the entry (this is the one host edit it survives, M1): the saved key
+       if it is for this entry, else the key pinned now under the tailnet address */
+    carry_t c;
+    lock();
+    c = s_carry;
+    unlock();
+    bool have = c.host[0] && strcmp(c.host, e.host) == 0 && (!tsip[0] || strcmp(c.ip, tsip) == 0);
+    if (!have && tsip[0] && tailscale_is_tailnet_ip(tsip)) {
+        memset(&c, 0, sizeof(c));
+        strlcpy(c.ip, tsip, sizeof(c.ip));
+        have = ssh_known_host_hash(tsip, e.port > 0 ? e.port : 22, c.hash) == KH_PIN_FOUND;
+    }
     strlcpy(e.host, host, sizeof(e.host));
     if (!server_store_update(idx, &e)) return ESP_FAIL;
+    if (have) {
+        strlcpy(c.host, host, sizeof(c.host));
+        carry_store(&c);
+    } else carry_store(NULL);
     lock();
-    if (tsip[0] && tailscale_is_tailnet_ip(tsip)) strlcpy(g_settings.mac_ts_ip, tsip, sizeof(g_settings.mac_ts_ip));
     if (fb) strlcpy(g_settings.mac_lan_ip, fb, sizeof(g_settings.mac_lan_ip));
+    s_lan_last[0] = 0;
     unlock();
     settings_save();
-    ESP_LOGI(TAG, "Mac entry host -> %s, fallback %s, tailnet pin source %s", host,
-             g_settings.mac_lan_ip[0] ? g_settings.mac_lan_ip : "none", g_settings.mac_ts_ip[0] ? g_settings.mac_ts_ip : "none");
+    ESP_LOGI(TAG, "Mac entry host -> %s, fallback %s, carry source %s", host,
+             g_settings.mac_lan_ip[0] ? g_settings.mac_lan_ip : "none", have ? c.ip : "none");
     s_reconfig = true;
     kick();
     return ESP_OK;
@@ -1733,7 +1837,7 @@ const char *cc_link_tailnet_pin_source(char *out, size_t cap)
 {
     if (!out || !cap) return "";
     lock();
-    strlcpy(out, g_settings.mac_ts_ip, cap);
+    strlcpy(out, s_carry.ip, cap);
     unlock();
     return out;
 }
@@ -1777,6 +1881,7 @@ esp_err_t cc_link_start(void)
     if (!s_lock || !s_queue || !s_list || !s_parse || !s_json || !s_screen || !s_wbody) return ESP_ERR_NO_MEM;
     cJSON_Hooks hooks = { .malloc_fn = psram_malloc, .free_fn = heap_caps_free };
     cJSON_InitHooks(&hooks);
+    carry_load();
     libssh_esp32_init();   /* once only */
     if (xTaskCreatePinnedToCore(link_task, "cc_link", 24576, NULL, 4, &s_task, 1) != pdPASS)
         return ESP_ERR_NO_MEM;

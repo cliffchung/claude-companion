@@ -42,10 +42,12 @@ static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
 /* ---- records: `power checkins`, NVS ns "power" key "chk" ------------------ */
 
-typedef enum { P_HANDSHAKE, P_REBIND, P_FAILED, P_HIB_HANDSHAKE, P_HIB_REBIND, P_HIB_FAILED, P_HIB_LOW, P_HIB_USB } ck_path_t;
+/* P_LAN, P_HIB_LAN (Plan 3): no tunnel; appended so saved records keep their meaning */
+typedef enum { P_HANDSHAKE, P_REBIND, P_FAILED, P_HIB_HANDSHAKE, P_HIB_REBIND, P_HIB_FAILED, P_HIB_LOW, P_HIB_USB,
+               P_LAN, P_HIB_LAN } ck_path_t;
 static const char *const k_path[] = { "handshake", "rebind", "failed", "hib-handshake", "hib-rebind", "hib-failed", "hib-low",
-                                      "hib-usb" };
-#define K_PATH_N 8
+                                      "hib-usb", "lan", "hib-lan" };
+#define K_PATH_N 10
 typedef struct { uint32_t epoch, ms, mwh_x1000; uint8_t path, tag, needs, pad; } ck_rec_t;
 typedef struct { uint8_t ver, n, head, pad; ck_rec_t r[CHK_N]; } ck_log_t;
 #define CHK_VER 1
@@ -236,7 +238,7 @@ static ts_checkin_t tunnel(const char *mac, bool rebind)
     }
     if (!needs_tunnel(mac)) {
         ESP_LOGI(TAG, "tunnel: skipped (%s)", tailscale_enabled() ? "the Mac is on the LAN" : "Tailscale is off");
-        return TS_CHECKIN_HANDSHAKE;
+        return TS_CHECKIN_SKIPPED;
     }
     return tailscale_checkin(mac, rebind, NULL);
 }
@@ -299,7 +301,7 @@ static void job_checkin(void)
     bool poll_ok;
     ts_checkin_t ts = bring_up(s_arg_rebind, &poll_ok, t0);
     if (poll_ok) wait_for(judged, JUDGED_WAIT_MS);
-    ck_path_t path = !poll_ok ? P_FAILED : ts == TS_CHECKIN_REBIND ? P_REBIND : P_HANDSHAKE;
+    ck_path_t path = !poll_ok ? P_FAILED : ts == TS_CHECKIN_REBIND ? P_REBIND : ts == TS_CHECKIN_SKIPPED ? P_LAN : P_HANDSHAKE;
     bool needs = poll_ok && power_needs_you();
     record(path, (uint32_t)(now_ms() - t0), needs);
     if (want_parked(power_state())) {
@@ -446,7 +448,7 @@ static void job_hib(void)
     }
     bool late = now_ms() > end;
     if (late) poll_ok = false;   /* out of time: hibernate anyway, recorded as failed */
-    ck_path_t path = !poll_ok ? P_HIB_FAILED : ts == TS_CHECKIN_REBIND ? P_HIB_REBIND : P_HIB_HANDSHAKE;
+    ck_path_t path = !poll_ok ? P_HIB_FAILED : ts == TS_CHECKIN_REBIND ? P_HIB_REBIND : ts == TS_CHECKIN_SKIPPED ? P_HIB_LAN : P_HIB_HANDSHAKE;
     if (power_battery_low()) path = P_HIB_LOW;
     record(path, (uint32_t)now_ms(), poll_ok && needs);
     bool kbd = hibernate_kbd_rail_survives();

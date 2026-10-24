@@ -73,6 +73,7 @@ ts_state_t tailscale_state(void)
 bool tailscale_start(void) { return true; }
 void tailscale_stop(void) {}
 bool tailscale_enabled(void) { return g_settings.ts_enable != 0; }
+bool tailscale_stopping(void) { return false; }
 void tailscale_set_enabled(bool on) { g_settings.ts_enable = on; }
 const char *tailscale_state_text(void) { return tailscale_state() == TS_CONNECTED ? "Connected" : tailscale_state() == TS_OFF ? "Off" : "Connecting"; }
 const char *tailscale_vpn_ip(void) { return tailscale_state() == TS_CONNECTED ? "100.101.102.103" : ""; }
@@ -130,6 +131,7 @@ const char *cc_watch_status_text(char *b, size_t cap) { snprintf(b, cap, "watch:
 bool cc_link_connected(void) { return !s_rc_preview; }
 const char *cc_link_status_text(char *b, size_t cap) { snprintf(b, cap, "connected Mac"); return b; }
 cc_link_fail_t cc_link_failure(void) { return CC_LINK_FAIL_NONE; }
+bool cc_link_mac_address(char *o, size_t cap) { snprintf(o, cap, "100.101.102.103"); return true; }
 bool cc_link_mac_path(char *o, size_t cap) { snprintf(o, cap, "lan 192.168.1.50"); return true; }
 bool cc_link_set_lan_fallback(const char *ip) { (void)ip; return true; }
 const char *cc_link_lan_fallback(char *o, size_t cap) { snprintf(o, cap, "192.168.1.50"); return o; }

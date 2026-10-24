@@ -24,7 +24,9 @@ bool cc_link_connected(void);
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
    "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
    is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting",
-   "new host key for <ip>; Forget Mac host key to trust it" (a LAN address with no pin to carry over),
+   "new host key SHA256:... for <ip>; Forget Mac host key to trust it" (a LAN address with no key to carry over),
+   "Mac not found at <host> (set its address in Settings → Network)" (the name doesn't resolve, no fallback),
+   "Mac not at <fallback> (fallback for <host>)" (the name didn't resolve and the fallback doesn't answer),
    "no server named '<name>' in Servers", "<name> refused the device key" or CC_LINK_TS_OFF_TEXT. */
 const char *cc_link_status_text(char *buf, size_t cap);
 /* Why the link is down when it isn't reachability (the status text has the words). */
@@ -34,6 +36,7 @@ typedef enum {
     CC_LINK_FAIL_HOSTKEY,     /* the Mac's host key doesn't match its pin, or the pin is unreadable */
     CC_LINK_FAIL_AUTH,        /* the Mac refused the device key */
     CC_LINK_FAIL_TS_OFF,      /* the Mac entry is a tailnet host and the Tailscale switch is off */
+    CC_LINK_FAIL_NOT_FOUND,   /* the Mac's name doesn't resolve, or its fallback address doesn't answer */
 } cc_link_fail_t;
 #define CC_LINK_TS_OFF_TEXT "the Mac is a tailnet host and Tailscale is off (Settings \xe2\x86\x92 Network)"
 cc_link_fail_t cc_link_failure(void);
@@ -160,7 +163,7 @@ esp_err_t cc_link_set_server_host(const char *host, const char *fallback);
    "" or a private IPv4 address. Retries the link at once. */
 bool cc_link_set_lan_fallback(const char *ip);
 const char *cc_link_lan_fallback(char *out, size_t cap);
-/* The Mac entry's remembered tailnet address, whose pin carries over to the LAN ("" = none). */
+/* The carry source's tailnet address: the key last met there carries over to the LAN ("" = none). */
 const char *cc_link_tailnet_pin_source(char *out, size_t cap);
 
 /* Registers companion, sessions, reply, logs, wifi and ts console commands. */

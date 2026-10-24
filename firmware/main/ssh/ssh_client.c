@@ -119,6 +119,33 @@ bool ssh_known_host_fingerprint(const char *host, int port, char *fp_out, size_t
     return true;
 }
 
+bool ssh_server_key_hash(ssh_session session, uint8_t out[32])
+{
+    ssh_key srv_key = NULL;
+    if (ssh_get_server_publickey(session, &srv_key) != SSH_OK) return false;
+    unsigned char *hash = NULL; size_t hlen = 0;
+    int rc = ssh_get_publickey_hash(srv_key, SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
+    ssh_key_free(srv_key);
+    bool ok = rc == 0 && hlen == 32;
+    if (ok) memcpy(out, hash, 32);
+    ssh_clean_pubkey_hash(&hash);
+    return ok;
+}
+
+kh_pin_t ssh_known_host_hash(const char *host, int port, uint8_t out[32])
+{
+    if (!host || !host[0]) return KH_PIN_NONE;
+    char key[16]; kh_key(host, port, key);
+    void *stored = NULL; size_t slen = 0;
+    kh_pin_t r = kh_read(key, &stored, &slen);
+    if (r == KH_PIN_FOUND) {
+        if (slen == 32) memcpy(out, stored, 32);
+        else r = KH_PIN_READ_FAILED;
+    }
+    free(stored);
+    return r;
+}
+
 bool ssh_known_host_trust(ssh_session session, const char *host, int port)
 {
     ssh_key srv_key = NULL;

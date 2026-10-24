@@ -21,6 +21,8 @@ void tailscale_stop(void);
    up) or stops it and frees it. While off nothing calls microlink_init, _start or _rebind. */
 void tailscale_set_enabled(bool on);
 bool tailscale_enabled(void);
+/* True while a switched-off instance is still stopping or not yet freed (UI: "Turning Tailscale off…"). */
+bool tailscale_stopping(void);
 /* The SSH terminal's message for a tailnet host while the switch is off. */
 #define TS_OFF_MESSAGE "Tailscale is off. Turn it on in Settings → Network."
 void tailscale_on_wifi(bool connected);   /* called from the WiFi manager hook */
@@ -47,8 +49,9 @@ const char *tailscale_last_error(void);
    WireGuard handshake first and rebinds only when that fails. */
 void tailscale_set_fast_resume(bool on);
 bool tailscale_fast_resume(void);
-typedef enum { TS_CHECKIN_HANDSHAKE, TS_CHECKIN_REBIND, TS_CHECKIN_FAILED } ts_checkin_t;
-const char *tailscale_checkin_name(ts_checkin_t c);   /* "handshake", "rebind", "failed" */
+/* TS_CHECKIN_SKIPPED (Plan 3): no tunnel was needed (the Mac is on the LAN, or Tailscale is off). */
+typedef enum { TS_CHECKIN_HANDSHAKE, TS_CHECKIN_REBIND, TS_CHECKIN_FAILED, TS_CHECKIN_SKIPPED } ts_checkin_t;
+const char *tailscale_checkin_name(ts_checkin_t c);   /* "handshake", "rebind", "failed", "lan" */
 /* Brings the tunnel to the Mac up. host is a tailnet IP or a MagicDNS name (resolved here). Waits up to
    60 s for MicroLink to be connected (a cold boot registers first), then kicks
    ml_wg_mgr_trigger_handshake + ml_wg_mgr_send_cmm and waits up to 8 s for ml_wg_mgr_peer_is_up. Only

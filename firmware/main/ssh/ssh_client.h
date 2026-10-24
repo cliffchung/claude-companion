@@ -42,6 +42,10 @@ void ssh_known_hosts_clear(void);
 /* kh_result_t is in kh_rules.h. KH_PIN_ERROR (the pin is unreadable) never re-pins. */
 /* Compares the connected session's server key with the pin for host:port; fp_out gets "SHA256:..." (optional). */
 kh_result_t ssh_known_host_check(ssh_session session, const char *host, int port, char *fp_out, size_t fp_cap);
+/* The connected session's server key, SHA256 (32 bytes); false if unreadable. */
+bool ssh_server_key_hash(ssh_session session, uint8_t out[32]);
+/* The pin for host:port (32-byte SHA256): found (out set), none, or unreadable. */
+kh_pin_t ssh_known_host_hash(const char *host, int port, uint8_t out[32]);
 /* Pins the connected session's server key for host:port. */
 bool ssh_known_host_trust(ssh_session session, const char *host, int port);
 /* The pinned fingerprint for host:port as "SHA256:..." (as ssh-keygen -l prints it); false

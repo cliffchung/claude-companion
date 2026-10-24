@@ -8,6 +8,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include "storage/sd.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #define fs_read_all_pub(p, o, l) fs_read_all((p), (o), (l), 4096)
 
 static lv_obj_t *s_scr, *s_status, *s_peers;
@@ -65,7 +67,7 @@ static void enable_cb(lv_event_t *e)
         if (!wifi_mgr_is_connected()) { ui_toast(tr(STR_WIFI_NOT_CONNECTED)); return; }
         if (!g_settings.ts_auth_key[0]) ui_alert(tr(STR_TAILSCALE), tr(STR_TS_KEY_MISSING));
         if (tailscale_state() == TS_ERROR) ui_alert(tr(STR_ERROR), tailscale_last_error());
-    }
+    } else if (tailscale_stopping()) ui_toast("Turning Tailscale off\xe2\x80\xa6");
     fill();
 }
 static void key_prompt_cb(const char *v, void *ud) { (void)ud; strlcpy(g_settings.ts_auth_key, v, sizeof(g_settings.ts_auth_key)); settings_save(); ui_nav_refresh(); }
@@ -88,7 +90,23 @@ static void direct_cb(lv_event_t *e)
     g_settings.ts_direct = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED); settings_save();
     ui_toast(tr(STR_REBOOT_Q));   /* takes effect after the client restarts */
 }
-static void forget_yes(bool yes, void *ud) { (void)ud; if (yes) { tailscale_forget_node(); g_settings.ts_auth_key[0] = 0; settings_save(); ui_nav_refresh(); } }
+/* The forget waits for the old instance to be freed (up to 40 s): off the LVGL task (fix round 1). */
+static void forget_done_async(void *arg) { (void)arg; ui_toast(tr(STR_TS_FORGET)); ui_nav_refresh(); }
+static void forget_task(void *arg)
+{
+    (void)arg;
+    tailscale_forget_node();
+    g_settings.ts_auth_key[0] = 0; settings_save();
+    ui_async(forget_done_async, NULL);
+    vTaskDelete(NULL);
+}
+static void forget_yes(bool yes, void *ud)
+{
+    (void)ud;
+    if (!yes) return;
+    if (xTaskCreate(forget_task, "ts_forget", 4096, NULL, 3, NULL) != pdPASS) ui_toast(tr(STR_ERROR));
+    else ui_toast("Turning Tailscale off\xe2\x80\xa6");
+}
 static void forget_cb(lv_event_t *e) { (void)e; ui_confirm(tr(STR_TS_FORGET), tr(STR_TS_FORGET_Q), forget_yes, NULL); }
 static void refresh_cb(lv_event_t *e) { (void)e; fill(); }
 static void del_cb(lv_event_t *e) { (void)e; tailscale_set_event_cb(NULL, NULL); s_scr = NULL; }

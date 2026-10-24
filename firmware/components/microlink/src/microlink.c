@@ -585,6 +585,8 @@ esp_err_t microlink_stop(microlink_t *ml) {
     return ESP_OK;
 }
 
+/* LOCAL CHANGE (Claude Companion Plan 3, L6/L15; listed in UPSTREAM.md): the free half of
+ * microlink_destroy() is split out as ml_free_instance() for microlink_destroy_finish(). */
 static void ml_free_instance(microlink_t *ml);
 
 void microlink_destroy(microlink_t *ml) {

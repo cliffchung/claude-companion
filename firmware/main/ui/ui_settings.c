@@ -289,7 +289,9 @@ static void ts_switch_cb(lv_event_t *e)
 {
     bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
     tailscale_set_enabled(on);   /* saved at once: sticky across boots and wakes */
-    ui_toast(on ? (wifi_mgr_is_connected() ? "Tailscale on: connecting" : "Tailscale on: starts with Wi-Fi") : "Tailscale off");
+    ui_toast(on ? (tailscale_stopping() ? "Tailscale on: starts when it has finished turning off"
+                  : wifi_mgr_is_connected() ? "Tailscale on: connecting" : "Tailscale on: starts with Wi-Fi")
+                : (tailscale_stopping() ? "Turning Tailscale off\xe2\x80\xa6" : "Tailscale off"));
     ui_nav_refresh();
 }
 static void ts_details_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_tailscale_create, NULL); }

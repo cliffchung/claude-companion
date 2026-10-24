@@ -189,8 +189,9 @@ esp_err_t microlink_rebind(microlink_t *ml);
  * @param ml Handle (NULL-safe)
  */
 void microlink_destroy(microlink_t *ml);
-/* Frees an instance microlink_stop() stopped, once all its tasks have exited; false (and
- * nothing freed) while one still runs. For a stop that timed out (Claude Companion, Plan 3). */
+/* LOCAL CHANGE (Claude Companion Plan 3, L6/L15; listed in UPSTREAM.md): frees an instance
+ * microlink_stop() stopped, once all its tasks have exited; false (and nothing freed) while
+ * one still runs. For a stop that timed out. */
 bool microlink_destroy_finish(microlink_t *ml);
 
 /**
