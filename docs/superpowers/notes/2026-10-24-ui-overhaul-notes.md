@@ -638,3 +638,37 @@ Final state: `ts off`, `power set defaults`, DHCP, Host link connected on the LA
   sharing an arg, and the boot-millisecond cache window.
 - **Size:** image 7,249,499 B, DIRAM 189,824 B.
 - **Boot:** the P4 booted unaided after `idf.py flash` (its RTS hard reset); no esptool reset was needed this time.
+
+**Task 9 fix round 3.**
+- I-new-2: the deny-list read has three results, NONE / FOUND / ERROR (`hk_read`, raw NVS: a missing namespace or key
+  is NONE, any other open or read failure and a blob that isn't a multiple of 32 bytes or longer than 8 keys is
+  ERROR; no allocation). The pure `hf_shell_gate` decides: an interactive session is refused with "Couldn't check
+  this host against the Host's keys" on ERROR or an unreadable server key, refused with the footnote sentence on a
+  Host key, and allowed on NONE (no list yet) or FOUND without a match; a take-over (cmd) is never gated.
+  `ssh_host_keys_add` writes only after a NONE or FOUND read (`hf_hostkeys_may_write`), so an unreadable list is never
+  overwritten. This replaces round 2's "It fails closed when the list or the server key can't be read", which only
+  held for the server key and the buffer.
+- M-new-3 (correcting round 2's key-type note): a Host whose key changed (regenerated, or a newly preferred type met on
+  a pinned address) makes the link refuse with KH_CHANGED and append nothing; the new key joins the deny-list only
+  after Settings › Host › Forget and the link's re-pin. Until then the Terminal's key check doesn't know it (only the
+  address checks apply). The same holds for a second sshd on the Host (another port, a container, Tailscale SSH),
+  and for the time before the link's first authenticated connect (an empty list).
+- Key-type hardening: the link records the type of the key it authenticated on (NVS "cc"/"hostktype",
+  `ssh_host_key_type_note`); an interactive Terminal session sets `SSH_OPTIONS_HOSTKEYS` to that type's algorithms
+  first and then libssh 0.11's DEFAULT_HOSTKEYS (`hf_hostkeys_pref`, host-tested: RSA is rsa-sha2-512,rsa-sha2-256;
+  ed25519 is the default order unchanged). So a Host that adds a newer preferred type still presents its deny-listed
+  key. Gaps: a regenerated key and a second sshd (above). Side effect to watch on the visit: when the Host's type is
+  not ed25519, a Terminal host with several key types pinned under the default order may present another type once
+  and ask about a changed key.
+- M-new-4: the deny-list mutex is made once by `ssh_host_keys_init()` at `cc_link_start` (before the migration and
+  the link task); before it, a read is ERROR and an add is skipped. No FreeRTOS call in a critical section.
+- M-new-5: first labels are kept apart from addresses (`hf_host_addrs_t.label`) and match only a `*.ts.net` name with
+  that first label or the bare name (one trailing dot allowed): with a Host at web.local, web.example.com and web.lan
+  are not refused; web.tail1234.ts.net and "web" are. `hf_first_label` is the one helper (cc_link uses it too).
+- Order seam: `ssh_task` runs the steps `hf_conn_steps(interactive)` gives (DENY_CHECK, VERIFY_HOST, AUTH for an
+  interactive session; VERIFY_HOST, AUTH for a take-over) in a loop, so the host test pins "deny check before the
+  known-hosts check and before any authentication". What stays untestable on the host: that libssh's `ssh_connect`
+  sends no userauth request (read in client.c; the device visit covers the live refusal).
+- Boot log: `cc_link: host keys: N known for the Host` after the migration (a count). Device after the flash: "host
+  keys: 1 known for the Host", link connected on the LAN, booted unaided after `idf.py flash`; final state as found.
+- `idf.py size`: image 7,251,867 B; DIRAM 189,824 B.

@@ -189,6 +189,74 @@ static void test_host_addrs_first_label(void)
     TEST_ASSERT_FALSE(hf_is_host("192.tail1234.ts.net", &h));
 }
 
+/* I-new-2: the deny-list read has three results; only NONE and FOUND let a shell through, and ERROR never writes */
+static void test_shell_gate(void)
+{
+    uint8_t list[HF_HOSTKEYS_MAX][32], host[32], other[32];
+    key(host, 7); key(other, 9);
+    int n = hf_hostkeys_add(list, 0, host);
+    const uint8_t (*l)[32] = (const uint8_t (*)[32])list;
+    TEST_ASSERT_EQUAL(HF_GATE_ALLOW, hf_shell_gate(true, HF_DENY_FOUND, other, l, n));
+    TEST_ASSERT_EQUAL(HF_GATE_REFUSE_HOST, hf_shell_gate(true, HF_DENY_FOUND, host, l, n));
+    TEST_ASSERT_EQUAL(HF_GATE_ALLOW, hf_shell_gate(true, HF_DENY_NONE, host, l, 0));   /* no list yet */
+    TEST_ASSERT_EQUAL(HF_GATE_REFUSE_UNCHECKED, hf_shell_gate(true, HF_DENY_ERROR, other, l, 0));
+    TEST_ASSERT_EQUAL(HF_GATE_REFUSE_UNCHECKED, hf_shell_gate(true, HF_DENY_FOUND, NULL, l, n));   /* no server key */
+    TEST_ASSERT_EQUAL(HF_GATE_ALLOW, hf_shell_gate(false, HF_DENY_ERROR, host, l, n));   /* the take-over (cmd) */
+    TEST_ASSERT_TRUE(hf_hostkeys_may_write(HF_DENY_NONE));
+    TEST_ASSERT_TRUE(hf_hostkeys_may_write(HF_DENY_FOUND));
+    TEST_ASSERT_FALSE(hf_hostkeys_may_write(HF_DENY_ERROR));
+}
+/* the gate runs before the host-key prompt and before any authentication (the steps ssh_task runs, in order) */
+static int step_at(const hf_step_t *s, int n, hf_step_t want) { for (int i = 0; i < n; i++) if (s[i] == want) return i; return -1; }
+static void test_conn_steps_gate_first(void)
+{
+    hf_step_t s[8];
+    int n = hf_conn_steps(true, s, 8);
+    TEST_ASSERT_EQUAL(3, n);
+    TEST_ASSERT_EQUAL(0, step_at(s, n, HF_STEP_DENY_CHECK));
+    TEST_ASSERT_TRUE(step_at(s, n, HF_STEP_DENY_CHECK) < step_at(s, n, HF_STEP_VERIFY_HOST));
+    TEST_ASSERT_TRUE(step_at(s, n, HF_STEP_VERIFY_HOST) < step_at(s, n, HF_STEP_AUTH));
+    n = hf_conn_steps(false, s, 8);
+    TEST_ASSERT_EQUAL(2, n);
+    TEST_ASSERT_EQUAL(-1, step_at(s, n, HF_STEP_DENY_CHECK));
+    TEST_ASSERT_EQUAL(HF_STEP_AUTH, s[n - 1]);
+    TEST_ASSERT_EQUAL(0, hf_conn_steps(true, s, 2));   /* too small: nothing to run, never a partial order */
+}
+/* M-new-5: the first label counts only against MagicDNS names and a bare name */
+static void test_first_label_scope(void)
+{
+    hf_host_addrs_t h;
+    hf_host_addrs_init(&h);
+    hf_host_addrs_add_name(&h, "web.local");
+    TEST_ASSERT_FALSE(hf_is_host("web.example.com", &h));
+    TEST_ASSERT_FALSE(hf_is_host("web.lan", &h));
+    TEST_ASSERT_TRUE(hf_is_host("web.tail1234.ts.net", &h));
+    TEST_ASSERT_TRUE(hf_is_host("WEB", &h));
+    TEST_ASSERT_TRUE(hf_is_host("web.", &h));
+    TEST_ASSERT_TRUE(hf_is_host("web.local", &h));
+    TEST_ASSERT_FALSE(hf_is_host("webx.tail1234.ts.net", &h));
+    char l[64];
+    TEST_ASSERT_TRUE(hf_first_label(" web.local", l, sizeof(l)));
+    TEST_ASSERT_EQUAL_STRING("web", l);
+    TEST_ASSERT_FALSE(hf_first_label("10.1.2.3", l, sizeof(l)));
+    TEST_ASSERT_FALSE(hf_first_label("web", l, sizeof(l)));   /* no dot: the name is itself */
+}
+/* key-type hardening: the type the link met first, then libssh's defaults (a reorder only) */
+static void test_hostkeys_pref(void)
+{
+    char b[400];
+    TEST_ASSERT_TRUE(hf_hostkeys_pref("ssh-rsa", b, sizeof(b)));
+    TEST_ASSERT_EQUAL(0, strncmp(b, "rsa-sha2-512,rsa-sha2-256,ssh-ed25519,", 38));
+    TEST_ASSERT_EQUAL(1, (int)(strstr(b + 1, "rsa-sha2-512") == NULL));   /* no repeat */
+    TEST_ASSERT_TRUE(hf_hostkeys_pref("ecdsa-sha2-nistp256", b, sizeof(b)));
+    TEST_ASSERT_EQUAL(0, strncmp(b, "ecdsa-sha2-nistp256,ssh-ed25519,ecdsa-sha2-nistp521,ecdsa-sha2-nistp384,sk-", 75));
+    TEST_ASSERT_TRUE(hf_hostkeys_pref("ssh-ed25519", b, sizeof(b)));
+    TEST_ASSERT_EQUAL_STRING(HF_DEFAULT_HOSTKEYS, b);
+    TEST_ASSERT_FALSE(hf_hostkeys_pref("", b, sizeof(b)));
+    TEST_ASSERT_FALSE(hf_hostkeys_pref("ssh-dss", b, sizeof(b)));
+    TEST_ASSERT_FALSE(hf_hostkeys_pref("ssh-rsa", b, 10));   /* too small: no option rather than a cut list */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -206,5 +274,9 @@ int main(void)
     RUN_TEST(test_hostkey_is_host);
     RUN_TEST(test_hostkeys_fifo);
     RUN_TEST(test_host_addrs_first_label);
+    RUN_TEST(test_shell_gate);
+    RUN_TEST(test_conn_steps_gate_first);
+    RUN_TEST(test_first_label_scope);
+    RUN_TEST(test_hostkeys_pref);
     return UNITY_END();
 }

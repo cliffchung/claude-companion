@@ -254,7 +254,8 @@ lv_obj_t *ui_terminal_create(void *p) {
     uint8_t keys[HF_HOSTKEYS_MAX][32], met[32] = { 0x11, 0x22 };
     int n = hf_hostkeys_add(keys, 0, k_pv_host_key);
     if (e && !strcmp(e->host, "10.20.30.40")) memcpy(met, k_pv_host_key, 32);
-    if (hf_hostkey_is_host(met, (const uint8_t (*)[32])keys, n)) ui_hosts_note_failure(s_term_idx, tr(STR_HOSTS_NOT_LISTED));
+    hf_gate_t g = hf_shell_gate(true, HF_DENY_FOUND, met, (const uint8_t (*)[32])keys, n);   /* as ssh_task's first step */
+    if (g == HF_GATE_REFUSE_HOST) ui_hosts_note_failure(s_term_idx, tr(STR_HOSTS_NOT_LISTED));
     return ui_screen_base();
 }
 pr_src_t power_source(int *pct, bool *charging)

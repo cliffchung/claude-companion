@@ -263,6 +263,10 @@ static void host_keys_migrate(void)
         }
     }
     if (s_carry.host[0]) ssh_host_keys_add(s_carry.hash);
+    uint8_t l[HF_HOSTKEYS_MAX][32];
+    int n = 0;
+    hf_deny_read_t r = ssh_host_keys_load(l, &n);
+    ESP_LOGI(TAG, "host keys: %d known for the Host%s", n, r == HF_DENY_ERROR ? " (the list can't be read)" : "");   /* a count only */
 }
 
 void cc_link_host_addresses(hf_host_addrs_t *h)
@@ -274,13 +278,9 @@ void cc_link_host_addresses(hf_host_addrs_t *h)
     char ip[128];
     hf_host_addrs_add_name(h, c->host);   /* the host and its first label ("studio" matches studio.<tailnet>.ts.net) */
     if (tailscale_resolve(c->host, ip, sizeof(ip))) hf_host_addrs_add(h, ip);
-    const char *dot = strchr(c->host, '.');
-    if (dot && dot > c->host && (size_t)(dot - c->host) < 64 && !ts_host_is_ipv4(c->host)) {
-        char label[64];
-        memcpy(label, c->host, (size_t)(dot - c->host));
-        label[dot - c->host] = 0;
-        if (tailscale_resolve(label, ip, sizeof(ip))) hf_host_addrs_add(h, ip);   /* the peer by its machine name */
-    }
+    char label[64];
+    if (hf_first_label(c->host, label, sizeof(label)) && tailscale_resolve(label, ip, sizeof(ip)))
+        hf_host_addrs_add(h, ip);   /* the peer by its machine name */
     lock();
     hf_host_addrs_add(h, g_settings.mac_lan_ip);
     hf_host_addrs_add(h, g_settings.mac_ts_ip);
@@ -795,7 +795,7 @@ lookup:
     strlcpy(s_ok_host, host, sizeof(s_ok_host));   /* M6: key checked and authenticated */
     bool moved = s_host_gen != gen;                /* M4: `companion server-host` ran meanwhile */
     unlock();
-    if (have_met) ssh_host_keys_add(met);   /* P4C-10: the Host's key, for the SSH Terminal's refusal */
+    if (have_met) { ssh_host_keys_add(met); ssh_host_key_type_note(s); }   /* P4C-10: the Host's key and its type */
     if (tnet && moved) ESP_LOGW(TAG, "kh: the Host entry moved during this connect; the carry source is kept");
     if (tnet && !moved) {
         /* remember the key met on the entry's tailnet address: it carries over when the entry moves to the LAN */
@@ -2158,6 +2158,7 @@ esp_err_t cc_link_start(void)
     cJSON_InitHooks(&hooks);
     carry_load();
     hc_load();
+    ssh_host_keys_init();   /* the deny-list's lock, before anything reads or adds */
     host_keys_migrate();
     libssh_esp32_init();   /* once only */
     static const lg_closer_t closer = { "cc_link", lg_link_close, lg_link_idle, lg_link_reopen, NULL };

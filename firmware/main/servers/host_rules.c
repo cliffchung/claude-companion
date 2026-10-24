@@ -37,19 +37,25 @@ void hf_host_addrs_add(hf_host_addrs_t *h, const char *addr)
     h->n++;
 }
 
+bool hf_first_label(const char *host, char *out, size_t cap)
+{
+    if (!host || !out || !cap) return false;
+    while (*host == ' ' || *host == '\t') host++;
+    if (ts_host_is_ipv4(host)) return false;
+    const char *dot = strchr(host, '.');
+    if (!dot || dot == host || (size_t)(dot - host) >= cap) return false;
+    memcpy(out, host, (size_t)(dot - host));
+    out[dot - host] = 0;
+    return true;
+}
+
 void hf_host_addrs_add_name(hf_host_addrs_t *h, const char *host)
 {
     hf_host_addrs_add(h, host);
-    if (!host || ts_host_is_ipv4(host)) return;
-    while (*host == ' ' || *host == '\t') host++;
-    const char *dot = strchr(host, '.');
-    if (!dot || dot == host) return;
     char label[64];
-    size_t n = (size_t)(dot - host);
-    if (n >= sizeof(label)) return;
-    memcpy(label, host, n);
-    label[n] = 0;
-    hf_host_addrs_add(h, label);
+    if (!h || h->nl >= HF_HOST_LABELS_MAX || !hf_first_label(host, label, sizeof(label))) return;
+    for (int i = 0; i < h->nl; i++) if (!strcmp(h->label[i], label)) return;
+    strcpy(h->label[h->nl++], label);
 }
 
 static bool zero_key(const uint8_t fp[32])
@@ -82,11 +88,26 @@ int hf_hostkeys_add(uint8_t (*list)[32], int n, const uint8_t fp[32])
     return n + 1;
 }
 
+static bool same_ci_n(const char *a, const char *b, size_t n);
+/* label matches addr: addr is that bare name (one trailing dot allowed), or a *.ts.net name with that first label */
+static bool label_match(const char *addr, const char *label)
+{
+    while (*addr == ' ' || *addr == '\t') addr++;
+    size_t ll = strlen(label), al = strlen(addr);
+    if (al && addr[al - 1] == '.') al--;
+    if (al == ll) return same_ci_n(addr, label, ll);
+    if (al > ll && addr[ll] == '.' && same_ci_n(addr, label, ll) && ts_host_needs_tailscale(addr) && !ts_host_is_ipv4(addr))
+        return true;
+    return false;
+}
+
 bool hf_is_host(const char *addr, const hf_host_addrs_t *h)
 {
     if (!h || blank(addr)) return false;
     for (int i = 0; i < h->n; i++)
         if (cc_same_host(addr, h->a[i])) return true;
+    for (int i = 0; i < h->nl; i++)
+        if (label_match(addr, h->label[i])) return true;
     return false;
 }
 
@@ -162,4 +183,73 @@ hf_auth_plan_t hf_auth_plan(bool use_key, const char *keypath, bool file_exists)
     hf_auth_plan_t p = { HF_KEY_NONE, !use_key };
     if (use_key) p.key = hf_key_source(keypath, file_exists);
     return p;
+}
+
+static bool same_ci_n(const char *a, const char *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        char x = a[i], y = b[i];
+        if (x >= 'A' && x <= 'Z') x = (char)(x + 32);
+        if (y >= 'A' && y <= 'Z') y = (char)(y + 32);
+        if (x != y || !x) return false;
+    }
+    return true;
+}
+
+hf_gate_t hf_shell_gate(bool interactive, hf_deny_read_t rd, const uint8_t key[32], const uint8_t (*list)[32], int n)
+{
+    if (!interactive) return HF_GATE_ALLOW;
+    if (rd == HF_DENY_ERROR || !key) return HF_GATE_REFUSE_UNCHECKED;
+    if (rd == HF_DENY_FOUND && hf_hostkey_is_host(key, list, n)) return HF_GATE_REFUSE_HOST;
+    return HF_GATE_ALLOW;
+}
+
+bool hf_hostkeys_may_write(hf_deny_read_t rd) { return rd != HF_DENY_ERROR; }
+
+int hf_conn_steps(bool interactive, hf_step_t *out, int cap)
+{
+    int need = interactive ? 3 : 2;
+    if (!out || cap < need) return 0;
+    int n = 0;
+    if (interactive) out[n++] = HF_STEP_DENY_CHECK;
+    out[n++] = HF_STEP_VERIFY_HOST;
+    out[n++] = HF_STEP_AUTH;
+    return n;
+}
+
+/* appends name to out (comma-separated) unless it is already listed; false when it doesn't fit */
+static bool list_add(char *out, size_t cap, const char *name, size_t len)
+{
+    size_t ol = strlen(out);
+    for (const char *p = out; *p; ) {
+        const char *e = strchr(p, ',');
+        size_t pl = e ? (size_t)(e - p) : strlen(p);
+        if (pl == len && !strncmp(p, name, len)) return true;
+        p = e ? e + 1 : p + pl;
+    }
+    if (ol + (ol ? 1 : 0) + len + 1 > cap) return false;
+    if (ol) out[ol++] = ',';
+    memcpy(out + ol, name, len);
+    out[ol + len] = 0;
+    return true;
+}
+
+bool hf_hostkeys_pref(const char *key_type, char *out, size_t cap)
+{
+    if (!key_type || !out || !cap) return false;
+    const char *first;
+    if (!strcmp(key_type, "ssh-rsa")) first = "rsa-sha2-512,rsa-sha2-256";
+    else if (!strcmp(key_type, "ssh-ed25519") || !strcmp(key_type, "ecdsa-sha2-nistp256") ||
+             !strcmp(key_type, "ecdsa-sha2-nistp384") || !strcmp(key_type, "ecdsa-sha2-nistp521")) first = key_type;
+    else return false;
+    out[0] = 0;
+    const char *srcs[2] = { first, HF_DEFAULT_HOSTKEYS };
+    for (int k = 0; k < 2; k++)
+        for (const char *p = srcs[k]; *p; ) {
+            const char *e = strchr(p, ',');
+            size_t pl = e ? (size_t)(e - p) : strlen(p);
+            if (!list_add(out, cap, p, pl)) { out[0] = 0; return false; }
+            p = e ? e + 1 : p + pl;
+        }
+    return true;
 }

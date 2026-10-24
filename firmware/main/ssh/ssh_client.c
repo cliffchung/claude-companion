@@ -211,53 +211,78 @@ bool ssh_known_host_set_debug(const char *host, int port)
     return ok;
 }
 
-/* ---- P4C-10: every key the companion link ever pinned (NVS "cc"/"hostkeys", n x 32 bytes, FIFO of 8) ---- */
+/* ---- P4C-10: every key the companion link ever pinned (NVS "cc"/"hostkeys", n x 32 bytes, FIFO of 8) ----
+   The read has three results (I-new-2): no list yet, a list, or an error (the namespace won't open, the blob is
+   corrupt or the wrong size). An error refuses interactive shells (hf_shell_gate) and is never written over
+   (hf_hostkeys_may_write), so a bad read can't erase the history. The mutex is made once by ssh_host_keys_init
+   (cc_link_start, before the link task); before that every read is an error. */
 static StaticSemaphore_t s_hk_buf;
 static SemaphoreHandle_t s_hk_mx;
-static portMUX_TYPE s_hk_spin = portMUX_INITIALIZER_UNLOCKED;
-static void hk_lock(void)
+
+void ssh_host_keys_init(void)
 {
-    taskENTER_CRITICAL(&s_hk_spin);
     if (!s_hk_mx) s_hk_mx = xSemaphoreCreateMutexStatic(&s_hk_buf);
-    taskEXIT_CRITICAL(&s_hk_spin);
-    xSemaphoreTake(s_hk_mx, portMAX_DELAY);
 }
-static void hk_unlock(void) { xSemaphoreGive(s_hk_mx); }
 
-static int hk_read(uint8_t out[HF_HOSTKEYS_MAX][32])
+static hf_deny_read_t hk_read(uint8_t out[HF_HOSTKEYS_MAX][32], int *n)
 {
-    void *b = NULL; size_t n = 0;
-    int k = 0;
-    if (nvs_get_blob_alloc("cc", "hostkeys", &b, &n)) {
-        k = (int)(n / 32);
-        if (k > HF_HOSTKEYS_MAX) k = HF_HOSTKEYS_MAX;
-        memcpy(out, b, (size_t)k * 32);
-        free(b);
+    *n = 0;
+    nvs_handle_t h;
+    esp_err_t e = nvs_open("cc", NVS_READONLY, &h);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return HF_DENY_NONE;
+    if (e != ESP_OK) return HF_DENY_ERROR;
+    size_t len = 0;
+    e = nvs_get_blob(h, "hostkeys", NULL, &len);
+    hf_deny_read_t r = HF_DENY_ERROR;
+    if (e == ESP_ERR_NVS_NOT_FOUND) r = HF_DENY_NONE;
+    else if (e == ESP_OK && len % 32 == 0 && len <= HF_HOSTKEYS_MAX * 32) {
+        if (nvs_get_blob(h, "hostkeys", out, &len) == ESP_OK) { *n = (int)(len / 32); r = HF_DENY_FOUND; }
     }
-    return k;
+    nvs_close(h);
+    return r;
 }
 
-int ssh_host_keys_load(uint8_t out[HF_HOSTKEYS_MAX][32])
+hf_deny_read_t ssh_host_keys_load(uint8_t out[HF_HOSTKEYS_MAX][32], int *n)
 {
-    hk_lock();
-    int n = hk_read(out);
-    hk_unlock();
-    return n;
+    *n = 0;
+    if (!s_hk_mx) return HF_DENY_ERROR;
+    xSemaphoreTake(s_hk_mx, portMAX_DELAY);
+    hf_deny_read_t r = hk_read(out, n);
+    xSemaphoreGive(s_hk_mx);
+    return r;
 }
 
 void ssh_host_keys_add(const uint8_t hash[32])
 {
-    uint8_t list[HF_HOSTKEYS_MAX][32];
-    hk_lock();
-    int n = hk_read(list);
-    uint8_t before[HF_HOSTKEYS_MAX][32];
-    memcpy(before, list, sizeof(before));
-    int m = hf_hostkeys_add(list, n, hash);
-    if (m != n || memcmp(before, list, (size_t)m * 32)) {
-        if (!nvs_set_blob_ns("cc", "hostkeys", list, (size_t)m * 32)) ESP_LOGE(TAG, "host keys: not saved");
-        else ESP_LOGI(TAG, "host keys: %d known for the Host", m);   /* a count, never a key */
+    if (!s_hk_mx) { ESP_LOGE(TAG, "host keys: not ready, not saved"); return; }
+    uint8_t list[HF_HOSTKEYS_MAX][32], before[HF_HOSTKEYS_MAX][32];
+    int n = 0;
+    xSemaphoreTake(s_hk_mx, portMAX_DELAY);
+    hf_deny_read_t r = hk_read(list, &n);
+    if (!hf_hostkeys_may_write(r)) {
+        ESP_LOGE(TAG, "host keys: the list can't be read; not written over");
+    } else {
+        memcpy(before, list, sizeof(before));
+        int m = hf_hostkeys_add(list, n, hash);
+        if (m != n || memcmp(before, list, (size_t)m * 32)) {
+            if (!nvs_set_blob_ns("cc", "hostkeys", list, (size_t)m * 32)) ESP_LOGE(TAG, "host keys: not saved");
+            else ESP_LOGI(TAG, "host keys: %d known for the Host", m);   /* a count, never a key */
+        }
     }
-    hk_unlock();
+    xSemaphoreGive(s_hk_mx);
+}
+
+/* The type of the key the link last authenticated on (NVS "cc"/"hostktype"): an interactive session prefers it, so
+   the Host presents the key the deny-list holds even if its sshd prefers a newer type. */
+void ssh_host_key_type_note(ssh_session session)
+{
+    ssh_key k = NULL;
+    if (ssh_get_server_publickey(session, &k) != SSH_OK) return;
+    const char *t = ssh_key_type_to_char(ssh_key_type(k));
+    char *old = NULL;
+    if (t && (!nvs_get_str_alloc("cc", "hostktype", &old) || strcmp(old, t))) nvs_set_str_ns("cc", "hostktype", t);
+    free(old);
+    ssh_key_free(k);
 }
 
 static int verify_host(ssh_client_t *c)
@@ -381,36 +406,60 @@ static void ssh_task(void *arg)
     ssh_options_set(c->session, SSH_OPTIONS_COMPRESSION, "no");
     int verb = SSH_LOG_NOLOG;
     ssh_options_set(c->session, SSH_OPTIONS_LOG_VERBOSITY, &verb);
+    if (!c->p.cmd[0]) {
+        /* key-type hardening: the type the link last met first, then libssh's defaults (a reorder only) */
+        char *t = NULL;
+        char pref[400];
+        if (nvs_get_str_alloc("cc", "hostktype", &t) && hf_hostkeys_pref(t, pref, sizeof(pref)) &&
+            ssh_options_set(c->session, SSH_OPTIONS_HOSTKEYS, pref) != SSH_OK)
+            ESP_LOGW(TAG, "host key preference not set; libssh's defaults apply");
+        free(t);
+    }
     if (ssh_connect(c->session) != SSH_OK) {
         char m[160]; snprintf(m, sizeof(m), "Connect failed: %s", ssh_get_error(c->session));
         set_state(c, SSH_ST_ERROR, m); goto done;
     }
     if (GONE(c)) goto done;
-    if (!c->p.cmd[0]) {
-        /* P4C-10 (hard rule 1): never a login shell on the Host, by whatever address or name it was reached. The
-           server's key is checked against every key the companion link ever pinned, after the key exchange and
-           before any authentication is sent; it fails closed when either can't be read. */
-        uint8_t met[32];
-        uint8_t (*keys)[32] = malloc(HF_HOSTKEYS_MAX * 32);
-        int n = keys ? ssh_host_keys_load(keys) : 0;
-        bool host = !keys || !ssh_server_key_hash(c->session, met) || hf_hostkey_is_host(met, (const uint8_t (*)[32])keys, n);
-        free(keys);
-        if (host) {
-            ESP_LOGW(TAG, "this server presents the Host's key: no login shell");
-            set_state(c, SSH_ST_ERROR, tr(STR_HOSTS_NOT_LISTED));
-            goto done;
+    /* The steps after the key exchange, in hf_conn_steps' order (host-tested: an interactive session's deny-list
+       check comes first, before the known-hosts check and before any authentication is sent; libssh's ssh_connect
+       returns before any userauth request). */
+    hf_step_t steps[4];
+    int nsteps = hf_conn_steps(!c->p.cmd[0], steps, 4);
+    if (!nsteps) { set_state(c, SSH_ST_ERROR, HF_HOSTKEYS_UNCHECKED_MSG); goto done; }
+    for (int si = 0; si < nsteps; si++) {
+        if (GONE(c)) goto done;
+        if (steps[si] == HF_STEP_DENY_CHECK) {
+            /* P4C-10 (hard rule 1): never a login shell on the Host, by whatever address or name it was reached */
+            uint8_t met[32];
+            uint8_t (*keys)[32] = malloc(HF_HOSTKEYS_MAX * 32);
+            int n = 0;
+            hf_deny_read_t rd = keys ? ssh_host_keys_load(keys, &n) : HF_DENY_ERROR;
+            bool have = ssh_server_key_hash(c->session, met);
+            hf_gate_t g = hf_shell_gate(true, rd, have ? met : NULL, (const uint8_t (*)[32])keys, n);
+            free(keys);
+            if (g == HF_GATE_REFUSE_HOST) {
+                ESP_LOGW(TAG, "this server presents the Host's key: no login shell");
+                set_state(c, SSH_ST_ERROR, tr(STR_HOSTS_NOT_LISTED));
+                goto done;
+            }
+            if (g == HF_GATE_REFUSE_UNCHECKED) {
+                ESP_LOGW(TAG, "the Host's keys couldn't be checked: no login shell");
+                set_state(c, SSH_ST_ERROR, HF_HOSTKEYS_UNCHECKED_MSG);
+                goto done;
+            }
+        } else if (steps[si] == HF_STEP_VERIFY_HOST) {
+            ESP_LOGI(TAG, "connected; checking host key");
+            int hv = verify_host(c);
+            if (hv != 0) { set_state(c, SSH_ST_ERROR, hv == -2 ? "Can't read the saved host key; not connecting" : "Host key rejected"); goto done; }
+        } else {
+            set_state(c, SSH_ST_AUTH, NULL);
+            if (authenticate(c) != 0) {
+                char m[200];
+                if (c->err[0]) snprintf(m, sizeof(m), "%s", c->err);   /* the key's own reason (B6, M10) */
+                else snprintf(m, sizeof(m), "Authentication failed: %s", ssh_get_error(c->session));
+                set_state(c, SSH_ST_ERROR, m); goto done;
+            }
         }
-    }
-    ESP_LOGI(TAG, "connected; checking host key");
-    int hv = verify_host(c);
-    if (hv != 0) { set_state(c, SSH_ST_ERROR, hv == -2 ? "Can't read the saved host key; not connecting" : "Host key rejected"); goto done; }
-    if (GONE(c)) goto done;
-    set_state(c, SSH_ST_AUTH, NULL);
-    if (authenticate(c) != 0) {
-        char m[200];
-        if (c->err[0]) snprintf(m, sizeof(m), "%s", c->err);   /* the key's own reason (B6, M10) */
-        else snprintf(m, sizeof(m), "Authentication failed: %s", ssh_get_error(c->session));
-        set_state(c, SSH_ST_ERROR, m); goto done;
     }
     if (GONE(c)) goto done;   /* C1: closed while the auth ran */
     c->channel = ssh_channel_new(c->session);

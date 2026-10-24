@@ -3,6 +3,7 @@
    Pure (no ESP-IDF, no LVGL), so the host tests cover them. */
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,11 +19,18 @@ hf_err_t hf_validate(const char *address, const char *port, const char *user, bo
    fallback, the carry / mac_ts_ip tailnet address, the last verified and pinned addresses, the last LAN address and
    the host cache (cc_link_host_addresses fills it). Empty and repeated addresses are skipped; it never overflows. */
 #define HF_HOST_ADDRS_MAX 12
-typedef struct { char a[HF_HOST_ADDRS_MAX][128]; int n; } hf_host_addrs_t;
+#define HF_HOST_LABELS_MAX 4
+typedef struct {
+    char a[HF_HOST_ADDRS_MAX][128]; int n;            /* addresses: cc_same_host */
+    char label[HF_HOST_LABELS_MAX][64]; int nl;       /* first labels: only a *.ts.net name's, or a bare name (M-new-5) */
+} hf_host_addrs_t;
+/* The first DNS label of a dotted name (leading blanks skipped): false for an IPv4 address, a name with no dot, or a
+   label that doesn't fit. */
+bool hf_first_label(const char *host, char *out, size_t cap);
 void hf_host_addrs_init(hf_host_addrs_t *h);
 void hf_host_addrs_add(hf_host_addrs_t *h, const char *addr);
-/* addr and, when it is a name (not an IPv4 address), its first DNS label: "studio.local" also gives "studio", which
-   cc_same_host matches with the peer's MagicDNS name "studio.<tailnet>.ts.net". */
+/* addr and, when it is a dotted name, its first DNS label: "studio.local" also matches the peer's MagicDNS name
+   "studio.<tailnet>.ts.net" and the bare "studio", but never "studio.example.com" (M-new-5). */
 void hf_host_addrs_add_name(hf_host_addrs_t *h, const char *host);
 /* addr names the Host: cc_same_host with any of h's addresses (NULL h: no Host). */
 bool hf_is_host(const char *addr, const hf_host_addrs_t *h);
@@ -43,6 +51,29 @@ bool hf_hostkey_is_host(const uint8_t fp[32], const uint8_t (*list)[32], int n);
 /* Appends fp (moved to the newest when already there; the oldest goes past HF_HOSTKEYS_MAX); returns the new n.
    An all-zero fp is ignored. */
 int hf_hostkeys_add(uint8_t (*list)[32], int n, const uint8_t fp[32]);
+
+/* I-new-2: the deny-list read: no list yet, a list, or it couldn't be read (open failure, corruption). */
+typedef enum { HF_DENY_NONE, HF_DENY_FOUND, HF_DENY_ERROR } hf_deny_read_t;
+typedef enum { HF_GATE_ALLOW, HF_GATE_REFUSE_HOST, HF_GATE_REFUSE_UNCHECKED } hf_gate_t;
+/* The shell gate: a non-interactive session (the take-over's pty exec) is never gated. An interactive one is refused
+   when the server's key (NULL: unreadable) is one of the Host's, and refused unchecked when either side can't be
+   read. */
+hf_gate_t hf_shell_gate(bool interactive, hf_deny_read_t rd, const uint8_t key[32], const uint8_t (*list)[32], int n);
+/* An add writes only over a list it read (never over an unread one, which would erase it). */
+bool hf_hostkeys_may_write(hf_deny_read_t rd);
+#define HF_HOSTKEYS_UNCHECKED_MSG "Couldn't check this host against the Host's keys"
+
+/* The per-connection steps ssh_task runs after the key exchange, in order: an interactive session checks the
+   deny-list first, before the known-hosts check and before any authentication. Returns n (0 if cap is too small). */
+typedef enum { HF_STEP_DENY_CHECK, HF_STEP_VERIFY_HOST, HF_STEP_AUTH } hf_step_t;
+int hf_conn_steps(bool interactive, hf_step_t *out, int cap);
+
+/* Key-type hardening: the SSH_OPTIONS_HOSTKEYS list for an interactive session, the algorithms for the key type the
+   link last met (ssh_key_type_to_char) first, then libssh's defaults without repeats: a reorder only. False (set no
+   option) for an unknown type or a buffer too small. */
+#define HF_DEFAULT_HOSTKEYS "ssh-ed25519,ecdsa-sha2-nistp521,ecdsa-sha2-nistp384,ecdsa-sha2-nistp256," \
+                            "sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256"
+bool hf_hostkeys_pref(const char *key_type, char *out, size_t cap);
 
 typedef enum { HF_AUTH_DEVICE, HF_AUTH_PASSWORD, HF_AUTH_SD_FILE } hf_auth_t;
 /* "Sign in with": a key with an empty or "device" path is the device key; a key with any other path is the
