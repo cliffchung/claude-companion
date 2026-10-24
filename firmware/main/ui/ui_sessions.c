@@ -120,7 +120,7 @@ static lv_obj_t *s_pane, *s_title, *s_pill, *s_meta, *s_logbox, *s_log, *s_info;
 static lv_obj_t *s_answer_row, *s_ta, *s_action_row, *s_send, *s_note;
 static int s_body_top = -1, s_body = -1, s_banner_shown = -1, s_inert = -1;
 static int s_cols, s_rows_fit;             /* the log block, measured */
-static bool s_dirty_rows, s_dirty_pane, s_dirty_log;
+static bool s_dirty_rows, s_dirty_pane, s_dirty_log, s_scroll_sel;
 static unsigned s_ticks;
 static bool s_kbd_attached;                /* the soft keyboard is attached to this screen's field */
 
@@ -251,9 +251,14 @@ static void res_unlock(void);
    is toasted by the Sessions tick. Both go through s_forget_seen, so each forget toasts once. */
 static char s_forget_toast[128];
 
+/* The worker's outcome, passed as ui_async's arg; the text is composed here, on the LVGL task, so only
+   that task writes s_forget_toast (review M3). */
+enum { FORGET_TIMED_OUT = 1, FORGET_NO_HOST };
+
 static void forget_toast_cb(void *arg)
 {
-    (void)arg;
+    strlcpy(s_forget_toast, (intptr_t)arg == FORGET_TIMED_OUT ? "Old key forgotten; reconnecting\xe2\x80\xa6" : "No host set up",
+            sizeof(s_forget_toast));
     ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
 }
 
@@ -275,9 +280,7 @@ static void run_forget(void)
     esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
     ESP_LOGI(TAG, "forget host key: %s %s", esp_err_to_name(e), fp);
     if (e == ESP_OK) { ui_async(forget_done_cb, NULL); return; }
-    if (e == ESP_ERR_TIMEOUT) strlcpy(s_forget_toast, "Old key forgotten; reconnecting\xe2\x80\xa6", sizeof(s_forget_toast));
-    else strlcpy(s_forget_toast, "No host set up", sizeof(s_forget_toast));
-    ui_async(forget_toast_cb, NULL);
+    ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? FORGET_TIMED_OUT : FORGET_NO_HOST));
 }
 
 static void run_job(const job_t *j)
@@ -547,6 +550,7 @@ static bool measure_log(void)
 static int label_cells(uint32_t cp, void *ctx)
 {
     (void)ctx;
+    /* 0, unlike term_cells' 1: a label draws nothing for a control character (CR is already stripped) */
     if (cp < 0x20) return 0;
     return ((int)lv_font_get_glyph_width(FONT_MONO, cp, 0) + CELL_W - 1) / CELL_W;
 }
@@ -671,10 +675,27 @@ static void select_index(int i);
 static void sessions_open_selected(void);
 static void render(void);
 
+/* A tap belongs to the session under the finger when it went down (review I1): a poll can re-sort the
+   rows between the press and the release, and the row object then shows another session. */
+static char s_press_key[SM_KEY_MAX];
+
+static void row_pressed_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    s_press_key[0] = 0;
+    if (i >= 0 && i < s_n) sm_key(&s_items[i], s_press_key, sizeof(s_press_key));
+}
+
 static void row_click_cb(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
+    char k[SM_KEY_MAX];
     if (s_inert == 1 || i < 0 || i >= s_n) return;
+    sm_key(&s_items[i], k, sizeof(k));
+    /* no press recorded: a keyboard activation (Ctrl+Tab, Enter), which acts on the row as it is now */
+    bool moved = s_press_key[0] && strcmp(k, s_press_key) != 0;
+    s_press_key[0] = 0;
+    if (moved) return;   /* the row shows another session now: the tap does nothing */
     if (i == s_sel) {
         const cc_session_t *s = selected();
         if (actionable(s)) { sessions_open_selected(); render(); }
@@ -987,6 +1008,7 @@ static void load_snapshot(void)
     s_n = n;
     /* the selection follows the session; a session that went away leaves the row now at its place */
     int sel = sm_select(s_items, n, s_sel_key, s_sel);
+    if ((sel < 0 ? 0 : sel) != s_sel) s_scroll_sel = true;   /* the selected session moved: keep it in view */
     s_sel = sel < 0 ? 0 : sel;
     char k[SM_KEY_MAX] = "";
     if (n > 0) sm_key(&s_items[s_sel], k, sizeof(k));
@@ -1156,6 +1178,13 @@ static void render(void)
 {
     if (!s_scr) return;
     if (s_dirty_rows) { s_dirty_rows = false; rows_update(); }
+    if (s_scroll_sel) {
+        s_scroll_sel = false;
+        if (s_sel >= 0 && s_sel < MAX_ROWS && s_rows[s_sel] && s_body == BODY_LIST) {
+            lv_obj_update_layout(s_list);
+            lv_obj_scroll_to_view(s_rows[s_sel], LV_ANIM_OFF);   /* a no-op when it is in view */
+        }
+    }
     if (s_dirty_pane && s_body == BODY_LIST) { s_dirty_pane = false; pane_update(); }
     if (s_dirty_log) { s_dirty_log = false; log_update(); }
     if (s_dirty_pane && s_body == BODY_LIST) { s_dirty_pane = false; pane_update(); }   /* the options note */
@@ -1196,11 +1225,12 @@ bool ui_sessions_selected_center(int32_t *x, int32_t *y)
     if (!s_scr || s_scr != lv_screen_active() || s_body != BODY_LIST || s_n <= 0 || s_sel < 0 ||
         s_sel >= MAX_ROWS || !s_rows[s_sel] || lv_obj_has_flag(s_rows[s_sel], LV_OBJ_FLAG_HIDDEN))
         return false;
-    lv_area_t a;
+    lv_area_t a, l;
     lv_obj_get_coords(s_rows[s_sel], &a);
+    lv_obj_get_coords(s_list, &l);
     *x = (a.x1 + a.x2) / 2;
     *y = (a.y1 + a.y2) / 2;
-    return true;
+    return *y >= l.y1 && *y <= l.y2;   /* a scrolled-out row has no point to touch */
 }
 
 int ui_sessions_open_test_session(const char *id)
@@ -1417,6 +1447,7 @@ lv_obj_t *ui_sessions_create(void *arg)
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
     for (int i = 0; i < MAX_ROWS; i++) {
         s_rows[i] = ui_session_row(s_list, row_click_cb, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(s_rows[i], row_pressed_cb, LV_EVENT_PRESSED, (void *)(intptr_t)i);
         lv_obj_add_flag(s_rows[i], LV_OBJ_FLAG_HIDDEN);
     }
     /* loading: 3 skeleton rows where the list goes */

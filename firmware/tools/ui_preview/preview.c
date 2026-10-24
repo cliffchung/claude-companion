@@ -198,7 +198,8 @@ esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, cha
     return ESP_OK;
 }
 esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; s_paste_calls++; if (cap) err[0] = 0; return ESP_OK; }
-esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; if (cap) err[0] = 0; return ESP_OK; }
+static int s_check_calls;
+esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; s_check_calls++; if (cap) err[0] = 0; return ESP_OK; }
 static int s_forget_calls;
 #define PREVIEW_FP "SHA256:Xq3v9yPreviewFingerprintOnly0123456789abcd"
 esp_err_t cc_link_forget_host_key(char *fp, size_t cap, int ms) {
@@ -664,7 +665,7 @@ static int sessions_case(lv_display_t *d, const char *v) {
     if (!strcmp(v, "working")) setenv("PREVIEW_FIXTURE", "agents_working.json", 1);
     if (!strcmp(v, "loading")) setenv("PREVIEW_FIXTURE", "loading", 1);
     if (!strcmp(v, "empty")) setenv("PREVIEW_FIXTURE", "none", 1);
-    if (!strcmp(v, "16")) setenv("PREVIEW_FIXTURE", "agents_16.json", 1);
+    if (!strcmp(v, "16") || !strcmp(v, "resort-scroll")) setenv("PREVIEW_FIXTURE", "agents_16.json", 1);
     if (!strcmp(v, "long") || !strcmp(v, "interactive")) { setenv("PREVIEW_FIXTURE", "agents_long.json", 1); setenv("PREVIEW_LOG", "long", 1); }
     if (!strcmp(v, "no-wifi")) setenv("PREVIEW_WIFI", "0", 1);
     if (!strcmp(v, "no-host")) setenv("PREVIEW_HOST", "0", 1);
@@ -680,7 +681,8 @@ static int sessions_case(lv_display_t *d, const char *v) {
     char why[256];
     lv_obj_t *row0 = s_preview_n > 0 ? row_named(s, s_preview_sessions[0].name) : NULL;
     lv_obj_t *list = row0 ? lv_obj_get_parent(row0) : NULL;
-    if (!strcmp(v, "live") || !strcmp(v, "selected-needs-you") || !strcmp(v, "resort") || !strcmp(v, "16")) needs = true;
+    if (!strcmp(v, "live") || !strcmp(v, "selected-needs-you") || !strcmp(v, "resort") || !strcmp(v, "16") ||
+        !strcmp(v, "tap-resort") || !strcmp(v, "resort-scroll")) needs = true;
     if (!strcmp(v, "live")) {
         assert(find_label(s, "\xe2\x97\x8f 2 need you", false));
         assert(list && selected_index(list) == 0);
@@ -804,6 +806,33 @@ static int sessions_case(lv_display_t *d, const char *v) {
         assert(find_label_x(s, bname, 440));
         assert(!strcmp(field_text(s), "abc"));
         assert(row_selected(row_named(s, bname)) && selected_index(list) == s_preview_n - 1);
+    } else if (!strcmp(v, "tap-resort")) {
+        /* review I1: a tap belongs to the session under the finger at the press. Press the last row, then a
+           poll moves the selected session (row 0) into that slot before the release: nothing opens, and the
+           selection stays on the session it was on. */
+        int last = s_preview_n - 1;
+        char sel[96]; snprintf(sel, sizeof(sel), "%s", s_preview_sessions[0].name);
+        lv_obj_t *r = lv_obj_get_child(list, last);
+        lv_obj_send_event(r, LV_EVENT_PRESSED, NULL);
+        preview_resort_to_last(0); step(d, 400);
+        assert(row_selected(row_named(s, sel)) && selected_index(list) == last);
+        lv_obj_send_event(r, LV_EVENT_CLICKED, NULL); step(d, 400);
+        assert(s_check_calls == 0 && ui_nav_is_top(ui_sessions_create));
+        assert(row_selected(row_named(s, sel)) && find_label_x(s, sel, 440));
+        /* a whole tap on the selected row still opens it (the check runs; the stub terminal closes at once) */
+        lv_obj_send_event(r, LV_EVENT_PRESSED, NULL);
+        lv_obj_send_event(r, LV_EVENT_CLICKED, NULL); step(d, 400);
+        assert(s_check_calls == 1);
+        s = lv_screen_active();
+    } else if (!strcmp(v, "resort-scroll")) {
+        /* review M1: a re-sort that moves the selected session out of view scrolls the list to it */
+        preview_resort_to_last(0); step(d, 400);
+        lv_obj_update_layout(s);
+        int32_t x, y;
+        assert(ui_sessions_selected_center(&x, &y));
+        lv_area_t l; lv_obj_get_coords(list, &l);
+        if (y < l.y1 || y > l.y2) { printf("check %s: FAIL selected centre %d,%d outside the list %d-%d\n", name, (int)x, (int)y, (int)l.y1, (int)l.y2); return 1; }
+        assert(selected_index(list) == s_preview_n - 1);
     } else if (!strcmp(v, "keys")) {
         assert(sink_ch('k', MOD_CTRL) && ui_sessions_keys_overlay_shown());
         /* Ctrl+Tab is not taken by buttons mode while the overlay is up; the sink closes it */

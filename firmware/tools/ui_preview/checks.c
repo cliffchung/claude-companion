@@ -161,13 +161,16 @@ static const char *ctrl_name(lv_obj_t *o, char *buf, size_t cap)
     return buf;
 }
 
-/* True when a scrollable ancestor (below the screen) shows o only in part, or not at all. */
+/* True when a scrollable ancestor (below the screen) that really overflows or is scrolled shows o only in
+   part, or not at all (review M5: a merely scrollable container clips like any other and is checked). */
 static bool scrolled_out(lv_obj_t *o)
 {
     lv_area_t a;
     lv_obj_get_coords(o, &a);
     for (lv_obj_t *p = lv_obj_get_parent(o); p && lv_obj_get_parent(p); p = lv_obj_get_parent(p)) {
         if (!lv_obj_has_flag(p, LV_OBJ_FLAG_SCROLLABLE)) continue;
+        if (!lv_obj_get_scroll_top(p) && !lv_obj_get_scroll_bottom(p) && !lv_obj_get_scroll_left(p) &&
+            !lv_obj_get_scroll_right(p)) continue;   /* everything fits: no part is scrolled out */
         lv_area_t c;
         lv_obj_get_coords(p, &c);
         if (a.y1 < c.y1 || a.y2 > c.y2 || a.x1 < c.x1 || a.x2 > c.x2) return true;

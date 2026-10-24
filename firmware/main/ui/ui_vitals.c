@@ -6,6 +6,7 @@
 #include "net/tailscale.h"
 #include "settings/settings.h"
 #include "companion/cc_link.h"
+#include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -49,6 +50,7 @@ static void track(vitals_t *v, bool on)
         else if (!on && s_live[i] == v) s_live[i] = NULL;
         live += s_live[i] != NULL;
     }
+    if (on) ESP_LOGW("vitals", "more than %d live clusters: this one is never refreshed", MAX_CLUSTERS);
     if (live && !s_timer) s_timer = lv_timer_create(vitals_timer_cb, VITALS_MS, NULL);
     else if (!live && s_timer) { lv_timer_delete(s_timer); s_timer = NULL; }
 }

@@ -24,7 +24,7 @@ run targets-clip
 run softkbd
 for i in 0 1 2 3 4 5 6; do run settings "$i"; done
 for v in live selected-needs-you working loading stale reconnecting no-wifi not-found no-host empty \
-         interactive sent low-battery 16 long resort keys idle forget; do run sessions "$v"; done
+         interactive sent low-battery 16 long resort tap-resort resort-scroll keys idle forget; do run sessions "$v"; done
 run ctrlk
 run keyboard
 run gesture
