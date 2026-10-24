@@ -188,11 +188,11 @@ Known issues:
 | Plan | Delivers |
 |---|---|
 | **1 Session control** (`docs/superpowers/plans/2026-10-22-session-control.md`) | baseline build, debug console, a hands-on check of the couch path with the user, trimmed and rebranded fork, session dashboard with quick answers and take-over. Done when, from the couch, the Tab5 shows your Mac sessions, the amber ones need you, and you can answer or open them. |
-| 2 Power & vitals | backlight dim → light sleep; wake on keyboard, touch or lift; fast reconnect on wake; full vitals bar |
-| 3 Home screen | a home screen tailored to the companion: drop the fork's camera and music tiles; sessions, needs-you and vitals first (the user, 2026-10-23) |
-| 4 Voice input | dictate answers and session input with the mic instead of typing. Push-to-talk on the keyboard; the Tab5 records and sends the audio over the existing SSH link to a local transcriber on the Mac (whisper.cpp, one `brew install`, chosen by the user 2026-10-23), and the text goes into the answer field. Claude Code's own `/voice` needs a mic on the machine running it and doesn't work over SSH, and the Claude API takes no audio input. The user offered an API key with monthly credit if a later need for one comes up. |
-| 5 Design pass | typography (IBM Plex via the fork's font tools), motion |
-| 6 Camera | take a photo, copy it to the Mac over SFTP, and ask the open session about it (lowest priority) |
+| **2 Power & vitals** (`docs/superpowers/plans/2026-10-23-power-vitals.md`) | backlight dim → light sleep; wake on keyboard, touch or lift; fast reconnect on wake; full vitals bar |
+| **3 Local link** (`docs/superpowers/plans/2026-10-23-local-link.md`) | the Host link and every check-in run over the home LAN (the Host's `.local` name, with a fallback address); Tailscale becomes a sticky on/off switch, off by default, that never starts MicroLink while off; fast check-in; SSH closed before every link-down |
+| **4 UI overhaul** (`docs/superpowers/plans/2026-10-24-ui-overhaul.md`) | folds in the old "Home screen" and "Design pass" items: Music, Camera, USB drive, Files and the launcher removed; six screens (Sessions home, Take-over, Terminal, SSH session, Host form, Settings) on one token set and shared components; one tr() string table that says "Host". The typeface question (IBM Plex or the current pixel font) stays open for the user |
+| 5 Voice input (next) | dictate answers and session input with the mic instead of typing. Push-to-talk on the keyboard; the Tab5 records and sends the audio over the existing SSH link to a local transcriber on the Host (whisper.cpp, one `brew install`, chosen by the user 2026-10-23), and the text goes into the answer field. Claude Code's own `/voice` needs a mic on the machine running it and doesn't work over SSH, and the Claude API takes no audio input. The user offered an API key with monthly credit if a later need for one comes up. |
+| 6 Camera (last) | take a photo, copy it to the Host over SFTP, and ask the open session about it (lowest priority) |
 | 7 Release | final name, README, GitHub publish (visibility approved by the user), OTA manifest |
 
 Write each later plan when the previous one ships, against this spec.

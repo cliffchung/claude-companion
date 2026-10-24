@@ -1019,6 +1019,274 @@ creds-on-SD and others); 95 new ones carry the Sessions, overlay, pill, boot, sl
   M5, DIRAM 190,008 B): `--gc-sections` was already dropping all of it. The gain is build time and source size.
 - `idf.py size`: image 7,253,147 B; DIRAM 190,008 B.
 
+## Task 13: final device check, measurements and the visit list
+
+**Build and setup.** HEAD 307b6b9 (code-complete: Task 12 fix round 1 plus the final-review fixes), ESP-IDF v5.5.6,
+flashed on `/dev/cu.usbmodem1101` (NVS kept). Test session `companion-test-t13` was made before the flash (P4C-6) and
+was the only session the device touched. Host link on the LAN, Tailscale off except where a step says so, device on
+USB. Screenshots are in the scratchpad `t13/shots/` only. No navigation key was sent while Sessions showed, except the
+Step 4 wake leg below (P4C-9 exception ruled by the controller, after a screenshot showed the selection on
+`companion-test-t13`).
+
+### Flash and boot (cold-boot carry)
+
+| Flash | Serial in the 10 s after esptool's RTS reset | Booted by itself |
+|---|---|---|
+| 1 (HEAD 307b6b9) | ROM `rst:0x17 (CHIP_USB_UART_RESET),boot:0x20c (SPI_FAST_FLASH_BOOT)`, 2nd-stage bootloader, app: `host keys: 1 known for the Host`, `boot complete in 2879 ms`, Wi-Fi associated, link connected at 9.1 s | yes; no extra reset needed |
+
+The capture opens the port with DTR and RTS held low, so it can't reset the chip itself. Task 9 and Task 10's silent
+boots don't recur on this flash. They were never captured, so whether they were a tooling or a firmware problem stays
+unproven. If one recurs, the first lines of this capture will tell: `boot:0x...(DOWNLOAD...)` or `waiting for download`
+means the ROM stayed in download mode (tooling); a normal ROM line with no app output means a hang.
+
+### Task 12 Step 5 (held from Task 12)
+
+| Check | Result | |
+|---|---|---|
+| `companion status` prints no "Mac" | product text: none. The status line reads `connected <entry name>`, and the user's saved Host **entry** is named "Mac" (user data, `s_shown` in cc_link.c). The log line `connected to <entry name>` is the same | pass (see the visit list: rename the entry) |
+| Sessions screenshot | no "Mac"; interactive rows lead with a muted "on Host"; no finished `companion-test-*` row shows (only the live t13); the header says "1 needs you" | pass |
+| Settings › Host screenshot | no "Mac"; Host, Address, Link "connected over home Wi-Fi", Fallback, "Claude path on Host", Host key + Forget, "This device's key" | pass |
+| Terminal screenshot | "+ Add host", "The Host isn't listed here: …", no "Mac" | pass |
+| `companion host none` | not run (T8-9 ruling; preview only) | PENDING |
+
+### Step 1: sizes
+
+| Item | Task 1 baseline (Plan 3) | Final (307b6b9) | Delta | Expected (§7.1/§7.2) |
+|---|---|---|---|---|
+| `idf.py size`, total image | 8,317,249 B | 7,253,147 B | **−1,064,102 B (−1.01 MiB)** | about −0.82 MB, or −0.9 MB with the camera pipeline unlinked: beaten by about 0.1 MB (fonts and dead code removed in Tasks 2–12) |
+| DIRAM (static internal) | 214,126 B | 190,008 B (`.text` 115,632, `.bss` 46,320, `.data` 28,056) | **−24,118 B** | |
+| Unlinked libraries | — | `size-components`: no esp_video, ISP, CAM, audio codec, audio simple decoder, tinyusb, esp_tinyusb, usb_host_msc, esp_codec_dev or qrcode | | |
+| MSC task | `usb_mgr` MSC task present | absent: no `msc` line in the boot log; `usb_mgr` creates only its HID `usb_lib` task | | |
+
+There is no console verb for the task count (`CONFIG_FREERTOS_USE_TRACE_FACILITY` is off), and this task adds no product
+code. The MSC check is by the boot log and the task-creation sites instead (T13-1).
+
+### Step 2: heap gates (B2)
+
+| Gate | Result | Threshold | |
+|---|---|---|---|
+| TS off: `ts` steady state on Sessions, screen on, link up | free **142,571 B** (three reads), largest 63,488 B | ≥ Task 1 dashboard 122,607–123,495 B | pass (+19.9 KB) |
+| TS off: `ui heapmin` over `ui settings network` (3 runs) | min **140,231 / 139,111 / 140,767 B**, largest 63,488 B | ≥ 66,560 B | pass |
+| TS off: `ui heapmin` over a 60 s take-over of companion-test-t13, then `key ctrl ]` (3 runs) | min **87,671 / 85,255 / 90,575 B**, largest 63,488 B | ≥ 40,960 B | pass |
+| TS on: `ui heapmin` over Settings › Network | min **78,139 B**, largest 22,528 B | ≥ 20,480 B | pass |
+| TS on: `ui heapmin` over a **10-minute** take-over of companion-test-t13 (terminal 106x22) | min **39,419 B**, largest 22,528 B (L28: 8,116 B) | ≥ 20,480 B | pass |
+| TS on, same run: `grep -c "err=-2\|ERR_BUF"` over the captured console log | 0 (and no panic, abort or assert) | 0 | pass |
+| TS on, same run: `companion status` every 2 min | connected at all 6 reads (t+5 s, then every 120 s to t+605 s) and after leaving | connected throughout | pass |
+| Then `ts off` | `ts: off (Off)`, link back on the LAN path | | done |
+
+**Base against final, take-over trough and check-in (Task 1 carry).** The base wasn't rebuilt and reflashed. The base
+build is CFG 21, and this device's NVS now holds the CFG 23 blob, so a downgrade could misread or reset the user's
+settings. That isn't reversible from the console. The base side uses the Task 1 numbers: one take-over run of
+64,115 B at 8b94efb plus the verbs, and 57,763 / 63,699 / 59,771 B after the removals. The final take-over trough is
+85,255 to 90,575 B (three runs), so it is now about 21 to 33 KB **above** both, in line with the 20.9 KB steady-state
+gain. The trough Task 1 saw stay flat has moved up since. Its likely cause was the old terminal (the 21-key column, the
+status strip and the hot zones), which Task 10 replaced. The check-in side is under Step 7.
+
+### Step 3: timers (B1)
+
+| Screen | `ui timers` | |
+|---|---|---|
+| Sessions | 300 ms tick, 30 s vitals, 10 ms key drain, three paused 16 ms (LVGL) | pass |
+| Settings | 30 s vitals, 10 ms drain, three paused 16 ms (no 300 ms) | pass |
+| Terminal | 30 s vitals, 10 ms drain, three paused 16 ms | pass |
+| Take-over | 16 ms pty pump, 10 ms drain, three paused 16 ms (no 300 ms, no 30 s, no 550 ms) | pass |
+| Any screen | no 60 ms timer | pass |
+| `power go off`, 62 s, `power go active`, `ui timers` at once | 300 ms ran 245 ms ago, 30 s vitals 4,455 ms ago, drain 0 ms | pass in substance (T13-2) |
+
+T13-2: the brief's "every last-run age ≥ 60,000 ms" can't be read on this build. Off calls `lvgl_port_stop()`
+(power.c `lvgl_quiet_locked`), which stops the LVGL tick, so `lv_tick` doesn't advance while the screen is off. Ages
+count awake time only. The reading still shows that nothing ran while off. The 30 s vitals timer's 4,455 ms is exactly
+the 3.7 s awake before Off plus the 0.8 s after the wake, out of 66 s of wall clock: had it run while off, it would read
+under 0.8 s. The 300 ms tick ran once on resume, as an overdue timer does.
+
+### Step 4: keys
+
+| Check | Result | |
+|---|---|---|
+| `key layout stock`: `key log on`, then `key ctrl t`, `key ctrl m`, `key ctrl space` (each from Sessions, the screen woken by `power go active` first) | `type=char cp='t' key=none mods=ctrl`, `cp='m' … mods=ctrl`, `cp=' ' … mods=ctrl` | pass |
+| `key layout jis`, the same three | the same three lines | pass |
+| Back to `key layout stock` | `key layout: stock` (as found) | done |
+| `key ctrl ]` leaves the take-over | `holds=takeover` → `holds=none` after every leave in this task (13 take-overs) | pass |
+| `key ctrl ]` leaves the SSH session | not run (P4C-8: no SSH terminal to a real box) | PENDING |
+| Wake swallow, Settings: `power go dim`, `key down`; `power go off`, `power sim touch` | `key swallowed=1`, then `touch swallowed=1` | pass |
+| Wake swallow, take-over of companion-test-t13: the same | `key swallowed=1`, `touch swallowed=1`; the take-over stayed open; t13's transcript still has 1 user turn (the prompt), and its log gained only a redraw | pass |
+| Wake swallow, Sessions (after a screenshot showed the selection on companion-test-t13): the same | `key swallowed=1`, `touch swallowed=1`; the selection is still on t13 (screenshot); every real background session's `sessions` state and id unchanged | pass |
+
+A note for scripted gates: a key sent while the screen is dim or off is the wake key and is swallowed. Early in this
+task, two `key ctrl t` were swallowed that way (and no screen changed). Every key step after that sent
+`power go active` first.
+
+### Step 5: screens
+
+Console screenshots, read against the mockups, with `companion-test-t13` the only test session: Sessions, Take-over,
+Terminal, Host form ("Add host" by "+ Add host" › "Enter manually", left by Esc with nothing saved), Settings › Host,
+Network (and Networks, Advanced, Peers), Power, Keyboard light, Display & time, About, the device-key sheet, the Reset
+confirm and the time-zone picker. All pass. No "Mac" anywhere, no amber outside NEEDS YOU, and About carries "Based on
+Clientre 5 by Mozgi512 (MIT)".
+- **The SSH session screen:** PENDING (P4C-8).
+- **The take-over's session bar:** the top-zone tap armed the bar's 3000 ms timer (`ui timers`), but the console
+  screenshot didn't catch the bar either time. Task 10's screenshot of it stands.
+- **Settings › Host's Link row:** the watch text ("last block 94s ago, heartbeat 33s ago") is set when the section is
+  built and doesn't tick. Noted, not a gate.
+
+### Step 6: flows
+
+| Flow | Result | |
+|---|---|---|
+| Tailscale on and off from Network's switch (focus walked to the row, Enter; Enter again) | on: "Connecting", then "connected · <tailnet address> · DERP · 4 peers online"; off: "off · saved", Status "Off: doesn't run…", link stays on the LAN | pass, with finding T13-3 |
+| Turn on from Terminal | Terminal lists no tailnet entry (0 entries), so no dots and no banner | PENDING |
+| Reset settings scope (About › Reset settings, Tab Tab Enter on the Cancel-first confirm) | changed: keyboard light brightness 0 → 20 (its default). Unchanged: brightness (80 = default), power settings (already defaults), time zone, Tailscale off, Wi-Fi, static address off, the Host entry, host-key pin and link, key layout | pass. User's keyboard light restored to `0 0 0080ff 1 5` at once |
+| Device key Show | the sheet's line equals `sshkey`'s public key, character for character | pass |
+| Join Wi-Fi with no Host set | not run (T8-9: `companion host none` drops the pin carry-over) | PENDING |
+| Forget host key on a Terminal host | not run (P4C-8) | PENDING |
+| Forget node | not run (no re-registration agreed) | PENDING |
+
+T13-3 (finding, product, minor): when a Tailscale event refreshes Settings › Network, the keyboard focus is lost (no
+ring after the refresh). The next bare Enter then lands on the walk's start, "← Sessions", and leaves Settings. Seen
+once after the switch turned Tailscale on. Nothing was sent anywhere: the Enter only navigated. A fix would restore the
+focused row after `panel_ts_ev`'s refill. Not fixed here (no product code in this task).
+
+T13-4 (finding, minor): on Terminal with no entries, the first Down lands on "← Sessions" and not "+ Add host", so
+Down then Enter leaves Terminal. The hint says "↑ ↓ move · Enter choose". Same walk-start rule as T13-3.
+
+### Final-fix device checks (final-fix-report.md)
+
+| # | Check | Result | |
+|---|---|---|---|
+| 1 | Leave a take-over while companion-test-t13 streams (`reply` with a 1,500-word story; t13 `working`) by Ctrl+] (twice), the Leave chip (top-zone tap then `power sim touch 80 28`), Esc, and a console `ui home` | 5 take-overs, each opened, streamed (first output 0.9–1.5 s after open) and closed (`holds=none`, toast "Session still running on the Host"). No crash, abort, assert or "callback is still running" line. Esc goes to the session, by design (T10): it interrupted t13's reply (`[Request interrupted by user]` in t13's transcript); Ctrl+] then left | pass |
+| 2 | Close the SSH screen during a host-key question | needs a Terminal connect to a new box (P4C-8) | PENDING |
+| 3 | Settings › Network open during a Wi-Fi rejoin and `ts on`/`ts off` | `ts on` (console): the switch and Status followed. `wifi leave`: the Wi-Fi row went "Not connected" and the header's Host dot grey at once; Status kept "connected", matching `ts` (MicroLink still said Connected). Rejoin from Networks › Saved (focus on the row, not the trash; Enter): "Connected to …" toast, the link back on the LAN in under 20 s. `ts off` (console): the switch and Status followed. The UI never froze | pass |
+| 4 | Peers and Terminal follow Tailscale | Peers: the list filled under `ts on` and went back to "Tailscale is off…" after `ts off`. Terminal: no tailnet entry to follow | pass / PENDING |
+| 5 | Fresh-picker Enter | time zone set to a custom rule (`clock tz XYZ-3`); Display & time › Time zone opened; a bare Enter only landed the focus on "US Pacific" (tz still `XYZ-3`); a second Enter picked it, which restored the user's rule (`PST8PDT,M3.2.0,M11.1.0`). The Host-picker half needs a console Host name against the user's real selection, so it stays preview-only | pass / PENDING |
+| 6 | heapmin gates | Step 2 above; unchanged or better | pass |
+
+### Step 7: power
+
+| Item | Baseline | Final | |
+|---|---|---|---|
+| Idle on USB, Sessions, 5 min, no input (`power log clear/on`, `power_report.py --log --include-charging`) | 9 mW (609 samples; tags 0x01 and 0x02) | **9 mW** (305 samples: 0x01 n=85, 9 mW, 0.21 mWh; 0x02 n=220, 9 mW, 0.53 mWh; estimate 1,688 h) | pass (≤ baseline). `src=usb-standby`: the INA226 reads about 1 mA on USB, so this says little about battery draw |
+| Check-in awake, `power checkins` (counts from the app start), 5 Hibernate check-in boots on USB, `power checkin hibernate keep usb chain 4` (Plan 3's method) | Plan 3 build: 6,223 / 8,372 / 6,285 / 6,430 / 6,292 / 6,258 / 6,260 / 6,354 ms (median 6,289; Task 1 recorded 6,354) | **6,310 / 6,338 / 6,268 / 6,344 / 6,368 ms** (median 6,338; 1.17–1.79 mWh on USB standby) | pass: within the Plan 3 spread and ≤ the 6,354 ms Task 1 figure; +49 ms against the median, which is noise |
+| The same boots, sleep from the timer wake (`power phases`: `rtcwake` + `sleep`, the RTC-derived span before the reset plus the app's) | Plan 3 Task 3 "after": median 9,630 ms | 9,560 / 9,565 / 9,495 / 9,571 / 9,488 ms, **median 9,560 ms** | pass (−70 ms). Segments match Plan 3's: assoc ≈ 5.3 s from reset, auth ≈ 6.0 s, poll ≈ 6.3 s |
+
+Base against final for the check-in (Task 1 carry): the base is Plan 3's own records on this device (T13-5). No
+UI code runs on the check-in path, and a check-in boot builds no screen, so an unchanged figure is what §11 predicts.
+
+### The two-client attach test (the user asked for it)
+
+Method: on the Host, a Python pty (fixed 120x40, `TERM=xterm-256color`) ran `~/.local/bin/claude attach <t13 id>` and
+logged every output chunk with a timestamp, untouched. About 15 s later the Tab5 opened the same session with
+`companion takeover` (its terminal is 106x22), stayed for about 18 s, and left with Ctrl+]. The Mac client stayed
+attached until Ctrl+Z at the end. Which size each client was drawing at is read from the width of Claude Code's full-width
+`─` rule lines in the Mac client's output. Four runs; the first was refused because t13 had just finished (below).
+
+| Question | Finding |
+|---|---|
+| Does the second attach take over, mirror, or get refused? | **Mirror.** The Tab5's attach was accepted while the Mac was attached. Both clients showed the same live session (Tab5 screenshot: the whole conversation and prompt), and neither was refused or detached |
+| What happens to the first client? | It stays attached, but the session **resizes to the newest client**. Within about 5 s of the Tab5 opening, the Mac client got a full redraw at the Tab5's 106 columns (rules 106 wide, where they had been 120) |
+| After the Tab5 leaves, does the Mac client recover and redraw at its own size? | **No, not by itself.** At the Tab5's Ctrl+] the Mac got one more redraw, still 106 wide, then nothing. A SIGWINCH at the same 120x40 brought no redraw either. A real size change (121x41) brought a full redraw at 121 at once. So the Mac terminal recovers when its window is resized, or on the next redraw it triggers itself |
+| Detach | Ctrl+Z exited the Mac client cleanly (status 0) in runs 1, 3 and 4. In run 2 it hadn't exited within the 4 s the script waited, and the script killed the pty. With a 10 s wait it always exited |
+| Device side | Each take-over opened in about 0.7 s, showed output at once and closed on Ctrl+] (`holds=none`). Nothing typed: t13's transcript gained only this task's own `reply` prompts |
+| A refusal seen on the way | `companion takeover` printed `takeover: no companion-test-* row <id> on Sessions` while t13 was DONE. P4C-11 hides finished test rows, and the console verb only opens a row that Sessions shows. That is consistent and not a fault. A `reply` made t13 wait again |
+
+**What the user should know:** watching from the Tab5 while a Mac terminal is attached works, and both keep working.
+But the Mac terminal is redrawn at the Tab5's narrower width and stays that way after the Tab5 leaves, until the Mac
+window is resized (any width change, even one column). That matches how `claude attach` works: one shared screen sized
+by the newest attacher, and the Tab5 can't fix it from its side. A later plan could have the Tab5 send its own size only
+while it is the sole client. That would need a `claude attach` option that doesn't exist today, so it is a note, not a
+task.
+
+### Housekeeping on the Host
+
+`~/.local/bin/claude agents --json --all` listed 64 `companion-test-*` background sessions before this step: 46
+`stopped`, 17 `done` and the live t13. Every `stopped` and `done` one was removed with `claude rm <id>`. `stopped` was
+counted as finished: it is the state `claude stop` leaves, and rm is documented for exited sessions. Before removing,
+each one's job record (`~/.claude/jobs/<id>/state.json`) was checked: none had a `worktreePath`, so rm deleted no
+directory. `git worktree list` was the same before and after. **Removed: 63, failed: 0.** t13 was stopped and removed
+last (64 in all). Every non-test session id is still listed (0 missing). Afterwards the Tab5's `sessions` verb lists 21
+rows, none of them `companion-test-*` (it listed 85 at the start of the task).
+
+### Preview carries
+
+- The Release-build segfault is still there: `run_all.sh` on a Release preview build fails at `sessions long`
+  (Segmentation fault 11). Every other case passes, and the Debug build passes all of them. The cause is still asserts
+  with side effects. It is a preview-tool issue, not firmware.
+- The linker warning is still there: `ld: warning: ignoring duplicate libraries: 'lvgl/liblvgl.a',
+  'lvgl/liblvgl_thorvg.a'`. Harmless.
+- Both are left for the release clean-up.
+
+### Rulings and deviations (Task 13)
+
+- T13-1: there's no task-count verb. MSC's absence is shown by the boot log and the task-creation sites (no product
+  code added).
+- T13-2: the timers-after-off check is read as "nothing ran while off", because the LVGL tick is stopped in Off
+  (Step 3).
+- T13-3 and T13-4: the focus findings above, for a later polish task.
+- T13-5: the base build was not reflashed (CFG 21 against the CFG 23 blob). The Task 1 numbers stand in for it.
+- T13-6: the user's Host entry is named "Mac". That is user data, so the status line shows it. Renaming it is the
+  user's call, and Task 9's T9-10 says a rename clears the pin carry-over, so it waits for the visit.
+- T13-7: the header's "1 needs you" counts only **live** background sessions that need you
+  (`cc_session_needs_you`). The `sessions` verb printed 5 NEEDS_YOU rows: t13 plus 4 real background sessions the Host
+  lists as `blocked` but not live. This is the existing Plan 1 rule, unchanged.
+
+### The user's visit (batched)
+
+One sitting with the Tab5 in hand. Each item says what to do and why it waited.
+
+**Hands and eyes (only a person can judge these)**
+1. Real-finger touch targets on every screen, the bar controls above all (P4C-5: bar hit areas are the full bar
+   height, at least 80 px wide; rows 64 visible / 80 hit).
+2. Two-thumb reach for the footer chips and the take-over's session bar (Esc, Tab, ^C, ↑, ↓, ← Leave).
+3. The typeface question (§15, P4C-2): keep the MaruMinya pixel font or move to IBM Plex.
+4. A look at every screen: Sessions, Take-over, Terminal, SSH session, Host form and the six Settings sections. Include
+   the 1 s boot splash, which the console can't capture.
+5. The keyboard light in person: amber when a session needs you, the dark-screen 5 %, and the user's own colour.
+6. A USB keyboard plugged in, if one is around (Task 1: never attached).
+
+**Your decisions**
+7. Your Host entry is named "Mac", so the status line reads "connected Mac". Rename it if you want the word gone
+   (T13-6). Note that a rename clears the pin carry-over (T9-10).
+8. Forget this device on the tailnet (Forget node): it needs your OK to re-register with an auth key (T8 ruling).
+
+**Security-sensitive checks (need you present, P4C-8)**
+9. Forget host key on a Terminal host, then reconnect and accept the new key (preview `hostform edit-pin`).
+10. A real SSH Terminal session to a box of yours that isn't the Host:
+    - the 60 s SSH-session `ui heapmin` (gate 40,960 B with Tailscale off);
+    - `key ctrl ]` → confirm → Tab Tab Enter disconnects, while Enter alone cancels (T10-8);
+    - closing the screen while a host-key question is up or about to show (final-fix item 2).
+11. The P4C-10 refusal on a real connect: a Terminal entry that points at the Host by another name or address must be
+    refused after kex, before auth ("That's the Host: …"). The `ssh_task` gate order is not host-testable (T9 re-review 3).
+12. Terminal › Turn on, and the tailnet dots, once a tailnet entry exists (T9: none today).
+
+**State-changing checks held back**
+13. Join Wi-Fi with no Host set (T8-9). `companion host none` drops the pin carry-over and can't be undone from the
+    console, so it waits for you.
+14. The Host-picker half of the fresh-picker Enter (final-fix item 5). It needs a console-set Host name that no entry
+    has, against your real Host selection.
+15. Settings › Host › Forget on the real Host key (T7 ruling). It forces a re-TOFU of the Host.
+
+**SD-card paths (no card in the slot today)**
+16. TF-card hosts import on a `creds_on_sd=1` device (Task 11 Step 3), and a card inserted after a failed mount.
+17. B6, a host whose key file is on the SD card (Task 9). Plus Network › Auth key › Load from SD card with a card in,
+    and Clear key (Task 8, preview-only so far).
+
+**Battery (Plan 2 Task 10's visit, still open)**
+18. The unplug check: a real battery read (`src=battery` after the 10-sample settle), CHG_STAT (P6) polarity on
+    battery, the side-button power-on from Hibernate, and the colour-menu screenshot (P25).
+    - Then the idle power and a check-in on battery. On USB, both read the USB-standby draw only (Step 7 above).
+
+**Small findings to fold into a later polish task (not blocking)**
+19. T13-3: a Tailscale event that refreshes Settings › Network drops the keyboard focus, so a bare Enter then means
+    "← Sessions".
+20. T13-4: on an empty Terminal list the first Down lands on "← Sessions".
+21. Settings › Host › Link's watch text doesn't tick while shown.
+22. After a take-over, a Mac terminal attached to the same session stays at the Tab5's width until you resize it (the
+    two-client attach test above).
+
+Final state: the LAN Host entry, link connected over the LAN, `ts off` (switch off, saved), `power set defaults` (the
+check-in chain's RAM test state cleared), static address off (DHCP), brightness 80 and keyboard light `0 0 0080ff 1 5`
+(as found), key layout stock, time zone as found. Every `companion-test-*` session is stopped and removed. No NVS
+erase, no C6 flash, no `sshkey regenerate`, no sshd or tmux change, and no SSH login shell.
+
 ## Controller rulings and deferred items (copied from the SDD ledger)
 
 ### Rulings
