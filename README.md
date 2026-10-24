@@ -285,7 +285,8 @@ YOU, and doesn't light anything.
 - **Interactive sessions** (a plain `claude` in a terminal) show a muted **on Host** marker. Their
   detail pane reads "Running in a terminal on the Host. Start sessions with claude --bg to open
   them here." They have no answer field and can't be opened.
-- **Stopped sessions** show "This session has stopped." and can't be answered or opened.
+- **Stopped and finished sessions** can be opened: Open starts them again with their history, as
+  agent view does. Quick answers need a running session.
 
 ### Answering and opening
 
