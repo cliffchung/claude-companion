@@ -91,7 +91,8 @@ static void direct_cb(lv_event_t *e)
     ui_toast(tr(STR_REBOOT_Q));   /* takes effect after the client restarts */
 }
 /* The forget waits for the old instance to be freed (up to 40 s): off the LVGL task (fix round 1). */
-static void forget_done_async(void *arg) { (void)arg; ui_toast(tr(STR_TS_FORGET)); ui_nav_refresh(); }
+static bool s_forget_running;   /* LVGL task only: a second tap doesn't start a second forget (N4) */
+static void forget_done_async(void *arg) { (void)arg; s_forget_running = false; ui_toast(tr(STR_TS_FORGET)); ui_nav_refresh(); }
 static void forget_task(void *arg)
 {
     (void)arg;
@@ -104,8 +105,9 @@ static void forget_yes(bool yes, void *ud)
 {
     (void)ud;
     if (!yes) return;
+    if (s_forget_running || tailscale_forgetting()) { ui_toast("Already forgetting"); return; }
     if (xTaskCreate(forget_task, "ts_forget", 4096, NULL, 3, NULL) != pdPASS) ui_toast(tr(STR_ERROR));
-    else ui_toast("Turning Tailscale off\xe2\x80\xa6");
+    else { s_forget_running = true; ui_toast("Turning Tailscale off\xe2\x80\xa6"); }
 }
 static void forget_cb(lv_event_t *e) { (void)e; ui_confirm(tr(STR_TS_FORGET), tr(STR_TS_FORGET_Q), forget_yes, NULL); }
 static void refresh_cb(lv_event_t *e) { (void)e; fill(); }

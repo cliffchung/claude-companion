@@ -62,3 +62,16 @@ Decisions made while executing Plan 3, each with what it costs if wrong. Overrul
   - **The start:** a fresh boot has 63488 B as its largest block. The first cycle takes it down to about 32 KB, and it stays there.
   - *Skipped:* allocating MicroLink's task stacks once. That would be a larger change to the vendored code, and the measurement shows no slow decline.
   - **Cost if wrong:** a later need for a single internal block over 31 KB after a Tailscale cycle would fail until a reboot or hibernate.
+
+## Re-review quick fixes (task-1-rereview-1.md)
+
+- Ruling L24 (N1–N6 and the strings): **six small fixes from the re-review:**
+  - **N1:** the stop worker clears `s_worker` in the same locked step that sees the instance freed. A switch-off a moment later therefore starts a new worker. On the device, a switch-off 6 ms after the worker's auto-start was freed 114 ms later, with no MicroLink lines afterwards.
+  - **N2:** a worker that can't be created is created again by the next start, switch-off or forget wait (`ensure_worker_locked`).
+  - **N3:** `companion server-host` no longer reads a key from the address-keyed pin. With no saved key for the entry, the carry source is cleared, and the next tailnet connect captures it.
+  - **N4:** a second Forget while one runs is a no-op. The log says "forget: already forgetting" and the UI toasts "Already forgetting".
+  - **N5:** a check-in while an instance is still stopping fails at once instead of waiting 60 s.
+  - **N6:** the unused flag is dropped.
+  - **Strings:** the new user-visible texts say "Host": "Host not found at …", "Host not at … (fallback for …)", "Forget host key to trust it", and the log line "Host entry host -> …". The full-UI rename is out of scope.
+
+  Cost if wrong: none.

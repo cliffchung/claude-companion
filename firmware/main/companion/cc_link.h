@@ -24,9 +24,9 @@ bool cc_link_connected(void);
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
    "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
    is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting",
-   "new host key SHA256:... for <ip>; Forget Mac host key to trust it" (a LAN address with no key to carry over),
-   "Mac not found at <host> (set its address in Settings → Network)" (the name doesn't resolve, no fallback),
-   "Mac not at <fallback> (fallback for <host>)" (the name didn't resolve and the fallback doesn't answer),
+   "new host key SHA256:... for <ip>; Forget host key to trust it" (a LAN address with no key to carry over),
+   "Host not found at <host> (set its address in Settings → Network)" (the name doesn't resolve, no fallback),
+   "Host not at <fallback> (fallback for <host>)" (the name didn't resolve and the fallback doesn't answer),
    "no server named '<name>' in Servers", "<name> refused the device key" or CC_LINK_TS_OFF_TEXT. */
 const char *cc_link_status_text(char *buf, size_t cap);
 /* Why the link is down when it isn't reachability (the status text has the words). */

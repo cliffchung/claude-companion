@@ -469,7 +469,7 @@ static bool connect_once(const char *name)
     strlcpy(entry_host, host, sizeof(entry_host));
     if (!mac_resolve(host, ip, sizeof(ip), &how)) {
         ESP_LOGW(TAG, "mac: %s doesn't resolve and there is no fallback address", host);
-        snprintf(why, sizeof(why), "Mac not found at %s (set its address in Settings \xe2\x86\x92 Network)", host);
+        snprintf(why, sizeof(why), "Host not found at %s (set its address in Settings \xe2\x86\x92 Network)", host);
         set_fail(CC_LINK_FAIL_NOT_FOUND, why);   /* I2; retried with the backoff */
         return false;
     }
@@ -512,7 +512,7 @@ static bool connect_once(const char *name)
         ESP_LOGW(TAG, "connect %s:%d failed: %s", host, port, ssh_get_error(s));
         if (via_fallback) {
             /* the name didn't resolve and the fallback address doesn't answer: likely stale (I2) */
-            snprintf(why, sizeof(why), "Mac not at %s (fallback for %s)", host, entry_host);
+            snprintf(why, sizeof(why), "Host not at %s (fallback for %s)", host, entry_host);
             set_fail(CC_LINK_FAIL_NOT_FOUND, why);
         } else set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreachable */
         ssh_free(s);
@@ -562,7 +562,7 @@ static bool connect_once(const char *name)
     case KHA_REFUSE_UNKNOWN:
         ESP_LOGE(TAG, "kh: new host key for %s:%d %s, and no tailnet key to carry; not connecting", host, port, fp);
         /* the fingerprint, to compare with ssh-keygen -lf on the Mac before forgetting (M3) */
-        snprintf(why, sizeof(why), "new host key %s for %s; Forget Mac host key to trust it", fp, host);
+        snprintf(why, sizeof(why), "new host key %s for %s; Forget host key to trust it", fp, host);
         set_fail(CC_LINK_FAIL_HOSTKEY, why);
         ssh_disconnect(s);
         ssh_free(s);
@@ -1797,12 +1797,9 @@ esp_err_t cc_link_set_server_host(const char *host, const char *fallback)
     lock();
     c = s_carry;
     unlock();
+    /* only a key met in a verified tailnet session (N3): no matching saved key means none; the next
+       tailnet connect captures it */
     bool have = c.host[0] && strcmp(c.host, e.host) == 0 && (!tsip[0] || strcmp(c.ip, tsip) == 0);
-    if (!have && tsip[0] && tailscale_is_tailnet_ip(tsip)) {
-        memset(&c, 0, sizeof(c));
-        strlcpy(c.ip, tsip, sizeof(c.ip));
-        have = ssh_known_host_hash(tsip, e.port > 0 ? e.port : 22, c.hash) == KH_PIN_FOUND;
-    }
     strlcpy(e.host, host, sizeof(e.host));
     if (!server_store_update(idx, &e)) return ESP_FAIL;
     if (have) {
@@ -1814,7 +1811,7 @@ esp_err_t cc_link_set_server_host(const char *host, const char *fallback)
     s_lan_last[0] = 0;
     unlock();
     settings_save();
-    ESP_LOGI(TAG, "Mac entry host -> %s, fallback %s, carry source %s", host,
+    ESP_LOGI(TAG, "Host entry host -> %s, fallback %s, carry source %s", host,
              g_settings.mac_lan_ip[0] ? g_settings.mac_lan_ip : "none", have ? c.ip : "none");
     s_reconfig = true;
     kick();

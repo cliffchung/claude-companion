@@ -23,6 +23,8 @@ void tailscale_set_enabled(bool on);
 bool tailscale_enabled(void);
 /* True while a switched-off instance is still stopping or not yet freed (UI: "Turning Tailscale off…"). */
 bool tailscale_stopping(void);
+/* True while tailscale_forget_node runs; a second call meanwhile returns false at once (N4). */
+bool tailscale_forgetting(void);
 /* The SSH terminal's message for a tailnet host while the switch is off. */
 #define TS_OFF_MESSAGE "Tailscale is off. Turn it on in Settings → Network."
 void tailscale_on_wifi(bool connected);   /* called from the WiFi manager hook */

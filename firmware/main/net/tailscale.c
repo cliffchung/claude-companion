@@ -84,6 +84,18 @@ static bool reap_locked(void)
 }
 
 static bool start_locked(void);
+static void worker_task(void *arg);
+
+/* ctl held. Starts the stop worker for a detached instance if none runs; a failed create is retried by
+   the next start, switch-off or forget (N2), so the instance is never left without someone to stop it. */
+static void ensure_worker_locked(void)
+{
+    if (!s_zombie || s_worker) return;
+    if (xTaskCreate(worker_task, "ts_stop", 6144, NULL, 3, &s_worker) != pdPASS) {
+        s_worker = NULL;
+        ESP_LOGE(TAG, "no memory for the stop worker; retried on the next start, switch-off or forget");
+    }
+}
 
 static void worker_task(void *arg)
 {
@@ -96,23 +108,22 @@ static void worker_task(void *arg)
     ctl_lock();
     s_stopping = false;
     ctl_unlock();
-    bool done = false, started = false;
+    bool done = false;
     for (int i = 0; i < 600 && !done; i++) {   /* 300 s */
         ctl_lock();
         done = reap_locked();
         if (done && g_settings.ts_enable && !s_hold && !s_started && wifi_mgr_is_connected()) {
             ESP_LOGI(TAG, "switched on again while stopping: starting now");
-            started = start_locked();
+            start_locked();
         }
+        /* cleared in the same locked step that saw the result (N1): a switch-off after this point
+           sees no worker and starts a new one for its instance */
+        if (done || i == 599) s_worker = NULL;
         ctl_unlock();
         if (!done) vTaskDelay(pdMS_TO_TICKS(500));
     }
     if (!done) ESP_LOGE(TAG, "a stopped MicroLink instance is still in use after 300 s: it stays allocated");
-    (void)started;
     notify();
-    ctl_lock();
-    s_worker = NULL;   /* under s_ctl, so a detach never misses a running worker (M11) */
-    ctl_unlock();
     vTaskDelete(NULL);
 }
 
@@ -129,11 +140,8 @@ static void teardown(void)
         if (s_zombie) ESP_LOGE(TAG, "a second instance detached while the first isn't freed: the first stays allocated");
         s_zombie = ml;   /* published at once: nothing starts a second instance meanwhile (I1) */
         s_stopping = was_started;
-        if (!s_worker && xTaskCreate(worker_task, "ts_stop", 6144, NULL, 3, &s_worker) != pdPASS) {
-            s_worker = NULL;
-            ESP_LOGE(TAG, "no memory for the stop worker: the instance stays allocated until the next start");
-        }
     }
+    ensure_worker_locked();
     ctl_unlock();
 }
 
@@ -184,6 +192,7 @@ static bool start_locked(void)
     if (!g_settings.ts_enable) { strlcpy(s_err, "Tailscale is off", sizeof(s_err)); return false; }
     if (s_started) return true;
     if (s_hold) return false;   /* forgetting the node */
+    ensure_worker_locked();   /* a worker that couldn't be created before (N2) */
     if (!reap_locked()) {
         /* the worker starts it once the old instance is freed */
         strlcpy(s_err, "Tailscale is still turning off; it starts when that is done", sizeof(s_err));
@@ -300,6 +309,11 @@ ts_checkin_t tailscale_checkin(const char *host, bool force_rebind, uint32_t *ms
        bring up, so no start and no connect wait */
     if (!g_settings.ts_enable || !ts_host_maybe_tailnet(host)) {
         r = TS_CHECKIN_SKIPPED;
+        goto done;
+    }
+    if (tailscale_stopping()) {
+        /* an instance is still stopping: no tunnel until it is freed, so don't wait 60 s for one (N5) */
+        ESP_LOGW(TAG, "check-in: Tailscale is still turning off or restarting; no tunnel this time");
         goto done;
     }
     if (!s_started && wifi_mgr_is_connected()) tailscale_start();
@@ -487,9 +501,16 @@ void tailscale_tcp_probe(const char *ip, int port, int timeout_ms)
 }
 
 void tailscale_set_event_cb(ts_event_cb_t cb, void *user) { s_cb = cb; s_cb_user = user; }
+bool tailscale_forgetting(void) { return s_hold; }
+
 bool tailscale_forget_node(void)
 {
     ctl_lock();
+    if (s_hold) {   /* a second Forget while one runs: nothing to do (N4) */
+        ctl_unlock();
+        ESP_LOGW(TAG, "forget: already forgetting");
+        return false;
+    }
     s_hold = true;   /* no start (Wi-Fi event, check-in, worker) until the reset is done */
     ctl_unlock();
     teardown();
@@ -498,6 +519,7 @@ bool tailscale_forget_node(void)
     bool freed = false;
     for (int i = 0; i < 400 && !freed; i++) {   /* 40 s: a 15 s stop plus a stuck task's last read */
         ctl_lock();
+        ensure_worker_locked();
         freed = !s_zombie && !s_worker;
         ctl_unlock();
         if (!freed) vTaskDelay(pdMS_TO_TICKS(100));
