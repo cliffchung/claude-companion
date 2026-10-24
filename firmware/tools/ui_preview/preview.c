@@ -152,6 +152,7 @@ int wifi_mgr_scan_results(wifi_scan_item_t *out, int max) {
     return n;
 }
 bool sd_mount(void) { return strcmp(env_str("PREVIEW_SD", "1"), "0") != 0; }
+void sd_unmount(void) {}
 bool fs_read_all(const char *path, char **out, size_t *len, size_t max) {
     (void)max;
     if (strcmp(path, "/sdcard/tailscale/authkey.txt") || !strcmp(env_str("PREVIEW_SD", "1"), "nofile")) return false;

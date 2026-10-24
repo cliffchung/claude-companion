@@ -6,7 +6,9 @@
 #include "settings/settings.h"   /* the NVS helpers */
 #include "crypto/secure_store.h"
 #include "storage/sd.h"
+#include "servers/host_rules.h"
 #include <strings.h>
+#include <stdio.h>
 
 static const char *TAG = "servers";
 static server_t s_list[SERVER_MAX];
@@ -94,16 +96,29 @@ void server_store_init(void)
     }
 }
 
-/* The same entry: the same name (names identify entries, as companion_server does), or the same user at the
-   same host and port. */
+/* The same entry: its name is taken (hf_name_taken: case-insensitive, as the host form's rule, the Host's name
+   included), or the same user at the same host and port. */
 static bool have_entry(const server_t *e)
 {
-    for (int i = 0; i < s_n; i++) {
-        if (e->name[0] && !strcmp(s_list[i].name, e->name)) return true;
+    const char *names[SERVER_MAX];
+    for (int i = 0; i < s_n; i++) names[i] = s_list[i].name;
+    if (hf_name_taken(e->name, names, s_n, -1)) return true;
+    for (int i = 0; i < s_n; i++)
         if (!strcasecmp(s_list[i].host, e->host) && s_list[i].port == e->port && !strcmp(s_list[i].user, e->user))
             return true;
-    }
     return false;
+}
+
+/* M4: the host form's rules (hf_validate: an address, a user, port 1..65535; the Host check is the link's at run
+   time, cc_link_is_companion_server) and, for a key entry, a device key or a file under /sdcard/ (hf_key_source). */
+static bool valid_entry(const server_t *e)
+{
+    char port[12];
+    snprintf(port, sizeof(port), "%d", e->port);
+    if (hf_validate(e->host, port, e->user, true, NULL, NULL) != HF_OK) return false;
+    if (e->use_key && hf_key_source(e->keypath, true) != HF_KEY_DEVICE && hf_key_source(e->keypath, true) != HF_KEY_FILE)
+        return false;
+    return true;
 }
 
 int server_store_import_sd_once(void)
@@ -122,8 +137,9 @@ int server_store_import_sd_once(void)
     memset(json, 0, strlen(json));   /* it holds the passwords in the clear */
     free(json);
     if (n < 0) { free(in); ESP_LOGW(TAG, "the TF card's host list isn't a host list"); return -1; }
-    int added = 0, skipped = 0;
+    int added = 0, skipped = 0, invalid = 0;
     for (int i = 0; i < n; i++) {
+        if (!valid_entry(&in[i])) { invalid++; continue; }
         if (s_n >= SERVER_MAX || have_entry(&in[i])) { skipped++; continue; }
         s_list[s_n++] = in[i];
         added++;
@@ -136,7 +152,8 @@ int server_store_import_sd_once(void)
         ESP_LOGE(TAG, "the imported hosts could not be saved");
         return -1;
     }
-    if (skipped) ESP_LOGI(TAG, "%d hosts on the card were already here (or the list is full)", skipped);
+    ESP_LOGI(TAG, "hosts on the card: %d added, %d already here (or the list is full), %d invalid", added, skipped,
+             invalid);
     return added;
 }
 

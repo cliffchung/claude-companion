@@ -173,7 +173,7 @@ void app_main(void)
     imu_suspend();   /* nothing uses the BMI270 (PT15); it keeps whatever an earlier firmware left running */
     /* No sd_mount here (spec §7.1, P4-7): the card is mounted on demand (Load from SD, a key file on the card) */
     server_store_init();   /* NVS only */
-    settings_post_load_migrate();   /* CFG 23: the hosts an older build kept on the card, once */
+    settings_post_load_migrate(s_dark_boot);   /* CFG 23: the hosts an older build kept on the card (not on a check-in) */
 
     bsp_display_lock(0);
     fonts_init();

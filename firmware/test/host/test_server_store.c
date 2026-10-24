@@ -7,6 +7,7 @@
 #include "settings/settings.h"
 #include "crypto/secure_store.h"
 #include "storage/sd.h"
+#include "servers/host_rules.h"
 
 static char *s_nvs;            /* "srv"/"list" */
 static char *s_card;           /* /sdcard/.tab5/servers.enc, NULL = no file */
@@ -181,6 +182,70 @@ static void test_import_stops_at_full_list(void)
     TEST_ASSERT_EQUAL_INT(SERVER_MAX, server_store_count());
 }
 
+/* I2: names are one case-insensitive namespace (hf_name_taken), the Host's included */
+static void test_import_skips_case_only_name(void)
+{
+    server_t host = entry("Mac", "studio.local", "");
+    server_t pi = entry("PI", "other.example", "");
+    server_store_add(&host); server_store_add(&pi);
+    card_with("{\"servers\":["
+              "{\"name\":\"mac\",\"host\":\"else.example\",\"port\":22,\"user\":\"u\"},"
+              "{\"name\":\"pi\",\"host\":\"pi.local\",\"port\":2222,\"user\":\"pi\"}]}");
+    TEST_ASSERT_EQUAL_INT(0, server_store_import_sd_once());
+    TEST_ASSERT_EQUAL_INT(2, server_store_count());
+}
+
+/* M5: a card list repeating itself (by name in any case, or by user, host and port) adds each entry once */
+static void test_import_card_self_duplicates(void)
+{
+    card_with("{\"servers\":["
+              "{\"name\":\"pi\",\"host\":\"pi.local\",\"port\":22,\"user\":\"pi\"},"
+              "{\"name\":\"PI\",\"host\":\"other.local\",\"port\":22,\"user\":\"pi\"},"
+              "{\"name\":\"pi2\",\"host\":\"PI.local\",\"port\":22,\"user\":\"pi\"},"
+              "{\"name\":\"nas\",\"host\":\"nas.local\",\"port\":22,\"user\":\"admin\"}]}");
+    TEST_ASSERT_EQUAL_INT(2, server_store_import_sd_once());
+    TEST_ASSERT_EQUAL_INT(2, server_store_count());
+    TEST_ASSERT_EQUAL_STRING("pi.local", server_store_get(0)->host);
+    TEST_ASSERT_EQUAL_STRING("nas.local", server_store_get(1)->host);
+}
+
+/* M4: the form's rules (hf_validate: an address, a user, port 1..65535) and a key file only under /sdcard/ */
+static void test_import_skips_invalid_entries(void)
+{
+    card_with("{\"servers\":["
+              "{\"name\":\"p0\",\"host\":\"a.local\",\"port\":0,\"user\":\"u\"},"
+              "{\"name\":\"pbig\",\"host\":\"b.local\",\"port\":70000,\"user\":\"u\"},"
+              "{\"name\":\"pneg\",\"host\":\"c.local\",\"port\":-22,\"user\":\"u\"},"
+              "{\"name\":\"nouser\",\"host\":\"d.local\",\"port\":22,\"user\":\"  \"},"
+              "{\"name\":\"blank\",\"host\":\"   \",\"port\":22,\"user\":\"u\"},"
+              "{\"name\":\"etc\",\"host\":\"e.local\",\"port\":22,\"user\":\"u\",\"key\":\"/etc/id\",\"use_key\":true},"
+              "{\"name\":\"dots\",\"host\":\"f.local\",\"port\":22,\"user\":\"u\",\"key\":\"/sdcard/../id\",\"use_key\":true},"
+              "{\"name\":\"dev\",\"host\":\"g.local\",\"port\":22,\"user\":\"u\",\"key\":\"device\",\"use_key\":true},"
+              "{\"name\":\"file\",\"host\":\"h.local\",\"port\":65535,\"user\":\"u\",\"key\":\"/sdcard/id_h\",\"use_key\":true},"
+              "{\"name\":\"pw\",\"host\":\"i.local\",\"port\":1,\"user\":\"u\",\"key\":\"/etc/unused\",\"use_key\":false}]}");
+    TEST_ASSERT_EQUAL_INT(3, server_store_import_sd_once());
+    TEST_ASSERT_EQUAL_INT(3, server_store_count());
+    TEST_ASSERT_EQUAL_STRING("dev", server_store_get(0)->name);
+    TEST_ASSERT_EQUAL_STRING("file", server_store_get(1)->name);
+    TEST_ASSERT_EQUAL_STRING("pw", server_store_get(2)->name);   /* a password entry never reads its key path */
+}
+
+/* M5: an entry carrying the Host's address is imported, not skipped: at this point of the boot the link's
+   addresses aren't known (no tailnet lookup, no host cache, the Host's own entry may be one of the card's), so
+   the runtime rule (cc_link_is_companion_server: hf_is_host over cc_link_host_addresses) hides it from Terminal and
+   refuses its shell. The Host's own entry from the card comes in too. */
+static void test_import_entry_with_host_address(void)
+{
+    card_with("{\"servers\":["
+              "{\"name\":\"Mac\",\"host\":\"studio.local\",\"port\":22,\"user\":\"me\"},"
+              "{\"name\":\"studio-root\",\"host\":\"STUDIO.local\",\"port\":22,\"user\":\"root\"}]}");
+    TEST_ASSERT_EQUAL_INT(2, server_store_import_sd_once());
+    hf_host_addrs_t h;
+    hf_host_addrs_init(&h);
+    hf_host_addrs_add_name(&h, server_store_get(0)->host);   /* the Host's entry, as cc_link_host_addresses adds it */
+    TEST_ASSERT_TRUE(hf_is_host(server_store_get(1)->host, &h));   /* so Terminal hides and refuses it */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -192,6 +257,10 @@ int main(void)
     RUN_TEST(test_import_no_card_or_file_keeps_list);
     RUN_TEST(test_import_failed_save_keeps_list);
     RUN_TEST(test_import_stops_at_full_list);
+    RUN_TEST(test_import_skips_case_only_name);
+    RUN_TEST(test_import_card_self_duplicates);
+    RUN_TEST(test_import_skips_invalid_entries);
+    RUN_TEST(test_import_entry_with_host_address);
     set_str(&s_nvs, NULL); set_str(&s_card, NULL);
     return UNITY_END();
 }

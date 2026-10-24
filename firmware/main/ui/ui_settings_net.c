@@ -290,8 +290,11 @@ static void key_sd_work(sdk_job_t *j)
 {
     char *txt = NULL;
     size_t len = 0;
-    if (!sd_mount()) j->res = SDK_NO_CARD;
-    else if (!fs_read_all(KEY_FILE, &txt, &len, 4096)) j->res = SDK_NO_FILE;
+    bool held = sd_mount();
+    bool read = held && fs_read_all(KEY_FILE, &txt, &len, 4096);
+    if (held) sd_unmount();   /* M1: the key is in RAM; the card goes down again */
+    if (!held) j->res = SDK_NO_CARD;
+    else if (!read) j->res = SDK_NO_FILE;
     else {
         char *nl = strpbrk(txt, "\r\n");
         if (nl) *nl = 0;

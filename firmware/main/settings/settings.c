@@ -21,7 +21,6 @@ static const char *TAG = "settings";
 /* CFG_VERSION, CFG_MAGIC and the blob layout are in settings_migrate.h. */
 
 app_settings_t g_settings;
-static uint32_t s_loaded_version;   /* the blob version settings_init found; 0 = none */
 
 static void power_defaults(app_settings_t *s)
 {
@@ -115,7 +114,6 @@ void settings_init(void)
     void *blob = NULL; size_t len = 0;
     if (nvs_get_blob_alloc(NS, KEY, &blob, &len)) {
         uint32_t old_version = settings_blob_load(&g_settings, blob, len);
-        s_loaded_version = old_version;
         if (old_version && old_version != CFG_VERSION) {
             /* other layout: settings_blob_load copied what fits and ran the pure steps (v21 Tailscale off once;
                v23 the token terminal values, rotation 1, no amber keyboard light). The old line-height fixes
@@ -163,20 +161,25 @@ void settings_init(void)
     if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
 }
 
-void settings_post_load_migrate(void)
+void settings_post_load_migrate(bool checkin_boot)
 {
-    /* CFG 23 step 3 (spec §10): the hosts an older build kept on the TF card come into NVS once. The card is
-       mounted only for this (never at boot otherwise), and its file is left as it is. */
-    if (!s_loaded_version || s_loaded_version >= 23 || g_settings.creds_on_sd != 1) return;
+    /* CFG 23 step 3 (spec §10, T11-13): the hosts an older build kept on the TF card come into NVS. Keyed on the
+       flag alone (settings_sd_import_step), so a reset before it ran, no card, or a read error tries again on the
+       next full boot; the card is mounted only for the import and its file is left as it is. */
+    if (!settings_sd_import_step(g_settings.creds_on_sd, checkin_boot, -1).attempt) return;
+    int n = -1;
     if (!sd_mount()) {
-        ESP_LOGW(TAG, "hosts on SD not imported: no card");
+        ESP_LOGW(TAG, "hosts on SD not imported: no card (tries again next boot)");
     } else {
-        int n = server_store_import_sd_once();
+        n = server_store_import_sd_once();
+        sd_unmount();
         if (n >= 0) ESP_LOGI(TAG, "hosts on SD imported: %d", n);
-        else ESP_LOGW(TAG, "hosts on SD not imported: the file can't be read");
+        else ESP_LOGW(TAG, "hosts on SD not imported: the file can't be read (tries again next boot)");
     }
-    g_settings.creds_on_sd = 0;   /* reserved from here on (Plan 4) */
-    settings_save();
+    if (settings_sd_import_step(g_settings.creds_on_sd, checkin_boot, n).clear) {
+        g_settings.creds_on_sd = 0;   /* reserved from here on (Plan 4) */
+        settings_save();
+    }
 }
 
 void settings_save(void)

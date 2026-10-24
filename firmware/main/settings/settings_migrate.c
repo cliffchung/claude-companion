@@ -48,6 +48,13 @@ uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len)
     return version;
 }
 
+sd_import_plan_t settings_sd_import_step(uint8_t creds_on_sd, bool checkin_boot, int import_result)
+{
+    sd_import_plan_t p = { .attempt = creds_on_sd == 1 && !checkin_boot };
+    p.clear = p.attempt && import_result >= 0;
+    return p;
+}
+
 cfg_blob_t settings_blob_make(const app_settings_t *s)
 {
     cfg_blob_t b = { .magic = CFG_MAGIC, .version = CFG_VERSION, .s = *s };

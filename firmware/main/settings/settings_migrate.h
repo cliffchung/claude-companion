@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "settings/settings.h"
 /* The settings blob's layout and its pure migrations (no NVS), so the host tests cover them. */
 #ifdef __cplusplus
@@ -27,6 +28,14 @@ typedef struct {
    version, or 0 when the blob isn't ours (s keeps the defaults). The caller applies the migrations
    that need ESP-IDF for versions below CFG_VERSION, then saves. */
 uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len);
+/* CFG 23 step 3, the hosts an older build kept on the TF card (spec §10; controller ruling T11-13 over the brief):
+   keyed on creds_on_sd == 1 alone, not the version, so a reset between the v23 save and the import retries it.
+   attempt: mount and import now (never on a timer check-in boot, which must not pay for a mount). clear: set
+   creds_on_sd to 0 and save, only once an import ran (import_result >= 0, the count added); on -1 (no card, or the
+   file can't be read) the flag stays and the next full boot tries again. Call with import_result -1 to ask whether
+   to attempt, then with the import's result. */
+typedef struct { bool attempt, clear; } sd_import_plan_t;
+sd_import_plan_t settings_sd_import_step(uint8_t creds_on_sd, bool checkin_boot, int import_result);
 /* The blob settings_save writes. */
 cfg_blob_t settings_blob_make(const app_settings_t *s);
 /* Settings › About › Reset settings (spec §5.12, U3): every pw_* field, ss_disable_in_ssh, the keyboard light

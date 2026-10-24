@@ -86,9 +86,10 @@ typedef struct {
 extern app_settings_t g_settings;
 
 void settings_init(void);         /* load from NVS or defaults */
-/* The migration step that needs the device key and the card (CFG 23 step 3: the TF-card hosts, once). Call after
-   secure_store_init and server_store_init. */
-void settings_post_load_migrate(void);
+/* The migration step that needs the device key and the card (CFG 23 step 3: the TF-card hosts, while creds_on_sd
+   is 1; settings_sd_import_step). Call after secure_store_init and server_store_init; checkin_boot: a Hibernate
+   timer check-in, which skips it. */
+void settings_post_load_migrate(bool checkin_boot);
 void settings_save(void);
 /* The Plan 2 power settings (pw_*, kbd_needs_light, kbd_dark_light) back to their defaults; the time zone stays. */
 void settings_power_defaults(void);

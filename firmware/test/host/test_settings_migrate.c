@@ -268,6 +268,55 @@ static void test_newer_blob_takes_newer_path(void)
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 }
 
+/* ---- CFG 23 step 3, the TF-card hosts (I1, M2, M3: settings_sd_import_step) ---- */
+static void test_sd_import_step_flag_off(void)
+{
+    for (int checkin = 0; checkin <= 1; checkin++)
+        for (int r = -1; r <= 3; r++) {
+            sd_import_plan_t p = settings_sd_import_step(0, checkin, r);
+            TEST_ASSERT_FALSE(p.attempt);
+            TEST_ASSERT_FALSE(p.clear);
+        }
+    sd_import_plan_t p = settings_sd_import_step(2, false, 1);   /* only 1 means "on the card" */
+    TEST_ASSERT_FALSE(p.attempt);
+}
+
+static void test_sd_import_step_full_boot(void)
+{
+    sd_import_plan_t p = settings_sd_import_step(1, false, -1);
+    TEST_ASSERT_TRUE(p.attempt);
+    TEST_ASSERT_FALSE(p.clear);    /* no card or a read error: keep the flag, try again next boot (T11-13) */
+    p = settings_sd_import_step(1, false, 0);
+    TEST_ASSERT_TRUE(p.attempt);
+    TEST_ASSERT_TRUE(p.clear);     /* read, nothing new */
+    p = settings_sd_import_step(1, false, 3);
+    TEST_ASSERT_TRUE(p.attempt);
+    TEST_ASSERT_TRUE(p.clear);
+}
+
+static void test_sd_import_step_checkin_boot(void)
+{
+    for (int r = -1; r <= 3; r++) {
+        sd_import_plan_t p = settings_sd_import_step(1, true, r);   /* a timer check-in never mounts */
+        TEST_ASSERT_FALSE(p.attempt);
+        TEST_ASSERT_FALSE(p.clear);
+    }
+}
+
+/* I1: the step keys on the flag, not the version: a v23 blob still holding creds_on_sd 1 (a reset between the v23
+   save and the import) loads it unchanged, and the step then attempts */
+static void test_v23_blob_keeps_creds_on_sd_for_retry(void)
+{
+    app_settings_t src = old_look();
+    src.creds_on_sd = 1;
+    size_t len = make_blob(23, &src, sizeof(src));
+    app_settings_t out;
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(23, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT8(1, out.creds_on_sd);
+    TEST_ASSERT_TRUE(settings_sd_import_step(out.creds_on_sd, false, -1).attempt);
+}
+
 /* ---- Reset settings (spec §5.12, U3): power, keyboard light and display brightness; the rest stays ---- */
 static app_settings_t reset_defaults(void)
 {
@@ -359,6 +408,10 @@ int main(void)
     RUN_TEST(test_v23_blob_unchanged);
     RUN_TEST(test_migrate_amber_kbd_to_blue);
     RUN_TEST(test_newer_blob_takes_newer_path);
+    RUN_TEST(test_sd_import_step_flag_off);
+    RUN_TEST(test_sd_import_step_full_boot);
+    RUN_TEST(test_sd_import_step_checkin_boot);
+    RUN_TEST(test_v23_blob_keeps_creds_on_sd_for_retry);
     RUN_TEST(test_reset_scope_resets_power_light_brightness);
     RUN_TEST(test_reset_scope_keeps_identity_and_tz);
     return UNITY_END();

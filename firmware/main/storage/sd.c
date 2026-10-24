@@ -15,10 +15,13 @@
 
 static const char *TAG = "sd";
 static volatile bool s_mounted = false;
+static int s_users;   /* successful sd_mount calls not yet matched by sd_unmount (under s_mx) */
 
 /* Mounted on demand, never at boot (spec §7.1, P4-7). Callers run on different tasks (the Tailscale key's
    Load from SD worker, ssh_task for a key file on the card, the CFG 23 migration at boot), so the mount and
-   unmount hold one mutex: two first calls at once must not both bring the card up. */
+   unmount hold one mutex: two first calls at once must not both bring the card up. Each successful sd_mount is
+   one user; sd_unmount drops one and the card goes down with the last, so one caller's unmount never pulls the
+   card from another still reading it (a key file read while the Tailscale key loads). */
 static SemaphoreHandle_t s_mx;
 static portMUX_TYPE s_mx_init = portMUX_INITIALIZER_UNLOCKED;
 
@@ -37,10 +40,8 @@ static void sd_unlock(void) { if (s_mx) xSemaphoreGive(s_mx); }
 
 bool sd_mount(void)
 {
-    if (s_mounted) return true;
     sd_lock();
-    bool ok = s_mounted;
-    if (!ok) {
+    if (!s_mounted) {
         esp_err_t e = bsp_sdcard_mount();
         if (e != ESP_OK) {
             ESP_LOGW(TAG, "mount failed: %s", esp_err_to_name(e));
@@ -48,22 +49,25 @@ bool sd_mount(void)
                once, so without this every later mount fails too (a card put in after a try with none). */
             bsp_sdcard_unmount();
         } else {
-            s_mounted = ok = true;
+            s_mounted = true;
             sdmmc_card_t *card = bsp_sdcard_get_handle();
             if (card) ESP_LOGI(TAG, "SD mounted: %s %lluMB", card->cid.name, ((uint64_t)card->csd.capacity * card->csd.sector_size) >> 20);
         }
     }
+    bool ok = s_mounted;
+    if (ok) s_users++;
     sd_unlock();
     return ok;
 }
 
 void sd_unmount(void)
 {
-    if (!s_mounted) return;
     sd_lock();
-    if (s_mounted) {
+    if (s_users > 0) s_users--;
+    if (s_users == 0 && s_mounted) {
         bsp_sdcard_unmount();
         s_mounted = false;
+        ESP_LOGI(TAG, "SD unmounted");
     }
     sd_unlock();
 }

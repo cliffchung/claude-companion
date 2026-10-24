@@ -850,3 +850,43 @@ Final state as found: LAN Host link connected, `ts off`, `power set defaults`, D
   list).
 - T11-12: the tests restate `test_settings_v21_keeps_tailscale_choice` as `..._v23_...` (a v21 blob now migrates) and
   the v20 test compares every byte outside the v23 step's fields.
+
+**Task 11 fix round 1** (review: 0 Critical, 2 Important, 5 Minor).
+- I1 (replaces T11-2's keying): step 3 keys on `creds_on_sd == 1` alone, not on the loaded version, so a reset
+  between `settings_init`'s v23 save and the import retries on the next boot (the import skips what's already
+  there). Test: a v23 blob holding `creds_on_sd` 1 loads it unchanged and the step attempts.
+- T11-13 (controller ruling, a deviation from the brief's Step 3, M2): on -1 (no card, or the file can't be read)
+  `creds_on_sd` stays 1 and the next full boot tries again, so a device whose old build kept the list only on the
+  card isn't left with no hosts; the flag clears (and saves) only when the import returns ≥ 0. A Hibernate timer
+  check-in boot (`POWER_BOOT_HIB_CHECKIN`, app_main's `s_dark_boot`) never attempts, so check-ins never pay for a
+  mount. One log line per attempt ("hosts on SD imported: n", or "not imported: no card / the file can't be read
+  (tries again next boot)").
+- M3: the decision is the pure `settings_sd_import_step(creds_on_sd, checkin_boot, import_result)` in
+  settings_migrate.c, returning `{attempt, clear}`; host tests cover the flag 0/1 (and 2), a check-in or full boot,
+  and results -1, 0 and n. `settings_post_load_migrate(bool checkin_boot)` calls it before and after the import.
+- I2: the import's name check is `hf_name_taken` (case-insensitive, the host form's rule; the Host's name is one of
+  the list's), plus the same user, host (any case) and port. Tests: a card entry differing only in case from an NVS
+  entry or the Host's name is skipped; a card list repeating itself adds each entry once.
+- M4: imported entries pass `hf_validate` (an address, a user, port 1..65535 as digits; the Host check is left to
+  the link at run time) and a key entry's path must be the device key or a file under /sdcard/ with no ".." part
+  (`hf_key_source`). A password entry's unused key path isn't checked (it is never read, `hf_auth_of`). Invalid
+  entries are skipped and counted: "hosts on the card: a added, d already here (or the list is full), v invalid".
+- M5: an entry carrying the Host's address is imported, not skipped. At this point in the boot the link's address
+  set (`cc_link_host_addresses`: tailnet lookups, the host cache, the last verified address, under cc_link's lock)
+  isn't up, and on a creds_on_sd device the Host's own entry is normally one of the card's, so a skip by address
+  could drop the Host itself. Run time catches it: `cc_link_is_companion_server` hides it from Terminal and refuses
+  its shell. The test asserts it is listed and that `hf_is_host` matches it against the Host's entry.
+- M1: the card goes down after use. `sd_mount` counts users (each success is one; a failure is none and must not be
+  matched), `sd_unmount` drops one and unmounts with the last, all under the mutex: so the Load-from-SD worker's
+  unmount can't pull the card from an SSH connect reading its key file, or the reverse. Callers: the migration
+  unmounts after the import; Task 8's Load from SD after the read (T8-6's "the card stays mounted afterwards" no
+  longer holds); B6 in ssh_task (`c->sd_held`) after `authenticate` returns (the key is in RAM, or will never be
+  read), or at `done` on an earlier exit. ssh_client.c changed only there; `hf_conn_steps` and the gate order are
+  untouched. The OTA functions still mount with no matching unmount (no callers today; the card stays up until the
+  updater's restart, which calls `sd_unmount`).
+- Device (flash 3, test session `companion-test-t11c`): booted unaided (log within the 25 s capture after idf.py's RTS
+  reset); with `creds_on_sd` 0 the boot log has no `sd:` and no "hosts on SD" line (step 3 not attempted), "1
+  servers loaded", "host keys: 1 known for the Host", boot complete 2879 ms. The no-card Load from SD leg was not
+  re-run: right after boot the taps landed on Network › Advanced (opened and left, nothing changed). Final state as
+  found: LAN Host link, `ts off`, `power set defaults`, DHCP, brightness 80, keyboard light `0 0 0080ff 1 5`; test
+  session stopped.

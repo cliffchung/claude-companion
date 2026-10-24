@@ -41,6 +41,7 @@ struct ssh_client {
     bool ext_stack;     /* created WithCaps (stack in PSRAM) */
     volatile bool kill;     /* C1: the link is going down: close now (the owner still holds c) */
     volatile bool closed;   /* the session is disconnected and freed (the object may still live) */
+    bool sd_held;           /* B6: ssh_task holds the SD card for this entry's key file (sd_mount) */
 };
 
 /* C1: the live clients, so a path that takes the link down can close them first (the SSH Terminal and the
@@ -374,7 +375,7 @@ static void ssh_task(void *arg)
            (or the path isn't on the card, M9) */
         hf_key_src_t src = hf_key_source(c->p.keypath, true);
         if (src == HF_KEY_FILE) {
-            sd_mount();
+            c->sd_held = sd_mount();   /* released once authenticate has the key in RAM (or at done) */
             struct stat st;
             src = hf_key_source(c->p.keypath, stat(c->p.keypath, &st) == 0);
         }
@@ -453,7 +454,9 @@ static void ssh_task(void *arg)
             if (hv != 0) { set_state(c, SSH_ST_ERROR, hv == -2 ? "Can't read the saved host key; not connecting" : "Host key rejected"); goto done; }
         } else {
             set_state(c, SSH_ST_AUTH, NULL);
-            if (authenticate(c) != 0) {
+            int auth = authenticate(c);
+            if (c->sd_held) { sd_unmount(); c->sd_held = false; }   /* M1: the key file was read (or never will be) */
+            if (auth != 0) {
                 char m[200];
                 if (c->err[0]) snprintf(m, sizeof(m), "%s", c->err);   /* the key's own reason (B6, M10) */
                 else snprintf(m, sizeof(m), "Authentication failed: %s", ssh_get_error(c->session));
@@ -518,6 +521,7 @@ static void ssh_task(void *arg)
     if (c->kill && !c->stop) { c->exit_status = -1; set_state(c, SSH_ST_ERROR, "the network is going down"); }
     else set_state(c, SSH_ST_CLOSED, c->stop || c->p.cmd[0] ? NULL : "Server closed this connection");
 done:
+    if (c->sd_held) { sd_unmount(); c->sd_held = false; }   /* an exit before authenticate */
     if (c->kill && !c->stop && c->state != SSH_ST_ERROR && c->state != SSH_ST_CLOSED)
         set_state(c, SSH_ST_ERROR, "the network is going down");
     if (c->channel) { ssh_channel_send_eof(c->channel); ssh_channel_close(c->channel); ssh_channel_free(c->channel); }

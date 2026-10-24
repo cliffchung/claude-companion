@@ -77,7 +77,7 @@ endforeach()
 # server_store.c itself over simulated NVS and card (stubs/ holds an esp_log.h that prints nothing)
 add_executable(test_server_store test_server_store.c ${MAIN}/servers/server_store.c)
 target_include_directories(test_server_store PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/stubs ${MAIN})
-target_link_libraries(test_server_store cjson unity)
+target_link_libraries(test_server_store pure unity)
 target_compile_options(test_server_store PRIVATE -Wall -Wextra)
 add_test(NAME test_server_store COMMAND test_server_store)
 
