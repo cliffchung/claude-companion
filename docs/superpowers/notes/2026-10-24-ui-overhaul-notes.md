@@ -443,3 +443,26 @@ Device name, Control server, Connection, Peers, Forget), every row shown with th
 - T8-12: C5: with ui_wifi.c and ui_tailscale.c gone, `ui_terminal.c` is the only `ui_theme_*` shim user. C11: the
   preview builds `ui_settings_net.c` (the two deleted files were never in it). C14 ends: `settings 1` and
   `keyboard-settings` run every check.
+
+**Task 8 fix round 1.**
+- I1 (replaces T8-1's Status clause): the Network panel holds `tailscale_set_event_cb` while its Status row exists
+  and gives it back in that row's DELETE event; events coalesce to one `ui_async` and update the switch (state set
+  without VALUE_CHANGED), its "on" / "off · saved" label, Status (text and tone) and Peers' "N online" in place, with
+  no rebuild and no timer. Peers takes the slot over by B2's delete-then-create order. Device: on Network, `ts on`
+  took Status from "connecting" to "connected · <ip> · DERP <n> · 4 peers online", and `ts off` turned the switch and
+  Status back, with no rebuild (screenshots, scratch only). The DERP region shows its number until the DERP map's
+  code arrives with a later event.
+- M1: Saved rows resolve their network by the row's SSID at tap time (the trash button by its line's row).
+- M2: the dead `STR_WIFI_*`, `STR_TS_*`, `STR_TAILSCALE` and `STR_POWER_NOTE` entries are deleted (grep: no users).
+- T8-13 (M3, controller ruling, a deviation from §5.8 row 8): with no key saved, the forget confirm reads "Removes this
+  device's tailnet identity. You'll need a new auth key to register it again." (the spec's appended sentence
+  contradicted the "saved auth key" one).
+- M4: `ui_settings_column()` (a shared style; Settings' panel and the sub-pages) and `ui_srow_line()` (a row and a
+  trailing button) in ui_comp; the switch label's extra margin is gone (the row's 16 px gap spaces it).
+- M5: `refill()` in ui_settings.c goes through `ui_settings_refill()`: every panel keeps its scroll on a change
+  (a rail click still starts at the top).
+- M6: Load from SD runs the mount and the read on a one-shot worker task (the forget's pattern), the result by
+  `ui_async`; a first line without `tskey-` ("The key file doesn't hold a Tailscale auth key") or longer than the
+  setting ("The key in the file is too long") is refused whole.
+- M7: `ui net <sub>` with Settings on top switches its section in place (one Back returns to Settings).
+- M8: the `ui_comp_pass_hits` comment no longer claims ui_core and ui_softkbd are its only users.

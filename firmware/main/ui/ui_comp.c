@@ -19,7 +19,7 @@ static lv_style_t s_focus;
 /* controls */
 static lv_style_t s_btn, s_btn_primary, s_btn_secondary, s_btn_destructive, s_pressed, s_chip;
 static lv_style_t s_pill, s_pill_working;
-static lv_style_t s_row, s_row_sel, s_session_geom, s_srow_geom, s_skeleton;
+static lv_style_t s_row, s_row_sel, s_session_geom, s_srow_geom, s_skeleton, s_set_col, s_srow_line;
 /* bars */
 static lv_style_t s_dot_on, s_dot_off, s_scrim, s_spinner_main, s_spinner_ind, s_pressed_destructive;
 static lv_style_t s_green_text, s_red_text, s_mono, s_rail, s_swatch, s_chip_destructive;
@@ -59,7 +59,7 @@ void ui_comp_init(void)
     s_ready = true;
     lv_style_t *all[] = { &s_bg, &s_panel, &s_panel2, &s_line_border, &s_fg_text, &s_muted, &s_label, &s_focus,
                           &s_btn, &s_btn_primary, &s_btn_secondary, &s_btn_destructive, &s_pressed, &s_chip,
-                          &s_pill, &s_pill_working, &s_row, &s_row_sel, &s_session_geom, &s_srow_geom, &s_skeleton,
+                          &s_pill, &s_pill_working, &s_row, &s_row_sel, &s_session_geom, &s_srow_geom, &s_skeleton, &s_set_col, &s_srow_line,
                           &s_dot_on, &s_dot_off, &s_scrim, &s_spinner_main, &s_spinner_ind, &s_pressed_destructive,
                           &s_title, &s_bar, &s_side_bottom, &s_side_top, &s_banner_muted, &s_banner_red, &s_section,
                           &s_w_button, &s_w_field, &s_w_track, &s_w_on, &s_w_knob_off, &s_w_knob_on, &s_w_knob,
@@ -150,6 +150,16 @@ void ui_comp_init(void)
     lv_style_set_border_width(&s_srow_geom, 0);
     lv_style_set_pad_hor(&s_srow_geom, 20);
     flex_row(&s_srow_geom, UI_TK_GAP_M);
+    /* a Settings column: the panel and the Network sub-pages */
+    lv_style_set_pad_ver(&s_set_col, UI_TK_GAP_L);
+    lv_style_set_pad_hor(&s_set_col, 32);
+    lv_style_set_pad_row(&s_set_col, UI_TK_GAP_S);
+    lv_style_set_layout(&s_set_col, LV_LAYOUT_FLEX);
+    lv_style_set_flex_flow(&s_set_col, LV_FLEX_FLOW_COLUMN);
+    /* a row and its trailing button */
+    lv_style_set_width(&s_srow_line, LV_PCT(100));
+    lv_style_set_height(&s_srow_line, UI_TK_ROW_H);
+    flex_row(&s_srow_line, UI_TK_GAP_S);
     lv_style_set_height(&s_skeleton, UI_TK_SESSION_ROW_H);
     lv_style_set_radius(&s_skeleton, UI_TK_RADIUS);
 
@@ -770,6 +780,22 @@ lv_obj_t *ui_srow_slider(lv_obj_t *parent, const char *label, int min, int max, 
     if (on_release) lv_obj_add_event_cb(s, on_release, LV_EVENT_RELEASED, ud);
     lv_obj_set_user_data(r, s);
     return r;
+}
+
+void ui_settings_column(lv_obj_t *o)
+{
+    lv_obj_add_style(o, &s_set_col, 0);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(o, LV_DIR_VER);
+}
+
+lv_obj_t *ui_srow_line(lv_obj_t *parent)
+{
+    lv_obj_t *l = plain(parent);
+    lv_obj_add_style(l, &s_srow_line, 0);
+    pass_hits(l, BODY_HIT_PAD);   /* the row and the button keep their 80 px hit areas */
+    return l;
 }
 
 lv_obj_t *ui_srow_value(lv_obj_t *row) { return row ? lv_obj_get_user_data(row) : NULL; }

@@ -143,7 +143,10 @@ bool sd_mount(void) { return strcmp(env_str("PREVIEW_SD", "1"), "0") != 0; }
 bool fs_read_all(const char *path, char **out, size_t *len, size_t max) {
     (void)max;
     if (strcmp(path, "/sdcard/tailscale/authkey.txt") || !strcmp(env_str("PREVIEW_SD", "1"), "nofile")) return false;
-    *out = strdup("tskey-auth-fromsd-NOTAREALKEY\nsecond line\n");
+    const char *v = env_str("PREVIEW_SD", "1");
+    char longkey[400];
+    memset(longkey, 'k', sizeof(longkey) - 1); memcpy(longkey, "tskey-auth-", 11); longkey[sizeof(longkey) - 1] = 0;
+    *out = strdup(!strcmp(v, "bad") ? "not a key at all\n" : !strcmp(v, "long") ? longkey : "tskey-auth-fromsd-NOTAREALKEY\nsecond line\n");
     *len = strlen(*out);
     return true;
 }
@@ -1165,6 +1168,15 @@ static bool network_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *panel, const ch
         setenv("PREVIEW_SD", "nofile", 1);
         click_label(d, settings_panel(s), "Auth key"); click_label(d, top, "Load from SD card");
         assert(find_label(top, "No key file", false));
+        /* M6: a first line that isn't a key, or is longer than the setting holds, is refused whole */
+        char before[sizeof(g_settings.ts_auth_key)];
+        strcpy(before, g_settings.ts_auth_key);
+        setenv("PREVIEW_SD", "bad", 1);
+        click_label(d, settings_panel(s), "Auth key"); click_label(d, top, "Load from SD card");
+        assert(find_label(top, "The key file doesn't hold a Tailscale auth key", false) && !strcmp(before, g_settings.ts_auth_key));
+        setenv("PREVIEW_SD", "long", 1);
+        click_label(d, settings_panel(s), "Auth key"); click_label(d, top, "Load from SD card");
+        assert(find_label(top, "The key in the file is too long", false) && !strcmp(before, g_settings.ts_auth_key));
         setenv("PREVIEW_SD", "1", 1);
         click_label(d, settings_panel(s), "Auth key"); click_label(d, top, "Load from SD card");
         assert(!strcmp(g_settings.ts_auth_key, "tskey-auth-fromsd-NOTAREALKEY"));
@@ -1197,7 +1209,9 @@ static bool network_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *panel, const ch
     if (!strcmp(click, "Forget this device on the tailnet")) {
         bool had_key = g_settings.ts_auth_key[0] != 0;
         assert(find_label(top, "Forget this device on the tailnet?", false));
-        bool extra = find_label_has(top, "You'll need a new auth key.", 0) != NULL;
+        /* T8-13: without a key the body doesn't promise the saved key */
+        bool extra = find_label(top, "Removes this device's tailnet identity. You'll need a new auth key to register it again.", false) != NULL;
+        assert(had_key == (find_label_has(top, "saved auth key", 0) != NULL));
         if (extra == had_key) { printf("check %s: FAIL the no-key sentence %s\n", name, extra ? "shown with a key" : "missing"); *r = 1; return true; }
         *r |= pv_run_checks(d, s, name, false, 0);
         char key[sizeof(g_settings.ts_auth_key)];
@@ -1232,6 +1246,62 @@ static bool network_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *panel, const ch
     }
     printf("preview: no assertions for settings 1 with PREVIEW_CLICK=\"%s\"\n", click);
     return false;
+}
+
+/* network-live (I1): Status, Peers and the switch follow Tailscale events in place; the slot goes with the panel. */
+static int network_live_case(lv_display_t *d) {
+    setenv("PREVIEW_TS", "1", 1);
+    g_settings.ts_enable = 1;
+    preview_sessions_load();
+    ui_nav_home(); step(d, 200);
+    ui_settings_open(UI_SET_NETWORK); step(d, 200);
+    lv_obj_t *s = lv_screen_active(), *panel = settings_panel(s);
+    if (!s_ts_cb) { printf("check network-live: FAIL the Network panel doesn't follow Tailscale\n"); return 1; }
+    lv_obj_t *row = row_labeled(panel, "Status"), *v = ui_srow_value(row);
+    lv_obj_t *peers = ui_srow_value(row_labeled(panel, "Peers"));
+    assert(!strcmp(lv_label_get_text(v), "connecting") && !strcmp(lv_label_get_text(peers), "0 online"));
+    setenv("PREVIEW_TS", "2", 1);
+    int reads = s_peer_reads;
+    s_ts_cb(s_ts_cb_user); s_ts_cb(s_ts_cb_user); s_ts_cb(s_ts_cb_user); step(d, 200);
+    if (row_labeled(panel, "Status") != row || strcmp(lv_label_get_text(v), "connected \xc2\xb7 100.101.102.103 \xc2\xb7 DERP sea \xc2\xb7 2 peers online")) {
+        printf("check network-live: FAIL Status reads \"%s\" after the event\n", lv_label_get_text(v)); return 1;
+    }
+    assert(!strcmp(lv_label_get_text(peers), "2 online"));
+    assert(s_peer_reads - reads <= 4);   /* three events, one update (two peer walks: Status and Peers) */
+    setenv("PREVIEW_TS", "3", 1);
+    s_ts_cb(s_ts_cb_user); step(d, 200);
+    if (strcmp(lv_label_get_text(v), "Auth key expired: enter a new one") ||
+        !lv_color_eq(lv_obj_get_style_text_color(v, 0), lv_color_hex(UI_TK_RED))) {
+        printf("check network-live: FAIL the error isn't shown in red (\"%s\")\n", lv_label_get_text(v)); return 1;
+    }
+    int r = pv_run_checks(d, s, "network-live", false, 0);
+    /* the switch turned off elsewhere (`ts off`): the row follows, back in the muted tone */
+    g_settings.ts_enable = 0;
+    setenv("PREVIEW_TS", "0", 1);
+    s_ts_cb(s_ts_cb_user); step(d, 200);
+    lv_obj_t *sw_row = row_labeled(panel, "Tailscale");
+    assert(find_label(sw_row, "off \xc2\xb7 saved", false) && !lv_obj_has_state(ui_srow_value(sw_row), LV_STATE_CHECKED));
+    assert(!strncmp(lv_label_get_text(v), "Off: doesn't run", 16) &&
+           lv_color_eq(lv_obj_get_style_text_color(v, 0), lv_color_hex(UI_TK_MUTED)));
+    lv_obj_send_event(rail_row(s, UI_SET_POWER), LV_EVENT_CLICKED, NULL); step(d, 200);
+    if (s_ts_cb) { printf("check network-live: FAIL the slot is set after a rail click away\n"); return 1; }
+    printf("network-live: Status, Peers and the switch updated in place; slot NULL after the rail click\n");
+    return r;
+}
+
+/* net-sub-open (M7): `ui net <sub>` with Settings on top switches section; one Back reaches Settings, two Sessions. */
+static int net_sub_open_case(lv_display_t *d) {
+    preview_sessions_load();
+    ui_nav_home(); step(d, 200);
+    ui_settings_open(UI_SET_HOST); step(d, 200);
+    ui_settings_open_net_sub(UI_NET_SUB_PEERS); step(d, 200);
+    assert(ui_nav_is_top(ui_settings_sub_create));
+    ui_nav_back(); step(d, 200);
+    assert(ui_nav_is_top(ui_settings_create) && !strcmp(lv_label_get_text(lv_obj_get_child(settings_panel(lv_screen_active()), 0)), "Network"));
+    ui_nav_back(); step(d, 200);
+    if (!ui_nav_is_top(ui_sessions_create)) { printf("check net-sub-open: FAIL a second Settings entry was stacked\n"); return 1; }
+    printf("check net-sub-open: ok\n");
+    return 0;
 }
 
 static int timer_count(void) { int n = 0; for (lv_timer_t *t = lv_timer_get_next(NULL); t; t = lv_timer_get_next(t)) n++; return n; }
@@ -1284,6 +1354,16 @@ static int settings_sub_case(lv_display_t *d, const char *sub, const char *varia
         click_label(d, body, "Clientre Wi-Fi");   /* the network it is on: no rejoin, so the Host link stays */
         assert(s_wifi_connect_calls == 3 && find_label(top, "Connected to Clientre Wi-Fi", false));
         lv_obj_clean(top);
+        /* M1: the saved table changes under the page (a join saved a network first): a row still means its SSID */
+        memmove(&s_preview_saved[1], &s_preview_saved[0], sizeof(s_preview_saved[0]) * (size_t)s_preview_saved_n);
+        snprintf(s_preview_saved[0].ssid, sizeof(s_preview_saved[0].ssid), "Attic");
+        snprintf(s_preview_saved[0].pass, sizeof(s_preview_saved[0].pass), "preview-pass-3");
+        s_preview_saved_n++;
+        click_label(d, body, "Cabin");
+        if (s_wifi_connect_calls != 4 || strcmp(s_wifi_connect_ssid, "Cabin")) {
+            printf("check %s: FAIL a tap on Cabin joined \"%s\"\n", name, s_wifi_connect_ssid); return 1;
+        }
+        lv_obj_clean(top);
         /* the trash button forgets, after a confirm */
         lv_obj_t *cab = find_label(body, "Cabin", false);
         lv_obj_t *trash = lv_obj_get_child(lv_obj_get_parent(lv_obj_get_parent(cab)), 1);
@@ -1299,7 +1379,7 @@ static int settings_sub_case(lv_display_t *d, const char *sub, const char *varia
         ta = find_shown(top, &lv_textarea_class);
         assert(ta && lv_textarea_get_password_mode(ta));
         prompt_answer(d, "");
-        assert(s_wifi_connect_calls == 4 && !strcmp(s_wifi_connect_ssid, "Hidden lab"));
+        assert(s_wifi_connect_calls == 5 && !strcmp(s_wifi_connect_ssid, "Hidden lab"));
         lv_obj_clean(top);
         /* Back: the scan slot is cleared */
         ui_nav_back(); step(d, 200);
@@ -1331,14 +1411,17 @@ static int settings_sub_case(lv_display_t *d, const char *sub, const char *varia
         ts_event_cb_t old = s_ts_cb; void *old_user = s_ts_cb_user;
         ui_nav_back(); step(d, 200);
         lv_obj_t *now = lv_screen_active();
-        if (s_ts_cb != NULL) { printf("check %s: FAIL the Tailscale slot is still set after Peers went\n", name); return 1; }
+        /* I1: the slot is now Settings › Network's (its Status row follows Tailscale), never Peers' */
+        if (s_ts_cb == old || !s_ts_cb) { printf("check %s: FAIL the Tailscale slot after Peers went: %s\n", name, s_ts_cb ? "Peers'" : "empty"); return 1; }
         reads = s_peer_reads;
         old(old_user); step(d, 200);   /* a late event from MicroLink's task: nothing happens */
         if (lv_screen_active() != now || s_peer_reads != reads) { printf("check %s: FAIL a stale event acted\n", name); return 1; }
-        if (s_ts_cb) s_ts_cb(s_ts_cb_user);   /* the stub's saved callback: NULL, nothing to call */
         assert(ui_nav_is_top(ui_settings_create));
-        printf("%s: slot NULL after back; a stale event did nothing\n", name);
-        return pv_run_checks(d, now, name, false, 0);
+        r = pv_run_checks(d, now, name, false, 0);
+        lv_obj_send_event(rail_row(now, UI_SET_HOST), LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (s_ts_cb) { printf("check %s: FAIL the Tailscale slot is set after leaving Network\n", name); return 1; }
+        printf("%s: Peers' callback gone after back; a stale event did nothing; slot NULL off Network\n", name);
+        return r;
     }
     r |= pv_run_checks(d, s, name, false, 0);
     click_label(d, body, "preview-host-a");
@@ -1462,6 +1545,13 @@ static int settings_case(lv_display_t *d, int section) {
         assert(h);
         lv_area_t a, p; lv_obj_get_coords(h, &a); lv_obj_get_coords(panel, &p);
         if (a.y1 < p.y1 || a.y2 > p.y2) { printf("check %s: FAIL Battery saver at %d-%d, the panel %d-%d\n", name, (int)a.y1, (int)a.y2, (int)p.y1, (int)p.y2); return 1; }
+        /* T8 review M5: a value change rebuilds the panel where it was, not at the top */
+        int32_t y = lv_obj_get_scroll_y(panel);
+        lv_obj_send_event(find_clickable_shown(panel, "Deep idle after"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        lv_obj_t *sheet = lv_obj_get_parent(find_label(top, "Deep idle after", false));
+        lv_obj_send_event(lv_obj_get_child(sheet, 2), LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (lv_obj_get_scroll_y(settings_panel(s)) != y) { printf("check %s: FAIL the panel scrolled %d -> %d on a change\n", name, (int)y, (int)lv_obj_get_scroll_y(settings_panel(s))); return 1; }
+        panel = settings_panel(s);
     } else if (section == UI_SET_HOST && !click[0] && (!pv_host() || pv_notfound())) {
         /* U11 and the frozen countdown (T7 review I2): the Link row says Host, never Mac, and no "(retry in Ns)" */
         const char *want = !pv_host() ? "No Host set up" : "Host not found at my-host.local";
@@ -1595,6 +1685,8 @@ int main(int argc,char **argv) {
     if (!strcmp(name,"ctrlk")) return sessions_case(d, "ctrlk");
     if (!strcmp(name,"settings")) return settings_case(d, argc>2 ? atoi(argv[2]) : 0);
     if (!strcmp(name,"keyboard-settings")) return keyboard_settings_case(d);
+    if (!strcmp(name,"network-live")) return network_live_case(d);
+    if (!strcmp(name,"net-sub-open")) return net_sub_open_case(d);
     if (!strcmp(name,"settings-sub")) return settings_sub_case(d, argc>2 ? argv[2] : "networks", argc>3 ? argv[3] : "");
     fprintf(stderr, "preview: unknown case %s\n", argc>1 ? argv[1] : "(none)");
     return 2;

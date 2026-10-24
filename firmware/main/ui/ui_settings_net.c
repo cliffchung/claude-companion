@@ -260,25 +260,70 @@ static void key_prompt_cb(const char *v, void *ud)
     ui_settings_refill();
 }
 
-/* The first line of /sdcard/tailscale/authkey.txt, mounting the card on demand (spec §7.1). */
-static void key_from_sd(void)
+/* Load from SD card: the first line of /sdcard/tailscale/authkey.txt, mounting the card on demand (spec §7.1).
+   The mount and the read run on a one-shot worker task, as the forget does, so the LVGL task never waits on the
+   card; the result comes back through ui_async. A line that isn't a key, or doesn't fit the setting, is refused
+   whole: never truncated. The key is never logged. */
+typedef enum { SDK_OK, SDK_NO_CARD, SDK_NO_FILE, SDK_NOT_A_KEY, SDK_TOO_LONG } sdk_result_t;
+typedef struct { sdk_result_t res; char key[sizeof(g_settings.ts_auth_key)]; } sdk_job_t;
+static bool s_sdk_running;   /* LVGL task only */
+
+static void key_sd_done_async(void *arg)
 {
-    if (!sd_mount()) { ui_toast(tr(STR_NET_TS_NO_SD)); return; }
+    sdk_job_t *j = arg;
+    s_sdk_running = false;
+    static const str_id_t msg[] = { STR_NET_TS_KEY_LOADED, STR_NET_TS_NO_SD, STR_NET_TS_NO_KEY_FILE,
+                                    STR_NET_TS_KEY_NOT_A_KEY, STR_NET_TS_KEY_TOO_LONG };
+    if (j->res == SDK_OK) {
+        strlcpy(g_settings.ts_auth_key, j->key, sizeof(g_settings.ts_auth_key));
+        settings_save();
+    }
+    ui_toast(tr(msg[j->res]));
+    memset(j, 0, sizeof(*j));
+    free(j);
+    if (!s_sdk_running) ui_settings_refill();
+}
+static void key_sd_work(sdk_job_t *j)
+{
     char *txt = NULL;
     size_t len = 0;
-    if (!fs_read_all(KEY_FILE, &txt, &len, 4096)) { ui_toast(tr(STR_NET_TS_NO_KEY_FILE)); return; }
-    char *nl = strpbrk(txt, "\r\n");
-    if (nl) *nl = 0;
-    char *t = trim(txt);
-    if (!*t) ui_toast(tr(STR_NET_TS_NO_KEY_FILE));
+    if (!sd_mount()) j->res = SDK_NO_CARD;
+    else if (!fs_read_all(KEY_FILE, &txt, &len, 4096)) j->res = SDK_NO_FILE;
     else {
-        strlcpy(g_settings.ts_auth_key, t, sizeof(g_settings.ts_auth_key));
-        settings_save();
-        ui_toast(tr(STR_NET_TS_KEY_LOADED));
+        char *nl = strpbrk(txt, "\r\n");
+        if (nl) *nl = 0;
+        char *t = trim(txt);
+        if (!*t) j->res = SDK_NO_FILE;
+        else if (strncmp(t, "tskey-", 6) != 0) j->res = SDK_NOT_A_KEY;
+        else if (strlen(t) >= sizeof(j->key)) j->res = SDK_TOO_LONG;
+        else { strlcpy(j->key, t, sizeof(j->key)); j->res = SDK_OK; }
+        memset(txt, 0, len);
+        free(txt);
     }
-    memset(txt, 0, len);
-    free(txt);
-    ui_settings_refill();
+    ui_async(key_sd_done_async, j);
+}
+#ifndef UI_PREVIEW
+static void key_sd_task(void *arg)
+{
+    key_sd_work(arg);
+    vTaskDelete(NULL);
+}
+#endif
+static void key_from_sd(void)
+{
+    if (s_sdk_running) return;
+    sdk_job_t *j = calloc(1, sizeof(*j));
+    if (!j) { ui_toast(tr(STR_NET_TS_NO_SD)); return; }
+    s_sdk_running = true;
+#ifdef UI_PREVIEW
+    key_sd_work(j);   /* the preview has no tasks */
+#else
+    if (xTaskCreate(key_sd_task, "ts_keysd", 4096, j, 3, NULL) != pdPASS) {
+        s_sdk_running = false;
+        free(j);
+        ui_toast(tr(STR_NET_TS_NO_SD));
+    }
+#endif
 }
 
 static void key_clear_yes(bool yes, void *ud)
@@ -408,6 +453,49 @@ static void forget_cb(lv_event_t *e)
                   tr(STR_NET_TS_FORGET_ACTION), true, forget_yes, NULL);
 }
 
+/* The Tailscale rows that follow events while the panel shows: the switch and its state, Status, Peers. */
+static lv_obj_t *s_ts_switch, *s_ts_state, *s_ts_status, *s_ts_peers;
+static volatile bool s_ts_queued;   /* one ui_async in flight at most, however many events arrive */
+
+static void label_set(lv_obj_t *l, const char *t) { if (strcmp(lv_label_get_text(l), t)) lv_label_set_text(l, t); }
+
+/* In place: no rebuild, so the focus and the scroll stay. */
+static void ts_rows_set(void)
+{
+    if (!s_ts_status) return;
+    bool on = tailscale_enabled(), red;
+    if (on != lv_obj_has_state(s_ts_switch, LV_STATE_CHECKED)) {
+        if (on) lv_obj_add_state(s_ts_switch, LV_STATE_CHECKED);   /* no VALUE_CHANGED: nothing is toggled */
+        else lv_obj_remove_state(s_ts_switch, LV_STATE_CHECKED);
+    }
+    label_set(s_ts_state, tr(on ? STR_NET_TS_ON : STR_NET_TS_OFF_SAVED));
+    char v[200];
+    ts_status_text(v, sizeof(v), &red);
+    label_set(s_ts_status, v);
+    ui_text_tone(s_ts_status, red ? UI_TONE_RED : UI_TONE_MUTED);
+    snprintf(v, sizeof(v), tr(STR_NET_TS_N_ONLINE), peers_online());
+    label_set(s_ts_peers, v);
+}
+static void panel_ts_async(void *arg)
+{
+    (void)arg;
+    s_ts_queued = false;
+    ts_rows_set();   /* nothing when the panel went meanwhile */
+}
+static void panel_ts_ev(void *user)
+{
+    (void)user;
+    if (s_ts_queued) return;
+    s_ts_queued = true;
+    ui_async(panel_ts_async, NULL);
+}
+static void ts_rows_deleted(lv_event_t *e)
+{
+    (void)e;
+    tailscale_set_event_cb(NULL, NULL);
+    s_ts_switch = s_ts_state = s_ts_status = s_ts_peers = NULL;
+}
+
 /* --------------------------------------------------------------- the panel */
 void ui_settings_fill_network(lv_obj_t *p)
 {
@@ -426,13 +514,11 @@ void ui_settings_fill_network(lv_obj_t *p)
     ui_section_header(p, tr(STR_NET_TS));
     bool on = tailscale_enabled();
     lv_obj_t *r = ui_srow(p, UI_ROW_SWITCH, tr(STR_NET_TS), on ? "1" : NULL, ts_switch_cb, NULL);
-    lv_obj_t *state = ui_text(r, tr(on ? STR_NET_TS_ON : STR_NET_TS_OFF_SAVED), UI_TONE_MUTED, true);
-    lv_obj_move_to_index(state, 1);   /* "off · saved" before the switch */
-    lv_obj_set_style_margin_right(state, UI_TK_GAP_M, 0);
-    bool red;
-    ts_status_text(v, sizeof(v), &red);
-    r = ui_srow(p, UI_ROW_INFO, tr(STR_NET_TS_STATUS), v, NULL, NULL);
-    if (red) ui_text_tone(ui_srow_value(r), UI_TONE_RED);
+    s_ts_switch = ui_srow_value(r);
+    s_ts_state = ui_text(r, "", UI_TONE_MUTED, true);
+    lv_obj_move_to_index(s_ts_state, 1);   /* "off · saved" before the switch (the row's own 16 px gap) */
+    lv_obj_t *status = ui_srow(p, UI_ROW_INFO, tr(STR_NET_TS_STATUS), "", NULL, NULL);
+    s_ts_status = ui_srow_value(status);
     ui_srow(p, UI_ROW_NAV, tr(STR_NET_TS_AUTH_KEY), tr(g_settings.ts_auth_key[0] ? STR_NET_TS_KEY_SET : STR_NET_TS_KEY_NOT_SET),
             key_cb, NULL);
     ui_srow(p, UI_ROW_VALUE, tr(STR_NET_TS_NAME), device_name(), name_cb, NULL);
@@ -440,8 +526,13 @@ void ui_settings_fill_network(lv_obj_t *p)
             ctrl_cb, NULL);
     ui_srow(p, UI_ROW_VALUE, tr(STR_NET_TS_CONN), tr(g_settings.ts_direct ? STR_NET_TS_DIRECT : STR_NET_TS_RELAY), conn_cb, NULL);
     ui_footnote(p, tr(STR_NET_TS_APPLIES));
-    snprintf(v, sizeof(v), tr(STR_NET_TS_N_ONLINE), peers_online());
-    ui_srow(p, UI_ROW_NAV, tr(STR_NET_TS_PEERS), v, peers_cb, NULL);
+    s_ts_peers = ui_srow_value(ui_srow(p, UI_ROW_NAV, tr(STR_NET_TS_PEERS), "", peers_cb, NULL));
+    ts_rows_set();
+    /* the panel holds the Tailscale slot while its Status row exists; Peers takes it over (B2: the old screen
+       is deleted before the next is built), and the row's delete gives it back */
+    lv_obj_add_event_cb(status, ts_rows_deleted, LV_EVENT_DELETE, NULL);
+    s_ts_queued = false;
+    tailscale_set_event_cb(panel_ts_ev, NULL);
     r = ui_srow(p, UI_ROW_ACTION, tr(STR_NET_TS_FORGET), NULL, forget_cb, NULL);
     ui_text_tone(lv_obj_get_child(r, 0), UI_TONE_RED);
 }
@@ -477,10 +568,18 @@ static void join(const char *ssid, const char *pass)
     ui_toastf(tr(STR_NET_JOINING), s);
 }
 
+/* A saved row's SSID, read from its label at tap time: the saved table may have changed since the page was built
+   (a join saves at once; `wifi forget`), so a build-time index could name another network (T8 M1). */
+static const wifi_saved_t *saved_of_row(lv_obj_t *row)
+{
+    int i = saved_index(lv_label_get_text(lv_obj_get_child(row, 0)));
+    return i >= 0 ? wifi_mgr_saved(i) : NULL;
+}
 static void saved_tap_cb(lv_event_t *e)
 {
-    const wifi_saved_t *w = wifi_mgr_saved((int)(intptr_t)lv_event_get_user_data(e));
+    const wifi_saved_t *w = saved_of_row(lv_event_get_current_target_obj(e));
     if (w) join(w->ssid, w->pass);
+    else sub_refill();   /* forgotten meanwhile */
 }
 static void saved_forget_yes(bool yes, void *ud)
 {
@@ -493,8 +592,9 @@ static void saved_forget_yes(bool yes, void *ud)
 }
 static void saved_forget_cb(lv_event_t *e)
 {
-    const wifi_saved_t *w = wifi_mgr_saved((int)(intptr_t)lv_event_get_user_data(e));
-    if (!w) return;
+    /* the button's line: its first child is the row */
+    const wifi_saved_t *w = saved_of_row(lv_obj_get_child(lv_obj_get_parent(lv_event_get_current_target_obj(e)), 0));
+    if (!w) { sub_refill(); return; }
     strlcpy(s_pick, w->ssid, sizeof(s_pick));
     char q[96];
     snprintf(q, sizeof(q), tr(STR_NET_FORGET_Q), s_pick);
@@ -545,22 +645,16 @@ static void scan_cb(lv_event_t *e)
 }
 
 /* A saved network: the row connects; the trash button beside it forgets (both 64 px, 8 apart). */
-static void saved_line(lv_obj_t *p, int i, const wifi_saved_t *w)
+static void saved_line(lv_obj_t *p, const wifi_saved_t *w)
 {
-    lv_obj_t *line = lv_obj_create(p);
-    lv_obj_remove_style_all(line);
-    lv_obj_remove_flag(line, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(line, LV_PCT(100), UI_TK_ROW_H);
-    lv_obj_set_flex_flow(line, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(line, UI_TK_GAP_S, 0);
-    ui_comp_pass_hits(line);   /* the two controls keep their 80 px hit areas */
+    lv_obj_t *line = ui_srow_line(p);
     char v[64] = "";
     if (wifi_mgr_is_connected() && !strcmp(wifi_mgr_ssid(), w->ssid))
         snprintf(v, sizeof(v), tr(STR_NET_CONNECTED), signal_word(sysinfo_rssi_cached()));
-    lv_obj_t *r = ui_srow(line, UI_ROW_ACTION, w->ssid, v, saved_tap_cb, (void *)(intptr_t)i);
+    lv_obj_t *r = ui_srow(line, UI_ROW_ACTION, w->ssid, v, saved_tap_cb, NULL);
     lv_obj_set_flex_grow(r, 1);
     if (v[0]) ui_text_tone(ui_srow_value(r), UI_TONE_GREEN);
-    lv_obj_t *b = ui_btn(line, UI_BTN_DESTRUCTIVE, LV_SYMBOL_TRASH, saved_forget_cb, (void *)(intptr_t)i);
+    lv_obj_t *b = ui_btn(line, UI_BTN_DESTRUCTIVE, LV_SYMBOL_TRASH, saved_forget_cb, NULL);
     lv_obj_set_size(b, UI_TK_TARGET, UI_TK_TARGET);
     lv_obj_center(lv_obj_get_child(b, 0));
 }
@@ -572,7 +666,7 @@ static void fill_networks(lv_obj_t *p)
     if (!n) ui_footnote(p, tr(STR_NET_NO_SAVED));
     for (int i = 0; i < n; i++) {
         const wifi_saved_t *w = wifi_mgr_saved(i);
-        if (w) saved_line(p, i, w);
+        if (w) saved_line(p, w);
     }
     ui_section_header(p, tr(STR_NET_AVAILABLE));
     if (s_scan_n == -1) ui_footnote(p, tr(STR_NET_SCANNING));
@@ -753,15 +847,9 @@ lv_obj_t *ui_settings_sub_create(void *arg)
 
     s_body = lv_obj_create(scr);
     lv_obj_remove_style_all(s_body);
-    lv_obj_remove_flag(s_body, LV_OBJ_FLAG_CLICKABLE);
+    ui_settings_column(s_body);   /* the same column as Settings' panel (shared styles) */
     lv_obj_set_pos(s_body, 0, UI_TK_HEADER_H);
     lv_obj_set_size(s_body, LV_PCT(100), lv_display_get_vertical_resolution(NULL) - UI_TK_HEADER_H);
-    lv_obj_set_style_pad_ver(s_body, UI_TK_GAP_L, 0);
-    lv_obj_set_style_pad_hor(s_body, 32, 0);
-    lv_obj_set_style_pad_row(s_body, UI_TK_GAP_S, 0);
-    lv_obj_set_flex_flow(s_body, LV_FLEX_FLOW_COLUMN);
-    lv_obj_add_flag(s_body, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(s_body, LV_DIR_VER);
 
     if (s_sub == UI_NET_SUB_NETWORKS) {
         s_scan = malloc(sizeof(wifi_scan_item_t) * SCAN_MAX);

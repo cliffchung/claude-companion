@@ -43,7 +43,7 @@ static const str_id_t k_section_names[UI_SET_COUNT] = {
 };
 
 static void panel_fill(void);
-static void refill(void) { if (s_panel) panel_fill(); }
+static void refill(void) { ui_settings_refill(); }   /* every panel keeps its scroll on a change (T8 M5) */
 
 /* ------------------------------------------------------------------ Host */
 static char s_host_names[SERVER_MAX][48];
@@ -615,16 +615,17 @@ void ui_settings_refill(void)
     lv_obj_scroll_to_y(s_panel, y, LV_ANIM_OFF);
 }
 
-static void rail_cb(lv_event_t *e)
+static void select_section(ui_set_section_t next)
 {
-    ui_set_section_t next = (ui_set_section_t)(uintptr_t)lv_event_get_user_data(e);
-    if (next >= UI_SET_COUNT || next == s_section) return;
+    if (next >= UI_SET_COUNT || next == s_section || !s_panel) return;
     ui_srow_set_selected(s_rail[s_section], false);
     ui_srow_set_selected(s_rail[next], true);
     s_section = next;
     s_diag_open = false;
     panel_fill();
 }
+
+static void rail_cb(lv_event_t *e) { select_section((ui_set_section_t)(uintptr_t)lv_event_get_user_data(e)); }
 
 static void screen_deleted(lv_event_t *e)
 {
@@ -679,15 +680,9 @@ lv_obj_t *ui_settings_create(void *arg)
     /* the panel: a title heading and 64 px rows; it scrolls when the section doesn't fit */
     s_panel = lv_obj_create(body);
     lv_obj_remove_style_all(s_panel);
-    lv_obj_remove_flag(s_panel, LV_OBJ_FLAG_CLICKABLE);
+    ui_settings_column(s_panel);
     lv_obj_set_height(s_panel, LV_PCT(100));
     lv_obj_set_flex_grow(s_panel, 1);
-    lv_obj_set_style_pad_ver(s_panel, UI_TK_GAP_L, 0);
-    lv_obj_set_style_pad_hor(s_panel, 32, 0);
-    lv_obj_set_style_pad_row(s_panel, UI_TK_GAP_S, 0);
-    lv_obj_set_flex_flow(s_panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_add_flag(s_panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(s_panel, LV_DIR_VER);
     panel_fill();
     return scr;
 }
@@ -700,6 +695,8 @@ void ui_settings_open(ui_set_section_t s)
 
 void ui_settings_open_net_sub(ui_net_sub_t sub)
 {
-    if (!ui_nav_is_top(ui_settings_create) || s_section != UI_SET_NETWORK) ui_settings_open(UI_SET_NETWORK);
+    /* Settings on top: switch its section in place, so one Back returns to it (T8 M7) */
+    if (ui_nav_is_top(ui_settings_create) && s_panel) select_section(UI_SET_NETWORK);
+    else ui_settings_open(UI_SET_NETWORK);
     ui_nav_push(ui_settings_sub_create, (void *)(intptr_t)sub);
 }

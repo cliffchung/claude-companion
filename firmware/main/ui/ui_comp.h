@@ -74,6 +74,11 @@ lv_obj_t *ui_srow(lv_obj_t *parent, ui_row_kind_t kind, const char *label, const
 /* A 64 px row with the label and a slider; on_release runs on LV_EVENT_RELEASED with the slider as the target. */
 lv_obj_t *ui_srow_slider(lv_obj_t *parent, const char *label, int min, int max, int val,
                          lv_event_cb_t on_release, void *ud);
+/* Styles o (an object with its styles removed) as a Settings column: 24 px top and bottom, 32 sideways, 8 between
+ * rows, a vertical flex column that scrolls. Settings' panel and the Network sub-pages. */
+void ui_settings_column(lv_obj_t *o);
+/* A 64 px line for a row (flex-grow it) and a trailing 64 px button, 8 px apart; both keep their 80 px hit. */
+lv_obj_t *ui_srow_line(lv_obj_t *parent);
 /* The row's value label (the switch of a UI_ROW_SWITCH row, the slider of a ui_srow_slider row). */
 lv_obj_t *ui_srow_value(lv_obj_t *row);
 /* Selection on a rail or list of rows: panel-2 with a 50 % fg outline. */
@@ -125,7 +130,8 @@ void ui_comp_scrim(lv_obj_t *ov);                /* the dim layer behind a dialo
 lv_obj_t *ui_comp_radio_dot(lv_obj_t *parent, bool on);   /* the picker's 20 px dot: fg on, a line ring off */
 void ui_comp_busy(lv_obj_t *spinner, lv_obj_t *label);    /* line/fg arcs, a muted label */
 lv_obj_t *ui_comp_body(lv_obj_t *parent, const char *text);  /* a dialog's body: muted, wrapped */
-/* Lets a container's children keep their 80 px hit area past its edges (LVGL clips hits at the parent). */
+/* Lets a container's children keep their 80 px hit area past its edges (LVGL clips hits at the parent). Also used
+ * by screens whose own containers need it (Sessions); a row with a trailing button uses ui_srow_line. */
 void ui_comp_pass_hits(lv_obj_t *o);
 
 #ifdef __cplusplus

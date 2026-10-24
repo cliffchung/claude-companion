@@ -106,24 +106,10 @@ X(NO_AUDIO, "No audio files found") \
 X(DECODE_FAILED, "Decode failed") \
 X(VOLUME, "Volume") \
 X(MUSIC_STOPPED, "Music stopped") \
-X(WIFI_MANAGER, "WiFi Manager") \
-X(WIFI_STATUS, "Status") \
-X(WIFI_SCAN, "Scan") \
-X(WIFI_SCANNING, "Scanning...") \
-X(WIFI_SAVED, "Saved Networks") \
-X(WIFI_MANUAL, "Manual WiFi") \
-X(WIFI_SSID, "SSID") \
-X(WIFI_SAVE_CONNECT, "Save & Connect") \
-X(WIFI_FORGET, "Forget") \
-X(WIFI_OPEN_NOTE, "Leave the password blank for open networks.") \
-X(WIFI_CONNECT_FAILED, "Connect failed. Check password.") \
-X(WIFI_SAVED_DELETED, "Saved WiFi deleted.") \
-X(WIFI_ENABLE, "WiFi enabled") \
 X(IPV4, "IPv4") \
 X(IPV6, "IPv6") \
 X(RSSI, "Signal") \
 X(CHANNEL, "Channel") \
-X(POWER_NOTE, "WiFi upload draws up to 11W. Use a 5V 2A adapter.") \
 X(SETTINGS, "Settings") \
 X(SET_SYSTEM, "System") \
 X(SET_DISPLAY, "Display") \
@@ -242,24 +228,6 @@ X(REBOOT_Q, "Reboot now?") \
 X(ABOUT, "About") \
 X(ABOUT_TEXT,       "Claude Companion: session control for Claude Code on M5Stack Tab5.\nlibssh (LGPL 2.1), MicroLink (MIT), LVGL (MIT), Noto Sans CJK (OFL).\nBased on Clientre 5 by Mozgi512 (MIT)") \
 X(SD_LOW_SPACE, "TF card has less than 20MB free") \
-X(TAILSCALE, "Tailscale") \
-X(TS_ENABLE, "Join tailnet") \
-X(TS_AUTH_KEY, "Auth key (tskey-auth-...)") \
-X(TS_DEVICE_NAME, "Device name") \
-X(TS_CTRL_HOST, "Control server (blank = Tailscale)") \
-X(TS_STATUS, "Status: %s") \
-X(TS_VPN_IP, "Tailnet IP: %s") \
-X(TS_PEERS, "Peers") \
-X(TS_NO_PEERS, "No peers yet") \
-X(TS_KEY_FROM_SD, "Load key from SD (/tailscale/authkey.txt)") \
-X(TS_KEY_LOADED, "Auth key loaded") \
-X(TS_KEY_MISSING, "No auth key. Create one at login.tailscale.com/admin/settings/keys") \
-X(TS_DIRECT, "Direct connections (experimental)") \
-X(TS_DIRECT_NOTE, "Off = always relay via DERP (reliable). On = try direct UDP paths; may stall behind strict NAT.") \
-X(TS_FORGET, "Forget this node") \
-X(TS_FORGET_Q, "Remove node keys? You will need a new auth key.") \
-X(TS_ADD_SERVER, "Add as SSH server") \
-X(TS_NOTE, "Unofficial client (MicroLink). Hostnames are resolved from the peer list; connections may relay via DERP.") \
 X(PUBLIC_IP, "Public IP") \
 X(QUERYING, "querying...") \
 X(SET_HOST, "Host") \
@@ -436,6 +404,8 @@ X(NET_TS_KEY_EMPTY, "Nothing saved: the key was empty") \
 X(NET_TS_KEY_LOADED, "Auth key loaded from the SD card") \
 X(NET_TS_NO_SD, "No SD card") \
 X(NET_TS_NO_KEY_FILE, "No key file") \
+X(NET_TS_KEY_NOT_A_KEY, "The key file doesn't hold a Tailscale auth key") \
+X(NET_TS_KEY_TOO_LONG, "The key in the file is too long") \
 X(NET_TS_KEY_CLEAR_Q, "Clear the auth key?") \
 X(NET_TS_KEY_CLEAR_BODY, "This device stays on the tailnet. To register it again you'll need a new key.") \
 X(NET_TS_KEY_CLEAR_ACTION, "Clear") \
@@ -454,7 +424,7 @@ X(NET_TS_N_ONLINE, "%d online") \
 X(NET_TS_FORGET, "Forget this device on the tailnet") \
 X(NET_TS_FORGET_Q, "Forget this device on the tailnet?") \
 X(NET_TS_FORGET_BODY, "Removes this device's tailnet identity. It registers again with the saved auth key the next time Tailscale starts.") \
-X(NET_TS_FORGET_BODY_NO_KEY, "Removes this device's tailnet identity. It registers again with the saved auth key the next time Tailscale starts. You'll need a new auth key.") \
+X(NET_TS_FORGET_BODY_NO_KEY, "Removes this device's tailnet identity. You'll need a new auth key to register it again.") \
 X(NET_TS_FORGET_ACTION, "Forget") \
 X(NET_TS_FORGETTING, "Forgetting this device\xe2\x80\xa6") \
 X(NET_TS_FORGOTTEN, "Forgotten: it registers again the next time Tailscale starts") \

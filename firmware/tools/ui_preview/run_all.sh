@@ -52,6 +52,8 @@ runv "PREVIEW_CLICK=Forget this device on the tailnet" settings 1
 PV_ENV="PREVIEW_KEY=0"; PV_ENV2="PREVIEW_CLICK=Forget this device on the tailnet"; run settings 1; PV_ENV=; PV_ENV2=
 for v in networks advanced peers; do run settings-sub "$v"; done
 run settings-sub peers deleted-event
+run network-live
+run net-sub-open
 runv "PREVIEW_HOST=0" settings-sub networks   # join a saved network with no Host set (the device gate's no-Host leg)
 run keyboard-settings
 for v in live selected-needs-you working loading stale reconnecting no-wifi not-found no-host empty \
