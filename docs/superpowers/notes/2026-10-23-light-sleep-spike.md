@@ -125,7 +125,9 @@ reset leaves every pin like that, with its pull-down on):
 
 - **Side button (S1):** SW_PWR into the PMS150G's PA4. It drives the power controller, not EN and not a GPIO. When the
   board is on (deep sleep counts as on) a press goes to the PMS150G's firmware, whose behaviour isn't documented
-  beyond "double-press to shut down".
+  beyond "double-press to shut down". **PT26/PT27 (final review C1, on hardware 2026-10-23):** one press wakes deep
+  sleep: `power hib test timer 900`, pressed at once, booted about 76 s in, as hw reason 7 (HP watchdog), the same
+  reset as a timer wake. A press on an awake board also resets it.
 - **Reset button:** none on the board. SOC_RST goes to the P4's reset circuit and the M5-Bus EN pin; the USB-UART
   bridge (CH9102F, U32) is marked NC. M5Stack's "Reset/Boot button" is S1 through the PMS150G (PA5 drives
   BOOT_GPIO35).
@@ -160,7 +162,12 @@ the build before P60, which printed `sources=timer supported=no`).
   (after a power-off the time comes from the RX8130's own clock). A stale flag on a power-on is the button, and the
   boot log says the RTC fired earlier. A power-off that doesn't take deep-sleeps with its timer, or a 60 min
   backstop when it had none.
-- **Mode chosen (P60):** power-off for an untimed Hibernate (the ladder, battery ≤ 10 %), with the side button as its
+- **Superseded by PT26 (final review):** every product Hibernate is a deep sleep with a timer (the check-in, or a
+  2 h power probe that reads the INA226 once and boots on USB). The button wakes deep sleep (PT27), and a power-off
+  drops the expander and with it CHG_EN (PT22), so a powered-off Tab5 would not charge; deep sleep keeps P7 driven
+  (seen: the probe wake reads -295..-464 mA into the pack before any init). The power-off stays for
+  `power hib test off`. Task 10 measures the deep-sleep floor against the power-off floor.
+- **Mode chosen (P60, superseded by PT26):** power-off for an untimed Hibernate (the ladder, battery ≤ 10 %), with the side button as its
   wake; a timed one (test-wake, bench probes, Task 8's check-in) deep-sleeps, since only the timer is proved and only
   deep sleep has it. Power-off beats deep sleep because something other than USB (the button) switches it on, and its
   floor is the PMS150G and RTC on VDD_STBY.
@@ -218,7 +225,8 @@ A normal boot after a flash reaches live in 45.6–45.9 s. The spec's 50–130 s
 
 ### Step 12: the Hibernate default
 
-`hibernate_h` stays 2 (P60). The path: power-off with the side button (on paper; the device's normal power-on),
+PT26: the mode is deep sleep (`power hib` prints `mode=deepsleep sources=timer,button`), and the text below
+describes the earlier power-off default. `hibernate_h` stays 2 (P60). The path: power-off with the side button (on paper; the device's normal power-on),
 plus a USB plug-in edge on the same trigger. Task 10's press confirms it, and that press is also what brings this
 device back now. The battery ≤ 10 % trigger stays on (`hibernate_supported()` is true).
 

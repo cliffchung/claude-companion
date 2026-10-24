@@ -2,7 +2,7 @@
 
 Status: written 2026-10-23 as a follow-on to the main spec
 (`docs/superpowers/specs/2026-10-22-claude-tab5-design.md`, which stays binding). Roadmap row:
-"backlight dim → light sleep; wake on keyboard or touch (lift dropped, PT15); fast reconnect on wake; full vitals
+"backlight dim → screen off (light sleep was dropped by the spike, P57); wake on keyboard or touch (lift dropped, PT15); fast reconnect on wake; full vitals
 bar". The user said "keep going with stage 2" and gave no further direction, so every choice below
 marked *(my call)* is mine and can be overruled.
 
@@ -114,8 +114,8 @@ They touch the same code (cc_link, reconnect), so they belong here:
   - never flash the C6 or erase NVS;
   - never run `sshkey regenerate`.
 - ESP-IDF 5.5.6, ESP32-P4 rev v1.3, esp_hosted 3.0.10 over SDIO, PSRAM XIP, USB host in use.
-- New third-party code must be MIT/BSD/Apache. The BMI270 driver is `espressif/bmi270` 1.1.0,
-  Apache-2.0 (verified by the builder check).
+- New third-party code must be MIT/BSD/Apache. (PT15: no BMI270 driver; `sys/imu.c` only reads the
+  chip ID and suspends it by raw I²C, so `espressif/bmi270` is not a dependency.)
 
 ## How it works (decided parts)
 
@@ -272,8 +272,8 @@ states follow Radio off.
 
 | State | Enter when (on battery only) | What changes |
 |---|---|---|
-| Deep idle | no input for `deep_idle_min` (default 60) | Check-ins back off: 5 → 15 → 30 min. The keyboard light is off unless something needs you, then at the dark brightness (PT24). The display is torn down and the CPU runs at its lowest frequency, if the spike shows that works. |
-| Hibernate | no input for `hibernate_h` (default 2 h), or battery ≤ 10% | The whole device powers down: a full power-off if the board supports it, else ESP deep sleep. Wi-Fi and the link are dropped. |
+| Deep idle | no input for `deep_idle_min` (default 60) | Check-ins back off: 5 → 15 → 30 min. The keyboard light is off unless something needs you, then at the dark brightness (PT24). The display stays as in Off and the CPU frequency is not lowered: the spike dropped both (wake-to-picture 680 ms, P57). |
+| Hibernate | no input for `hibernate_h` (default 2 h), or battery ≤ 10% (this one overrides every hold but the bench's, PT28) | ESP deep sleep, always with a timer (PT26): the Hibernate check-in's, or, when the check-in is Off or the battery is ≤ 10%, a 2 h power probe that reads the power source only and boots on USB. CHG_EN stays driven high, so a sleeping Tab5 charges. Wi-Fi and the link are dropped. There is no power-off in a product path (`power hib test off` keeps it for tests). |
 
 - **Waking from Hibernate.** The keyboard INT (GPIO50) and the touch INT (GPIO23) are not LP GPIOs,
   so neither can wake the P4 from deep sleep. Wake comes from:
@@ -283,18 +283,28 @@ states follow Radio off.
 
   There is no IMU wake (PT15).
 
-  The spike finds which of these exist on this board. The screen tells you before it hibernates:
-  "Sleeping to save battery. Press the side button to wake."
+  Found (P114, PT27): the side button wakes deep sleep (a press 76 s into a 900 s timer, arriving as
+  the same HP watchdog reset as a timer wake), and so does the timer; the RX8130 never switched a
+  powered-off board on. A reset-type boot before the armed timer is read as the button. The screen
+  tells you before it hibernates: "Sleeping to save battery. Press the side button to wake."
+- **Power probe (PT26).** Every 2 h a deep sleep with no check-in wakes, reads the INA226 once
+  (about 9 ms, before any rail, Wi-Fi or display) and boots normally on USB (charging, standby or no
+  pack); otherwise it sleeps again at once. Measured: 2.75 s from reset to sleep, of which about
+  30 ms is the probe; the rest is the bootloader's image check (1.5 s) and PSRAM XIP setup.
 - **After wake.** The device cold-boots straight to the dashboard. It shows "Waking: reconnecting
   to Mac" until the link is live, measured at 50–130 s today. The cards come back from the first
   poll; nothing stale is shown as live.
 - **Needs-you during Hibernate: a periodic check-in, on by default (PT16).** It runs every 15 min
   by default (PT18: user set 15 min, 2026-10-23) (setting: 15 min to 12 h, or Off). A check-in cold-boots, connects and polls, then:
-  - **Something needs you:** it lights the keyboard amber (the dark brightness, PT24). If Task 6 Step 4c shows the
-    keyboard rail survives deep sleep with the light held, it goes back to Hibernate with that rail
-    kept. Otherwise it stays in Deep idle (radio parked, light amber) until input, or until a later
-    poll shows nothing needs you, and then hibernates again.
+  - **Something needs you:** it lights the keyboard amber at the dark brightness (PT24, 5% by
+    default) and goes back to Hibernate with the light held through deep sleep: Task 6 Step 4c showed
+    the keyboard rail survives (P61), so this is the shipped path for every needs-you check-in (M8).
+    The stay-in-Deep-idle branch is kept for a board where it doesn't, reached only by a debug flag.
   - **Nothing needs you:** straight back to Hibernate.
+  - **USB found (PT28 I2):** the check-in boots fully, with the screen on and the normal ladder
+    (Hibernate is for battery only).
+  - **A failed check-in (no live link or poll, PT28 I3)** backs off 15 → 30 → 60 → 120 min (cap,
+    kept in the hib record), reset by the first success.
   - Cost: each check-in is a cold boot plus a Tailscale connect, about 2.5 W for ~90 s, roughly
     60 mWh. At 15 min that is 96 a day, about 5.8 Wh/day (estimate; Task 10 measures it), roughly 40%
     of a ~15 Wh pack per day. That leans against the max-battery priority, so the bench (Task 10)
@@ -403,8 +413,11 @@ the first thing to do after it.
 - **Drop the gold (0xFFD700) and orange (0xFF8000) light presets**, so the user's own colour can't
   pass for amber.
 - **Setting:** "Keyboard light shows needs-you", on by default.
-- **Measure** the light's extra draw at amber with the INA226. If it matters on battery in Off, cap
-  its brightness there and record the numbers.
+- **Measure** the light's extra draw at amber with the INA226 and record the numbers. With the
+  screen dark the light is already at the dark brightness (PT24: 2/5/15%, default 5%); the old Off
+  cap is gone.
+- **Byte order confirmed by eye (2026-10-23):** the user saw the default owner colour as blue with
+  the screen on, so the B, G, R order (P121) is right on the device.
 
 ### Reconnect
 
