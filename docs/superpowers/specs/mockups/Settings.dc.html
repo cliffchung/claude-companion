@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#e9e7e1}a:hover{color:#ffffff}
+</style>
+</helmet>
+<div style="width: 1280px; height: 720px; box-sizing: border-box; background: #0e1116; color: #e9e7e1; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; display: flex; flex-direction: column">
+<header style="height: 56px; box-sizing: border-box; padding: 0 24px; background: #161b22; border-bottom: 1px solid #2a323d; display: flex; align-items: center; gap: 20px; font-size: 22px">
+<a href="Main.dc.html" style="height: 44px; padding: 0 14px; border-radius: 8px; background: #1b212b; display: flex; align-items: center; text-decoration: none; font-size: 20px">← Sessions</a>
+<span style="font-weight: 700">Settings</span>
+<span style="flex-grow: 1"></span>
+<span style="font-size: 20px">78%</span>
+<span style="font-weight: 700">21:20</span>
+</header>
+<div style="flex-grow: 1; display: flex; min-height: 0">
+<nav aria-label="Settings sections" style="width: 320px; box-sizing: border-box; padding: 16px 8px 16px 24px; display: flex; flex-direction: column; gap: 8px; border-right: 1px solid #2a323d; font-size: 22px">
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; background: #1b212b; border: 1px solid rgba(233,231,225,0.5); display: flex; align-items: center; cursor: pointer">Host</button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; display: flex; align-items: center; cursor: pointer">Network</button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; display: flex; align-items: center; cursor: pointer">Power</button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; display: flex; align-items: center; cursor: pointer">Keyboard light</button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; display: flex; align-items: center; cursor: pointer">Display &amp; time</button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; display: flex; align-items: center; cursor: pointer">About</button>
+</nav>
+<main style="flex-grow: 1; box-sizing: border-box; padding: 24px 32px; display: flex; flex-direction: column; gap: 8px; font-size: 22px">
+<h1 style="margin: 0 0 8px; font-size: 32px">Host</h1>
+<div style="height: 64px; box-sizing: border-box; padding: 0 20px; border-radius: 12px; background: #161b22; display: flex; align-items: center"><span style="flex-grow: 1">Host</span><span style="color: #8a94a2">my-host.local (macOS)</span></div>
+<div style="height: 64px; box-sizing: border-box; padding: 0 20px; border-radius: 12px; background: #161b22; display: flex; align-items: center"><span style="flex-grow: 1">Link</span><span style="color: #54d08a">● connected over home Wi-Fi</span></div>
+<div style="height: 64px; box-sizing: border-box; padding: 0 20px; border-radius: 12px; background: #161b22; display: flex; align-items: center"><span style="flex-grow: 1">Fallback address</span><span style="color: #8a94a2">192.168.1.50</span></div>
+<div style="height: 64px; box-sizing: border-box; padding: 0 20px; border-radius: 12px; background: #161b22; display: flex; align-items: center"><span style="flex-grow: 1">Claude path on host</span><span style="color: #8a94a2">~/.local/bin/claude</span></div>
+<h2 style="margin: 20px 0 4px; font-size: 20px; color: #8a94a2; font-weight: 400">Host key</h2>
+<div style="height: 64px; box-sizing: border-box; padding: 0 20px; border-radius: 12px; background: #161b22; display: flex; align-items: center; gap: 16px"><span style="flex-grow: 1; color: #8a94a2; font-size: 19px">SHA256:[fingerprint]</span><button style="all: unset; height: 48px; padding: 0 18px; border-radius: 8px; border: 1px solid #ef6f6f; color: #ef6f6f; display: flex; align-items: center; cursor: pointer; font-size: 20px">Forget</button></div>
+<h2 style="margin: 20px 0 4px; font-size: 20px; color: #8a94a2; font-weight: 400">This device's key</h2>
+<div style="height: 64px; box-sizing: border-box; padding: 0 20px; border-radius: 12px; background: #161b22; display: flex; align-items: center"><span style="flex-grow: 1">Public key</span><span style="color: #8a94a2">ssh-ed25519 … claude-companion · Show</span></div>
+
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":720}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

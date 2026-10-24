@@ -632,7 +632,7 @@ Three groups. Each has a footnote under it. Units go in the values, never in the
 | 69 | Theme colours ×8 | Removed (gone) | — | tokens |
 | 70 | Terminal foreground, background and cursor | Removed (gone) | — | fixed values; the migration writes the token values into the slots |
 | 71 | Cursor shape | Removed (gone) | — | fixed: block |
-| 72 | Cursor blink | Removed (gone) | — | fixed: on |
+| 72 | Cursor blink | Removed (gone) | — | fixed: off (B1: no idle redraw) |
 | 73 | Line height | Removed (gone) | — | fixed: 32 |
 | 74 | ANSI palette ×16 | Removed (gone) | — | fixed: VS Code ANSI |
 | 75 | Reset to preset | Removed (gone) | — | no presets |
@@ -878,7 +878,7 @@ cell width). Whether the user wants a different face is in §15.
   - The pure part stays in `settings_migrate.c`, which has host tests.
 - **Steps for `old_version` < 23:**
   1. Write the token terminal values into `term_fg`, `term_bg`, `term_cursor` and `term_ansi[16]`;
-     set `term_cursor_style` to 0 (block), `term_cursor_blink` to 1 and `term_line_height` to 32.
+     set `term_cursor_style` to 0 (block), `term_cursor_blink` to 0 (B1) and `term_line_height` to 32.
      These slots stay in use with fixed values, and nothing edits them.
   2. Set `rotation` to 1.
   3. `creds_on_sd`:
@@ -1089,3 +1089,35 @@ cell width). Whether the user wants a different face is in §15.
 1. **Typeface.** The default keeps today's pixel font. A cleaner face, such as the mono face in the
    mockups, is a small follow-up. It is a matter of taste.
 2. **The real-finger and two-thumb checks** in the device visit (§12, step 8).
+
+## 16. Builder-check rulings (B1–B6)
+
+A fresh builder read this spec cold and raised the questions below. Each ruling below binds the plan. Each one gives a reason and the cost if it turns out wrong.
+
+- **B1: what the timer ceiling covers.** The §11 ceiling (no LVGL timer faster than 300 ms, only while Sessions is shown) applies to presentation timers: animation, refresh and polling of UI data.
+  - Exempt, and unchanged by this plan: the keyboard key drain (`keyboard.c`, 10 ms, which carries the wake-swallow logic) and the pty pump (`ui_terminal.c`, 16 ms). The pty pump may run only while an SSH session or a take-over is live, and it is deleted when that session closes.
+  - The header's vitals cluster updates from one shared 30 s timer, on every screen, only while the screen is on.
+  - With the screen off, no UI timer fires. LVGL is already paused there.
+  - The cursor does not blink. It is fixed off, and the CFG 23 migration sets `term_cursor_blink` to 0. A steady block cursor means no idle redraw.
+  - Why: rewriting Plan 2's input path to be event-driven risks the wake-swallow logic for almost no power gain.
+  - Cost if wrong: a later pass to make input event-driven.
+- **B2: RAM budget conditions.**
+  - Every gate is a measured minimum internal free (the `heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)` delta over the action), not a total.
+  - With Tailscale off: opening Settings › Network leaves a minimum of at least 65 KB, and a take-over leaves at least 40 KB.
+  - With Tailscale on, the targets from controller call 28 apply: a take-over minimum of at least 20 KB and no ERR_BUF. Opening Settings › Network leaves at least 20 KB.
+  - Screen changes are instant: `lv_screen_load` with the old screen deleted first, and no fade or slide. This replaces §5.13's 120 ms transition.
+  - Why: two screens alive at once was P54's failure, and instant changes also save power.
+  - Cost if wrong: transitions look less polished. A fade could come back later, with Tailscale off only.
+- **B3: interactive sessions** (empty `id`).
+  - Row key: `"i:" + name + ":" + started_ms`. Selection and drafts use this key.
+  - Detail pane: state, cwd and start time, plus the muted line "Interactive — answer it on the Host". No log fetch, no reply box and no take-over.
+  - Amber goes only to what `cc_session_needs_you()` reports, which keeps today's rule. A blocked interactive row shows the muted state text "waiting on Host", with no amber pill or edge.
+  - Why: the device can't act on these sessions, and the NEEDS YOU light already follows `cc_session_needs_you()`. A row and an LED that disagree would mislead.
+  - Cost if wrong: one rule change in the session model, plus its test.
+- **B4: mockups.** The five mockups are committed under `docs/superpowers/specs/mockups/`. They are visual references, opened with `support.js` absent: the layout is readable, but the canvas chrome is missing. The spec text wins wherever the two disagree.
+- **B5: sort order.** "Most recent activity" means `started_ms`, newest first, within each state group. The Host JSON gets no new field.
+  - Why: no parser or Host change, and fewer re-sorts.
+  - Cost if wrong: a field gets added later.
+- **B6: SD key-file entries.** Before connecting with a host entry whose key path is on the SD card, mount the card on demand. If the key file is then missing, fail with "Key file not found on SD card". Never fall back to the device key for that entry.
+  - Why: today `ssh_client.c:214` quietly signs in with a different key on ENOENT, and an unmounted card would make that the normal case.
+  - Cost if wrong: none for safety. A user with a broken key file sees an error instead of a sign-in with the wrong key.

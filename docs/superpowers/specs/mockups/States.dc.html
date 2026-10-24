@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>States and visual system</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#e9e7e1}a:hover{color:#ffffff}
+</style>
+</helmet>
+<div style="width: 1280px; height: 720px; box-sizing: border-box; background: #0e1116; color: #e9e7e1; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; padding: 32px 40px; display: flex; flex-direction: column; gap: 20px">
+<h1 style="margin: 0; font-size: 28px">States: one line under the header, only when not live</h1>
+<div style="display: flex; flex-direction: column; gap: 10px; font-size: 20px">
+<div style="height: 44px; box-sizing: border-box; padding: 0 20px; border-radius: 8px; background: #161b22; color: #8a94a2; display: flex; align-items: center">Loading sessions…</div>
+<div style="height: 44px; box-sizing: border-box; padding: 0 20px; border-radius: 8px; background: #161b22; color: #8a94a2; display: flex; align-items: center">Reconnecting to host… <span style="flex-grow: 1"></span>cards dimmed and inert</div>
+<div style="height: 44px; box-sizing: border-box; padding: 0 20px; border-radius: 8px; background: rgba(239,111,111,0.12); border: 1px solid #ef6f6f; color: #ef6f6f; display: flex; align-items: center; gap: 16px">Host not found at my-host.local<span style="flex-grow: 1"></span><span style="border: 1px solid #ef6f6f; border-radius: 6px; padding: 2px 12px">Host settings</span></div>
+<div style="height: 44px; box-sizing: border-box; padding: 0 20px; border-radius: 8px; background: rgba(239,111,111,0.12); border: 1px solid #ef6f6f; color: #ef6f6f; display: flex; align-items: center; gap: 16px">No Wi-Fi<span style="flex-grow: 1"></span><span style="border: 1px solid #ef6f6f; border-radius: 6px; padding: 2px 12px">Wi-Fi settings</span></div>
+</div>
+<h2 style="margin: 8px 0 0; font-size: 24px">Colour: amber means NEEDS YOU, nowhere else</h2>
+<div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; font-size: 17px">
+<div style="display: flex; flex-direction: column; gap: 6px"><span style="height: 56px; border-radius: 10px; background: #f4b545"></span>amber #f4b545<span style="color: #8a94a2">NEEDS YOU only</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><span style="height: 56px; border-radius: 10px; background: #54d08a"></span>green #54d08a<span style="color: #8a94a2">working, linked</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><span style="height: 56px; border-radius: 10px; background: #ef6f6f"></span>red #ef6f6f<span style="color: #8a94a2">errors, low battery, REC</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><span style="height: 56px; border-radius: 10px; background: #e9e7e1"></span>fg #e9e7e1<span style="color: #8a94a2">text, primary button, focus</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><span style="height: 56px; border-radius: 10px; background: #1b212b; border: 1px solid #2a323d"></span>panels #161b22 / #1b212b<span style="color: #8a94a2">rows, fields, bars</span></div>
+</div>
+<p style="margin: 4px 0 0; font-size: 18px; line-height: 28px; color: #8a94a2">Type 36 / 24 / 20, one mono family · 8 px grid · rows 64, session rows 72 · touch targets 64 visible, 80 hit · radius 12 rows, 8 chips</p>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":720}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

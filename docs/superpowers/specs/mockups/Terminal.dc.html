@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Terminal hosts</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#e9e7e1}a:hover{color:#ffffff}
+</style>
+</helmet>
+<div style="width: 1280px; height: 720px; box-sizing: border-box; background: #0e1116; color: #e9e7e1; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; display: flex; flex-direction: column">
+<header style="height: 56px; box-sizing: border-box; padding: 0 24px; background: #161b22; border-bottom: 1px solid #2a323d; display: flex; align-items: center; gap: 20px; font-size: 22px">
+<a href="Main.dc.html" style="height: 44px; padding: 0 14px; border-radius: 8px; background: #1b212b; display: flex; align-items: center; text-decoration: none; font-size: 20px">← Sessions</a>
+<span style="font-weight: 700">Terminal</span>
+<span style="flex-grow: 1"></span>
+<span style="display: flex; align-items: center; gap: 8px; color: #8a94a2; font-size: 20px"><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="5" fill="#8a94a2"></circle></svg>Tailscale off</span>
+<span style="font-weight: 700">21:20</span>
+</header>
+<div style="box-sizing: border-box; height: 48px; padding: 0 24px; background: #161b22; border-bottom: 1px solid #2a323d; display: flex; align-items: center; gap: 16px; font-size: 19px; color: #8a94a2">
+<span style="flex-grow: 1">Tailscale is off. These hosts are reachable only over your tailnet.</span>
+<button style="all: unset; height: 36px; padding: 0 14px; border-radius: 8px; background: #e9e7e1; color: #0e1116; font-weight: 700; display: flex; align-items: center; cursor: pointer">Turn on</button>
+</div>
+<main style="flex-grow: 1; box-sizing: border-box; padding: 16px 24px; display: flex; flex-direction: column; gap: 8px">
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; background: #1b212b; border: 1px solid rgba(233,231,225,0.5); display: flex; align-items: center; gap: 16px; cursor: pointer"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="6" fill="#2a323d"></circle></svg><span style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px"><span style="font-size: 22px; font-weight: 700">[host name]</span><span style="font-size: 18px; color: #8a94a2">[user]@[host].ts.net</span></span><span style="font-size: 18px; color: #8a94a2">↵ Connect</span></button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; background: #161b22; border: 1px solid #2a323d; display: flex; align-items: center; gap: 16px; cursor: pointer"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="6" fill="#2a323d"></circle></svg><span style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px"><span style="font-size: 22px; font-weight: 700">[host name]</span><span style="font-size: 18px; color: #8a94a2">[user]@100.x.y.z</span></span></button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 20px; border-radius: 12px; border: 1px dashed #2a323d; display: flex; align-items: center; gap: 16px; cursor: pointer; color: #8a94a2; font-size: 22px">+ Add host</button>
+<p style="margin: 16px 0 0; font-size: 18px; color: #8a94a2; line-height: 28px">Your Claude host isn't listed here: its sessions live on the Sessions screen. Ctrl+] leaves an SSH session.</p>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":720}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
