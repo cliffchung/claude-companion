@@ -103,7 +103,11 @@ int cc_sessions_parse(const char *json, cc_session_t *out, int cap)
         const char *state = jstr(e, "state"), *status = jstr(e, "status");
         const char *wfor = jstr(e, "waitingFor");
         bool asking = (status && !strcmp(status, "waiting")) || (wfor && wfor[0]);
-        s->state = asking ? CC_NEEDS_YOU : map_state(state ? state : status);
+        if (asking) s->state = CC_NEEDS_YOU;
+        else if (status && !strcmp(status, "busy")) s->state = CC_WORKING;
+        /* status idle is the live process's word: a stale state "working" doesn't make it WORKING */
+        else if (status && !strcmp(status, "idle")) s->state = (state && !strcmp(state, "done")) ? CC_DONE : CC_IDLE;
+        else s->state = map_state(state ? state : status);
         s->background = bg;
         const cJSON *st = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "startedAt");
         s->started_ms = cJSON_IsNumber(st) ? (int64_t)st->valuedouble : 0;

@@ -142,8 +142,8 @@ static void test_parse_waiting_is_the_only_needs_you(void)
     cc_session_t s[8];
     int n = cc_sessions_parse(j, s, 8);
     free(j);
-    TEST_ASSERT_EQUAL(5, n);
-    const cc_session_t *by[6] = { 0 };
+    TEST_ASSERT_EQUAL(6, n);
+    const cc_session_t *by[7] = { 0 };
     for (int i = 0; i < n; i++) by[s[i].id[7] - '0'] = &s[i];
     TEST_ASSERT_EQUAL(CC_NEEDS_YOU, by[1]->state);   /* status waiting, waitingFor "input needed" */
     TEST_ASSERT_TRUE(cc_session_needs_you(by[1]));
@@ -152,6 +152,7 @@ static void test_parse_waiting_is_the_only_needs_you(void)
     TEST_ASSERT_EQUAL(CC_DONE, by[3]->state);
     TEST_ASSERT_EQUAL(CC_IDLE, by[4]->state);        /* blocked, no pid, no status: stopped mid-wait */
     TEST_ASSERT_EQUAL(CC_WORKING, by[5]->state);
+    TEST_ASSERT_EQUAL(CC_IDLE, by[6]->state);        /* state working, status idle: the process is idle */
     char out[64];
     cc_summary(s, n, out, sizeof(out));
     TEST_ASSERT_EQUAL_STRING("1 needs you \xC2\xB7 1 working", out);

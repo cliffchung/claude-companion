@@ -17,8 +17,9 @@ typedef struct {
 } cc_session_t;
 
 /* Returns the count (<= cap), or -1 if the input isn't a JSON array.
-   status "waiting" or a non-empty "waitingFor" (a question on screen) -> NEEDS_YOU, whatever "state" says. Otherwise state comes
-   from "state" if present, else "status", else idle:
+   status "waiting" or a non-empty "waitingFor" (a question on screen) -> NEEDS_YOU, whatever "state" says.
+   Then the live process's status wins over a stale state: busy -> WORKING; idle -> DONE if state is "done",
+   else IDLE. Otherwise (no status: no live process) state comes from "state" if present, else idle:
      waiting -> NEEDS_YOU;  blocked (the turn ended, waiting for your next message) -> IDLE;
      working / busy -> WORKING;  idle -> IDLE;
      done -> DONE;  failed / stopped -> ENDED;  anything else -> IDLE.
