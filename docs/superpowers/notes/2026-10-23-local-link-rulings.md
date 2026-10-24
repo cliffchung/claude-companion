@@ -217,3 +217,28 @@ Numbers are medians over 5 check-in boots on USB (`power checkin hibernate keep 
   - **M6:** `s_ok_host` is set only after the key check and the auth. A take-over is handed only that address, and is refused with a toast when there is none.
   - **M7:** the new strings say "Host": the fallback row, the link line and note, `CC_LINK_TS_OFF_TEXT`, the console's `server-host` lines and check-in logs.
   - Cost if wrong: a take-over refused during the first moments of a reconnect (M6).
+
+## Controller rulings L43–L44 and deferred items (copied from the SDD ledger at merge)
+
+- **L43:** the check-in battery settle goes back to Plan 2's 10 samples (P110). L42 is dropped.
+  - Why: with 3 samples, a device on USB can read as running on battery (`test_usb_with_pack_supplementing`), and PT28 I2 would then send it back to hibernate.
+  - Cost if wrong: a fraction of a second per check-in on battery.
+- **L44:** the Host address cache lives in NVS only, with no copy in the hibernate record.
+  - Why: an NVS read takes milliseconds, and one copy is simpler.
+  - Cost if wrong: a few ms per check-in.
+- Two Plan 2 rulings stay binding: Hibernate is always a deep sleep with a timer (PT26), and CFG 22 is reserved for the Plan 2 Task 10 battery visit.
+
+### Deferred minors
+- **Task 2:** M4 (old "Mac" strings) moves to the UI overhaul. M6 and M7 are deferred.
+- **Task 3 re-review, N1:** the 10-sample test drives vitals and not the `checkin.c` path. The seed function is deleted, so a revert would have to re-add it, which keeps the risk low.
+- **Task 3:**
+  - m4 is partly done: the static IP is not tied to an SSID and not in the backup. The help text documents this.
+  - m9: the debug timing commands stay. A check-in boot warns when they are set.
+- **Final re-review:**
+  - N1: the LVGL task can stall for up to about 3.2 s when a close hangs. There is no watchdog risk.
+  - N3: a µs race between the server-host change and the carry store. It fails safe.
+  - N4: `cc_link_close_now`, `cc_link_reopen` and `cc_park_abort_work` have no production callers.
+  - N5: a terminal opened between the guard and the link going down stays open. No UI path does that.
+- **L49:** a connect still blocked in `ssh_connect` after the 2 s guard can leave a socket open that hasn't authenticated.
+- **Plan 4 wording pass:** "SSH connection failed. the network is going down".
+- **Known issue, L28:** with Tailscale on, a take-over drops internal free memory to 8.1 KB. The UI overhaul's removals target this.
