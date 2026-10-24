@@ -514,6 +514,8 @@ static void keyboard_test_cb(lv_event_t *e) {
 }
 static void keyboard_confirmed(bool yes, void *ud) { keyboard_answer=yes ? 1 : -1; }
 static int keyboard_pick=-2;
+static char *s_prompt_got; static int s_prompt_calls;
+static void keyboard_prompted(const char *t, void *ud) { (void)ud; s_prompt_calls++; free(s_prompt_got); s_prompt_got = t ? strdup(t) : NULL; }
 static void keyboard_picked(int index, void *ud) { (void)ud; keyboard_pick=index; }
 static bool press_key(special_key_t key, uint8_t mods, bool terminal) {
     key_event_t ev={.type=KEY_EV_SPECIAL,.key=key,.mods=mods};
@@ -592,6 +594,16 @@ static void keyboard_check(void) {
     /* T10-8 stays: a confirm's first control is Cancel, so Enter alone cancels */
     keyboard_answer=0; ui_confirm_ex("test",NULL,"Go",false,keyboard_confirmed,NULL);
     press_key(SK_ENTER,0,false); assert(keyboard_answer==-1);
+    /* polish 1: Enter in a prompt's one-line field presses OK. The router leaves a textarea's keys to the keyboard
+       sink (input/keyboard.c, not built here), whose Enter sends a one-line field READY: that step is done by hand */
+    s_prompt_got = NULL; s_prompt_calls = 0;
+    ui_prompt("prompt","","~/bin/claude",false,keyboard_prompted,NULL);
+    press_key(SK_TAB,0,false);
+    lv_obj_t *pta=keyboard_lvgl_focused();
+    assert(pta && lv_textarea_get_one_line(pta));
+    assert(!press_key(SK_ENTER,0,false));                      /* the router passes Enter on */
+    lv_obj_send_event(pta,LV_EVENT_READY,NULL);                /* the sink's one-line Enter */
+    assert(s_prompt_calls==1 && s_prompt_got && !strcmp(s_prompt_got,"~/bin/claude") && !ui_keyboard_owns_input());
     puts("Keyboard navigation, slider persistence, modal isolation, mixed input, switches, deletion, sheet focus and SSH routing checks passed.");
 }
 

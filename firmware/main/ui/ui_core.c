@@ -449,6 +449,9 @@ void ui_prompt(const char *title, const char *placeholder, const char *initial, 
     lv_obj_add_event_cb(ov, prompt_cancel_cb, LV_EVENT_CANCEL, c);
     ui_btn(row, UI_BTN_PRIMARY, tr(STR_OK), prompt_ok_cb, c);
     softkbd_attach_textarea(ta, ov);
+    /* Enter in the one-line field presses OK: the keyboard sink (and the soft keyboard's Enter) sends it READY.
+       Added after the soft keyboard's handler, which hides that keyboard first. */
+    lv_obj_add_event_cb(ta, prompt_ok_cb, LV_EVENT_READY, c);
     lv_obj_add_state(ta, LV_STATE_FOCUSED);
 }
 
