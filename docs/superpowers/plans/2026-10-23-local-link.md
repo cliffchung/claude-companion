@@ -114,3 +114,73 @@
   - A `companion-test-*` session blocking during a check-in still lights amber.
   - Five reboots with no new brownout or panic.
 - [ ] **Step 6: Write the notes, then commit.**
+
+### Task 3: Fast check-in (Wi-Fi join, address, host lookup)
+
+The user, 2026-10-23: "consider maybe using a static IP address or something if that speeds up wifi connection or see if there is _anything_ else we can do like caching or something that might help save power. I worry about power the most here."
+
+Every second awake on a check-in costs about 0.7 mWh. At 96 check-ins a day, cutting 5 s saves about 0.3 Wh a day (about 2% of the pack).
+
+**Files:** `firmware/main/net/wifi_mgr.c`, `wifi_mgr.h`, `firmware/main/companion/cc_link.c`, `firmware/main/sys/checkin.c`, `firmware/main/sys/hibernate.c` (the hib record), `firmware/main/settings/settings.*`, `firmware/main/ui/ui_settings.c` (Network › Wi-Fi › Advanced), `firmware/sdkconfig.defaults`, and host tests for any pure rule.
+
+- [ ] **Step 1: Time each phase first.** On a check-in boot, log ms from reset for each of:
+  - bootloader done
+  - app start
+  - esp_hosted/C6 ready
+  - Wi-Fi start
+  - scan done
+  - associated
+  - got IP
+  - host resolved
+  - TCP connected
+  - SSH kex done
+  - auth done
+  - poll done
+  - sleep
+
+  Run 5 check-in boots on USB and record the median per phase. Every later step is judged against this table.
+- [ ] **Step 2: Fast join.**
+  - After every successful join, save the AP's BSSID, channel and auth mode. Put them in the hib record (RTC or NVS) and in NVS.
+  - On a check-in or wake boot, connect with `bssid_set` and `channel` set, `scan_method = WIFI_FAST_SCAN` and the cached auth mode as the threshold.
+  - If that join fails within 3 s, fall back to today's full scan. Clear the cache after 2 consecutive failures.
+  - Normal boots also use the cache.
+  - Host test: the cache-use decision.
+- [ ] **Step 3: Fast address.**
+  - Turn on `CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y`, so DHCP reuses the last lease (INIT-REBOOT) instead of a full discover.
+  - Add an optional static IP setting, off by default, under Network › Wi-Fi › Advanced: address, mask, gateway and DNS. When it's set, skip DHCP entirely.
+  - Measure both against plain DHCP. If the static IP saves less than 300 ms over the restored lease, say so in the notes and keep the setting off by default.
+- [ ] **Step 4: Fast host lookup.**
+  - Cache the host's last resolved address, with its source name, in NVS and the hib record.
+  - Connect to the cached address first. Use mDNS only when that connect fails or the host key doesn't match the pin.
+  - A changed key still refuses, as before. The address cache only skips the lookup and never weakens the pin check.
+- [ ] **Step 5: Other quick wins.** Measure each one; keep it only if it helps and is safe. Record every outcome as a ruling.
+  - **WPA2 vs WPA3:** if the router offers WPA3 transition mode, does SAE add time? If so, add a cached "prefer WPA2-PSK" option. Never weaken an AP that is WPA3-only.
+  - **Wi-Fi power while connected:** `WIFI_PS_MAX_MODEM` plus `listen_interval`.
+  - **CPU clock:** run the boot and the SSH key exchange at 360 MHz, so the work finishes sooner.
+  - **Skip non-essential init on a check-in boot:** the display, the LVGL screen build, fonts and keyboard layout loading, keeping only what the poll and the light need.
+  - **Bootloader validation:** `CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` (only after deep sleep, not on a cold boot or OTA). It saved about 1.3 s in Plan 2's P125. That ruling's objection was about skipping validation on every boot, which doesn't apply to the deep-sleep-only option.
+- [ ] **Step 6: Measure again.** Re-run the Step 1 table with everything kept, record the before and after per phase, and estimate the new check-in mWh and the Wh per day.
+- [ ] **Step 7: Commit**, with the notes and the rulings.
+
+### Task 4: Spike — instant needs-you without polling (C6 stays associated, wakes the P4)
+
+This is a throwaway spike. It decides whether a later plan replaces the 15-minute polling.
+
+**The idea:**
+- In Hibernate, keep the C6 powered and associated in its own Wi-Fi power save (DTIM sleep). Today WIFI_EN is cut, so every check-in cold-boots the C6.
+- The P4 deep-sleeps.
+- When the host has something new, a packet for the Tab5 arrives (for example a UDP or TCP knock to a port), and the C6 wakes the P4 over a GPIO.
+
+That would give instant amber with no periodic boots, if the C6's average standby draw is below today's check-in average. That average is about 8 mWh per 15 min, about 32 mW, and Task 3 should lower it.
+
+**Steps:**
+- [ ] **Step 1: On paper.** Answer these from the esp_hosted 3.0.10 Kconfig and docs, and from the Tab5 schematic and spike notes:
+  - Does esp_hosted support host power save with a wakeup GPIO?
+  - Which C6 GPIO goes to which P4 pin?
+  - Is that P4 pin an LP GPIO that can wake deep sleep through ext1?
+  - What is the C6's documented associated-sleep current at DTIM 1, 3 and 10?
+- [ ] **Step 2: Decide.** If the wake line isn't an LP GPIO, or host power save needs something this board lacks, record "not feasible" and stop.
+- [ ] **Step 3: Only if Step 2 passes, prototype it in a scratch build.** Keep WIFI_EN on in Hibernate. Arm ext1 on the wake line. Send a test knock from the Mac with `nc -u <tab5-ip> <port>` and show the P4 wakes.
+  - Measure on USB: standby with the C6 associated vs cut.
+  - Real battery numbers come at the Task 10 visit.
+- [ ] **Step 4: Write it up** in `docs/superpowers/notes/2026-10-23-push-wake-spike.md`: feasible yes/no, the numbers, and a recommendation. The push model would need a host-side sender, which means running something on the host, so it would need its own design pass. Nothing ships from this task.
