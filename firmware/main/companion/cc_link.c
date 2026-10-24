@@ -564,6 +564,9 @@ static bool connect_once(const char *name)
         /* the fingerprint, to compare with ssh-keygen -lf on the Mac before forgetting (M3) */
         snprintf(why, sizeof(why), "new host key %s for %s; Forget host key to trust it", fp, host);
         set_fail(CC_LINK_FAIL_HOSTKEY, why);
+        lock();
+        s_pin_host[0] = 0;   /* M1 */
+        unlock();
         ssh_disconnect(s);
         ssh_free(s);
         return false;
@@ -577,6 +580,9 @@ static bool connect_once(const char *name)
         set_fail(CC_LINK_FAIL_HOSTKEY, why);
     } else if (kh != KH_OK) set_fail(CC_LINK_FAIL_NONE, NULL);   /* server key unreadable: retried as unreachable */
     if (kh != KH_OK) {
+        lock();
+        s_pin_host[0] = 0;   /* M1: never hand a refused address to a take-over */
+        unlock();
         ESP_LOGE(TAG, "host key %s for %s:%d (%s); not connecting",
                  kh == KH_CHANGED ? "CHANGED" : kh == KH_PIN_ERROR ? "pin unreadable" : "unreadable", host, port, fp);
         ssh_disconnect(s);
@@ -1809,6 +1815,7 @@ esp_err_t cc_link_set_server_host(const char *host, const char *fallback)
     lock();
     if (fb) strlcpy(g_settings.mac_lan_ip, fb, sizeof(g_settings.mac_lan_ip));
     s_lan_last[0] = 0;
+    s_pin_host[0] = 0;   /* M2: the old host's address is no take-over target, even before the reconfig */
     unlock();
     settings_save();
     ESP_LOGI(TAG, "Host entry host -> %s, fallback %s, carry source %s", host,

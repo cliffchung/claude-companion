@@ -52,7 +52,9 @@ static char s_takeover_id[16];
 static void takeover_async(void *arg)
 {
     (void)arg;
-    if (!ui_dashboard_open_test_session(s_takeover_id)) printf("takeover: no companion-test-* card %s on the dashboard\n", s_takeover_id);
+    int r = ui_dashboard_open_test_session(s_takeover_id);
+    if (r == UI_DASH_TEST_NOT_SHOWING) printf("takeover: dashboard not showing\n");
+    else if (r != UI_DASH_TEST_OK) printf("takeover: no companion-test-* card %s on the dashboard\n", s_takeover_id);
 }
 
 static int cmd_companion(int argc, char **argv)

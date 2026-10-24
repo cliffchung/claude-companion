@@ -656,8 +656,9 @@ void checkin_hibernate_test(int force_kbd)
     uint8_t dbg = HIB_DBG_STAY_AWAKE | (force_kbd == 1 ? HIB_DBG_FORCE_KEEP : force_kbd == 2 ? HIB_DBG_FORCE_NOKEEP : 0) |
                   (as_bat ? HIB_DBG_AS_BATTERY : 0);
     hibernate_set_debug_next(dbg);
-    printf("checkin: hibernating with a %d s wake (debug: a re-hibernate result stays awake%s)\n", HIB_TEST_WAKE_S,
-           force_kbd == 1 ? ", keyboard rail forced kept" : force_kbd == 2 ? ", keyboard rail forced not kept" : "");
+    printf("checkin: hibernating with a %d s wake (debug: a re-hibernate result stays awake%s%s)\n", HIB_TEST_WAKE_S,
+           force_kbd == 1 ? ", keyboard rail forced kept" : force_kbd == 2 ? ", keyboard rail forced not kept" : "",
+           as_bat ? ", as battery: the USB wake gate is bypassed" : "");
     fflush(stdout);
     vTaskDelay(pdMS_TO_TICKS(100));
     hibernate_now(HIB_TEST_WAKE_S, POWER_BOOT_HIB_CHECKIN);

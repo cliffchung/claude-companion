@@ -34,7 +34,7 @@
 
 Notes on reading the table:
 
-- **USB energy.** The check-in mWh on USB is the USB-standby draw, a full pack with almost no charge current (P118). Only the ratio is meaningful here. On battery, Plan 2 measured about 1 mWh per awake second, so a LAN check-in should come to about 8–9 mWh instead of about 45.
+- **USB energy.** The check-in mWh on USB is the USB-standby draw, a full pack with almost no charge current (P118). Indicative only; the battery projection uses awake time. On battery, Plan 2 measured about 1 mWh per awake second, so a LAN check-in should come to about 8–9 mWh instead of about 45.
 - **Projected daily cost.** At the default 15-minute Hibernate check-in, that is about 96 × 8.5 ≈ 0.8 Wh a day instead of about 4.3 Wh (simulated from the awake time; not measured on battery).
 - **Reconnect is the same both ways.** A short drop is bound by the Wi-Fi join, and the tunnel's peer stayed up, so Tailscale didn't add its 95 s rebind (P117 and Plan 2's rebind). What the LAN removes is that rebind after long drops and parks. A long drop wasn't re-measured.
 - **The before take-over failed once.** A second take-over over the tailnet, with the link's own SSH session also up, drove the internal minimum to 8116 B. The link dropped, and WireGuard sends failed with `err=-2` (lwIP `ERR_BUF`). See L28.

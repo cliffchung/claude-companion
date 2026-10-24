@@ -789,18 +789,21 @@ static void keys_ov_clicked(lv_event_t *e)
     ui_dashboard_keys_overlay(false);
 }
 
-bool ui_dashboard_open_test_session(const char *id)
+int ui_dashboard_open_test_session(const char *id)
 {
+    /* the same gate as HK_D_OPEN plus the screen: with the dashboard gone, nothing collects the
+       open check's result (Task 2 review I1) */
+    if (!s_scr || s_scr != lv_screen_active() || !s_shown_live || !cc_link_connected()) return UI_DASH_TEST_NOT_SHOWING;
     for (int i = 0; i < s_n; i++) {
         const cc_session_t *s = &s_items[i];
         if (strcmp(s->id, id) != 0) continue;
-        if (strncmp(s->name, "companion-test-", 15) != 0) return false;   /* only the agent's own test sessions */
+        if (strncmp(s->name, "companion-test-", 15) != 0) return UI_DASH_TEST_NO_CARD;   /* only the agent's own test sessions */
         select_index(i);
         ESP_LOGI(TAG, "debug: take-over of %s requested", id);
         open_selected();
-        return true;
+        return UI_DASH_TEST_OK;
     }
-    return false;
+    return UI_DASH_TEST_NO_CARD;
 }
 
 bool ui_dashboard_keys_overlay_shown(void)
