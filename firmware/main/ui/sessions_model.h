@@ -1,0 +1,49 @@
+#pragma once
+/* Sessions screen logic, pure (companion/cc_sessions.h only): row keys, selection and drafts that
+ * follow a session across polls, the banner order, the low-battery rule and the log wrap.
+ * Host-tested in firmware/test/host/test_sessions_model.c. */
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "companion/cc_sessions.h"
+
+#define SM_KEY_MAX 128
+#define SM_DRAFTS 16
+#define SM_ANSWER_MAX 480
+#define SM_UNREACHABLE_MS 30000
+
+/* The row key: a background session's id; otherwise "i:" + name + ":" + started_ms (B3). */
+void sm_key(const cc_session_t *s, char *out, size_t cap);
+/* Index whose key equals sel_key; else prev_index clamped to [0, n-1]; -1 when n == 0. */
+int sm_select(const cc_session_t *items, int n, const char *sel_key, int prev_index);
+/* Next index after sel (wrapping) that needs you; none -> (sel + 1) % n; -1 when n == 0. */
+int sm_next_needs_you(const cc_session_t *items, int n, int sel);
+
+typedef struct { char key[SM_KEY_MAX]; char text[SM_ANSWER_MAX + 1]; uint32_t used; } sm_draft_t;
+typedef struct { sm_draft_t d[SM_DRAFTS]; uint32_t clock; } sm_drafts_t;   /* the caller allocates it in PSRAM */
+const char *sm_draft_get(const sm_drafts_t *ds, const char *key);          /* "" when none */
+void sm_draft_set(sm_drafts_t *ds, const char *key, const char *text);     /* "" clears; full -> evict the least recently set */
+void sm_drafts_prune(sm_drafts_t *ds, const cc_session_t *items, int n);   /* drop drafts whose key matches no item */
+
+const char *sm_pill_text(const cc_session_t *s);
+
+typedef enum { SM_B_NO_WIFI, SM_B_NO_HOST, SM_B_UNREACHABLE, SM_B_LOW_BATTERY, SM_B_RECONNECTING,
+               SM_B_LOADING, SM_B_STALE, SM_B_EMPTY, SM_B_LIVE } sm_banner_t;
+typedef struct {
+    bool host_set, wifi_up, wifi_connecting, link_up, link_failed, poll_failing, reconnecting, waking,
+         stale, have_list, low_battery_shown;
+    int64_t down_ms;
+    int n;
+} sm_in_t;
+sm_banner_t sm_banner(const sm_in_t *in);
+
+typedef struct { bool armed, shown, dismissed; } sm_lowbat_t;   /* zero-initialised is the start state */
+/* True while the low-battery banner shows: once per discharge at or below 15 % while not charging,
+   until a dismiss tap. Charging or above 15 % re-arms. pct < 0 never shows. */
+bool sm_lowbat_step(sm_lowbat_t *st, int pct, bool charging, bool dismiss);
+
+/* Wrap `in` to `cols` UTF-8 characters per row (continuations indented 2 cells), keep the newest
+   `rows` rows, joined by '\n' into out. Returns the row count. */
+int sm_wrap_tail(const char *in, int cols, int rows, char *out, size_t cap);
+/* The highest number of a trailing numbered list of at least 2 items (^\s*(❯\s*)?\d+\.), else 0. */
+int sm_tail_options(const char *tail);

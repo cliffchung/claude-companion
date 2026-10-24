@@ -842,20 +842,13 @@ void ui_dashboard_keys_overlay(bool show)
 
     lv_obj_t *t = text(p, "Keyboard shortcuts", FONT_BODY, UI_TK_FG);
     lv_obj_set_style_pad_bottom(t, 8, 0);
-    for (int i = 0; hk_overlay_lines[i]; i++) {
-        /* "<keys>  <what it does>": the keys in muted, the rest in fg */
-        const char *line = hk_overlay_lines[i];
-        const char *gap = strstr(line, "  ");
-        char keys[64];
-        size_t kn = gap ? (size_t)(gap - line) : 0;
-        if (kn >= sizeof(keys)) kn = sizeof(keys) - 1;
-        memcpy(keys, line, kn);
-        keys[kn] = 0;
+    for (int i = 0; hk_overlay[i].keys; i++) {
+        /* the keys in muted, what they do in fg */
         lv_obj_t *r = row(p, 16);
-        lv_obj_t *k = text(r, keys, FONT_SMALL, UI_TK_MUTED);
+        lv_obj_t *k = text(r, hk_overlay[i].keys, FONT_SMALL, UI_TK_MUTED);
         lv_obj_set_width(k, LV_PCT(46));
         lv_label_set_long_mode(k, LV_LABEL_LONG_WRAP);
-        lv_obj_t *dsc = text(r, gap ? gap + 2 : line, FONT_SMALL, UI_TK_FG);
+        lv_obj_t *dsc = text(r, hk_overlay[i].what, FONT_SMALL, UI_TK_FG);
         lv_obj_set_flex_grow(dsc, 1);
         lv_label_set_long_mode(dsc, LV_LABEL_LONG_WRAP);
     }
@@ -875,6 +868,7 @@ static bool dash_key(const key_event_t *ev, void *user)
     case HK_D_SETTINGS: ui_nav_push(ui_settings_create, NULL); return true;
     case HK_D_TERMINAL: ui_nav_push(ui_hosts_create, NULL); return true;
     case HK_D_KEYS:     ui_dashboard_keys_overlay(true); return true;
+    case HK_D_VOICE:    ui_toast_ms(HK_VOICE_TOAST, 3000); return true;
     case HK_D_LOCAL:    return true;
     case HK_D_NONE:     break;
     }
@@ -1214,7 +1208,7 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_set_flex_flow(f, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(f, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(f, 12, 0);
-    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 " HK_DASH_HINT, FONT_SMALL, UI_TK_MUTED);
+    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 " "Ctrl+O open \xc2\xb7 Ctrl+P settings \xc2\xb7 Ctrl+M terminal \xc2\xb7 Ctrl+K keys", FONT_SMALL, UI_TK_MUTED);
     lv_obj_set_flex_grow(keys, 1);
     lv_label_set_long_mode(keys, LV_LABEL_LONG_DOT);
     lv_obj_set_height(keys, lv_font_get_line_height(FONT_SMALL));

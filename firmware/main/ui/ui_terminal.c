@@ -173,11 +173,12 @@ static bool term_key(const key_event_t *ev, void *user)
     if (c->ctrl_on) e.mods |= MOD_CTRL;
     if (c->alt_on) e.mods |= MOD_ALT;
     hk_term_t hk = hk_takeover(&e, c->cmd_mode);
-    if (hk == HK_T_LEAVE) {
+    if (hk == HK_T_LEAVE && c->cmd_mode) {   /* an SSH session leaves only after Task 10's confirm */
         c->ctrl_on = c->alt_on = false;
-        cmd_close(c, "Session still running on your Mac");
+        cmd_close(c, "Session still running on the Host");
         return true;   /* never sent */
     }
+    if (hk == HK_T_LEAVE) hk = HK_T_NONE;
     if (hk == HK_T_SCROLL_UP || hk == HK_T_SCROLL_DOWN) {
         vt_scroll_view(c->vt, hk == HK_T_SCROLL_UP ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
         lv_obj_invalidate(term_view_obj(c->tv));
@@ -393,7 +394,7 @@ static void pump_cb(lv_timer_t *t)
     if (sd && c->cmd_mode) {
         if (st == SSH_ST_CONNECTED) {
             ssh_active(c, true);
-            ui_toast_ms(HK_TAKEOVER_TOAST, HK_TAKEOVER_TOAST_MS);
+            ui_toast_ms("Ctrl+] to leave", 3000);
             ESP_LOGI(TAG, "command session: connected %lld ms after open",
                      (long long)((esp_timer_get_time() - c->t_open_us) / 1000));
         } else if (st == SSH_ST_CLOSED || st == SSH_ST_ERROR) {
