@@ -34,6 +34,8 @@ runv "PREVIEW_CLICK=Diagnostics" settings 5
 runv "PREVIEW_CLICK=Reboot" settings 5
 runv "PREVIEW_CLICK=Colour" settings 3
 runv "PREVIEW_SCROLL=400" settings 2
+runv "PREVIEW_HOST=0" settings 0
+runv "PREVIEW_FAIL=notfound" settings 0
 run keyboard-settings
 for v in live selected-needs-you working loading stale reconnecting no-wifi not-found no-host empty \
          interactive sent low-battery 16 long resort tap-resort resort-scroll keys idle forget; do run sessions "$v"; done

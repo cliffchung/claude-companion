@@ -22,7 +22,7 @@ bool cc_link_connected(void);
    "connected <host>" | "connected <host>; session list over 256 KB, not updating" |
    "connected <host>; session list not updating (N polls failed)" |
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
-   "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
+   "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Host set up", where <failure>
    is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting",
    "new host key SHA256:... for <ip>; Forget host key to trust it" (a LAN address with no key to carry over),
    "Host not found at <host> (set its address in Settings → Network)" (the name doesn't resolve, no fallback),

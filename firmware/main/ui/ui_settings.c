@@ -26,6 +26,7 @@
 #include "esp_chip_info.h"
 #include "esp_idf_version.h"
 #include "esp_app_desc.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -161,7 +162,7 @@ static void link_row(lv_obj_t *p)
     bool up = cc_link_connected();
     bool tailnet = cc_link_mac_path(path, sizeof(path)) && !strncmp(path, "tailnet", 7);
     if (up) snprintf(b, sizeof(b), "\xe2\x97\x8f %s", tr(tailnet ? STR_SET_LINK_UP_TS : STR_SET_LINK_UP_LAN));
-    else cc_link_status_text(b, sizeof(b));
+    else ui_sessions_link_down_text(b, sizeof(b));
     lv_obj_t *l1 = ui_text(col, b, up ? UI_TONE_GREEN : UI_TONE_RED, true);
     lv_obj_t *l2 = ui_text(col, "", UI_TONE_MUTED, true);
     snprintf(b, sizeof(b), "%s \xc2\xb7 %s", path, cc_watch_status_text(w, sizeof(w)));
@@ -547,21 +548,34 @@ static void fill_display(lv_obj_t *p)
 static const char *reset_name(esp_reset_reason_t r)
 {
     switch (r) {
-    case ESP_RST_POWERON: return "power-on";
-    case ESP_RST_EXT: return "external pin";
-    case ESP_RST_SW: return "software";
-    case ESP_RST_PANIC: return "panic";
-    case ESP_RST_INT_WDT: return "interrupt watchdog";
-    case ESP_RST_TASK_WDT: return "task watchdog";
-    case ESP_RST_WDT: return "watchdog";
-    case ESP_RST_DEEPSLEEP: return "deep sleep";
-    case ESP_RST_BROWNOUT: return "brownout";
-    case ESP_RST_USB: return "USB";
-    default: return "other";
+    case ESP_RST_POWERON: return tr(STR_RST_POWERON);
+    case ESP_RST_EXT: return tr(STR_RST_EXT);
+    case ESP_RST_SW: return tr(STR_RST_SW);
+    case ESP_RST_PANIC: return tr(STR_RST_PANIC);
+    case ESP_RST_INT_WDT: return tr(STR_RST_INT_WDT);
+    case ESP_RST_TASK_WDT: return tr(STR_RST_TASK_WDT);
+    case ESP_RST_WDT: return tr(STR_RST_WDT);
+    case ESP_RST_DEEPSLEEP: return tr(STR_RST_DEEPSLEEP);
+    case ESP_RST_BROWNOUT: return tr(STR_RST_BROWNOUT);
+    case ESP_RST_USB: return tr(STR_RST_USB);
+    default: return tr(STR_RST_OTHER);
     }
 }
 
 static int s_diag_channel;   /* read once when Diagnostics opens (an SDIO RPC), not every 2 s */
+
+/* Appends one formatted line (the formats are STR_DIAG_*); false once the buffer is full. */
+static bool diag_line(char *b, size_t cap, size_t *n, const char *fmt, ...)
+{
+    if (*n >= cap) return false;
+    va_list ap;
+    va_start(ap, fmt);
+    int k = vsnprintf(b + *n, cap - *n, fmt, ap);
+    va_end(ap);
+    if (k < 0) return false;
+    *n += (size_t)k;
+    return *n < cap;
+}
 
 static void diag_text(char *b, size_t cap)
 {
@@ -571,30 +585,23 @@ static void diag_text(char *b, size_t cap)
     char ip[20] = "", up[16];
     if (wifi_mgr_is_connected()) wifi_mgr_get_ip4(ip, sizeof(ip));
     ui_format_duration(up, sizeof(up), sysinfo_uptime_s());
-    size_t ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t n = 0;
-    n += snprintf(b + n, cap - n, "Chip: ESP32-P4 rev %d.%d \xc2\xb7 IDF %s\n", chip.revision / 100, chip.revision % 100,
-                  esp_get_idf_version());
-    if (n >= cap) return;
-    n += snprintf(b + n, cap - n, "Internal: %u KB free, min %u KB, largest %u KB\n",
-                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
-                  (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
-                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
-    if (n >= cap) return;
-    n += snprintf(b + n, cap - n, "PSRAM: %u.%u MB free\n", (unsigned)(ps >> 20), (unsigned)((ps & 0xFFFFF) * 10 >> 20));
-    if (n >= cap) return;
-    float ma = pw.current_a * 1000.0f;
-    if (pw.valid)
-        n += snprintf(b + n, cap - n, "Battery: %.2f V, %d mA, %.2f W, %s\n", (double)pw.bus_v, (int)ma,
-                      (double)(pw.bus_v * (pw.current_a < 0 ? -pw.current_a : pw.current_a)),
-                      sysinfo_charging() ? "charging" : "not charging");
-    else n += snprintf(b + n, cap - n, "Battery: no reading\n");
-    if (n >= cap) return;
-    if (ip[0]) n += snprintf(b + n, cap - n, "Wi-Fi: %d dBm, channel %d, %s\n", sysinfo_rssi_cached(), s_diag_channel, ip);
-    else n += snprintf(b + n, cap - n, "Wi-Fi: not connected\n");
-    if (n >= cap) return;
-    snprintf(b + n, cap - n, "Tailscale: %s\nKeyboard: %s\nUptime: %s\nLast reset: %s", tailscale_state_text(),
-             tr(kbd_state()), up, reset_name(esp_reset_reason()));
+    size_t ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM), n = 0;
+    b[0] = 0;
+    if (!diag_line(b, cap, &n, tr(STR_DIAG_CHIP), chip.revision / 100, chip.revision % 100, esp_get_idf_version())) return;
+    if (!diag_line(b, cap, &n, tr(STR_DIAG_INTERNAL), (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                   (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                   (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024))) return;
+    if (!diag_line(b, cap, &n, tr(STR_DIAG_PSRAM), (unsigned)(ps >> 20), (unsigned)((ps & 0xFFFFF) * 10 >> 20))) return;
+    bool ok = pw.valid
+        ? diag_line(b, cap, &n, tr(STR_DIAG_BATTERY), (double)pw.bus_v, (int)(pw.current_a * 1000.0f),
+                    (double)(pw.bus_v * (pw.current_a < 0 ? -pw.current_a : pw.current_a)),
+                    tr(sysinfo_charging() ? STR_DIAG_CHARGING : STR_DIAG_NOT_CHARGING))
+        : diag_line(b, cap, &n, "%s", tr(STR_DIAG_BATTERY_NONE));
+    if (!ok) return;
+    ok = ip[0] ? diag_line(b, cap, &n, tr(STR_DIAG_WIFI), sysinfo_rssi_cached(), s_diag_channel, ip)
+               : diag_line(b, cap, &n, "%s", tr(STR_DIAG_WIFI_NONE));
+    if (!ok) return;
+    diag_line(b, cap, &n, tr(STR_DIAG_REST), tailscale_state_text(), tr(kbd_state()), up, reset_name(esp_reset_reason()));
 }
 
 static void diag_tick(lv_timer_t *t)

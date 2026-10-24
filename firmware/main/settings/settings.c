@@ -94,10 +94,10 @@ void settings_reset_user(void)
     settings_defaults(d);
     settings_reset_scope(&g_settings, d);
     free(d);
-    settings_save();
+    /* one NVS write: power_settings_defaults saves the whole blob (the scope above included), ends any console
+       test value and refreshes the keyboard light, which also wakes the power task for the new timings */
+    power_settings_defaults();
     bsp_display_brightness_set(g_settings.brightness);
-    power_kbd_light_refresh();
-    power_settings_defaults();   /* the power task takes the reset timings now; ends any console test value */
 }
 
 void settings_init(void)

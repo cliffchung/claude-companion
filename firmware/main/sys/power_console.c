@@ -1,4 +1,5 @@
 #include "power_console.h"
+#include "sys/url_mask.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -287,17 +288,12 @@ static int cmd_clock(int argc, char **argv)
 }
 
 /* `ota url [<url>|none]`: the OTA manifest URL (no Settings row since Plan 4). It may carry a token in its
-   query, so a URL with '?' prints as <scheme>://<host>/…?<masked>. No argument prints the current one. */
+   userinfo or query, which print masked (url_mask). No argument prints the current one. */
 static void ota_url_print(const char *u)
 {
-    if (!u[0]) { printf("ota url: none\n"); return; }
-    const char *q = strchr(u, '?');
-    if (!q) { printf("ota url: %s\n", u); return; }
-    const char *host = strstr(u, "://");
-    host = host ? host + 3 : u;
-    const char *slash = strchr(host, '/');
-    int hl = (int)((slash && slash < q ? slash : q) - u);
-    printf("ota url: %.*s/\xe2\x80\xa6?<masked>\n", hl, u);
+    char b[200];
+    url_mask(u, b, sizeof(b));   /* userinfo and a query may hold a token */
+    printf("ota url: %s\n", b);
 }
 
 static int cmd_ota(int argc, char **argv)

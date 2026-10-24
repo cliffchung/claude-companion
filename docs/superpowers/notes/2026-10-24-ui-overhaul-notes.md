@@ -366,3 +366,16 @@ stopped, `ts off`, `power set defaults`, DHCP, Host link connected on the LAN.
   The IDF line shows `esp_get_idf_version()`, which is a git hash on this checkout.
 - T7-11 (T6 N1): a Sessions row clears its press key on `LV_EVENT_PRESS_LOST` too.
 - The public key row reads "ssh-ed25519 … claude-companion · Show": the key's comment up to its '@'.
+
+**Task 7 fix round 1.**
+- I1: `scrolled_out` counts an edge only while the scroller can still scroll toward it, so a clip no scroll undoes
+  (sides, the top at scroll 0) fails again. `targets-clip` adds an unpadded 10-row scroller that the check must
+  report (`"Row 0" ... hits 600x72`). T7-5 now reads that way.
+- I2: cc_link's no-host status says "no Host set up". The Host › Link row and the Sessions banner share
+  `ui_sessions_link_down_text`: "No Host set up", "Can't reach <name>. Is it awake?", or the failure up to its
+  parenthetical, so no frozen "(retry in Ns)". Preview `settings 0` with `PREVIEW_HOST=0` / `PREVIEW_FAIL=notfound`
+  asserts no "Mac" and no "retry in".
+- M1–M6: the Diagnostics and reset-reason text is `STR_*`. `ota url` masks userinfo too (pure `sys/url_mask.c`,
+  host-tested). `settings_reset_user` writes NVS once, and the extra `notify()` is gone (`power_kbd_light_refresh`
+  already wakes the task). Preview Diagnostics covers Esc while expanded. The reset test covers the reserved pw
+  fields. `key light` and `ui brightness` parse strictly.

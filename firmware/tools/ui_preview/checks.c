@@ -163,8 +163,9 @@ static const char *ctrl_name(lv_obj_t *o, char *buf, size_t cap)
 
 /* True when a scrollable ancestor (below the screen) that really overflows or is scrolled shows o only in
    part, or not at all (review M5: a merely scrollable container clips like any other and is checked). "o" here
-   is its hit area: a row that a scroll leaves at the viewport's edge, its 8 px of extra hit area cut off, is
-   checked once it is scrolled into view (LVGL's scroll-to-view keeps it inside the container's padding). */
+   is its hit area, and an edge counts only while a scroll toward it is still possible: a row a scroll leaves at
+   the viewport's edge is checked once scrolled into view, but a clip no scroll undoes (the sides of a vertical
+   list, the top at scroll 0) is still a failure (T7 review I1). */
 static bool scrolled_out(lv_obj_t *o)
 {
     lv_area_t a;
@@ -177,7 +178,9 @@ static bool scrolled_out(lv_obj_t *o)
             !lv_obj_get_scroll_right(p)) continue;   /* everything fits: no part is scrolled out */
         lv_area_t c;
         lv_obj_get_coords(p, &c);
-        if (a.y1 < c.y1 || a.y2 > c.y2 || a.x1 < c.x1 || a.x2 > c.x2) return true;
+        if ((a.y1 < c.y1 && lv_obj_get_scroll_top(p) > 0) || (a.y2 > c.y2 && lv_obj_get_scroll_bottom(p) > 0) ||
+            (a.x1 < c.x1 && lv_obj_get_scroll_left(p) > 0) || (a.x2 > c.x2 && lv_obj_get_scroll_right(p) > 0))
+            return true;
     }
     return false;
 }

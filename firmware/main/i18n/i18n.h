@@ -338,7 +338,30 @@ X(SET_RESET_Q, "Reset settings?") \
 X(SET_RESET, "Reset") \
 X(SET_RESET_BODY, "Power, keyboard light and display brightness go back to their defaults. Wi-Fi networks, the Host and the Terminal hosts, the host-key pins, the Tailscale identity and auth key, and the device key stay. It also keeps the time zone.") \
 X(SET_RESET_NOTE, "Reset settings puts power, the keyboard light and brightness back to their defaults.") \
-X(SET_RESET_DONE, "Settings reset")
+X(SET_RESET_DONE, "Settings reset") \
+X(LINK_NO_HOST, "No Host set up") \
+X(DIAG_CHIP, "Chip: ESP32-P4 rev %d.%d \xc2\xb7 IDF %s\n") \
+X(DIAG_INTERNAL, "Internal: %u KB free, min %u KB, largest %u KB\n") \
+X(DIAG_PSRAM, "PSRAM: %u.%u MB free\n") \
+X(DIAG_BATTERY, "Battery: %.2f V, %d mA, %.2f W, %s\n") \
+X(DIAG_BATTERY_NONE, "Battery: no reading\n") \
+X(DIAG_CHARGING, "charging") \
+X(DIAG_NOT_CHARGING, "not charging") \
+X(DIAG_WIFI, "Wi-Fi: %d dBm, channel %d, %s\n") \
+X(DIAG_WIFI_NONE, "Wi-Fi: not connected\n") \
+X(DIAG_REST, "Tailscale: %s\nKeyboard: %s\nUptime: %s\nLast reset: %s") \
+X(RST_POWERON, "power-on") \
+X(RST_EXT, "external pin") \
+X(RST_SW, "software") \
+X(RST_PANIC, "panic") \
+X(RST_INT_WDT, "interrupt watchdog") \
+X(RST_TASK_WDT, "task watchdog") \
+X(RST_WDT, "watchdog") \
+X(RST_DEEPSLEEP, "deep sleep") \
+X(RST_BROWNOUT, "brownout") \
+X(RST_USB, "USB") \
+X(RST_OTHER, "other") \
+X(LINK_CANT_REACH, "Can't reach %s. Is it awake?")
 
 typedef enum {
 #define X(id, en) STR_##id,

@@ -18,6 +18,9 @@ bool ui_sessions_selected_center(int32_t *x, int32_t *y);
    finished later by a reconnect is toasted by the Sessions tick (P4-3). LVGL task; false if the
    worker can't take it now. */
 bool ui_sessions_forget_host_key(void);
+/* Why the Host link is down, in Host words with no "(retry in Ns)": "No Host set up", "Can't reach <name>. Is it
+   awake?" or cc_link's failure up to its parenthetical. The Sessions banner and Settings › Host › Link use it. */
+void ui_sessions_link_down_text(char *out, size_t cap);
 #define FORGET_TOAST_MS 6000   /* long enough to read the fingerprint */
 /* Debug (`companion takeover <id>`): selects the row with this id and opens it as Ctrl+O does, only
    for a session named companion-test-*. LVGL task. NOT_SHOWING unless Sessions is the active screen,

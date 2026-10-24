@@ -1055,19 +1055,28 @@ static void wifi_settings_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_N
 static void host_settings_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_HOST); }
 static void lowbat_dismiss_cb(lv_event_t *e) { (void)e; s_lowbat_dismiss = true; render(); }
 
-/* The banner's reason for an unreachable Host: cc_link's status text up to its parenthetical
-   ("Host not found at my-host.local (set its address …) (retry in 12s)"), capitalised. */
-static void unreachable_text(char *out, size_t cap, const char *name, bool too_big, int fails)
+/* Why the Host link is down, for the Sessions banner and Settings › Host › Link: no Host, "Can't reach <name>.
+   Is it awake?" when nothing failed, or cc_link's status text up to its parenthetical ("Host not found at
+   my-host.local (set its address …) (retry in 12s)"), capitalised. */
+void ui_sessions_link_down_text(char *out, size_t cap)
 {
-    if (cc_link_connected() && too_big) { strlcpy(out, "Session list too large to load", cap); return; }
-    if (cc_link_connected() && fails >= CC_POLL_FAILS_SHOWN) { strlcpy(out, "Can't load sessions from the host\xe2\x80\xa6", cap); return; }
-    if (cc_link_failure() == CC_LINK_FAIL_NONE) { snprintf(out, cap, "Can't reach %s. Is it awake?", name); return; }
+    char name[48];
+    cc_settings_server_name(name, sizeof(name));
+    if (!name[0]) { strlcpy(out, tr(STR_LINK_NO_HOST), cap); return; }
+    if (cc_link_failure() == CC_LINK_FAIL_NONE) { snprintf(out, cap, tr(STR_LINK_CANT_REACH), name); return; }
     char st[CC_STATUS_MAX];
     cc_link_status_text(st, sizeof(st));
     char *p = strstr(st, " (");
     if (p) *p = 0;
     if (st[0] >= 'a' && st[0] <= 'z') st[0] = (char)(st[0] - 'a' + 'A');
     strlcpy(out, st, cap);
+}
+
+static void unreachable_text(char *out, size_t cap, bool too_big, int fails)
+{
+    if (cc_link_connected() && too_big) { strlcpy(out, "Session list too large to load", cap); return; }
+    if (cc_link_connected() && fails >= CC_POLL_FAILS_SHOWN) { strlcpy(out, "Can't load sessions from the host\xe2\x80\xa6", cap); return; }
+    ui_sessions_link_down_text(out, cap);
 }
 
 static void place_body(int top)
@@ -1132,7 +1141,7 @@ static void update_state(void)
     case SM_B_NO_WIFI:
         ui_banner_set(s_banner, UI_BANNER_RED, "No Wi-Fi", "Wi-Fi settings", wifi_settings_cb, NULL); break;
     case SM_B_UNREACHABLE:
-        unreachable_text(t, sizeof(t), name, too_big, fails);
+        unreachable_text(t, sizeof(t), too_big, fails);
         ui_banner_set(s_banner, UI_BANNER_RED, t, "Host settings", host_settings_cb, NULL); break;
     case SM_B_LOW_BATTERY:
         snprintf(t, sizeof(t), "Battery %d %%. The Tab5 sleeps at 10 %%.", pct);

@@ -56,6 +56,17 @@ static int utf8_next(const unsigned char *s, uint32_t *cp)
     return 0;
 }
 
+/* The whole of s as a number in base: trailing junk ("1x") or an empty string is refused. */
+static bool parse_long(const char *s, int base, long *out)
+{
+    char *end;
+    if (!s || !*s || *s == ' ') return false;
+    long v = strtol(s, &end, base);
+    if (*end) return false;
+    *out = v;
+    return true;
+}
+
 /* `key layout [stock|jis]`: the keyboard layout (it left Settings in Plan 4). No argument prints it. */
 static int key_layout(int argc, char **argv)
 {
@@ -77,12 +88,11 @@ static int key_layout(int argc, char **argv)
 static int key_light(int argc, char **argv)
 {
     if (argc == 5 || argc == 7) {
-        char *end;
-        long mode = strtol(argv[2], &end, 10), bright = *end ? -1 : strtol(argv[3], &end, 10);
-        long rgb = (*end || strlen(argv[4]) != 6) ? -1 : strtol(argv[4], &end, 16);
-        long needs = 1, dark = g_settings.kbd_dark_light;
-        if (argc == 7) { needs = strtol(argv[5], NULL, 10); dark = strtol(argv[6], NULL, 10); }
-        if (*end || mode < 0 || mode > 1 || bright < 0 || bright > 100 || rgb < 0 || needs < 0 || needs > 1 ||
+        long mode, bright, rgb, needs = 1, dark = g_settings.kbd_dark_light;
+        bool ok = parse_long(argv[2], 10, &mode) && parse_long(argv[3], 10, &bright) && strlen(argv[4]) == 6 &&
+                  parse_long(argv[4], 16, &rgb);
+        if (argc == 7) ok = ok && parse_long(argv[5], 10, &needs) && parse_long(argv[6], 10, &dark);
+        if (!ok || mode < 0 || mode > 1 || bright < 0 || bright > 100 || rgb < 0 || needs < 0 || needs > 1 ||
             dark < 2 || dark > 100) {
             printf("usage: key light [<mode 0|1> <bright 0..100> <rrggbb> [<needs 0|1> <dark 2..100>]]\n");
             return 1;
@@ -213,8 +223,8 @@ static int cmd_ui(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "settings") == 0) { ui_async(ui_settings_async, NULL); printf("ui: settings\n"); return 0; }
     if (argc >= 2 && argc <= 3 && strcmp(argv[1], "brightness") == 0) {
         if (argc == 3) {
-            int v = atoi(argv[2]);
-            if (v < 5 || v > 100) { printf("usage: ui brightness [5..100]\n"); return 1; }
+            long v;
+            if (!parse_long(argv[2], 10, &v) || v < 5 || v > 100) { printf("usage: ui brightness [5..100]\n"); return 1; }
             g_settings.brightness = (uint8_t)v;
             settings_save();
             if (power_state() == PS_ACTIVE) bsp_display_brightness_set(v);

@@ -27,7 +27,7 @@ set(MAIN ${CMAKE_CURRENT_SOURCE_DIR}/../../main)
 add_library(pure STATIC ${MAIN}/sys/plog.c ${MAIN}/sys/vitals.c ${MAIN}/sys/power_rules.c ${MAIN}/sys/hib_rules.c ${MAIN}/ui/hotkeys.c ${MAIN}/input/key_log.c ${MAIN}/ssh/kh_rules.c
     ${MAIN}/companion/kh_carry.c ${MAIN}/settings/settings_migrate.c ${MAIN}/net/ts_host.c ${MAIN}/net/fast_rules.c
     ${MAIN}/sys/link_guard.c ${MAIN}/companion/cc_park.c ${MAIN}/ui/ui_tokens.c ${MAIN}/ui/sessions_model.c ${MAIN}/term/wcwidth.c
-    ${MAIN}/settings/kbd_colour.c)
+    ${MAIN}/settings/kbd_colour.c ${MAIN}/sys/url_mask.c)
 target_include_directories(pure PUBLIC ${MAIN} ${MAIN}/sys)
 target_link_libraries(pure PUBLIC companion)
 target_compile_options(pure PRIVATE -Wall -Wextra)
@@ -68,7 +68,7 @@ add_executable(test_kh_rules test_kh_rules.c)
 target_link_libraries(test_kh_rules pure unity)
 add_test(NAME test_kh_rules COMMAND test_kh_rules)
 
-foreach(t test_kh_carry test_settings_migrate test_ts_host test_fast_rules test_link_guard test_sessions_model test_kbd_colour)
+foreach(t test_kh_carry test_settings_migrate test_ts_host test_fast_rules test_link_guard test_sessions_model test_kbd_colour test_url_mask)
     add_executable(${t} ${t}.c)
     target_link_libraries(${t} pure unity)
     add_test(NAME ${t} COMMAND ${t})

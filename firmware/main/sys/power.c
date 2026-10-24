@@ -972,8 +972,7 @@ void power_settings_defaults(void)
     for (int i = 0; i < PCFG_N; i++) s_cfg_ram[i] = -1;
     settings_power_defaults();
     settings_save();
-    power_kbd_light_refresh();
-    notify();   /* the ladder takes the default timings now (Settings › About › Reset settings, Plan 4 T7) */
+    power_kbd_light_refresh();   /* also wakes the power task, so the ladder takes the default timings now */
 }
 
 void power_settings_text(char *buf, size_t cap)

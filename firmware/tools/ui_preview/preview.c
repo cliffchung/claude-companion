@@ -176,7 +176,8 @@ const char *cc_watch_status_text(char *b, size_t cap) { snprintf(b, cap, "watch:
 bool cc_link_connected(void) { return pv_wifi() && pv_host() && !pv_notfound(); }
 /* the device's own wording (cc_link.c), so the banner's cut is tested */
 const char *cc_link_status_text(char *b, size_t cap) {
-    if (pv_notfound()) snprintf(b, cap, "Host not found at my-host.local (set its address in Settings \xe2\x86\x92 Network) (retry in 12s)");
+    if (!pv_host()) snprintf(b, cap, "no Host set up");
+    else if (pv_notfound()) snprintf(b, cap, "Host not found at my-host.local (set its address in Settings \xe2\x86\x92 Network) (retry in 12s)");
     else snprintf(b, cap, cc_link_connected() ? "connected my-host" : "connecting to my-host");
     return b;
 }
@@ -599,7 +600,25 @@ static int targets_clip_case(lv_display_t *d) {
     int forget_btn = pv_touch_targets(lv_layer_top(), why, sizeof(why));
     printf("targets-clip: dialog 64 px end button -> %s\n", forget_btn ? why : "ok");
     lv_obj_clean(lv_layer_top());
-    if (!clipped || bars || ok_btn || forget_btn) { printf("check targets-clip: FAIL\n"); return 1; }
+    /* T7 review I1: a scroller with no padding clips its rows' 80 px hit areas, and no scroll undoes it at the top
+       (scroll 0) or at the sides, so the check must report it, not skip it as scrolled out */
+    lv_obj_t *col = lv_obj_create(scr);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_pos(col, 200, 100);
+    lv_obj_set_size(col, 600, 400);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, UI_TK_GAP_S, 0);
+    lv_obj_add_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(col, LV_DIR_VER);
+    for (int i = 0; i < 10; i++) {
+        char t[16]; snprintf(t, sizeof(t), "Row %d", i);
+        ui_srow(col, UI_ROW_NAV, t, NULL, noop_cb, NULL);
+    }
+    lv_obj_update_layout(scr); lv_refr_now(d);
+    int scroll_clip = pv_touch_targets(scr, why, sizeof(why));
+    printf("targets-clip: unpadded scroller -> %s\n", scroll_clip ? why : "passed (wrong)");
+    lv_obj_delete(col);
+    if (!clipped || bars || ok_btn || forget_btn || !scroll_clip) { printf("check targets-clip: FAIL\n"); return 1; }
     printf("check targets-clip: ok\n");
     return 0;
 }
@@ -988,6 +1007,8 @@ static int settings_case(lv_display_t *d, int section) {
     char name[64], sl[32];
     slug(sl, sizeof(sl), click);
     if (click[0]) snprintf(name, sizeof(name), "settings-%d-%s", section, sl);
+    else if (!pv_host()) snprintf(name, sizeof(name), "settings-%d-no-host", section);
+    else if (pv_notfound()) snprintf(name, sizeof(name), "settings-%d-not-found", section);
     else if (scroll) snprintf(name, sizeof(name), "settings-%d-scroll-%d", section, scroll);
     else snprintf(name, sizeof(name), "settings-%d", section);
     preview_sessions_load();
@@ -1063,6 +1084,13 @@ static int settings_case(lv_display_t *d, int section) {
         assert(timers_with_period(2000) == 1);
         lv_obj_send_event(rail_row(s, UI_SET_HOST), LV_EVENT_CLICKED, NULL); step(d,200);
         if (timers_with_period(2000) != 0) { printf("check %s: FAIL a 2 s timer after leaving About\n", name); r = 1; }
+        /* B1 (review M4): Esc out of Settings while expanded: the timer goes with the screen */
+        lv_obj_send_event(rail_row(s, UI_SET_ABOUT), LV_EVENT_CLICKED, NULL); step(d,200);
+        lv_obj_send_event(find_clickable_shown(panel, "Diagnostics"), LV_EVENT_CLICKED, NULL); step(d,200);
+        assert(timers_with_period(2000) == 1);
+        press_key(SK_ESC, 0, false); step(d,200);
+        assert(ui_nav_is_top(ui_sessions_create));
+        if (timers_with_period(2000) != 0) { printf("check %s: FAIL a 2 s timer after Esc from Settings\n", name); r = 1; }
         return r;
     } else if (section == UI_SET_ABOUT && !strcmp(click, "Reboot")) {
         /* the short-label confirm: its end button keeps an 80 px hit area (pv_run_checks below) */
@@ -1082,6 +1110,15 @@ static int settings_case(lv_display_t *d, int section) {
         assert(h);
         lv_area_t a, p; lv_obj_get_coords(h, &a); lv_obj_get_coords(panel, &p);
         if (a.y1 < p.y1 || a.y2 > p.y2) { printf("check %s: FAIL Battery saver at %d-%d, the panel %d-%d\n", name, (int)a.y1, (int)a.y2, (int)p.y1, (int)p.y2); return 1; }
+    } else if (section == UI_SET_HOST && !click[0] && (!pv_host() || pv_notfound())) {
+        /* U11 and the frozen countdown (T7 review I2): the Link row says Host, never Mac, and no "(retry in Ns)" */
+        const char *want = !pv_host() ? "No Host set up" : "Host not found at my-host.local";
+        if (!find_label(panel, want, false)) { printf("check %s: FAIL no Link text \"%s\"\n", name, want); return 1; }
+        if (find_label_has(panel, "Mac", 0) || find_label_has(panel, "retry in", 0)) {
+            printf("check %s: FAIL the Link row says \"%s\"\n", name,
+                   lv_label_get_text(find_label_has(panel, "Mac", 0) ? find_label_has(panel, "Mac", 0) : find_label_has(panel, "retry in", 0)));
+            return 1;
+        }
     } else if (section == UI_SET_HOST && !click[0]) {
         assert(!find_label(s, "(macOS)", true));
         assert(find_label(panel, "\xe2\x97\x8f connected over home Wi-Fi", false));

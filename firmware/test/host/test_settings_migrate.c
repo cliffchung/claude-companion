@@ -146,6 +146,9 @@ static void test_reset_scope_resets_power_light_brightness(void)
     s.pw_dim_s = 600;
     s.kbd_led_bright = 90;
     s.brightness = 30;
+    s.pw_wake_lift = (uint8_t)(d.pw_wake_lift + 1);
+    s.pw_light_sleep = (uint8_t)(d.pw_light_sleep + 1);
+    s.pw_hibernate_checkin_h = (uint8_t)(d.pw_hibernate_checkin_h + 1);
     settings_reset_scope(&s, &d);
     TEST_ASSERT_EQUAL_UINT16(d.pw_dim_s, s.pw_dim_s);
     TEST_ASSERT_EQUAL_UINT8(d.kbd_led_bright, s.kbd_led_bright);
@@ -159,6 +162,9 @@ static void test_reset_scope_resets_power_light_brightness(void)
     TEST_ASSERT_EQUAL_UINT16(d.pw_deep_idle_min, s.pw_deep_idle_min);
     TEST_ASSERT_EQUAL_UINT8(d.pw_hibernate_h, s.pw_hibernate_h);
     TEST_ASSERT_EQUAL_UINT16(d.pw_hibernate_checkin_min, s.pw_hibernate_checkin_min);
+    TEST_ASSERT_EQUAL_UINT8(d.pw_wake_lift, s.pw_wake_lift);                     /* reserved, still pw_* */
+    TEST_ASSERT_EQUAL_UINT8(d.pw_light_sleep, s.pw_light_sleep);
+    TEST_ASSERT_EQUAL_UINT8(d.pw_hibernate_checkin_h, s.pw_hibernate_checkin_h); /* reserved, still pw_* */
     TEST_ASSERT_EQUAL_UINT8(d.ss_disable_in_ssh, s.ss_disable_in_ssh);
     TEST_ASSERT_EQUAL_UINT8(d.kbd_led_mode, s.kbd_led_mode);
     TEST_ASSERT_EQUAL_MEMORY(d.kbd_led_rgb, s.kbd_led_rgb, 3);

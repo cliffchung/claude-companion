@@ -159,7 +159,7 @@ static struct {                             /* for cc_watch_status_text, under s
 } s_wv;
 
 /* Before cc_link_start (or if it failed) there is no lock and no link task: getters then
-   read the settings directly and the status is "no Mac set up". */
+   read the settings directly and the status is "no Host set up". */
 static void lock(void) { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 static int64_t now_us(void) { return esp_timer_get_time(); }
@@ -282,7 +282,7 @@ const char *cc_link_status_text(char *b, size_t cap)
 {
     if (!b || !cap) return "";
     if (!s_task) {
-        strlcpy(b, "no Mac set up", cap);
+        strlcpy(b, "no Host set up", cap);
         return b;
     }
     lock();
@@ -293,7 +293,7 @@ const char *cc_link_status_text(char *b, size_t cap)
     }
     switch (s_state) {
     case LS_NO_MAC:
-        strlcpy(b, "no Mac set up", cap);
+        strlcpy(b, "no Host set up", cap);
         break;
     case LS_CONNECTING:
         if (s_fail != CC_LINK_FAIL_NONE) snprintf(b, cap, "%s (retrying now)", s_fail_text);
