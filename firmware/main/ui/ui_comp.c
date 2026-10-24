@@ -26,6 +26,7 @@ static lv_style_t s_green_text, s_red_text, s_mono, s_rail, s_swatch, s_chip_des
 static lv_style_t s_host_geom, s_host_line, s_host_dot, s_dot_green, s_dot_line, s_add_row;
 static lv_style_t s_host_col, s_host_hint, s_host_fail, s_srow_wrap, s_wrap_label, s_dot_red, s_dot_muted;
 static lv_style_t s_title, s_bar, s_side_bottom, s_side_top, s_banner_muted, s_banner_red, s_section;
+static lv_style_t s_bar_name, s_bar_state, s_body_hdr, s_body_hdr_banner;
 /* the LVGL widgets the screens create directly (theme layer) */
 static lv_style_t s_w_button, s_w_field, s_w_track, s_w_on, s_w_knob_off, s_w_knob_on, s_w_knob;
 /* NEEDS YOU: built on first use by the three components that may draw amber */
@@ -68,7 +69,8 @@ void ui_comp_init(void)
                           &s_w_button, &s_w_field, &s_w_track, &s_w_on, &s_w_knob_off, &s_w_knob_on, &s_w_knob,
                           &s_green_text, &s_red_text, &s_mono, &s_rail, &s_swatch, &s_chip_destructive,
                           &s_host_geom, &s_host_line, &s_host_dot, &s_dot_green, &s_dot_line, &s_add_row,
-                          &s_host_col, &s_host_hint, &s_host_fail, &s_srow_wrap, &s_wrap_label, &s_dot_red, &s_dot_muted };
+                          &s_host_col, &s_host_hint, &s_host_fail, &s_srow_wrap, &s_wrap_label, &s_dot_red, &s_dot_muted,
+                          &s_bar_name, &s_bar_state, &s_body_hdr, &s_body_hdr_banner };
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
 
     lv_style_set_bg_color(&s_bg, HEX(UI_TK_BG));
@@ -255,6 +257,23 @@ void ui_comp_init(void)
     lv_style_set_pad_hor(&s_bar, UI_TK_MARGIN);
     lv_style_set_text_color(&s_bar, HEX(UI_TK_FG));
     flex_row(&s_bar, UI_TK_GAP_M);
+    /* the session bar's name (one line, at most 400 px) and its state text (takes the rest of the row) */
+    lv_style_set_max_width(&s_bar_name, 400);
+    lv_style_set_height(&s_bar_name, lv_font_get_line_height(FONT_BODY));
+    lv_style_set_width(&s_bar_state, 1);
+    lv_style_set_flex_grow(&s_bar_state, 1);
+    lv_style_set_height(&s_bar_state, lv_font_get_line_height(FONT_SMALL));
+    /* a screen body under the header, or under the header and a banner, to the bottom of the screen */
+    lv_display_t *disp = lv_display_get_default();
+    int32_t screen_h = disp ? lv_display_get_vertical_resolution(disp) : 720;
+    lv_style_set_x(&s_body_hdr, 0);
+    lv_style_set_y(&s_body_hdr, UI_TK_HEADER_H);
+    lv_style_set_width(&s_body_hdr, LV_PCT(100));
+    lv_style_set_height(&s_body_hdr, screen_h - UI_TK_HEADER_H);
+    lv_style_set_x(&s_body_hdr_banner, 0);
+    lv_style_set_y(&s_body_hdr_banner, UI_TK_HEADER_H + UI_TK_BANNER_H);
+    lv_style_set_width(&s_body_hdr_banner, LV_PCT(100));
+    lv_style_set_height(&s_body_hdr_banner, screen_h - UI_TK_HEADER_H - UI_TK_BANNER_H);
     lv_style_set_border_side(&s_side_bottom, LV_BORDER_SIDE_BOTTOM);
     lv_style_set_border_side(&s_side_top, LV_BORDER_SIDE_TOP);
     lv_style_set_bg_color(&s_banner_muted, HEX(UI_TK_PANEL));
@@ -531,8 +550,7 @@ void ui_header_needs_you_set(lv_obj_t *label, int n)
         lv_obj_add_flag(label, UI_NEEDS_YOU_PART);
     }
     char b[32];
-    if (n == 1) snprintf(b, sizeof(b), "\xe2\x97\x8f 1 needs you");   /* ● */
-    else snprintf(b, sizeof(b), "\xe2\x97\x8f %d need you", n);
+    snprintf(b, sizeof(b), "\xe2\x97\x8f %d %s", n, tr(n == 1 ? STR_HDR_NEEDS_YOU_1 : STR_HDR_NEEDS_YOU_N));   /* ● */
     set_text(label, b);
     if (lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN)) lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);   /* a flag write redraws */
 }
@@ -948,6 +966,28 @@ lv_obj_t *ui_session_bar(lv_obj_t *scr)
     lv_obj_t *b = bar(scr, UI_TK_SESSION_BAR_H, &s_side_bottom);
     lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 0);
     return b;
+}
+
+lv_obj_t *ui_session_bar_name(lv_obj_t *bar, const char *name)
+{
+    lv_obj_t *n = ui_text(bar, name, UI_TONE_FG, false);
+    lv_label_set_long_mode(n, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_add_style(n, &s_bar_name, 0);
+    return n;
+}
+
+lv_obj_t *ui_session_bar_state(lv_obj_t *bar)
+{
+    lv_obj_t *t = ui_text(bar, "", UI_TONE_MUTED, true);
+    lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_add_style(t, &s_bar_state, 0);
+    return t;
+}
+
+void ui_body_place(lv_obj_t *body, bool banner)
+{
+    lv_obj_remove_style(body, banner ? &s_body_hdr : &s_body_hdr_banner, 0);
+    lv_obj_add_style(body, banner ? &s_body_hdr_banner : &s_body_hdr, 0);
 }
 
 lv_obj_t *ui_dot(lv_obj_t *parent)

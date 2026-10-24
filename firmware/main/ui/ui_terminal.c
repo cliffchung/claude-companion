@@ -363,16 +363,9 @@ static lv_obj_t *session_bar(term_ctx_t *c, const char *name)
 {
     lv_obj_t *b = ui_session_bar(c->scr);
     ui_chip(b, tr(STR_TERM_LEAVE), leave_cb, c);
-    lv_obj_t *n = ui_text(b, name, UI_TONE_FG, false);
-    lv_label_set_long_mode(n, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_max_width(n, 400, 0);
-    lv_obj_set_height(n, lv_font_get_line_height(FONT_BODY));
+    ui_session_bar_name(b, name);
     c->bar_dot = ui_dot(b);
-    c->bar_state = ui_text(b, "", UI_TONE_MUTED, true);
-    lv_obj_set_width(c->bar_state, 1);
-    lv_obj_set_flex_grow(c->bar_state, 1);
-    lv_label_set_long_mode(c->bar_state, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_height(c->bar_state, lv_font_get_line_height(FONT_SMALL));
+    c->bar_state = ui_session_bar_state(b);
     if (!keyboard_any_present()) ui_chip(b, LV_SYMBOL_KEYBOARD, kbd_cb, c);
     for (size_t i = 0; i < sizeof(k_bar_keys) / sizeof(k_bar_keys[0]); i++)
         ui_chip(b, tr(k_bar_keys[i].label), key_chip_cb, (void *)&k_bar_keys[i]);
@@ -426,7 +419,9 @@ static void pump_cb(lv_timer_t *t)
         char line[200];
         int code = ssh_client_exit_status(c->ssh);
         if (st == SSH_ST_ERROR) {
-            snprintf(line, sizeof(line), "%s %s", tr(STR_SSH_CONN_FAILED), msg);
+            /* a live session the network cut keeps running on the host; one that never connected didn't open */
+            if (c->connected) snprintf(line, sizeof(line), "%s %s", msg, tr(STR_TERM_KEEPS_RUNNING));
+            else snprintf(line, sizeof(line), "%s %s", tr(STR_SSH_CONN_FAILED), msg);
         } else if (code == 0) {
             strlcpy(line, tr(STR_TERM_SESSION_CLOSED), sizeof(line));
         } else {

@@ -1,6 +1,7 @@
 #include "host_rules.h"
 #include "companion/cc_cmd.h"
 #include "net/ts_host.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -217,23 +218,6 @@ int hf_conn_steps(bool interactive, hf_step_t *out, int cap)
     return n;
 }
 
-/* appends name to out (comma-separated) unless it is already listed; false when it doesn't fit */
-static bool list_add(char *out, size_t cap, const char *name, size_t len)
-{
-    size_t ol = strlen(out);
-    for (const char *p = out; *p; ) {
-        const char *e = strchr(p, ',');
-        size_t pl = e ? (size_t)(e - p) : strlen(p);
-        if (pl == len && !strncmp(p, name, len)) return true;
-        p = e ? e + 1 : p + pl;
-    }
-    if (ol + (ol ? 1 : 0) + len + 1 > cap) return false;
-    if (ol) out[ol++] = ',';
-    memcpy(out + ol, name, len);
-    out[ol + len] = 0;
-    return true;
-}
-
 bool hf_hostkeys_pref(const char *key_type, char *out, size_t cap)
 {
     if (!key_type || !out || !cap) return false;
@@ -242,14 +226,7 @@ bool hf_hostkeys_pref(const char *key_type, char *out, size_t cap)
     else if (!strcmp(key_type, "ssh-ed25519") || !strcmp(key_type, "ecdsa-sha2-nistp256") ||
              !strcmp(key_type, "ecdsa-sha2-nistp384") || !strcmp(key_type, "ecdsa-sha2-nistp521")) first = key_type;
     else return false;
-    out[0] = 0;
-    const char *srcs[2] = { first, HF_DEFAULT_HOSTKEYS };
-    for (int k = 0; k < 2; k++)
-        for (const char *p = srcs[k]; *p; ) {
-            const char *e = strchr(p, ',');
-            size_t pl = e ? (size_t)(e - p) : strlen(p);
-            if (!list_add(out, cap, p, pl)) { out[0] = 0; return false; }
-            p = e ? e + 1 : p + pl;
-        }
+    int n = snprintf(out, cap, "^%s", first);
+    if (n < 0 || (size_t)n >= cap) { out[0] = 0; return false; }
     return true;
 }

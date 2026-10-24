@@ -155,117 +155,9 @@ lv_obj_t *ui_screen_base(void)
     return scr;
 }
 
-static void back_cb(lv_event_t *e) { (void)e; ui_nav_back(); }
-
-lv_obj_t *ui_topbar(lv_obj_t *parent, const char *title, bool back_button)
-{
-    lv_obj_t *bar = lv_obj_create(parent);
-    lv_obj_set_size(bar, LV_PCT(100), UI_TOPBAR_H);
-    lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(bar, UI_CARD, 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_border_color(bar, lv_color_hex(UI_TK_LINE), 0);
-    lv_obj_set_style_radius(bar, 0, 0);
-    lv_obj_set_style_pad_all(bar, 6, 0);
-    lv_obj_set_style_pad_column(bar, 8, 0);
-    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    if (back_button) {
-        lv_obj_t *b = lv_button_create(bar);
-        lv_obj_set_size(b, 76, 44);
-        lv_obj_set_style_bg_color(b, UI_CARD_HI, 0);
-        lv_obj_set_style_radius(b, UI_TK_RADIUS, 0);
-        /* The bar is only UI_TOPBAR_H tall, so the button cannot grow much, and
-         * at ~294 ppi 76x44 px is under 7x4 mm -- small for a finger, and it
-         * sits in the screen corner where aim is worst. Grow the hit box past
-         * the visible edges instead; 20 px reaches the very corner of the
-         * display, so taps that miss the button still go back. */
-        lv_obj_set_ext_click_area(b, 20);
-        lv_obj_t *l = lv_label_create(b);
-        lv_label_set_text(l, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_font(l, FONT_BODY, 0);
-        lv_obj_center(l);
-        lv_obj_add_event_cb(b, back_cb, LV_EVENT_CLICKED, NULL);
-    }
-    lv_obj_t *t = lv_label_create(bar);
-    lv_label_set_text(t, title ? title : "");
-    lv_obj_set_style_text_font(t, FONT_TITLE, 0);
-    lv_obj_set_height(t, FONT_TITLE->line_height);
-    lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
-    lv_obj_set_flex_grow(t, 1);
-    return bar;
-}
-
-lv_obj_t *ui_topbar_add_button(lv_obj_t *topbar, const char *symbol, lv_event_cb_t cb, void *user_data)
-{
-    lv_obj_t *b = lv_button_create(topbar);
-    lv_obj_set_size(b, LV_SIZE_CONTENT, 44);
-    lv_obj_set_style_min_width(b, 56, 0);
-    lv_obj_set_style_pad_hor(b, 12, 0);
-    lv_obj_set_style_bg_color(b, UI_CARD_HI, 0);
-    lv_obj_set_style_radius(b, UI_TK_RADIUS, 0);
-    /* Half the 8 px column gap, so neighbouring buttons never overlap. */
-    lv_obj_set_ext_click_area(b, 4);
-    lv_obj_t *l = lv_label_create(b);
-    lv_label_set_text(l, symbol);
-    lv_obj_center(l);
-    if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, user_data);
-    return b;
-}
-
-lv_obj_t *ui_content(lv_obj_t *parent)
-{
-    lv_obj_t *c = lv_obj_create(parent);
-    lv_obj_set_pos(c, 0, UI_TOPBAR_H);
-    lv_obj_set_size(c, LV_PCT(100), lv_display_get_vertical_resolution(NULL) - UI_TOPBAR_H);
-    lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(c, 0, 0);
-    lv_obj_set_style_pad_all(c, 14, 0);
-    lv_obj_set_style_pad_row(c, 10, 0);
-    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scroll_dir(c, LV_DIR_VER);
-    return c;
-}
-
-/* Legacy: the danger colour gives a destructive button, anything else a secondary one. */
-lv_obj_t *ui_button_colored(lv_obj_t *parent, const char *text, lv_color_t color, lv_event_cb_t cb, void *user_data)
-{
-    return ui_btn(parent, lv_color_eq(color, UI_DANGER) ? UI_BTN_DESTRUCTIVE : UI_BTN_SECONDARY, text, cb, user_data);
-}
-
 lv_obj_t *ui_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *user_data)
 {
     return ui_btn(parent, UI_BTN_SECONDARY, text, cb, user_data);
-}
-
-lv_obj_t *ui_card(lv_obj_t *parent)
-{
-    lv_obj_t *c = lv_obj_create(parent);
-    lv_obj_set_width(c, LV_PCT(100));
-    lv_obj_set_height(c, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(c, UI_CARD, 0);
-    lv_obj_set_style_border_width(c, 1, 0);
-    lv_obj_set_style_border_color(c, UI_CARD_HI, 0);
-    lv_obj_set_style_radius(c, UI_TK_RADIUS, 0);
-    lv_obj_set_style_pad_all(c, 12, 0);
-    lv_obj_set_style_pad_row(c, 8, 0);
-    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
-    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-    return c;
-}
-
-lv_obj_t *ui_label(lv_obj_t *parent, const char *text, const lv_font_t *font, lv_color_t color)
-{
-    lv_obj_t *l = lv_label_create(parent);
-    lv_label_set_text(l, text ? text : "");
-    if (font) lv_obj_set_style_text_font(l, font, 0);
-    lv_obj_set_style_text_color(l, color, 0);
-    lv_obj_set_width(l, LV_PCT(100));
-    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-    return l;
 }
 
 lv_obj_t *ui_row(lv_obj_t *parent)
@@ -290,38 +182,11 @@ lv_obj_t *ui_textarea(lv_obj_t *parent, const char *placeholder, bool password, 
     lv_textarea_set_one_line(ta, oneline);
     lv_textarea_set_password_mode(ta, password);
     lv_textarea_set_placeholder_text(ta, placeholder ? placeholder : "");
-    lv_obj_set_style_bg_color(ta, UI_BG, 0);
-    lv_obj_set_style_text_color(ta, UI_TEXT, 0);
-    lv_obj_set_style_border_color(ta, UI_CARD_HI, 0);
+    lv_obj_set_style_bg_color(ta, lv_color_hex(UI_TK_BG), 0);
+    lv_obj_set_style_text_color(ta, lv_color_hex(UI_TK_FG), 0);
+    lv_obj_set_style_border_color(ta, lv_color_hex(UI_TK_PANEL2), 0);
     lv_obj_set_style_radius(ta, UI_TK_RADIUS, 0);
     return ta;
-}
-
-lv_obj_t *ui_setting_row(lv_obj_t *parent, const char *label, const char *value, lv_event_cb_t cb, void *user_data)
-{
-    lv_obj_t *r = lv_button_create(parent);
-    lv_obj_set_width(r, LV_PCT(100));
-    lv_obj_set_height(r, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(r, UI_CARD, 0);
-    lv_obj_set_style_radius(r, UI_TK_RADIUS, 0);
-    lv_obj_set_style_pad_all(r, 14, 0);
-    lv_obj_set_style_shadow_width(r, 0, 0);
-    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_t *l = lv_label_create(r);
-    lv_label_set_text(l, label);
-    lv_obj_set_width(l, 0);
-    lv_obj_set_flex_grow(l, 1);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(l, UI_TEXT, 0);
-    lv_obj_t *v = lv_label_create(r);
-    lv_label_set_text(v, value ? value : "");
-    lv_obj_set_style_text_color(v, UI_MUTED, 0);
-    lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_max_width(v, LV_PCT(55), 0);
-    if (cb) lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, user_data);
-    lv_obj_set_user_data(r, v);   /* value label reachable via user data */
-    return r;
 }
 
 lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_cb_t cb, void *user_data)
@@ -329,7 +194,7 @@ lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_c
     lv_obj_t *r = lv_obj_create(parent);
     lv_obj_set_width(r, LV_PCT(100));
     lv_obj_set_height(r, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(r, UI_CARD, 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(UI_TK_PANEL), 0);
     lv_obj_set_style_border_width(r, 0, 0);
     lv_obj_set_style_radius(r, UI_TK_RADIUS, 0);
     lv_obj_set_style_pad_all(r, 14, 0);
@@ -345,61 +210,6 @@ lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_c
     if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
     if (cb) lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, user_data);
     lv_obj_set_user_data(r, sw);
-    return r;
-}
-
-lv_obj_t *ui_section_title(lv_obj_t *parent, const char *text)
-{
-    lv_obj_t *l = lv_label_create(parent);
-    lv_label_set_text(l, text);
-    lv_obj_set_style_text_color(l, UI_MUTED, 0);
-    lv_obj_set_style_text_font(l, FONT_SMALL, 0);
-    lv_obj_set_style_pad_top(l, 6, 0);
-    return l;
-}
-
-lv_obj_t *ui_list_item(lv_obj_t *parent, const char *icon, const char *title, const char *subtitle, lv_event_cb_t cb, void *user_data)
-{
-    lv_obj_t *r = lv_button_create(parent);
-    lv_obj_set_width(r, LV_PCT(100));
-    lv_obj_set_height(r, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(r, UI_CARD, 0);
-    lv_obj_set_style_bg_color(r, UI_CARD_HI, LV_STATE_PRESSED);
-    lv_obj_set_style_radius(r, UI_TK_RADIUS, 0);
-    lv_obj_set_style_pad_all(r, 12, 0);
-    lv_obj_set_style_pad_column(r, 12, 0);
-    lv_obj_set_style_shadow_width(r, 0, 0);
-    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    if (icon) {
-        lv_obj_t *i = lv_label_create(r);
-        lv_label_set_text(i, icon);
-        lv_obj_set_style_text_color(i, UI_MUTED, 0);
-        lv_obj_set_width(i, 34);
-    }
-    lv_obj_t *col = lv_obj_create(r);
-    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(col, 0, 0);
-    lv_obj_set_style_pad_all(col, 0, 0);
-    lv_obj_set_style_pad_row(col, 2, 0);
-    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_grow(col, 1);
-    lv_obj_set_height(col, LV_SIZE_CONTENT);
-    lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *t = lv_label_create(col);
-    lv_label_set_text(t, title ? title : "");
-    lv_obj_set_width(t, LV_PCT(100));
-    lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_color(t, UI_TEXT, 0);
-    if (subtitle && *subtitle) {
-        lv_obj_t *s = lv_label_create(col);
-        lv_label_set_text(s, subtitle);
-        lv_obj_set_width(s, LV_PCT(100));
-        lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_color(s, UI_MUTED, 0);
-        lv_obj_set_style_text_font(s, FONT_SMALL, 0);
-    }
-    if (cb) lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, user_data);
     return r;
 }
 
@@ -444,7 +254,7 @@ void ui_sleep_notice(bool show)
     lv_obj_add_flag(o, UI_KEYBOARD_SKIP);
     lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *l = lv_label_create(o);
-    lv_label_set_text(l, "Sleeping to save battery. Press the side button to wake.");
+    lv_label_set_text(l, tr(STR_SLEEP_NOTICE));
     lv_obj_set_style_text_font(l, FONT_BODY, 0);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(l, LV_PCT(80));
@@ -824,6 +634,7 @@ static void keyboard_focus_set(lv_obj_t *obj)
 
 typedef struct {
     lv_obj_t *first, *last, *previous, *next;
+    lv_obj_t *root;   /* an open dialog's scrim: never a control itself (a tap on it closes a sheet; a key must not) */
     bool found;
 } keyboard_walk_t;
 
@@ -834,7 +645,7 @@ static void keyboard_walk(lv_obj_t *obj, keyboard_walk_t *walk)
         (has_handler(obj, LV_EVENT_CLICKED) || has_handler(obj, LV_EVENT_SHORT_CLICKED) || has_handler(obj, LV_EVENT_LONG_PRESSED) || has_handler(obj, LV_EVENT_KEY) ||
          lv_obj_check_type(obj, &lv_textarea_class) || lv_obj_check_type(obj, &lv_slider_class) ||
          lv_obj_has_flag(obj, LV_OBJ_FLAG_CHECKABLE));
-    if (control) {
+    if (control && obj != walk->root) {
         if (!walk->first) walk->first = obj;
         if (obj == s_keyboard_focus) { walk->found = true; walk->previous = walk->last; }
         else if (walk->found && !walk->next) walk->next = obj;
@@ -872,7 +683,7 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
                !lv_obj_has_state(p, LV_STATE_DISABLED)) p = lv_obj_get_parent(p);
         if (p == scope) keyboard_focus_set(touched_ta);
     }
-    keyboard_walk_t walk = {0};
+    keyboard_walk_t walk = { .root = modal };
     keyboard_walk(scope, &walk);
     bool had_focus = walk.found;
     if (!had_focus) keyboard_focus_set(walk.first);
@@ -1008,15 +819,6 @@ void ui_tailscale_icon_set_color(lv_obj_t *icon, lv_color_t color, lv_opa_t opa)
     }
 }
 
-void ui_format_size(char *buf, size_t len, uint64_t bytes)
-{
-    const char *u[] = { "B", "KB", "MB", "GB", "TB" };
-    int i = 0; double v = (double)bytes;
-    while (v >= 1024 && i < 4) { v /= 1024; i++; }
-    if (i == 0) snprintf(buf, len, "%llu %s", (unsigned long long)bytes, u[0]);
-    else snprintf(buf, len, "%.1f %s", v, u[i]);
-}
-
 void ui_format_duration(char *buf, size_t len, uint32_t s)
 {
     if (s >= 3600) snprintf(buf, len, "%u:%02u:%02u", s / 3600, (s / 60) % 60, s % 60);
@@ -1074,7 +876,7 @@ void ui_init(void)
     lv_obj_t *layers[] = { lv_layer_top(), lv_layer_sys(), lv_layer_bottom() };
     for (size_t i = 0; i < sizeof(layers) / sizeof(layers[0]); i++) {
         lv_obj_set_style_text_font(layers[i], FONT_BODY, 0);
-        lv_obj_set_style_text_color(layers[i], UI_TEXT, 0);
+        lv_obj_set_style_text_color(layers[i], lv_color_hex(UI_TK_FG), 0);
     }
     lv_obj_set_style_bg_opa(lv_layer_top(), LV_OPA_TRANSP, 0);
     if (!s_blank) {

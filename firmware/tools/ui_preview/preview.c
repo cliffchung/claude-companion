@@ -171,7 +171,7 @@ void bsp_display_brightness_set(int v) {}
    address, online). PREVIEW_HOSTS=empty: the Host's entry only. PREVIEW_HOSTS=sd: the LAN host signs in with a key
    file on the SD card. The add / update / remove calls are recorded. */
 static server_t s_preview_servers[SERVER_MAX] = {
-    { .name = "Mac", .host = "studio-host.local", .port = 22, .user = "me", .use_key = true, .keypath = "device" },
+    { .name = "Desk", .host = "studio-host.local", .port = 22, .user = "me", .use_key = true, .keypath = "device" },
     { .name = "pi-lan", .host = "192.168.1.50", .port = 22, .user = "pi", .use_key = true, .keypath = "device" },
     { .name = "build-box", .host = "100.64.0.11", .port = 22, .user = "dev", .use_key = true, .keypath = "device" },
 };
@@ -362,7 +362,7 @@ bool cc_link_connected(void) { return pv_wifi() && pv_host() && !pv_notfound(); 
 /* the device's own wording (cc_link.c), so the banner's cut is tested */
 const char *cc_link_status_text(char *b, size_t cap) {
     if (!pv_host()) snprintf(b, cap, "no Host set up");
-    else if (pv_notfound()) snprintf(b, cap, "Host not found at studio-host.local (set its address in Settings \xe2\x86\x92 Network) (retry in 12s)");
+    else if (pv_notfound()) snprintf(b, cap, "Host not found at studio-host.local (set its fallback address in Settings \xe2\x80\xba Host) (retry in 12s)");
     else snprintf(b, cap, cc_link_connected() ? "connected studio-host" : "connecting to studio-host");
     return b;
 }
@@ -477,6 +477,8 @@ static void keyboard_test_cb(lv_event_t *e) {
     if (lv_event_get_code(e)==LV_EVENT_RELEASED) keyboard_releases++;
 }
 static void keyboard_confirmed(bool yes, void *ud) { keyboard_answer=yes ? 1 : -1; }
+static int keyboard_pick=-2;
+static void keyboard_picked(int index, void *ud) { (void)ud; keyboard_pick=index; }
 static bool press_key(special_key_t key, uint8_t mods, bool terminal) {
     key_event_t ev={.type=KEY_EV_SPECIAL,.key=key,.mods=mods};
     return ui_keyboard_route(&ev,terminal);
@@ -531,7 +533,18 @@ static void keyboard_check(void) {
     assert(lv_obj_has_state(toggle,LV_STATE_FOCUS_KEY));
     press_key(SK_ENTER,0,false); assert(lv_obj_has_state(toggle,LV_STATE_CHECKED));
     press_key(SK_ENTER,0,false); assert(!lv_obj_has_state(toggle,LV_STATE_CHECKED));
-    puts("Keyboard navigation, slider persistence, modal isolation, mixed input, switches, deletion and SSH routing checks passed.");
+    /* T9-18: in an action sheet the first Down lands on the first action, not on the scrim (Enter there closed it) */
+    const char *acts[]={"first","second"};
+    ui_action_sheet("sheet",acts,2,0,keyboard_picked,NULL);
+    press_key(SK_DOWN,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==0 && !ui_keyboard_owns_input());
+    ui_action_sheet("sheet",acts,2,0,keyboard_picked,NULL);
+    press_key(SK_DOWN,0,false); press_key(SK_DOWN,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==1);
+    ui_picker("picker",acts,2,1,keyboard_picked,NULL);
+    press_key(SK_TAB,0,false); press_key(SK_ENTER,0,false); assert(keyboard_pick==0);
+    /* T10-8 stays: a confirm's first control is Cancel, so Enter alone cancels */
+    keyboard_answer=0; ui_confirm_ex("test",NULL,"Go",false,keyboard_confirmed,NULL);
+    press_key(SK_ENTER,0,false); assert(keyboard_answer==-1);
+    puts("Keyboard navigation, slider persistence, modal isolation, mixed input, switches, deletion, sheet focus and SSH routing checks passed.");
 }
 
 static void terminal_spacing_check(void) {
@@ -1084,7 +1097,7 @@ static int sessions_case(lv_display_t *d, const char *v) {
         sink_text("cd");
         assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
         assert(!strcmp(field_text(s), "cd"));   /* no space reaches the field */
-        assert(find_label(lv_layer_top(), HK_VOICE_TOAST, false));
+        assert(find_label(lv_layer_top(), tr(STR_HK_VOICE), false));
         step(d, 3100);
         assert(sink_ch('p', MOD_CTRL)); step(d, 400);
         assert(ui_nav_is_top(ui_settings_create));
@@ -1689,7 +1702,7 @@ static int settings_case(lv_display_t *d, int section) {
         panel = settings_panel(s);
     } else if (section == UI_SET_HOST && !click[0] && (!pv_host() || pv_notfound())) {
         /* U11 and the frozen countdown (T7 review I2): the Link row says Host, never Mac, and no "(retry in Ns)" */
-        const char *want = !pv_host() ? "No Host set up" : "Host not found at studio-host.local";
+        const char *want = !pv_host() ? "No host set up" : "Host not found at studio-host.local";
         if (!find_label(panel, want, false)) { printf("check %s: FAIL no Link text \"%s\"\n", name, want); return 1; }
         if (find_label_has(panel, "Mac", 0) || find_label_has(panel, "retry in", 0)) {
             printf("check %s: FAIL the Link row says \"%s\"\n", name,
@@ -1761,7 +1774,7 @@ static int terminal_case(lv_display_t *d, const char *v) {
     lv_obj_t *s = open_terminal(d), *body = hosts_body(s), *banner = lv_obj_get_child(s, 1), *top = lv_layer_top();
     (void)timers0;
     assert(find_clickable_shown(s, "\xe2\x86\x90 Sessions") && find_label(s, "Terminal", false));
-    if (find_label(body, "Mac", false) || find_label_has(body, "me@studio-host", 0)) { printf("check %s: FAIL the Host's entry is listed\n", name); return 1; }
+    if (find_label(body, "Desk", false) || find_label_has(body, "me@studio-host", 0)) { printf("check %s: FAIL the Host's entry is listed\n", name); return 1; }
     if (!find_label(body, FOOTNOTE, false)) { printf("check %s: FAIL no footnote\n", name); return 1; }
     int r = 0;
     if (!v[0]) {
@@ -1853,7 +1866,7 @@ static int terminal_case(lv_display_t *d, const char *v) {
         setenv("PREVIEW_WIFI", "1", 1);
         assert(red(host_note(lan)) && !strcmp(lv_label_get_text(host_note(lan)), "No Wi-Fi") && !s_term_opens);
         /* a session that failed (B6's missing key file): the reason is on its row when Terminal shows again */
-        ui_hosts_note_failure(1, HF_KEY_FILE_MISSING_MSG);
+        ui_hosts_note_failure(1, tr(STR_HF_KEY_FILE_MISSING));
         ui_nav_refresh(); step(d, 200);
         s = lv_screen_active(); body = hosts_body(s); lan = host_row(body, "pi-lan");
         if (!red(host_note(lan)) || strcmp(lv_label_get_text(host_note(lan)), "Key file not found on SD card")) { printf("check %s: FAIL the failure isn't on the row\n", name); return 1; }
@@ -2113,7 +2126,7 @@ static int hostform_case(lv_display_t *d, const char *v) {
         r |= pv_run_checks(d, s, name, false, 0);
         form_set(d, s, "User", "me2");
         click_label(d, s, "Save");
-        if (s_store_updates != 1 || s_set_server_calls != 1 || strcmp(s_set_server_name, "Mac") || s_rename_calls || !ui_nav_is_top(ui_settings_create)) {
+        if (s_store_updates != 1 || s_set_server_calls != 1 || strcmp(s_set_server_name, "Desk") || s_rename_calls || !ui_nav_is_top(ui_settings_create)) {
             printf("check %s: FAIL the Host's entry save (updates %d, set_server %d)\n", name, s_store_updates, s_set_server_calls); return 1;
         }
         /* M1: a rename of the Host's entry follows it (no carry-clearing switch of Host) */
@@ -2121,7 +2134,7 @@ static int hostform_case(lv_display_t *d, const char *v) {
         s = lv_screen_active();
         form_set(d, s, "Name", "Studio");
         click_label(d, s, "Save");
-        if (s_rename_calls != 1 || strcmp(s_rename_old, "Mac") || strcmp(s_rename_new, "Studio") || strcmp(s_set_server_name, "Studio")) {
+        if (s_rename_calls != 1 || strcmp(s_rename_old, "Desk") || strcmp(s_rename_new, "Studio") || strcmp(s_set_server_name, "Studio")) {
             printf("check %s: FAIL the rename (%d calls)\n", name, s_rename_calls); return 1;
         }
         /* the Host picker's Add host…: the new entry becomes the Host (P4-6) */

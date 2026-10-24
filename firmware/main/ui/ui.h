@@ -9,24 +9,6 @@
 extern "C" {
 #endif
 
-/* ---- colours ----
- * Compatibility aliases onto the tokens (ui_tokens.h) for the screens not rebuilt yet; Task 12
- * removes them. New code uses UI_TK_* and the ui_comp components. */
-#define UI_BG          lv_color_hex(UI_TK_BG)
-#define UI_CARD        lv_color_hex(UI_TK_PANEL)
-#define UI_CARD_HI     lv_color_hex(UI_TK_PANEL2)
-#define UI_ACCENT      lv_color_hex(UI_TK_FG)
-#define UI_ACCENT2     lv_color_hex(UI_TK_MUTED)
-#define UI_DANGER      lv_color_hex(UI_TK_RED)
-#define UI_WARN        UI_ACCENT2
-#define UI_TEXT        lv_color_hex(UI_TK_FG)
-#define UI_MUTED       lv_color_hex(UI_TK_MUTED)
-/* Shims for the deleted theme engine (ruling C5). No users since Task 10 (ui_terminal.c moved to ui_comp);
- * Task 12 removes them. A zero radius (bars) stays square. */
-#define ui_theme_pad(design)     (design)
-#define ui_theme_radius(design)  ((design) ? UI_TK_RADIUS : 0)
-#define ui_theme_pixel()         true
-#define UI_TOPBAR_H    56
 /* Exclude a touch-only subtree from physical keyboard navigation. */
 #define UI_KEYBOARD_SKIP LV_OBJ_FLAG_USER_4
 
@@ -65,19 +47,10 @@ void ui_nav_cancel_pending(void);
 
 /* ---- common widgets ---- */
 lv_obj_t *ui_screen_base(void);
-lv_obj_t *ui_topbar(lv_obj_t *parent, const char *title, bool back_button);
-lv_obj_t *ui_topbar_add_button(lv_obj_t *topbar, const char *symbol, lv_event_cb_t cb, void *user_data);
-lv_obj_t *ui_content(lv_obj_t *parent);  /* scrollable column below the top bar */
 lv_obj_t *ui_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *user_data);   /* secondary */
-lv_obj_t *ui_button_colored(lv_obj_t *parent, const char *text, lv_color_t color, lv_event_cb_t cb, void *user_data);
-lv_obj_t *ui_card(lv_obj_t *parent);
-lv_obj_t *ui_label(lv_obj_t *parent, const char *text, const lv_font_t *font, lv_color_t color);
 lv_obj_t *ui_row(lv_obj_t *parent);
 lv_obj_t *ui_textarea(lv_obj_t *parent, const char *placeholder, bool password, bool oneline);
-lv_obj_t *ui_setting_row(lv_obj_t *parent, const char *label, const char *value, lv_event_cb_t cb, void *user_data);
 lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_cb_t cb, void *user_data);
-lv_obj_t *ui_section_title(lv_obj_t *parent, const char *text);
-lv_obj_t *ui_list_item(lv_obj_t *parent, const char *icon, const char *title, const char *subtitle, lv_event_cb_t cb, void *user_data);
 
 void ui_toast(const char *text);                  /* ui_toast_ms(text, 3000) */
 void ui_toast_ms(const char *text, uint32_t ms);
@@ -98,7 +71,6 @@ lv_obj_t *ui_tailscale_icon(lv_obj_t *parent, int dot, int gap);
 void ui_tailscale_icon_set_color(lv_obj_t *icon, lv_color_t color, lv_opa_t opa);
 
 /* Utilities */
-void ui_format_size(char *buf, size_t len, uint64_t bytes);
 void ui_format_duration(char *buf, size_t len, uint32_t seconds);
 const char *ui_basename(const char *path);
 void ui_lock(void);

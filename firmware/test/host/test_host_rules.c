@@ -241,20 +241,20 @@ static void test_first_label_scope(void)
     TEST_ASSERT_FALSE(hf_first_label("10.1.2.3", l, sizeof(l)));
     TEST_ASSERT_FALSE(hf_first_label("web", l, sizeof(l)));   /* no dot: the name is itself */
 }
-/* key-type hardening: the type the link met first, then libssh's defaults (a reorder only) */
+/* key-type hardening: libssh's "^" form, the type the link met first and libssh's own defaults after it */
 static void test_hostkeys_pref(void)
 {
-    char b[400];
+    char b[64];
     TEST_ASSERT_TRUE(hf_hostkeys_pref("ssh-rsa", b, sizeof(b)));
-    TEST_ASSERT_EQUAL(0, strncmp(b, "rsa-sha2-512,rsa-sha2-256,ssh-ed25519,", 38));
-    TEST_ASSERT_EQUAL(1, (int)(strstr(b + 1, "rsa-sha2-512") == NULL));   /* no repeat */
+    TEST_ASSERT_EQUAL_STRING("^rsa-sha2-512,rsa-sha2-256", b);
     TEST_ASSERT_TRUE(hf_hostkeys_pref("ecdsa-sha2-nistp256", b, sizeof(b)));
-    TEST_ASSERT_EQUAL(0, strncmp(b, "ecdsa-sha2-nistp256,ssh-ed25519,ecdsa-sha2-nistp521,ecdsa-sha2-nistp384,sk-", 75));
+    TEST_ASSERT_EQUAL_STRING("^ecdsa-sha2-nistp256", b);
     TEST_ASSERT_TRUE(hf_hostkeys_pref("ssh-ed25519", b, sizeof(b)));
-    TEST_ASSERT_EQUAL_STRING(HF_DEFAULT_HOSTKEYS, b);
+    TEST_ASSERT_EQUAL_STRING("^ssh-ed25519", b);
     TEST_ASSERT_FALSE(hf_hostkeys_pref("", b, sizeof(b)));
     TEST_ASSERT_FALSE(hf_hostkeys_pref("ssh-dss", b, sizeof(b)));
     TEST_ASSERT_FALSE(hf_hostkeys_pref("ssh-rsa", b, 10));   /* too small: no option rather than a cut list */
+    TEST_ASSERT_EQUAL_STRING("", b);
 }
 
 int main(void)

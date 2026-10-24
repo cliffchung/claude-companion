@@ -429,7 +429,7 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
         power_log_save();
         /* Task 3: a check-in boot never starts the watch loop (M3), so there is nothing to wait for */
         bool fast = s_kind == POWER_BOOT_HIB_CHECKIN && !cc_link_watch_wanted() && !(boot_phase_exp() & BPX_OLD_DOWN);
-        cc_link_watch_enable(false);   /* the Mac's watch loop ends now, not after its quiet timeout */
+        cc_link_watch_enable(false);   /* the Host's watch loop ends now, not after its quiet timeout */
         vTaskDelay(pdMS_TO_TICKS(fast ? 0 : 300));
         /* Task 3 (L37): close the SSH session while Wi-Fi is still up, so the Host's sshd sees the close.
            Before, the link noticed only after the Wi-Fi went, and every check-in left an idle session on the

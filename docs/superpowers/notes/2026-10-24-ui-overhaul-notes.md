@@ -666,9 +666,10 @@ Final state: `ts off`, `power set defaults`, DHCP, Host link connected on the LA
   that first label or the bare name (one trailing dot allowed): with a Host at web.local, web.example.com and web.lan
   are not refused; web.tail1234.ts.net and "web" are. `hf_first_label` is the one helper (cc_link uses it too).
 - Order seam: `ssh_task` runs the steps `hf_conn_steps(interactive)` gives (DENY_CHECK, VERIFY_HOST, AUTH for an
-  interactive session; VERIFY_HOST, AUTH for a take-over) in a loop, so the host test pins "deny check before the
-  known-hosts check and before any authentication". What stays untestable on the host: that libssh's `ssh_connect`
-  sends no userauth request (read in client.c; the device visit covers the live refusal).
+  interactive session; VERIFY_HOST, AUTH for a take-over) in a loop. The host test pins only the `hf_conn_steps`
+  table (deny check before the known-hosts check and before authentication); that `ssh_task` follows the table, in
+  that order, is read in the code, not tested (corrected in Task 12, T12-4). Also untestable on the host: that
+  libssh's `ssh_connect` sends no userauth request (read in client.c; the device visit covers the live refusal).
 - Boot log: `cc_link: host keys: N known for the Host` after the migration (a count). Device after the flash: "host
   keys: 1 known for the Host", link connected on the LAN, booted unaided after `idf.py flash`; final state as found.
 - `idf.py size`: image 7,251,867 B; DIRAM 189,824 B.
@@ -890,3 +891,66 @@ Final state as found: LAN Host link connected, `ts off`, `power set defaults`, D
   re-run: right after boot the taps landed on Network › Advanced (opened and left, nothing changed). Final state as
   found: LAN Host link, `ts off`, `power set defaults`, DHCP, brightness 80, keyboard light `0 0 0080ff 1 5`; test
   session stopped.
+
+## Task 12: copy pass, one tr() table, and the lint for words, literals and aliases
+
+**Lint.** `ui_lint.py` gains `mac-word`, `literal-outside-tr`, `ui-alias` and `unused-str` (an `X(ID, …)` entry no
+code uses: how "delete every unused STR_*" is found and kept found). Before: 220 findings (165 unused-str, 31 ui-alias,
+21 literal-outside-tr, 3 mac-word). After: none. `grep -rn '"[^"]*\bMac\b' firmware/main` finds nothing (comments
+included). 163 unused entries deleted (Camera, Music, USB, OTA, Device info, the theme editor, rotation, status bar,
+creds-on-SD and others); 95 new ones carry the Sessions, overlay, pill, boot, sleep, SSH and placeholder text.
+
+**Rulings.**
+- T12-1: `literal-outside-tr` checks the brief's calls plus `lv_label_set_text_fmt` / `_static`, and only literals
+  passed straight to them (not inside a nested call). A literal is text when a letter is left after its escapes and
+  printf conversions are removed. A literal cast to a pointer (`(void *)"sleep-usb"`) is a callback key and passes.
+  Literals that reach the screen through a buffer (strlcpy / snprintf, tables, the pure modules) aren't caught by
+  the rule; they were moved by a one-off scan of every literal in `ui/**` (listed in the report).
+- T12-2: left outside tr(): the soft keyboard's keycaps ("Ctrl", "Alt", "abc", the letter rows), "SHA256:" in the
+  fingerprint text, log reasons ("Settings reboot"), NVS and callback keys. cc_link's status texts stay literals in
+  cc_link.c (they are console and log text too, and the UI shows them only through `ui_sessions_link_down_text`);
+  their wording is fixed: "no host set up", "no host entry named '<name>' (Settings › Host)", "Host not found at
+  <host> (set its fallback address in Settings › Host)", "… forget the old key in Settings › Host to trust it", and
+  "›" for paths, not "→". Console and log text: "host: …" for "mac: …", "New host key pinned", "No host set up".
+- T12-3 (carried item 2, checked formats): `ui_sessions_link_down_text` now uses a literal format,
+  `"%s %s. %s"` with `STR_LINK_CANT_REACH` ("Can't reach") and `STR_LINK_IS_IT_AWAKE`. Every text this task added uses a
+  literal format with tr() pieces. The 24 older format entries (`STR_NET_*`, `STR_TERM_*`, `STR_DIAG_*`,
+  `STR_HF_DELETE_Q`) stay tr() formats; the new host test `test_i18n` pins each one's conversions to what its callers
+  pass, and fails if any other entry has a `%` (four plain-text entries with a literal "%" are listed as never-format).
+- T12-4 (carried item 3): the Task 9 round 3 order-seam note claimed the host test pins `ssh_task`'s order; it pins
+  only the `hf_conn_steps` table. Corrected in place.
+- T12-5 (carried item 4): `hf_hostkeys_pref` returns libssh's prefix form, "^rsa-sha2-512,rsa-sha2-256" or
+  "^<type>". Checked in the vendored libssh 0.11.5: `ssh_options_set_algo` (options.c) sends a leading '^' to
+  `ssh_prefix_default_algos` (kex.c), which puts the list first and the rest of the default host-key list after it
+  without repeats, filtered to the supported ones. `HF_DEFAULT_HOSTKEYS` and its copy of libssh's list are gone; the
+  buffer in ssh_client.c is 48 B. The P4C-10 order (`hf_conn_steps`, deny check before auth) is untouched.
+- T12-6 (carried item 5, T9-18): the keyboard walk never counts an open dialog's scrim as a control
+  (`keyboard_walk_t.root`). A sheet's first Down or Tab lands on its first action, and Enter runs it. A tap on the
+  scrim still closes the sheet. `ui_confirm_ex` keeps Cancel first, so Enter alone cancels (T10-8). Preview
+  `keyboard` checks all of it.
+- T12-7 (carried item 6): the session bar's name and state labels use shared styles (`ui_session_bar_name`,
+  `ui_session_bar_state`). The Terminal list's and the host form's bodies use `ui_body_place(body, banner)`, two
+  shared styles sized at `ui_comp_init` from the display height. No `lv_obj_set_style_*` is left in ui_terminal.c,
+  ui_hosts.c or ui_host_form.c, apart from the terminal view's own size.
+- T12-8 (carried item 7): "SSH connection failed. the network is going down" is gone. A take-over the network cuts
+  ends with "The network went down. The session keeps running on the host." One that never connected ends with
+  "Couldn't open the session. <reason>". ssh_client's reasons are tr() sentences now (`STR_SSH_*`), and so are
+  host_rules' four messages (`STR_HF_KEY_*`, `STR_HF_HOSTKEYS_UNCHECKED`); their `HF_*_MSG` macros are deleted.
+- T12-9 (carried item 8): the `UI_*` aliases, `ui_button_colored` and the `ui_theme_*` shims are deleted. Their last
+  users were in ui_core.c, not ui_terminal.c, which moved in Task 10. ui_core's dead legacy widgets (`ui_topbar`,
+  `ui_topbar_add_button`, `ui_content`, `ui_card`, `ui_label`, `ui_setting_row`, `ui_section_title`,
+  `ui_list_item`, `ui_format_size`, `UI_TOPBAR_H`) are deleted too. `ui_textarea` and `ui_switch_row` use `UI_TK_*`.
+- T12-10 (carried item 9): private data scrubbed from firmware, tools, and docs/superpowers (specs, mockups, plans
+  and notes). The Host name became `my-host`, and the tailnet address went to 100.64.0.x. A LAN address that only
+  needs to be an IPv4 went to 192.0.2.x (TEST-NET-1). One that must be private (the fallback validity test, the
+  migration fixture, the UI example and the placeholder) went to 192.168.1.50, the example the static-address hint
+  already uses. A whole-tree grep finds none of the real values afterwards.
+- T12-11 (carried items 1 and 10): `STR_SET_ROTATION`, `STR_SET_STATUSBAR`, `STR_OTA_URL`, `STR_DEVINFO` and
+  `STR_DEV_*` are among the 163 deleted. "Wi-Fi networks" survives only inside `STR_SET_RESET_BODY` (already in the
+  table) and the preview's negative check; the bridge row was gone. The placeholders pass `mac-word`.
+- T12-12: the hotkey overlay table holds tr() ids (`hk_line_t` of `str_id_t`, `hk_overlay_n`), and `sm_pill_text`
+  returns tr() text, so the host `pure` library links i18n.c. "HOST KEY CHANGED! Possible attack." loses its
+  exclamation mark: "This host's key changed. That can mean an attack. Continue only if you changed it." Other
+  rewrites: "No host set up" (§9.10), "Please wait…", "USB-C + battery …", "Can't open: set up the host in Settings ›
+  Host". The preview's and server_store test's Host entry is named "Desk", not "Mac".
+- `idf.py size`: image 7,251,899 B; DIRAM 190,008 B.

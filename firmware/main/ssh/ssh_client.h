@@ -40,7 +40,7 @@ const char *ssh_client_error(ssh_client_t *c);
 int ssh_client_exit_status(ssh_client_t *c);
 /* Final review C1: registers the live clients' closer with the close-before-down guard (sys/link_guard.h):
    every path that takes the link down first closes each open SSH Terminal and take-over session and waits
-   (bounded) for its disconnect. Its state then ends as SSH_ST_ERROR "the network is going down". Called
+   (bounded) for its disconnect. Its state then ends as SSH_ST_ERROR STR_SSH_NET_DOWN ("The network went down."). Called
    once at boot, before any client starts. */
 void ssh_client_guard_init(void);
 /* known hosts (NVS "kh"): key = hash of host:port, value = SHA256 of the server key */

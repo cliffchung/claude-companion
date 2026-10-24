@@ -41,15 +41,15 @@ hk_dash_t hk_dashboard(const key_event_t *ev)
 }
 
 const hk_line_t hk_overlay[] = {
-    { "Up / Down", "move between sessions" },
-    { "Enter", "send the answer" },
-    { "Ctrl+O", "open the session" },
-    { "Ctrl+T", "terminal (Ctrl+M also)" },
-    { "Ctrl+P", "settings" },
-    { "Ctrl+K", "this list" },
-    { "Ctrl+Space", "voice input (coming later)" },
-    { "Esc", "clear the answer, or go back" },
-    { "Ctrl+]", "leave a take-over or SSH session" },
-    { "Shift+Up / Down", "scroll back in a take-over" },
-    { NULL, NULL },
+    { STR_HK_K_UPDOWN, STR_HK_W_UPDOWN },
+    { STR_HK_K_ENTER, STR_HK_W_ENTER },
+    { STR_HK_K_CTRL_O, STR_HK_W_CTRL_O },
+    { STR_HK_K_CTRL_T, STR_HK_W_CTRL_T },
+    { STR_HK_K_CTRL_P, STR_HK_W_CTRL_P },
+    { STR_HK_K_CTRL_K, STR_HK_W_CTRL_K },
+    { STR_HK_K_CTRL_SPACE, STR_HK_W_CTRL_SPACE },
+    { STR_HK_K_ESC, STR_HK_W_ESC },
+    { STR_HK_K_CTRL_BRACKET, STR_HK_W_CTRL_BRACKET },
+    { STR_HK_K_SHIFT_UPDOWN, STR_HK_W_SHIFT_UPDOWN },
 };
+const int hk_overlay_n = (int)(sizeof(hk_overlay) / sizeof(hk_overlay[0]));

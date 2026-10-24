@@ -20,7 +20,7 @@ static hc_cache_t hc(const char *entry, const char *ip)
 
 static void test_hc_used_for_its_entry(void)
 {
-    hc_cache_t c = hc("my-host.local", "192.168.1.50");
+    hc_cache_t c = hc("my-host.local", "192.0.2.15");
     TEST_ASSERT_TRUE(hc_use(&c, "my-host.local", false, false));
     TEST_ASSERT_FALSE(hc_use(&c, "other.local", false, false));
     TEST_ASSERT_FALSE(hc_use(&c, "", false, false));
@@ -33,14 +33,14 @@ static void test_hc_literal_entry(void)
 {
     hc_cache_t c;
     memset(&c, 0, sizeof(c));
-    TEST_ASSERT_FALSE(hc_on_resolved(&c, "192.168.1.50", "192.168.1.50", KEY_A));
-    TEST_ASSERT_FALSE(hc_use(&c, "192.168.1.50", false, false));
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "192.0.2.15", "192.0.2.15", KEY_A));
+    TEST_ASSERT_FALSE(hc_use(&c, "192.0.2.15", false, false));
 }
 
 /* a pending Forget host key always looks the name up: the forget's pin must go to the real Host */
 static void test_hc_not_during_forget(void)
 {
-    hc_cache_t c = hc("my-host.local", "192.168.1.50");
+    hc_cache_t c = hc("my-host.local", "192.0.2.15");
     TEST_ASSERT_FALSE(hc_use(&c, "my-host.local", false, true));
 }
 
@@ -58,8 +58,8 @@ static void test_hc_bad_values(void)
     memset(&c, 0, sizeof(c));
     TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "not-an-ip", KEY_A));
     TEST_ASSERT_FALSE(hc_use(&c, "my-host.local", false, false));
-    TEST_ASSERT_FALSE(hc_on_resolved(&c, "", "192.168.1.50", KEY_A));
-    c = hc("my-host.local", "192.168.1.50");
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "", "192.0.2.15", KEY_A));
+    c = hc("my-host.local", "192.0.2.15");
     strcpy(c.ip, "192.168.1");
     TEST_ASSERT_FALSE(hc_use(&c, "my-host.local", false, false));
 }
@@ -69,24 +69,24 @@ static void test_hc_needs_a_key(void)
 {
     hc_cache_t c;
     memset(&c, 0, sizeof(c));
-    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "192.168.1.50", NULL));
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "192.0.2.15", NULL));
     TEST_ASSERT_FALSE(hc_use(&c, "my-host.local", false, false));
 }
 
 static void test_hc_change_reported(void)
 {
-    hc_cache_t c = hc("my-host.local", "192.168.1.50");
-    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "192.168.1.50", KEY_A));
-    TEST_ASSERT_TRUE(hc_on_resolved(&c, "my-host.local", "192.168.1.51", KEY_A));
-    TEST_ASSERT_TRUE(hc_on_resolved(&c, "mac.local", "192.168.1.51", KEY_A));
-    TEST_ASSERT_TRUE(hc_on_resolved(&c, "mac.local", "192.168.1.51", KEY_B));   /* a new key is a change */
+    hc_cache_t c = hc("my-host.local", "192.0.2.15");
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "192.0.2.15", KEY_A));
+    TEST_ASSERT_TRUE(hc_on_resolved(&c, "my-host.local", "192.0.2.16", KEY_A));
+    TEST_ASSERT_TRUE(hc_on_resolved(&c, "mac.local", "192.0.2.16", KEY_A));
+    TEST_ASSERT_TRUE(hc_on_resolved(&c, "mac.local", "192.0.2.16", KEY_B));   /* a new key is a change */
 }
 
 /* The cached address only skips the lookup: it is kept only when its own pin matches (KH_OK). Every other
    result (unknown, changed, unreadable) is dropped without acting on it, and the normal lookup decides. */
 static void test_hc_only_a_matching_pin_counts(void)
 {
-    hc_cache_t c = hc("my-host.local", "192.168.1.50");
+    hc_cache_t c = hc("my-host.local", "192.0.2.15");
     TEST_ASSERT_EQUAL(HC_ACCEPT, hc_cached_key(KH_OK, &c, KEY_A));
     TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_UNKNOWN, &c, KEY_A));
     TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_CHANGED, &c, KEY_A));

@@ -61,18 +61,17 @@ typedef enum { HF_GATE_ALLOW, HF_GATE_REFUSE_HOST, HF_GATE_REFUSE_UNCHECKED } hf
 hf_gate_t hf_shell_gate(bool interactive, hf_deny_read_t rd, const uint8_t key[32], const uint8_t (*list)[32], int n);
 /* An add writes only over a list it read (never over an unread one, which would erase it). */
 bool hf_hostkeys_may_write(hf_deny_read_t rd);
-#define HF_HOSTKEYS_UNCHECKED_MSG "Couldn't check this host against the Host's keys"
 
 /* The per-connection steps ssh_task runs after the key exchange, in order: an interactive session checks the
    deny-list first, before the known-hosts check and before any authentication. Returns n (0 if cap is too small). */
 typedef enum { HF_STEP_DENY_CHECK, HF_STEP_VERIFY_HOST, HF_STEP_AUTH } hf_step_t;
 int hf_conn_steps(bool interactive, hf_step_t *out, int cap);
 
-/* Key-type hardening: the SSH_OPTIONS_HOSTKEYS list for an interactive session, the algorithms for the key type the
-   link last met (ssh_key_type_to_char) first, then libssh's defaults without repeats: a reorder only. False (set no
-   option) for an unknown type or a buffer too small. */
-#define HF_DEFAULT_HOSTKEYS "ssh-ed25519,ecdsa-sha2-nistp521,ecdsa-sha2-nistp384,ecdsa-sha2-nistp256," \
-                            "sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256"
+/* Key-type hardening: the SSH_OPTIONS_HOSTKEYS value for an interactive session, libssh's "^" prefix form (0.11
+   options.c ssh_options_set_algo -> kex.c ssh_prefix_default_algos): the algorithms for the key type the link last met
+   (ssh_key_type_to_char) go first, and libssh puts the rest of its own default list after them without repeats, so
+   it is a reorder only. "^rsa-sha2-512,rsa-sha2-256" for "ssh-rsa", "^<type>" for ed25519 and the ECDSA curves.
+   False (set no option) for an unknown type or a buffer too small. */
 bool hf_hostkeys_pref(const char *key_type, char *out, size_t cap);
 
 typedef enum { HF_AUTH_DEVICE, HF_AUTH_PASSWORD, HF_AUTH_SD_FILE } hf_auth_t;
@@ -96,9 +95,6 @@ hf_auth_plan_t hf_auth_plan(bool use_key, const char *keypath, bool file_exists)
 /* B6: a key path the SSH client mounts the SD card for before it connects. */
 bool hf_key_on_sd(const char *keypath);
 /* B6: the connect error when a key file is missing (the SSH client's state message; the Terminal row shows it). */
-#define HF_KEY_FILE_MISSING_MSG "Key file not found on SD card"
-#define HF_KEY_BAD_PATH_MSG "The key file must be on the SD card"
-#define HF_KEY_REFUSED_MSG "The host refused the key"
 
 #ifdef __cplusplus
 }

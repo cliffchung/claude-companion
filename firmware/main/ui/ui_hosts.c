@@ -74,9 +74,7 @@ static int host_dot(const char *host)
 
 static void body_place(bool banner)
 {
-    int32_t y = UI_TK_HEADER_H + (banner ? UI_TK_BANNER_H : 0);
-    lv_obj_set_pos(s_body, 0, y);
-    lv_obj_set_size(s_body, LV_PCT(100), lv_display_get_vertical_resolution(NULL) - y);
+    ui_body_place(s_body, banner);
 }
 
 static void refresh_ts(void);

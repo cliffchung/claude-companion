@@ -20,7 +20,7 @@
 #include "freertos/task.h"
 
 /* Console commands for the companion link: companion, sessions, reply, logs, wifi, ts.
- * Everything that reaches the Mac goes through cc_link and a cc_cmd_* builder. */
+ * Everything that reaches the Host goes through cc_link and a cc_cmd_* builder. */
 
 #define SNAP_CAP 128
 #define LOGS_CAP (16 * 1024)
@@ -119,11 +119,11 @@ static int cmd_companion(int argc, char **argv)
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "resolve") == 0) {
-        /* how the link would resolve a Mac host: literal, MagicDNS, mDNS, DNS or the fallback */
+        /* how the link would resolve the Host's name: literal, MagicDNS, mDNS, DNS or the fallback */
         char ip[16];
         const char *how = "";
-        if (cc_link_resolve_test(argv[2], ip, sizeof(ip), &how)) printf("mac: %s -> %s (%s)\n", argv[2], ip, how);
-        else printf("mac: %s doesn't resolve (no fallback address)\n", argv[2]);
+        if (cc_link_resolve_test(argv[2], ip, sizeof(ip), &how)) printf("host: %s -> %s (%s)\n", argv[2], ip, how);
+        else printf("host: %s doesn't resolve (no fallback address)\n", argv[2]);
         return 0;
     }
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "server-host") == 0) {
@@ -132,7 +132,7 @@ static int cmd_companion(int argc, char **argv)
             printf("companion: rejected: the host has no spaces; the fallback is a private IPv4 address or none\n");
             return 1;
         }
-        if (e == ESP_ERR_INVALID_STATE) { printf("No Host set up\n"); return 1; }
+        if (e == ESP_ERR_INVALID_STATE) { printf("No host set up\n"); return 1; }
         if (e != ESP_OK) { printf("companion: the server list didn't save\n"); return 1; }
         char fb[16];
         cc_link_lan_fallback(fb, sizeof(fb));
@@ -157,15 +157,15 @@ static int cmd_companion(int argc, char **argv)
     if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "forget") == 0) {
         char fp[80];
         esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
-        if (e == ESP_OK) printf("New Mac key pinned: %s\n", fp);
+        if (e == ESP_OK) printf("New host key pinned: %s\n", fp);
         else if (e == ESP_ERR_TIMEOUT) printf("Old key forgotten; reconnecting...\n");
-        else printf("No Host set up\n");
+        else printf("No host set up\n");
         return e == ESP_OK || e == ESP_ERR_TIMEOUT ? 0 : 1;
     }
     if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "corrupt") == 0) {
-        /* debug: shows the changed-key path without touching the Mac */
+        /* debug: shows the changed-key path without touching the Host */
         char hp[160];
-        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No Host set up\n"); return 1; }
+        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No host set up\n"); return 1; }
         printf("debug: host key pin for %s overwritten; reconnecting\n", hp);
         return 0;
     }

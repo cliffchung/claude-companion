@@ -148,7 +148,7 @@ lv_obj_t *ui_vitals_create(lv_obj_t *parent)
     lv_obj_set_style_radius(v->dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(v->dot, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(v->dot, HEX(UI_TK_MUTED), 0);
-    v->host = label(link, "Host", FONT_SMALL, UI_TK_MUTED);
+    v->host = label(link, tr(STR_SET_HOST), FONT_SMALL, UI_TK_MUTED);
 
     v->clock = label(g, "--:--", FONT_BODY, UI_TK_FG);
     update(v);

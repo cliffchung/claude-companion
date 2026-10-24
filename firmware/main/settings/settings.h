@@ -56,8 +56,8 @@ typedef struct {
     uint8_t  term_line_height;   /* 32 */
     uint8_t ss_classic;          /* reserved (the removed screensaver's layout) */
     uint8_t  kbd_layout;         /* kbd_layout_t: STOCK follows the keycaps; live, console only (`key layout`) */
-    char     companion_server[48];   /* name of the Mac in the server list; "" = none */
-    char     claude_path[64];        /* Claude CLI on the Mac; must pass cc_path_valid */
+    char     companion_server[48];   /* name of the Host in the server list; "" = none */
+    char     claude_path[64];        /* Claude CLI on the Host; must pass cc_path_valid */
     /* Plan 2 (v18) */
     char     tz_rule[48];        /* POSIX TZ, default "PST8PDT,M3.2.0,M11.1.0" */
     uint16_t pw_dim_s;           /* 30 */
@@ -77,8 +77,8 @@ typedef struct {
     /* v19 (Task 8, PT16) */
     uint16_t pw_hibernate_checkin_min; /* spec hibernate_checkin: 15; 0 = off; clamped by pr_hib_checkin_clamp_min to 0 or 15-720 */
     /* v21 (Plan 3 Task 1, local link) */
-    char     mac_lan_ip[16];     /* the Mac's fallback LAN address when its name doesn't resolve; "" = none */
-    char     mac_ts_ip[16];      /* the Mac entry's last tailnet address: its pin carries over to the LAN (L3) */
+    char     mac_lan_ip[16];     /* the Host's fallback LAN address when its name doesn't resolve; "" = none */
+    char     mac_ts_ip[16];      /* the Host entry's last tailnet address: its pin carries over to the LAN (L3) */
 } app_settings_t;
 
 #define TZ_DEFAULT "PST8PDT,M3.2.0,M11.1.0"

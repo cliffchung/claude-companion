@@ -3,6 +3,7 @@
  * so it also builds in firmware/test/host. */
 #include <stdbool.h>
 #include "input/keyboard.h"
+#include "i18n/i18n.h"
 
 typedef enum { HK_T_NONE, HK_T_LEAVE, HK_T_SCROLL_UP, HK_T_SCROLL_DOWN } hk_term_t;
 /* Ctrl+] (KEY_EV_CHAR ']' with MOD_CTRL) and Ctrl+Q / Ctrl+q (the alias) -> LEAVE in both modes;
@@ -17,7 +18,6 @@ typedef enum { HK_D_NONE, HK_D_OPEN, HK_D_SETTINGS, HK_D_TERMINAL, HK_D_KEYS, HK
    answer field, never sent); anything else -> NONE (dash_key's existing handling) */
 hk_dash_t hk_dashboard(const key_event_t *ev);
 
-typedef struct { const char *keys, *what; } hk_line_t;
-extern const hk_line_t hk_overlay[];   /* NULL-terminated (keys == NULL); the Ctrl+K overlay, one shortcut per line */
-
-#define HK_VOICE_TOAST "Voice input comes in a later update"
+typedef struct { str_id_t keys, what; } hk_line_t;   /* tr() ids */
+extern const hk_line_t hk_overlay[];   /* the Ctrl+K overlay, one shortcut per line */
+extern const int hk_overlay_n;

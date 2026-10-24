@@ -64,6 +64,65 @@ class LintTests(unittest.TestCase):
         })
         self.assertEqual(ui_lint.lint(main), [])
 
+    def test_mac_word_flagged(self):
+        main = self.tree({
+            "ui/a.c": "void f(void) {\n    ui_toast(\"Can't reach your Mac\");\n}\n",
+            "ui/b.c": "/* the Mac's fallback */\nvoid g(void) { s.mac_lan_ip[0] = 0; h(\"MacBook\"); h(\"mac.local\"); }\n",
+            "companion/cc_console.c": "static const char *k = \"Mac entry host\";\n",
+            "companion/other.c": "static const char *k = \"Mac\";\n",
+            "i18n/i18n.h": "X(A, \"No Mac set up\") \\\n",
+        })
+        problems = ui_lint.lint(main)
+        mac = sorted(p for p in problems if p.endswith("mac-word"))
+        self.assertEqual(mac, [os.path.join("companion", "cc_console.c") + ":1: mac-word",
+                               os.path.join("i18n", "i18n.h") + ":1: mac-word",
+                               os.path.join("ui", "a.c") + ":2: mac-word"])
+
+    def test_literal_outside_tr_flagged(self):
+        main = self.tree({"ui/a.c": "void f(lv_obj_t *l) {\n"
+                                    "    lv_label_set_text(l, \"Loading\");\n"
+                                    "    ui_toast_ms(\"Saved\", 900);\n"
+                                    "    ui_srow_value(r, \"3 hosts\");\n"
+                                    "    ui_confirm_ex(\"Leave?\", tr(STR_OK), cb, NULL);\n"
+                                    "    ui_prompt(tr(STR_A), \"box.local\", cur, false, cb, NULL);\n"
+                                    "    lv_label_set_text_fmt(l, \"%d hosts\", n);\n"
+                                    "}\n"})
+        problems = ui_lint.lint(main)
+        self.assertEqual(self.rules(problems), ["literal-outside-tr"] * 6)
+        self.assertEqual([int(p.split(":")[1]) for p in problems], [2, 3, 4, 5, 6, 7])
+
+    def test_tr_and_format_allowed(self):
+        main = self.tree({"ui/a.c": "void f(lv_obj_t *l) {\n"
+                                    "    lv_label_set_text(l, tr(STR_DONE));\n"
+                                    "    lv_label_set_text(l, \"\");\n"
+                                    "    lv_label_set_text_fmt(l, \"%s\", x);\n"
+                                    "    lv_label_set_text_fmt(l, \"%s \\xc2\\xb7 %d%%\", x, n);\n"
+                                    "    ui_toast(tr(STR_SAVED));\n"
+                                    "    ui_chip(p, LV_SYMBOL_LEFT, cb, NULL);\n"
+                                    "    lv_label_set_text(l, s.name);\n"
+                                    "    ui_srow(p, UI_ROW_SWITCH, tr(STR_A), on, cb, (void *)\"sleep-usb\");\n"
+                                    "}\n",
+                          "i18n/i18n.h": "X(DONE, \"Done\") \\\nX(SAVED, \"Saved\") \\\nX(A, \"A\")\n",
+                          "ui/b.c": "int x = STR_A;\n"})
+        self.assertEqual(ui_lint.lint(main), [])
+
+    def test_ui_alias_flagged(self):
+        main = self.tree({
+            "ui/a.c": "void f(lv_obj_t *o) {\n    lv_obj_set_style_bg_color(o, UI_CARD, 0);\n"
+                      "    lv_obj_set_style_bg_color(o, lv_color_hex(UI_TK_PANEL), 0);\n}\n",
+            "sys/b.c": "lv_obj_t *b = ui_button_colored(p, t, c, cb, NULL);\n",
+            "ui/c.h": "#define UI_MUTED_X 1\n#define UI_TEXT lv_color_hex(UI_TK_FG)\n",
+        })
+        problems = ui_lint.lint(main)
+        self.assertEqual(sorted(problems), [os.path.join("sys", "b.c") + ":1: ui-alias",
+                                            os.path.join("ui", "a.c") + ":2: ui-alias",
+                                            os.path.join("ui", "c.h") + ":2: ui-alias"])
+
+    def test_unused_str_flagged(self):
+        main = self.tree({"i18n/i18n.h": "#define STR_TABLE(X) \\\nX(USED, \"Used\") \\\nX(DEAD, \"Dead\")\n",
+                          "ui/a.c": "const char *s = tr(STR_USED);\n"})
+        self.assertEqual(ui_lint.lint(main), [os.path.join("i18n", "i18n.h") + ":3: unused-str"])
+
 
 if __name__ == "__main__":
     unittest.main()

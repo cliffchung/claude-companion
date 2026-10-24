@@ -18,195 +18,32 @@ typedef enum {
 X(APP_TITLE, "Claude Companion") \
 X(OK, "OK") \
 X(CANCEL, "Cancel") \
-X(YES, "Yes") \
-X(NO, "No") \
-X(BACK, "Back") \
-X(SAVE, "Save") \
 X(DELETE, "Delete") \
 X(EDIT, "Edit") \
 X(CONNECT, "Connect") \
-X(PLAY, "Play") \
-X(PAUSE, "Pause") \
-X(GESTURE_NOTE, "Swipe right to go back. Long-press a tile for its shortcut.") \
-X(SET_SECURITY, "Security") \
-X(CREDS_ON_SD, "Keep SSH servers on the TF card") \
-X(CREDS_NOTE, "Hosts, user names and passwords are encrypted with the device key and written to the card; nothing is left in flash. The key stays on the device, so the card alone cannot be read. Without the card the list starts empty.") \
-X(CREDS_RELOAD, "Re-read from the card") \
-X(CREDS_NO_SD, "The TF card is not available") \
 X(DISCONNECT, "Disconnect") \
-X(CLOSE, "Close") \
-X(DONE, "Done") \
-X(PLEASE_WAIT, "Please wait...") \
-X(FAILED, "Failed") \
-X(BAD_COLOR, "Use #RRGGBB") \
-X(SUCCESS, "Success") \
-X(ON, "On") \
+X(PLEASE_WAIT, "Please wait\xe2\x80\xa6") \
 X(OFF, "Off") \
 X(NONE, "None") \
 X(UNKNOWN, "Unknown") \
-X(CAMERA_STARTING, "Starting camera...") \
-X(CAMERA_READY, "Ready") \
-X(CAMERA_CAPTURE, "Take photo") \
-X(CAMERA_SAVING, "Saving photo...") \
-X(CAMERA_SAVED, "Saved to TF/DCIM/ClaudeCompanion") \
-X(CAMERA_FAILED, "Camera could not start") \
-X(CAMERA_SAVE_FAIL, "Could not save photo") \
-X(AUTH_METHOD, "Auth") \
-X(AUTH_PASSWORD, "Password") \
-X(CONNECTING, "Connecting...") \
-X(CONNECTED, "Connected") \
-X(DISCONNECTED, "Disconnected") \
-X(SSH_CONN_FAILED, "SSH connection failed.") \
-X(SSH_AUTH_FAILED, "Authentication failed.") \
+X(SSH_CONN_FAILED, "Couldn't open the session.") \
+X(SSH_AUTH_FAILED, "Authentication failed:") \
 X(SSH_HOSTKEY_NEW, "New host key. Trust and continue?") \
-X(SSH_HOSTKEY_CHANGED, "HOST KEY CHANGED! Possible attack. Continue?") \
+X(SSH_HOSTKEY_CHANGED, "This host's key changed. That can mean an attack. Continue only if you changed it.") \
 X(KEYBOARD, "Keyboard") \
-X(PHYS_KBD_DETECTED, "Physical keyboard detected") \
-X(USB_DRIVE, "USB Drive") \
-X(TF_NOT_MOUNTED, "TF card not mounted") \
-X(COPYING, "Copying %s") \
-X(OPEN_WITH, "Open") \
-X(IMAGE_VIEWER, "Image Viewer") \
-X(CANNOT_READ, "Cannot read file.") \
-X(EXIF_INFO, "EXIF") \
-X(ROTATE, "Rotate") \
-X(MUSIC_PLAYER, "Music Player") \
-X(NOW_PLAYING, "Now Playing") \
-X(FAVORITES, "Favorites") \
-X(ALL_MUSIC, "All Music") \
-X(ADD_FAV, "Add to Favorites") \
-X(REMOVE_FAV, "Remove from Favorites") \
-X(ADDED_FAV, "Added to favorites") \
-X(REMOVED_FAV, "Removed from favorites") \
-X(CLEAR_FAV, "Clear Favorites") \
-X(SCANNING_AUDIO, "Scanning audio files...") \
-X(NO_AUDIO, "No audio files found") \
-X(DECODE_FAILED, "Decode failed") \
-X(VOLUME, "Volume") \
-X(MUSIC_STOPPED, "Music stopped") \
-X(IPV4, "IPv4") \
-X(IPV6, "IPv6") \
-X(RSSI, "Signal") \
-X(CHANNEL, "Channel") \
 X(SETTINGS, "Settings") \
 X(SET_SYSTEM, "System") \
-X(SET_DISPLAY, "Display") \
 X(SET_NETWORK, "Network") \
 X(SET_POWER, "Power") \
-X(SET_INPUT, "Input") \
 X(SET_BRIGHTNESS, "Brightness") \
-X(SET_ROTATION, "Screen rotation") \
-X(SET_TIME, "Time") \
-X(SET_UTC_OFFSET, "UTC offset") \
-X(SET_UTC_NOTE, "UTC+ means local time is ahead of UTC. Japan is UTC+9.") \
-X(SET_NTP, "Sync time (NTP)") \
-X(SET_TIME_SYNCED, "Time synchronized") \
-X(SET_STATUSBAR, "Status bar") \
-X(SET_THEME, "Appearance") \
-X(TH_PRESET, "Theme") \
-X(TH_CUSTOM, "Custom") \
-X(TH_RADIUS, "Corner rounding") \
-X(TH_DENSITY, "Spacing") \
-X(TH_COMPACT, "Compact") \
-X(TH_NORMAL, "Normal") \
-X(TH_ROOMY, "Roomy") \
-X(TH_TILE_ACCENT, "Tint home tiles with the accent") \
-X(TH_GLOW, "Glow behind cards") \
-X(TH_SCANLINES, "Scan lines") \
-X(TH_COLORS, "Colours") \
-X(TH_BG, "Background") \
-X(TH_CARD, "Card") \
-X(TH_CARD_HI, "Card highlight") \
-X(TH_ACCENT, "Accent") \
-X(TH_ACCENT2, "Secondary accent") \
-X(TH_DANGER, "Danger") \
-X(TH_TEXT, "Text") \
-X(TH_MUTED, "Secondary text") \
-X(TH_TERMINAL, "Terminal") \
-X(TH_TERM_FG, "Foreground") \
-X(TH_TERM_BG, "Background") \
-X(TH_TERM_CURSOR, "Cursor") \
-X(TH_CURSOR_STYLE, "Cursor shape") \
-X(TH_CUR_BLOCK, "Block") \
-X(TH_CUR_UNDER, "Underline") \
-X(TH_CUR_BAR, "Bar") \
-X(TH_CURSOR_BLINK, "Blink the cursor") \
-X(TH_LINE_HEIGHT, "Line height") \
-X(TH_ANSI, "ANSI palette") \
-X(TH_RESET, "Reset to the preset") \
-X(SET_KBD_LED, "Keyboard LED") \
-X(SET_KBD_LED_BRIGHT, "LED brightness") \
 X(SET_KBD_NEEDS_LIGHT, "Show needs-you on keyboard") \
-X(SET_KBD_STATUS, "Keyboard: %s") \
-X(SET_KBD_LAYOUT, "Keyboard layout") \
-X(KBD_LAYOUT_STOCK, "As printed") \
-X(KBD_LAYOUT_JIS, "JIS (Japanese)") \
-X(SET_KBD_LAYOUT_NOTE, "JIS reads the raw key matrix and maps the layout on this device, so the keys no longer match the printed caps. Fn gives F1-F12 on the number row.") \
-X(PRESENT, "present") \
-X(ABSENT, "not detected") \
-X(SET_TERM_FONT, "Terminal font size") \
-X(OTA_TITLE, "Firmware Update") \
-X(OTA_CURRENT, "Current: %s") \
-X(OTA_LATEST, "Latest: %s") \
-X(OTA_CHECK, "Check Update") \
-X(OTA_CHECKING, "Checking update...") \
-X(OTA_LATEST_ALREADY, "Already latest.") \
-X(OTA_FOUND, "Update found") \
-X(OTA_DOWNLOAD, "Download to SD") \
-X(OTA_DOWNLOADING, "Downloading %d%%") \
-X(OTA_DOWNLOADED, "Firmware downloaded. Ready to install.") \
-X(OTA_INSTALL, "Install") \
-X(OTA_INSTALL_NOTE, "Install will reboot to the updater and flash the app. Keep power stable.") \
-X(OTA_LAUNCHER_MODE, "Booted by Launcher: install via Launcher.") \
-X(OTA_VERIFY_FAILED, "Package verification failed") \
-X(OTA_HTTP_FAILED, "HTTP request failed") \
-X(OTA_UPDATER, "Updater (UPLOAD) firmware") \
-X(OTA_UPDATE_UPDATER, "Update Updater") \
-X(OTA_UPDATER_DONE, "Updater firmware updated.") \
-X(OTA_SD_PACKAGE, "Update package found on SD. Ready to install.") \
-X(OTA_URL, "Update URL") \
-X(DEVINFO, "Device Info") \
-X(DEV_CHIP, "Chip") \
-X(DEV_IDF, "IDF version") \
-X(DEV_APP_VER, "App version") \
-X(DEV_UPTIME, "Uptime") \
-X(DEV_HEAP, "DRAM free / total") \
-X(DEV_DMA, "DMA free / total") \
-X(DEV_PSRAM, "PSRAM free / total") \
-X(DEV_FLASH, "Flash") \
-X(DEV_TF, "TF card") \
-X(DEV_BATTERY, "Battery") \
-X(DEV_POWER_SRC, "Power") \
 X(PWR_USB_C, "USB-C") \
-X(PWR_USB_C_CHARGE, "USB-C + Battery charging") \
-X(PWR_USB_C_STANDBY, "USB-C + Battery standby") \
+X(PWR_USB_C_CHARGE, "USB-C + battery charging") \
+X(PWR_USB_C_STANDBY, "USB-C + battery standby") \
 X(PWR_BATTERY, "Battery") \
-X(DEV_PERIPHERALS, "Peripherals") \
-X(USB_TITLE, "USB") \
-X(USB_DISK_MODE, "USB Disk Mode") \
-X(USB_DISK_START, "Start USB Disk Mode") \
-X(USB_DISK_STOP, "Stop USB Disk Mode") \
-X(USB_DISK_NOTE, "Connect USB-C to the PC. The PC gets exclusive access to the TF card, and the serial port is unavailable until you stop it.") \
-X(USB_DISK_ON, "USB disk mode active: PC has the TF card") \
-X(USB_DISK_OFF, "USB disk mode off. TF card restored.") \
-X(USB_HOST, "USB Flash Drive") \
-X(USB_MOUNT, "Mount USB") \
-X(USB_EJECT, "Eject USB") \
-X(USB_MOUNTED, "USB drive mounted") \
-X(USB_NOT_MOUNTED, "USB drive not mounted") \
-X(USB_WAITING, "Waiting for USB device...") \
-X(USB_FORMAT, "Format USB (FAT32)") \
-X(USB_FORMAT_WARN, "Formatting will erase all files on the USB drive.") \
-X(USB_FORMATTED, "USB drive formatted") \
-X(BATTERY_PCT, "Battery %d%%") \
-X(SOFT_KBD, "Soft Keyboard") \
 X(REBOOT, "Reboot") \
 X(REBOOT_Q, "Reboot now?") \
 X(ABOUT, "About") \
-X(ABOUT_TEXT,       "Claude Companion: session control for Claude Code on M5Stack Tab5.\nlibssh (LGPL 2.1), MicroLink (MIT), LVGL (MIT), Noto Sans CJK (OFL).\nBased on Clientre 5 by Mozgi512 (MIT)") \
-X(SD_LOW_SPACE, "TF card has less than 20MB free") \
-X(PUBLIC_IP, "Public IP") \
-X(QUERYING, "querying...") \
 X(SET_HOST, "Host") \
 X(SET_KBD_LIGHT, "Keyboard light") \
 X(SET_DISPLAY_TIME, "Display & time") \
@@ -219,8 +56,10 @@ X(SET_LINK, "Link") \
 X(SET_LINK_UP_LAN, "connected over home Wi-Fi") \
 X(SET_LINK_UP_TS, "connected over Tailscale") \
 X(SET_FALLBACK, "Fallback address") \
+X(SET_FALLBACK_PH, "192.168.1.50") \
 X(SET_FALLBACK_BAD, "Use a home network address like 192.168.1.50, or leave it empty") \
 X(SET_CLAUDE_PATH, "Claude path on host") \
+X(SET_CLAUDE_PATH_PH, "~/.local/bin/claude") \
 X(SET_CLAUDE_PATH_BAD, "Use only letters, digits and _ . / ~ - (1 to 63 characters)") \
 X(SET_HOST_KEY, "Host key") \
 X(SET_NO_PIN, "No key pinned yet") \
@@ -284,7 +123,7 @@ X(SET_RESET, "Reset") \
 X(SET_RESET_BODY, "Power, keyboard light and display brightness go back to their defaults. Wi-Fi networks, the Host and the Terminal hosts, the host-key pins, the Tailscale identity and auth key, and the device key stay. It also keeps the time zone.") \
 X(SET_RESET_NOTE, "Reset settings puts power, the keyboard light and brightness back to their defaults.") \
 X(SET_RESET_DONE, "Settings reset") \
-X(LINK_NO_HOST, "No Host set up") \
+X(LINK_NO_HOST, "No host set up") \
 X(DIAG_CHIP, "Chip: ESP32-P4 rev %d.%d \xc2\xb7 IDF %s\n") \
 X(DIAG_INTERNAL, "Internal: %u KB free, min %u KB, largest %u KB\n") \
 X(DIAG_PSRAM, "PSRAM: %u.%u MB free\n") \
@@ -306,7 +145,8 @@ X(RST_DEEPSLEEP, "deep sleep") \
 X(RST_BROWNOUT, "brownout") \
 X(RST_USB, "USB") \
 X(RST_OTHER, "other") \
-X(LINK_CANT_REACH, "Can't reach %s. Is it awake?") \
+X(LINK_CANT_REACH, "Can't reach") \
+X(LINK_IS_IT_AWAKE, "Is it awake?") \
 X(NET_WIFI, "Wi-Fi") \
 X(NET_CONNECTED, "\xe2\x97\x8f connected \xc2\xb7 %s") \
 X(NET_SIG_STRONG, "strong") \
@@ -388,6 +228,7 @@ X(NET_TS_KEY_CLEAR_BODY, "This device stays on the tailnet. To register it again
 X(NET_TS_KEY_CLEAR_ACTION, "Clear") \
 X(NET_TS_KEY_CLEARED, "Auth key cleared") \
 X(NET_TS_NAME, "Device name") \
+X(NET_TS_NAME_PH, "claude-companion") \
 X(NET_TS_NAME_EMPTY, "A device name can't be empty") \
 X(NET_TS_APPLIES, "Applies the next time Tailscale starts") \
 X(NET_TS_CTRL, "Control server") \
@@ -450,6 +291,97 @@ X(TERM_SESSION_ENDED, "The session ended (status %d)") \
 X(TERM_CANT_OPEN, "Can't open the session") \
 X(TERM_NO_SSH_TASK, "Couldn't start the connection. Try again.") \
 X(TERM_NOT_VERIFIED, "The Host link isn't verified yet; try again in a moment") \
+X(BOOT_STARTING, "Starting\xe2\x80\xa6") \
+X(SLEEP_NOTICE, "Sleeping to save battery. Press the side button to wake.") \
+X(UNIT_S, "s") \
+X(UNIT_MIN, "min") \
+X(UNIT_H, "h") \
+X(HDR_NEEDS_YOU_1, "needs you") \
+X(HDR_NEEDS_YOU_N, "need you") \
+X(PILL_NEEDS_YOU, "NEEDS YOU") \
+X(PILL_WAITING, "waiting on Host") \
+X(PILL_WORKING, "WORKING") \
+X(PILL_IDLE, "IDLE") \
+X(PILL_DONE, "DONE") \
+X(PILL_ENDED, "ENDED") \
+X(SES_TITLE, "Sessions") \
+X(SES_SELECT, "\xe2\x86\x91\xe2\x86\x93 Select") \
+X(SES_SEND, "\xe2\x86\xb5 Send") \
+X(SES_OPEN, "\xe2\x8c\x83O Open") \
+X(SES_TERMINAL, "\xe2\x8c\x83T/\xe2\x8c\x83M Terminal") \
+X(SES_SETTINGS, "\xe2\x8c\x83P Settings") \
+X(SES_KEYS, "\xe2\x8c\x83K Keys") \
+X(SES_NO_HOST_BODY, "Set up your host to see its Claude sessions.") \
+X(SES_SET_UP_HOST, "Set up host") \
+X(SES_EMPTY, "No sessions on this host. Start one with `claude --bg`.") \
+X(SES_WIFI_SETTINGS, "Wi-Fi settings") \
+X(SES_HOST_SETTINGS, "Host settings") \
+X(SES_BATTERY, "Battery") \
+X(SES_SLEEPS_AT, "The Tab5 sleeps at 10 %.") \
+X(SES_DISMISS, "Dismiss") \
+X(SES_RECONNECTING, "Reconnecting to host\xe2\x80\xa6") \
+X(SES_LOADING, "Loading sessions\xe2\x80\xa6") \
+X(SES_UPDATING, "Updating\xe2\x80\xa6") \
+X(SES_LIST_TOO_BIG, "Session list too large to load") \
+X(SES_CANT_LOAD, "Can't load sessions from the host\xe2\x80\xa6") \
+X(SES_LOADING_OUTPUT, "Loading recent output\xe2\x80\xa6") \
+X(SES_NO_OUTPUT, "No output to show") \
+X(SES_NO_OUTPUT_YET, "No output yet") \
+X(SES_INTERACTIVE, "Interactive \xe2\x80\x94 answer it on the Host") \
+X(SES_STOPPED, "This session has stopped.") \
+X(SES_TYPE_ANSWER, "Type an answer\xe2\x80\xa6") \
+X(SES_TYPE_MESSAGE, "Type a message\xe2\x80\xa6") \
+X(SES_SENT, "Sent \xe2\x9c\x93") \
+X(SES_OPEN_TO_APPROVE, "Open it to approve") \
+X(SES_OPEN_TO_ANSWER, "Open the session to answer") \
+X(SES_PICKS_OPTION, "picks an option") \
+X(SES_STILL_WORKING, "Still working on the last request") \
+X(SES_SENDING, "Sending\xe2\x80\xa6") \
+X(SES_OPENING, "Opening\xe2\x80\xa6") \
+X(SES_HAS_STOPPED, "Session has stopped") \
+X(SES_CANT_OPEN, "Can't open: set up the host in Settings \xe2\x80\xba Host") \
+X(SES_NOT_CONNECTED, "Not connected to the host") \
+X(SES_FORGET_RECONNECTING, "Old key forgotten; reconnecting\xe2\x80\xa6") \
+X(SES_NEW_KEY_PINNED, "New host key pinned:") \
+X(SES_KEYS_TITLE, "Keyboard shortcuts") \
+X(SES_KEYS_CLOSE, "Any key or a touch closes this") \
+X(HK_K_UPDOWN, "Up / Down") \
+X(HK_W_UPDOWN, "move between sessions") \
+X(HK_K_ENTER, "Enter") \
+X(HK_W_ENTER, "send the answer") \
+X(HK_K_CTRL_O, "Ctrl+O") \
+X(HK_W_CTRL_O, "open the session") \
+X(HK_K_CTRL_T, "Ctrl+T") \
+X(HK_W_CTRL_T, "terminal (Ctrl+M also)") \
+X(HK_K_CTRL_P, "Ctrl+P") \
+X(HK_W_CTRL_P, "settings") \
+X(HK_K_CTRL_K, "Ctrl+K") \
+X(HK_W_CTRL_K, "this list") \
+X(HK_K_CTRL_SPACE, "Ctrl+Space") \
+X(HK_W_CTRL_SPACE, "voice input (coming later)") \
+X(HK_K_ESC, "Esc") \
+X(HK_W_ESC, "clear the answer, or go back") \
+X(HK_K_CTRL_BRACKET, "Ctrl+]") \
+X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
+X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
+X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
+X(HK_VOICE, "Voice input comes in a later update") \
+X(TERM_KEEPS_RUNNING, "The session keeps running on the host.") \
+X(SSH_NO_SESSION, "Couldn't start SSH. Try again.") \
+X(SSH_CANT_CONNECT, "Couldn't connect:") \
+X(SSH_PIN_UNREADABLE, "Can't read the saved host key; not connecting") \
+X(SSH_HOSTKEY_REJECTED, "Host key rejected") \
+X(SSH_NO_CHANNEL, "Couldn't open an SSH channel. Try again.") \
+X(SSH_CMD_REFUSED, "The host refused the command") \
+X(SSH_SHELL_REFUSED, "The host refused a shell") \
+X(SSH_NET_DOWN, "The network went down.") \
+X(SSH_SERVER_CLOSED, "The host closed this connection") \
+X(SSH_DEVICE_KEY_UNAVAILABLE, "The device key isn't available") \
+X(SSH_KEY_IMPORT_FAILED, "Couldn't read the key file:") \
+X(HF_KEY_FILE_MISSING, "Key file not found on SD card") \
+X(HF_KEY_BAD_PATH, "The key file must be on the SD card") \
+X(HF_KEY_REFUSED, "The host refused the key") \
+X(HF_HOSTKEYS_UNCHECKED, "Couldn't check this host against the Host's keys") \
 X(HF_TITLE_ADD, "Add host") \
 X(HF_TITLE_EDIT, "Edit host") \
 X(HF_BACK_TERMINAL, "Terminal") \

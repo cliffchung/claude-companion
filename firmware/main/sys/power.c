@@ -414,7 +414,7 @@ void power_bench_light(power_bench_light_t l)
     notify();
 }
 
-/* ---- results from the Mac ------------------------------------------------ */
+/* ---- results from the Host ----------------------------------------------- */
 
 /* On the poll task: copy what we need and wake our own task. No cc_link calls. */
 static void on_sessions(const cc_session_t *s, int n, void *ctx)

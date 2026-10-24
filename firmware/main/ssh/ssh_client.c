@@ -322,21 +322,21 @@ static int authenticate(ssh_client_t *c)
     if (c->p.use_key) {
         ssh_key key = NULL;
         if (plan.key == HF_KEY_FILE_MISSING || plan.key == HF_KEY_BAD_PATH) {
-            snprintf(c->err, sizeof(c->err), "%s", plan.key == HF_KEY_BAD_PATH ? HF_KEY_BAD_PATH_MSG : HF_KEY_FILE_MISSING_MSG);
+            snprintf(c->err, sizeof(c->err), "%s", tr(plan.key == HF_KEY_BAD_PATH ? STR_HF_KEY_BAD_PATH : STR_HF_KEY_FILE_MISSING));
             rc = SSH_ERROR;
         } else if (plan.key == HF_KEY_DEVICE) {
             rc = (device_key_ensure() == ESP_OK && device_key_get(&key) == ESP_OK) ? SSH_OK : SSH_ERROR;
-            if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Device key unavailable");
+            if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "%s", tr(STR_SSH_DEVICE_KEY_UNAVAILABLE));
         } else {
             rc = ssh_pki_import_privkey_file(c->p.keypath, c->p.pass[0] ? c->p.pass : NULL, NULL, NULL, &key);
-            if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Key import failed: %s", ssh_get_error(c->session));
+            if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "%s %s", tr(STR_SSH_KEY_IMPORT_FAILED), ssh_get_error(c->session));
         }
         if (rc != SSH_OK) { ESP_LOGW(TAG, "%s", c->err); return -1; }
         rc = AUTH_RETRY(ssh_userauth_publickey(c->session, NULL, key));
         ssh_key_free(key);
         if (rc == SSH_AUTH_SUCCESS) return 0;
         ESP_LOGW(TAG, "publickey auth failed: %s", ssh_get_error(c->session));
-        snprintf(c->err, sizeof(c->err), "%s", HF_KEY_REFUSED_MSG);
+        snprintf(c->err, sizeof(c->err), "%s", tr(STR_HF_KEY_REFUSED));
         return -1;   /* M10: no password fallback for a key entry */
     }
     if (!plan.try_password) return -1;
@@ -362,7 +362,7 @@ static void ssh_task(void *arg)
     ssh_client_t *c = arg;
     set_state(c, SSH_ST_CONNECTING, NULL);
     c->session = ssh_new();
-    if (!c->session) { set_state(c, SSH_ST_ERROR, "Failed to create SSH session"); goto done; }
+    if (!c->session) { set_state(c, SSH_ST_ERROR, tr(STR_SSH_NO_SESSION)); goto done; }
     const char *refused = ts_host_term_refusal(c->p.host, tailscale_enabled());
     if (refused) {
         /* the switch is off: fail at once, never start Tailscale on our own (spec Goal 5) */
@@ -381,7 +381,7 @@ static void ssh_task(void *arg)
         }
         if (src != HF_KEY_FILE) {
             ESP_LOGW(TAG, "key file for this host not usable; not connecting");
-            set_state(c, SSH_ST_ERROR, src == HF_KEY_BAD_PATH ? HF_KEY_BAD_PATH_MSG : HF_KEY_FILE_MISSING_MSG);
+            set_state(c, SSH_ST_ERROR, tr(src == HF_KEY_BAD_PATH ? STR_HF_KEY_BAD_PATH : STR_HF_KEY_FILE_MISSING));
             goto done;
         }
     }
@@ -408,16 +408,16 @@ static void ssh_task(void *arg)
     int verb = SSH_LOG_NOLOG;
     ssh_options_set(c->session, SSH_OPTIONS_LOG_VERBOSITY, &verb);
     if (!c->p.cmd[0]) {
-        /* key-type hardening: the type the link last met first, then libssh's defaults (a reorder only) */
+        /* key-type hardening: "^<the type the link last met>", libssh's defaults after it (a reorder only) */
         char *t = NULL;
-        char pref[400];
+        char pref[48];
         if (nvs_get_str_alloc("cc", "hostktype", &t) && hf_hostkeys_pref(t, pref, sizeof(pref)) &&
             ssh_options_set(c->session, SSH_OPTIONS_HOSTKEYS, pref) != SSH_OK)
             ESP_LOGW(TAG, "host key preference not set; libssh's defaults apply");
         free(t);
     }
     if (ssh_connect(c->session) != SSH_OK) {
-        char m[160]; snprintf(m, sizeof(m), "Connect failed: %s", ssh_get_error(c->session));
+        char m[160]; snprintf(m, sizeof(m), "%s %s", tr(STR_SSH_CANT_CONNECT), ssh_get_error(c->session));
         set_state(c, SSH_ST_ERROR, m); goto done;
     }
     if (GONE(c)) goto done;
@@ -426,7 +426,7 @@ static void ssh_task(void *arg)
        returns before any userauth request). */
     hf_step_t steps[4];
     int nsteps = hf_conn_steps(!c->p.cmd[0], steps, 4);
-    if (!nsteps) { set_state(c, SSH_ST_ERROR, HF_HOSTKEYS_UNCHECKED_MSG); goto done; }
+    if (!nsteps) { set_state(c, SSH_ST_ERROR, tr(STR_HF_HOSTKEYS_UNCHECKED)); goto done; }
     for (int si = 0; si < nsteps; si++) {
         if (GONE(c)) goto done;
         if (steps[si] == HF_STEP_DENY_CHECK) {
@@ -445,13 +445,13 @@ static void ssh_task(void *arg)
             }
             if (g == HF_GATE_REFUSE_UNCHECKED) {
                 ESP_LOGW(TAG, "the Host's keys couldn't be checked: no login shell");
-                set_state(c, SSH_ST_ERROR, HF_HOSTKEYS_UNCHECKED_MSG);
+                set_state(c, SSH_ST_ERROR, tr(STR_HF_HOSTKEYS_UNCHECKED));
                 goto done;
             }
         } else if (steps[si] == HF_STEP_VERIFY_HOST) {
             ESP_LOGI(TAG, "connected; checking host key");
             int hv = verify_host(c);
-            if (hv != 0) { set_state(c, SSH_ST_ERROR, hv == -2 ? "Can't read the saved host key; not connecting" : "Host key rejected"); goto done; }
+            if (hv != 0) { set_state(c, SSH_ST_ERROR, tr(hv == -2 ? STR_SSH_PIN_UNREADABLE : STR_SSH_HOSTKEY_REJECTED)); goto done; }
         } else {
             set_state(c, SSH_ST_AUTH, NULL);
             int auth = authenticate(c);
@@ -459,19 +459,19 @@ static void ssh_task(void *arg)
             if (auth != 0) {
                 char m[200];
                 if (c->err[0]) snprintf(m, sizeof(m), "%s", c->err);   /* the key's own reason (B6, M10) */
-                else snprintf(m, sizeof(m), "Authentication failed: %s", ssh_get_error(c->session));
+                else snprintf(m, sizeof(m), "%s %s", tr(STR_SSH_AUTH_FAILED), ssh_get_error(c->session));
                 set_state(c, SSH_ST_ERROR, m); goto done;
             }
         }
     }
     if (GONE(c)) goto done;   /* C1: closed while the auth ran */
     c->channel = ssh_channel_new(c->session);
-    if (!c->channel || ssh_channel_open_session(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Failed to create SSH channel"); goto done; }
+    if (!c->channel || ssh_channel_open_session(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, tr(STR_SSH_NO_CHANNEL)); goto done; }
     ssh_channel_request_pty_size(c->channel, "xterm-256color", c->p.cols, c->p.rows);
     if (c->p.cmd[0]) {
         /* An explicit command on a pty: never a login shell (it would start the user's tmux). */
-        if (ssh_channel_request_exec(c->channel, c->p.cmd) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Command request failed"); goto done; }
-    } else if (ssh_channel_request_shell(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Shell request failed"); goto done; }
+        if (ssh_channel_request_exec(c->channel, c->p.cmd) != SSH_OK) { set_state(c, SSH_ST_ERROR, tr(STR_SSH_CMD_REFUSED)); goto done; }
+    } else if (ssh_channel_request_shell(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, tr(STR_SSH_SHELL_REFUSED)); goto done; }
     set_state(c, SSH_ST_CONNECTED, NULL);
     ssh_set_blocking(c->session, 0);
 
@@ -518,12 +518,12 @@ static void ssh_task(void *arg)
         if (ssh_channel_get_exit_state(c->channel, &code, &sig, &core) == SSH_OK) c->exit_status = (int)code;
         ssh_string_free_char(sig);
     }
-    if (c->kill && !c->stop) { c->exit_status = -1; set_state(c, SSH_ST_ERROR, "the network is going down"); }
-    else set_state(c, SSH_ST_CLOSED, c->stop || c->p.cmd[0] ? NULL : "Server closed this connection");
+    if (c->kill && !c->stop) { c->exit_status = -1; set_state(c, SSH_ST_ERROR, tr(STR_SSH_NET_DOWN)); }
+    else set_state(c, SSH_ST_CLOSED, c->stop || c->p.cmd[0] ? NULL : tr(STR_SSH_SERVER_CLOSED));
 done:
     if (c->sd_held) { sd_unmount(); c->sd_held = false; }   /* an exit before authenticate */
     if (c->kill && !c->stop && c->state != SSH_ST_ERROR && c->state != SSH_ST_CLOSED)
-        set_state(c, SSH_ST_ERROR, "the network is going down");
+        set_state(c, SSH_ST_ERROR, tr(STR_SSH_NET_DOWN));
     if (c->channel) { ssh_channel_send_eof(c->channel); ssh_channel_close(c->channel); ssh_channel_free(c->channel); }
     if (c->session) { ssh_disconnect(c->session); ssh_free(c->session); }
     c->closed = true;   /* C1: the Host has seen the close (or there was no session) */

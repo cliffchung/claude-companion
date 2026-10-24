@@ -125,6 +125,12 @@ lv_obj_t *ui_title(lv_obj_t *parent, const char *text);   /* the title role (a p
 /* The session bar (spec §5.2): 56 px, panel, a 1 px line underneath, at the top of scr; a flex row 16 px apart,
  * 24 px margins. Its chips (ui_chip) hit its full height. */
 lv_obj_t *ui_session_bar(lv_obj_t *scr);
+/* The bar's name (one line, cut with "…", at most 400 px) and its muted state text, which takes the rest of the
+ * row; both shared styles (no local ones). */
+lv_obj_t *ui_session_bar_name(lv_obj_t *bar, const char *name);
+lv_obj_t *ui_session_bar_state(lv_obj_t *bar);
+/* A screen body from under the header (and the banner, when shown) to the bottom of the screen: shared styles. */
+void ui_body_place(lv_obj_t *body, bool banner);
 /* A 12 px link dot: UI_TONE_GREEN, UI_TONE_RED, or muted for any other tone. A set with the same tone does nothing. */
 lv_obj_t *ui_dot(lv_obj_t *parent);
 void ui_dot_tone(lv_obj_t *dot, ui_tone_t tone);

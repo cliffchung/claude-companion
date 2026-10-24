@@ -1,6 +1,7 @@
 #include "ui_boot.h"
 #include "ui_tokens.h"
 #include "fonts/fonts.h"
+#include "i18n/i18n.h"
 
 /* Spec §5.13: the logo and the name in fg, "Starting…" muted, on bg. No amber. */
 #define BOOT_BG     UI_TK_BG
@@ -73,8 +74,8 @@ void ui_boot_show(void)
     lv_obj_remove_flag(mark, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(mark, mark_draw, LV_EVENT_DRAW_MAIN, NULL);
     /* Const fonts can be used before their runtime fallback copies exist. */
-    boot_label(group, "Claude Companion", &font_px36b, BOOT_FG);
-    boot_label(group, "Starting\xe2\x80\xa6", &font_px20, BOOT_MUTED);
+    boot_label(group, tr(STR_APP_TITLE), &font_px36b, BOOT_FG);
+    boot_label(group, tr(STR_BOOT_STARTING), &font_px20, BOOT_MUTED);
     lv_obj_center(group);
 
     lv_obj_t *previous = lv_screen_active();

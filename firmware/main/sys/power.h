@@ -72,7 +72,7 @@ typedef enum { POWER_BENCH_LIGHT_NONE, POWER_BENCH_LIGHT_AMBER, POWER_BENCH_LIGH
 void power_bench_light(power_bench_light_t l);
 
 /* ---- Task 8: Radio off and the check-ins (sys/checkin.h) ---- */
-bool power_needs_you(void);                 /* pr_any_needs_you of the last result from the Mac */
+bool power_needs_you(void);                 /* pr_any_needs_you of the last result from the Host */
 bool power_battery_low(void);               /* pr_battery_low now (the sim battery counts): the 10% trigger */
 /* The power source as the rules see it (the sim battery counts as battery): UNKNOWN until vitals has
    settled after a boot (about 10 s of battery-like samples; USB and charging read as USB at once). */

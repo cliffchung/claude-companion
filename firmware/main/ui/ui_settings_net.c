@@ -379,7 +379,7 @@ static void name_prompt_cb(const char *v, void *ud)
 static void name_cb(lv_event_t *e)
 {
     (void)e;
-    ui_prompt(tr(STR_NET_TS_NAME), "claude-companion", device_name(), false, name_prompt_cb, NULL);
+    ui_prompt(tr(STR_NET_TS_NAME), tr(STR_NET_TS_NAME_PH), device_name(), false, name_prompt_cb, NULL);
 }
 
 static void ctrl_prompt_cb(const char *v, void *ud)

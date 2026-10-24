@@ -61,10 +61,10 @@ const char *tailscale_last_error(void);
    WireGuard handshake first and rebinds only when that fails. */
 void tailscale_set_fast_resume(bool on);
 bool tailscale_fast_resume(void);
-/* TS_CHECKIN_SKIPPED (Plan 3): no tunnel was needed (the Mac is on the LAN, or Tailscale is off). */
+/* TS_CHECKIN_SKIPPED (Plan 3): no tunnel was needed (the Host is on the LAN, or Tailscale is off). */
 typedef enum { TS_CHECKIN_HANDSHAKE, TS_CHECKIN_REBIND, TS_CHECKIN_FAILED, TS_CHECKIN_SKIPPED } ts_checkin_t;
 const char *tailscale_checkin_name(ts_checkin_t c);   /* "handshake", "rebind", "failed", "lan" */
-/* Brings the tunnel to the Mac up. host is a tailnet IP or a MagicDNS name (resolved here). Waits up to
+/* Brings the tunnel to the Host up. host is a tailnet IP or a MagicDNS name (resolved here). Waits up to
    60 s for MicroLink to be connected (a cold boot registers first), then kicks
    ml_wg_mgr_trigger_handshake + ml_wg_mgr_send_cmm and waits up to 8 s for ml_wg_mgr_peer_is_up. Only
    when that fails (or force_rebind) it calls microlink_rebind, waits up to 60 s for

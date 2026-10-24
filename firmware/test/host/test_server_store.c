@@ -185,11 +185,11 @@ static void test_import_stops_at_full_list(void)
 /* I2: names are one case-insensitive namespace (hf_name_taken), the Host's included */
 static void test_import_skips_case_only_name(void)
 {
-    server_t host = entry("Mac", "studio.local", "");
+    server_t host = entry("Desk", "studio.local", "");
     server_t pi = entry("PI", "other.example", "");
     server_store_add(&host); server_store_add(&pi);
     card_with("{\"servers\":["
-              "{\"name\":\"mac\",\"host\":\"else.example\",\"port\":22,\"user\":\"u\"},"
+              "{\"name\":\"desk\",\"host\":\"else.example\",\"port\":22,\"user\":\"u\"},"
               "{\"name\":\"pi\",\"host\":\"pi.local\",\"port\":2222,\"user\":\"pi\"}]}");
     TEST_ASSERT_EQUAL_INT(0, server_store_import_sd_once());
     TEST_ASSERT_EQUAL_INT(2, server_store_count());
@@ -237,7 +237,7 @@ static void test_import_skips_invalid_entries(void)
 static void test_import_entry_with_host_address(void)
 {
     card_with("{\"servers\":["
-              "{\"name\":\"Mac\",\"host\":\"studio.local\",\"port\":22,\"user\":\"me\"},"
+              "{\"name\":\"Desk\",\"host\":\"studio.local\",\"port\":22,\"user\":\"me\"},"
               "{\"name\":\"studio-root\",\"host\":\"STUDIO.local\",\"port\":22,\"user\":\"root\"}]}");
     TEST_ASSERT_EQUAL_INT(2, server_store_import_sd_once());
     hf_host_addrs_t h;

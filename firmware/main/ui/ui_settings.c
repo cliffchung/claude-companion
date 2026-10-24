@@ -111,7 +111,7 @@ static void fallback_cb(lv_event_t *e)
 {
     (void)e;
     char cur[16];
-    ui_prompt(tr(STR_SET_FALLBACK), "192.168.1.50", cc_link_lan_fallback(cur, sizeof(cur)), false, fallback_prompt_cb, NULL);
+    ui_prompt(tr(STR_SET_FALLBACK), tr(STR_SET_FALLBACK_PH), cc_link_lan_fallback(cur, sizeof(cur)), false, fallback_prompt_cb, NULL);
 }
 
 static void path_prompt_cb(const char *v, void *ud)
@@ -125,7 +125,7 @@ static void path_cb(lv_event_t *e)
 {
     (void)e;
     char cur[64];
-    ui_prompt(tr(STR_SET_CLAUDE_PATH), "~/.local/bin/claude", cc_settings_claude_path(cur, sizeof(cur)), false,
+    ui_prompt(tr(STR_SET_CLAUDE_PATH), tr(STR_SET_CLAUDE_PATH_PH), cc_settings_claude_path(cur, sizeof(cur)), false,
               path_prompt_cb, NULL);
 }
 
@@ -253,9 +253,9 @@ static void pw_value(const pw_menu_t *m, int v, char *buf, size_t cap)
 {
     int s = m->unit == 's' ? v : m->unit == 'm' ? v * 60 : v * 3600;
     if (v == 0) snprintf(buf, cap, "%s", tr(m->zero));
-    else if (s < 60 || s % 60) snprintf(buf, cap, "%d s", s);
-    else if (s % 3600 == 0) snprintf(buf, cap, "%d h", s / 3600);
-    else snprintf(buf, cap, "%d min", s / 60);
+    else if (s < 60 || s % 60) snprintf(buf, cap, "%d %s", s, tr(STR_UNIT_S));
+    else if (s % 3600 == 0) snprintf(buf, cap, "%d %s", s / 3600, tr(STR_UNIT_H));
+    else snprintf(buf, cap, "%d %s", s / 60, tr(STR_UNIT_MIN));
 }
 static int pw_current(const pw_menu_t *m)
 {

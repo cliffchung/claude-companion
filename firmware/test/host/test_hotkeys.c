@@ -106,13 +106,12 @@ static void test_overlay_lists_every_shortcut(void)
 {
     const char *need[] = { "Up / Down", "Enter", "Ctrl+O", "Ctrl+T", "Ctrl+P", "Ctrl+K", "Ctrl+Space",
                            "Esc", "Ctrl+]", "Shift+Up / Down" };
-    int n = 0;
-    while (hk_overlay[n].keys) n++;
+    int n = hk_overlay_n;
     TEST_ASSERT_EQUAL(10, n);
     for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
         bool found = false;
         for (int k = 0; k < n; k++)
-            if (strstr(hk_overlay[k].keys, need[i]) && hk_overlay[k].what && hk_overlay[k].what[0]) found = true;
+            if (strstr(tr(hk_overlay[k].keys), need[i]) && tr(hk_overlay[k].what)[0]) found = true;
         TEST_ASSERT_TRUE_MESSAGE(found, need[i]);
     }
 }

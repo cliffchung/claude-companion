@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ui/sessions_model.h"
+#include "i18n/i18n.h"
 #include "term/vt.h"   /* vt_wcwidth (term/wcwidth.c): the terminal's cell widths */
 
 void sm_key(const cc_session_t *s, char *out, size_t cap)
@@ -102,12 +103,12 @@ const char *sm_pill_text(const cc_session_t *s)
 {
     switch (s->state) {
     case CC_NEEDS_YOU:
-        if (cc_session_needs_you(s)) return "NEEDS YOU";
-        return s->background ? "ENDED" : "waiting on Host";
-    case CC_WORKING: return "WORKING";
-    case CC_IDLE:    return "IDLE";
-    case CC_DONE:    return "DONE";
-    default:         return "ENDED";
+        if (cc_session_needs_you(s)) return tr(STR_PILL_NEEDS_YOU);
+        return tr(s->background ? STR_PILL_ENDED : STR_PILL_WAITING);
+    case CC_WORKING: return tr(STR_PILL_WORKING);
+    case CC_IDLE:    return tr(STR_PILL_IDLE);
+    case CC_DONE:    return tr(STR_PILL_DONE);
+    default:         return tr(STR_PILL_ENDED);
     }
 }
 

@@ -1,7 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include "ssh/kh_rules.h"
-/* Carrying the Mac's host-key pin from its tailnet address to its LAN address (Plan 3 Task 1).
+/* Carrying the Host's host-key pin from its tailnet address to its LAN address (Plan 3 Task 1).
    Pure (no ESP-IDF, no libssh) so the host tests cover it. */
 #ifdef __cplusplus
 extern "C" {
@@ -24,7 +24,7 @@ khc_t kh_carry_decide(bool lan_pinned, bool tailnet_pinned, bool keys_equal);
 typedef enum { KHS_NONE, KHS_EQUAL, KHS_DIFFERENT, KHS_ERROR } khs_t;
 /* KHA_NORMAL: act on lan as kh_classify gave it (OK connects; CHANGED, ERROR, PIN_ERROR refuse).
    KHA_PIN_NEW: pin the key as new (first contact on a tailnet address, as in Plan 2, or the first
-   connect after the user's Forget Mac host key). KHA_PIN_SILENT: pin it, it equals the carry source.
+   connect after the user's Forget host key). KHA_PIN_SILENT: pin it, it equals the carry source.
    KHA_REFUSE_CHANGED: refused as a changed key. KHA_REFUSE_UNKNOWN: refused, nothing to carry (the
    user's Forget is the way to trust it). KHA_PIN_ERROR: the carry source can't be read: refused. */
 typedef enum { KHA_NORMAL, KHA_PIN_NEW, KHA_PIN_SILENT, KHA_REFUSE_CHANGED, KHA_REFUSE_UNKNOWN, KHA_PIN_ERROR } kha_t;

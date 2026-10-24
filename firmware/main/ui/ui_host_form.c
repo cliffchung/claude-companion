@@ -341,8 +341,7 @@ lv_obj_t *ui_host_form_create(void *arg)
     s_f->body = lv_obj_create(scr);
     lv_obj_remove_style_all(s_f->body);
     ui_settings_column(s_f->body);
-    lv_obj_set_pos(s_f->body, 0, UI_TK_HEADER_H);
-    lv_obj_set_size(s_f->body, LV_PCT(100), lv_display_get_vertical_resolution(NULL) - UI_TK_HEADER_H);
+    ui_body_place(s_f->body, false);
     fill(s_f->body);
     ui_nav_set_back_guard(scr, back_guard);
     return scr;

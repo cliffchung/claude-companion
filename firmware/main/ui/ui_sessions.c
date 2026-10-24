@@ -258,7 +258,7 @@ enum { FORGET_TIMED_OUT = 1, FORGET_NO_HOST };
 
 static void forget_toast_cb(void *arg)
 {
-    strlcpy(s_forget_toast, (intptr_t)arg == FORGET_TIMED_OUT ? "Old key forgotten; reconnecting\xe2\x80\xa6" : "No host set up",
+    strlcpy(s_forget_toast, (intptr_t)arg == FORGET_TIMED_OUT ? tr(STR_SES_FORGET_RECONNECTING) : tr(STR_LINK_NO_HOST),
             sizeof(s_forget_toast));
     ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
 }
@@ -269,7 +269,7 @@ static void forget_check(void)
     uint32_t n = cc_link_forget_done(fp, sizeof(fp));
     if (n == s_forget_seen) return;
     s_forget_seen = n;
-    snprintf(s_forget_toast, sizeof(s_forget_toast), "New host key pinned: %s", fp);
+    snprintf(s_forget_toast, sizeof(s_forget_toast), "%s %s", tr(STR_SES_NEW_KEY_PINNED), fp);
     ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
 }
 
@@ -573,9 +573,9 @@ static void log_update(void)
     res_unlock();
     const char *t;
     tc_t c = TC_FG;
-    if (!mine) { s_tail[0] = 0; t = "Loading recent output\xe2\x80\xa6"; c = TC_MUTED; }
-    else if (!ok) { t = s_tail[0] ? s_tail : "No output to show"; c = TC_MUTED; }
-    else if (!s_tail[0]) { t = "No output yet"; c = TC_MUTED; }
+    if (!mine) { s_tail[0] = 0; t = tr(STR_SES_LOADING_OUTPUT); c = TC_MUTED; }
+    else if (!ok) { t = s_tail[0] ? s_tail : tr(STR_SES_NO_OUTPUT); c = TC_MUTED; }
+    else if (!s_tail[0]) { t = tr(STR_SES_NO_OUTPUT_YET); c = TC_MUTED; }
     else {
         /* the wrap is the costly part: only for a new tail or a new block size */
         static uint32_t wrapped_sig;
@@ -638,15 +638,15 @@ static void pane_update(void)
     /* the info line: interactive sessions (B3), and background ones that can't be acted on */
     const char *info = NULL;
     tc_t ic = TC_MUTED;
-    if (interactive) info = "Interactive \xe2\x80\x94 answer it on the Host";
+    if (interactive) info = tr(STR_SES_INTERACTIVE);
     else if (!act) {
         if (n && n->kind == NOTE_ERROR) { info = n->text; ic = TC_RED; }
-        else info = "This session has stopped.";
+        else info = tr(STR_SES_STOPPED);
     }
     changed |= set_shown(s_info, info != NULL);
     if (info) { set_text(s_info, info); set_colour(s_info, ic); }
     if (field) {
-        const char *ph = s->state == CC_NEEDS_YOU ? "Type an answer\xe2\x80\xa6" : "Type a message\xe2\x80\xa6";
+        const char *ph = s->state == CC_NEEDS_YOU ? tr(STR_SES_TYPE_ANSWER) : tr(STR_SES_TYPE_MESSAGE);
         if (strcmp(lv_textarea_get_placeholder_text(s_ta), ph)) lv_textarea_set_placeholder_text(s_ta, ph);
         field_sync();
     }
@@ -657,14 +657,14 @@ static void pane_update(void)
     if (n && n->kind != NOTE_NONE && act) {
         switch (n->kind) {
         case NOTE_BUSY:           nt = n->text; break;
-        case NOTE_SENT:           nt = "Sent \xe2\x9c\x93"; nc = TC_GREEN; break;
-        case NOTE_APPROVE:        nt = "Open it to approve"; break;
-        case NOTE_OPEN_TO_ANSWER: nt = "Open the session to answer"; break;
+        case NOTE_SENT:           nt = tr(STR_SES_SENT); nc = TC_GREEN; break;
+        case NOTE_APPROVE:        nt = tr(STR_SES_OPEN_TO_APPROVE); break;
+        case NOTE_OPEN_TO_ANSWER: nt = tr(STR_SES_OPEN_TO_ANSWER); break;
         case NOTE_ERROR:          nt = n->text; nc = TC_RED; break;
         default: break;
         }
     } else if (act && s_options >= 2) {
-        snprintf(b, sizeof(b), "1\xe2\x80\x93%d picks an option", s_options);
+        snprintf(b, sizeof(b), "1\xe2\x80\x93%d %s", s_options, tr(STR_SES_PICKS_OPTION));
         nt = b;
     }
     set_text(s_note, nt);
@@ -744,7 +744,7 @@ static void select_index(int i)
 
 static void post_action(job_type_t type, const cc_session_t *s, const char *t)
 {
-    if (s_act_pending) { ui_toast("Still working on the last request"); return; }
+    if (s_act_pending) { ui_toast(tr(STR_SES_STILL_WORKING)); return; }
     job_t *j = job_new(type);
     if (!j) return;
     j->token = ++s_req_token;
@@ -753,10 +753,10 @@ static void post_action(job_type_t type, const cc_session_t *s, const char *t)
     strlcpy(j->id, s->id, sizeof(j->id));
     if (t) strlcpy(j->text, t, sizeof(j->text));
     s_act_pending = true;
-    note_set(s, NOTE_BUSY, type == JOB_PASTE ? "Sending\xe2\x80\xa6" : "Opening\xe2\x80\xa6");
+    note_set(s, NOTE_BUSY, type == JOB_PASTE ? tr(STR_SES_SENDING) : tr(STR_SES_OPENING));
     if (!job_post(j)) {
         s_act_pending = false;
-        note_set(s, NOTE_ERROR, "Busy, try again");
+        note_set(s, NOTE_ERROR, tr(STR_SET_BUSY));
     }
     heap_caps_free(j);
 }
@@ -780,10 +780,10 @@ static void open_now(const cc_session_t *s)
 {
     char claude[64], cmd[192];
     /* the session as of the latest poll must still be one we may open */
-    if (!actionable(s)) { note_set(s, NOTE_ERROR, "Session has stopped"); return; }
+    if (!actionable(s)) { note_set(s, NOTE_ERROR, tr(STR_SES_HAS_STOPPED)); return; }
     int idx = cc_settings_server();
     if (idx < 0 || !cc_cmd_attach(cc_settings_claude_path(claude, sizeof(claude)), s->id, cmd, sizeof(cmd))) {
-        note_set(s, NOTE_ERROR, "Can't open: set up the host in Settings");
+        note_set(s, NOTE_ERROR, tr(STR_SES_CANT_OPEN));
         return;
     }
     note_clear(s);
@@ -840,7 +840,7 @@ static void apply_action_result(void)
     } else if (err == CC_PASTE_NOT_READY) {
         note_set(s, NOTE_OPEN_TO_ANSWER, NULL); return;
     }
-    if (err == ESP_ERR_INVALID_STATE) strlcpy(msg, "Not connected to the host", sizeof(msg));
+    if (err == ESP_ERR_INVALID_STATE) strlcpy(msg, tr(STR_SES_NOT_CONNECTED), sizeof(msg));
     else if (!msg[0]) strlcpy(msg, esp_err_to_name(err), sizeof(msg));
     if (msg[0] >= 'a' && msg[0] <= 'z') msg[0] = (char)(msg[0] - 'a' + 'A');
     note_set(s, NOTE_ERROR, msg);
@@ -902,33 +902,33 @@ void ui_sessions_keys_overlay(bool show)
     lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
     lv_obj_add_flag(p, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    lv_obj_t *t = text(p, "Keyboard shortcuts", &st_body, TC_FG);
+    lv_obj_t *t = text(p, tr(STR_SES_KEYS_TITLE), &st_body, TC_FG);
     lv_obj_set_style_pad_bottom(t, UI_TK_GAP_S, 0);
     /* the keys column is as wide as its widest entry, so neither column wraps */
     int32_t kw = 0;
-    for (int i = 0; hk_overlay[i].keys; i++) {
+    for (int i = 0; i < hk_overlay_n; i++) {
         lv_point_t sz;
-        lv_text_get_size(&sz, hk_overlay[i].keys, FONT_SMALL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        lv_text_get_size(&sz, tr(hk_overlay[i].keys), FONT_SMALL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
         if (sz.x > kw) kw = sz.x;
     }
-    for (int i = 0; hk_overlay[i].keys; i++) {
+    for (int i = 0; i < hk_overlay_n; i++) {
         lv_obj_t *r = box(p);
         lv_obj_set_size(r, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
         lv_obj_set_style_pad_column(r, UI_TK_GAP_L, 0);
         lv_obj_add_flag(r, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_t *k = text(r, hk_overlay[i].keys, &st_label, TC_MUTED);
+        lv_obj_t *k = text(r, tr(hk_overlay[i].keys), &st_label, TC_MUTED);
         lv_obj_set_width(k, kw);
-        text(r, hk_overlay[i].what, &st_label, TC_FG);
+        text(r, tr(hk_overlay[i].what), &st_label, TC_FG);
     }
-    lv_obj_t *h = text(p, "Any key or a touch closes this", &st_label, TC_MUTED);
+    lv_obj_t *h = text(p, tr(STR_SES_KEYS_CLOSE), &st_label, TC_MUTED);
     lv_obj_set_style_pad_top(h, UI_TK_GAP_S, 0);
     s_keys_ov = o;
 }
 
 /* ------------------------------------------------------------------ keys */
 
-static void voice_toast(void) { ui_toast_ms(HK_VOICE_TOAST, 3000); }
+static void voice_toast(void) { ui_toast_ms(tr(STR_HK_VOICE), 3000); }
 
 static void type_cp(uint32_t c)
 {
@@ -1055,15 +1055,15 @@ static void wifi_settings_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_N
 static void host_settings_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_HOST); }
 static void lowbat_dismiss_cb(lv_event_t *e) { (void)e; s_lowbat_dismiss = true; render(); }
 
-/* Why the Host link is down, for the Sessions banner and Settings › Host › Link: no Host, "Can't reach <name>.
+/* Why the Host link is down, for the Sessions banner and Settings › Host › Link: no host, "Can't reach <name>.
    Is it awake?" when nothing failed, or cc_link's status text up to its parenthetical ("Host not found at
-   my-host.local (set its address …) (retry in 12s)"), capitalised. */
+   my-host.local (set its fallback address …) (retry in 12s)"), capitalised. */
 void ui_sessions_link_down_text(char *out, size_t cap)
 {
     char name[48];
     cc_settings_server_name(name, sizeof(name));
     if (!name[0]) { strlcpy(out, tr(STR_LINK_NO_HOST), cap); return; }
-    if (cc_link_failure() == CC_LINK_FAIL_NONE) { snprintf(out, cap, tr(STR_LINK_CANT_REACH), name); return; }
+    if (cc_link_failure() == CC_LINK_FAIL_NONE) { snprintf(out, cap, "%s %s. %s", tr(STR_LINK_CANT_REACH), name, tr(STR_LINK_IS_IT_AWAKE)); return; }
     char st[CC_STATUS_MAX];
     cc_link_status_text(st, sizeof(st));
     char *p = strstr(st, " (");
@@ -1074,8 +1074,8 @@ void ui_sessions_link_down_text(char *out, size_t cap)
 
 static void unreachable_text(char *out, size_t cap, bool too_big, int fails)
 {
-    if (cc_link_connected() && too_big) { strlcpy(out, "Session list too large to load", cap); return; }
-    if (cc_link_connected() && fails >= CC_POLL_FAILS_SHOWN) { strlcpy(out, "Can't load sessions from the host\xe2\x80\xa6", cap); return; }
+    if (cc_link_connected() && too_big) { strlcpy(out, tr(STR_SES_LIST_TOO_BIG), cap); return; }
+    if (cc_link_connected() && fails >= CC_POLL_FAILS_SHOWN) { strlcpy(out, tr(STR_SES_CANT_LOAD), cap); return; }
     ui_sessions_link_down_text(out, cap);
 }
 
@@ -1139,19 +1139,19 @@ static void update_state(void)
     char t[CC_STATUS_MAX + 16];
     switch (b) {
     case SM_B_NO_WIFI:
-        ui_banner_set(s_banner, UI_BANNER_RED, "No Wi-Fi", "Wi-Fi settings", wifi_settings_cb, NULL); break;
+        ui_banner_set(s_banner, UI_BANNER_RED, tr(STR_HOSTS_NO_WIFI), tr(STR_SES_WIFI_SETTINGS), wifi_settings_cb, NULL); break;
     case SM_B_UNREACHABLE:
         unreachable_text(t, sizeof(t), too_big, fails);
-        ui_banner_set(s_banner, UI_BANNER_RED, t, "Host settings", host_settings_cb, NULL); break;
+        ui_banner_set(s_banner, UI_BANNER_RED, t, tr(STR_SES_HOST_SETTINGS), host_settings_cb, NULL); break;
     case SM_B_LOW_BATTERY:
-        snprintf(t, sizeof(t), "Battery %d %%. The Tab5 sleeps at 10 %%.", pct);
-        ui_banner_set(s_banner, UI_BANNER_RED, t, "Dismiss", lowbat_dismiss_cb, NULL); break;
+        snprintf(t, sizeof(t), "%s %d %%. %s", tr(STR_SES_BATTERY), pct, tr(STR_SES_SLEEPS_AT));
+        ui_banner_set(s_banner, UI_BANNER_RED, t, tr(STR_SES_DISMISS), lowbat_dismiss_cb, NULL); break;
     case SM_B_RECONNECTING:
-        ui_banner_set(s_banner, UI_BANNER_MUTED, "Reconnecting to host\xe2\x80\xa6", NULL, NULL, NULL); break;
+        ui_banner_set(s_banner, UI_BANNER_MUTED, tr(STR_SES_RECONNECTING), NULL, NULL, NULL); break;
     case SM_B_LOADING:
-        ui_banner_set(s_banner, UI_BANNER_MUTED, "Loading sessions\xe2\x80\xa6", NULL, NULL, NULL); break;
+        ui_banner_set(s_banner, UI_BANNER_MUTED, tr(STR_SES_LOADING), NULL, NULL, NULL); break;
     case SM_B_STALE:
-        ui_banner_set(s_banner, UI_BANNER_MUTED, "Updating\xe2\x80\xa6", NULL, NULL, NULL); break;
+        ui_banner_set(s_banner, UI_BANNER_MUTED, tr(STR_SES_UPDATING), NULL, NULL, NULL); break;
     default:
         ui_banner_set(s_banner, UI_BANNER_MUTED, NULL, NULL, NULL, NULL); break;
     }
@@ -1407,8 +1407,8 @@ static lv_obj_t *build_pane(lv_obj_t *scr, int W, int top, int h)
     lv_obj_set_flex_align(s_action_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(s_action_row, 12, 0);
     ui_comp_pass_hits(s_action_row);
-    s_send = ui_btn(s_action_row, UI_BTN_PRIMARY, "\xe2\x86\xb5 Send", chip_send_cb, NULL);
-    ui_btn(s_action_row, UI_BTN_SECONDARY, "\xe2\x8c\x83O Open", chip_open_cb, NULL);
+    s_send = ui_btn(s_action_row, UI_BTN_PRIMARY, tr(STR_SES_SEND), chip_send_cb, NULL);
+    ui_btn(s_action_row, UI_BTN_SECONDARY, tr(STR_SES_OPEN), chip_open_cb, NULL);
     s_note = text(s_action_row, "", &st_label, TC_MUTED);
     lv_obj_set_width(s_note, 1);
     lv_obj_set_flex_grow(s_note, 1);
@@ -1491,22 +1491,22 @@ lv_obj_t *ui_sessions_create(void *arg)
     }
     s_nohost = centred[0];
     s_empty = centred[1];
-    ui_comp_pass_hits(ui_empty_state(s_nohost, "Set up your host to see its Claude sessions.", "Set up host", set_up_host_cb, NULL));
-    ui_empty_state(s_empty, "No sessions on this host. Start one with `claude --bg`.", NULL, NULL, NULL);
+    ui_comp_pass_hits(ui_empty_state(s_nohost, tr(STR_SES_NO_HOST_BODY), tr(STR_SES_SET_UP_HOST), set_up_host_cb, NULL));
+    ui_empty_state(s_empty, tr(STR_SES_EMPTY), NULL, NULL, NULL);
     s_pane = build_pane(scr, W, top, h);
 
     /* the bars last, over the body */
-    lv_obj_t *hd = ui_header(scr, "Sessions", NULL);
+    lv_obj_t *hd = ui_header(scr, tr(STR_SES_TITLE), NULL);
     s_needs = ui_header_needs_you(hd);
     s_banner = ui_banner(scr, UI_TK_HEADER_H);
     lv_obj_t *f = ui_footer(scr);
     lv_obj_t *l = ui_footer_group(f, false), *r = ui_footer_group(f, true);
-    ui_chip(l, "\xe2\x86\x91\xe2\x86\x93 Select", chip_select_cb, NULL);
-    ui_chip(l, "\xe2\x86\xb5 Send", chip_send_cb, NULL);
-    ui_chip(l, "\xe2\x8c\x83O Open", chip_open_cb, NULL);
-    ui_chip(r, "\xe2\x8c\x83T/\xe2\x8c\x83M Terminal", chip_terminal_cb, NULL);   /* Ctrl+M: the two-thumb alias */
-    ui_chip(r, "\xe2\x8c\x83P Settings", chip_settings_cb, NULL);
-    ui_chip(r, "\xe2\x8c\x83K Keys", chip_keys_cb, NULL);
+    ui_chip(l, tr(STR_SES_SELECT), chip_select_cb, NULL);
+    ui_chip(l, tr(STR_SES_SEND), chip_send_cb, NULL);
+    ui_chip(l, tr(STR_SES_OPEN), chip_open_cb, NULL);
+    ui_chip(r, tr(STR_SES_TERMINAL), chip_terminal_cb, NULL);   /* Ctrl+M: the two-thumb alias */
+    ui_chip(r, tr(STR_SES_SETTINGS), chip_settings_cb, NULL);
+    ui_chip(r, tr(STR_SES_KEYS), chip_keys_cb, NULL);
 
     key_sink_t sink = { .key = sessions_key, .user = scr };   /* per screen */
     keyboard_set_sink(&sink);

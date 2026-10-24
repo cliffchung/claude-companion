@@ -224,7 +224,7 @@ static bool judged(void) { return power_state() < PS_OFF || power_results_judged
 
 /* Steps 4-5: SSH, then one plain poll. A handshake path counts only once SSH works: a stale keypair can
    report the peer up, so a failed connect after a handshake escalates to a rebind. */
-/* Plan 3: a check-in brings the tunnel up only with the switch on and a Mac host that may be on the
+/* Plan 3: a check-in brings the tunnel up only with the switch on and a Host entry that may be on the
    tailnet. A LAN address or a .local name goes straight to the link and the poll: no connect wait, no
    handshake, no rebind. */
 static bool needs_tunnel(const char *mac)
@@ -235,7 +235,7 @@ static bool needs_tunnel(const char *mac)
 static ts_checkin_t tunnel(const char *mac, bool rebind)
 {
     if (!tailscale_enabled() && ts_host_needs_tailscale(mac)) {
-        /* the Mac entry is still a tailnet host: no link can come up, so don't wait for one */
+        /* the Host entry is still a tailnet host: no link can come up, so don't wait for one */
         ESP_LOGW(TAG, "tunnel: the Host (%s) needs Tailscale, which is off", mac);
         return TS_CHECKIN_FAILED;
     }
@@ -304,7 +304,7 @@ static void job_checkin(void)
     power_state_t st = s_arg_state;
     sums_reset((uint8_t)(0x80 | st));
     bool watch = cc_link_watch_wanted();
-    if (watch) cc_link_watch_resume(false);   /* one plain poll: no watch loop started on the Mac for a check-in */
+    if (watch) cc_link_watch_resume(false);   /* one plain poll: no watch loop started on the Host for a check-in */
     bool poll_ok;
     ts_checkin_t ts = bring_up(s_arg_rebind, &poll_ok, t0);
     if (poll_ok) wait_for(judged, JUDGED_WAIT_MS);
@@ -626,7 +626,7 @@ void checkin_step(power_state_t st, int64_t now)
         uint32_t gen = cc_poll_generation();
         bool fresh = gen != s_hold_gen;
         if (fresh) { s_hold_gen = gen; s_hold_gen_ms = now; }
-        bool stale = now - s_hold_gen_ms > HOLD_STALE_MS;   /* the Mac unreachable for an hour: nothing to show */
+        bool stale = now - s_hold_gen_ms > HOLD_STALE_MS;   /* the Host unreachable for an hour: nothing to show */
         if (!s_hold_down && ((fresh && !power_needs_you()) || stale)) {
             ESP_LOGI(TAG, "hibernate check-in hold: %s", stale ? "no result for an hour" : "nobody needs you now");
             s_hold_down = true;
@@ -704,7 +704,7 @@ void checkin_init(void)
            could read USB with the pack supplementing the boot load as battery (PT28 I2) */
         if (boot_phase_exp()) ESP_LOGW(TAG, "debug: Task 3 experiment mask 0x%02x is set (power checkin hibernate ... exp 0)",
                                        (unsigned)boot_phase_exp());   /* review m9 */
-        /* M3: one plain poll, no watch loop on the Mac for a boot that goes back to sleep (as job_checkin) */
+        /* M3: one plain poll, no watch loop on the Host for a boot that goes back to sleep (as job_checkin) */
         s_hib_watch = cc_link_watch_wanted();
         if (s_hib_watch) cc_link_watch_resume(false);
         power_go(PS_OFF);      /* dark from the start, pinned */

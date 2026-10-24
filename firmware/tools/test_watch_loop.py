@@ -2,7 +2,7 @@
 
 The command comes from firmware/test/host/build/cc_cmd_print (build the host tests first).
 It runs as `/bin/zsh -c "<command>"` under pty.fork(), so the pty is the controlling terminal
-as in a pty exec channel on the Mac. `claude` is a fake in a temp dir that prints state.json;
+as in a pty exec channel on the Host. `claude` is a fake in a temp dir that prints state.json;
 the real one is never run. Every test kills its process group and checks that nothing with the
 temp dir in its command line is left running.
 """
@@ -222,7 +222,7 @@ class WatchLoopTest(unittest.TestCase):
         self.pump(1.2, 1)
         self.pump(0.8)
         os.killpg(self.pid, signal.SIGSTOP)
-        time.sleep(6)   # a sleeping Mac: no keepalives arrive
+        time.sleep(6)   # a sleeping Host: no keepalives arrive
         os.killpg(self.pid, signal.SIGCONT)
         line = self.pump(1 + 1, None, lambda l: l.startswith('@@CC-BYE'))
         self.assertEqual('@@CC-BYE quiet', line, self.lines)
