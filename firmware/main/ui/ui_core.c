@@ -69,8 +69,25 @@ void ui_nav_replace(ui_screen_create_fn create, void *arg)
     nav_show_top();
 }
 
+/* A screen's back guard (the host form's "Discard changes?"): asked first by every ui_nav_back while its screen is
+   current; true means it handled the back itself. Forgotten when the screen is deleted. */
+static lv_obj_t *s_guard_scr;
+static ui_back_guard_t s_guard;
+static void guard_scr_deleted(lv_event_t *e)
+{
+    if (lv_event_get_target_obj(e) == s_guard_scr) { s_guard_scr = NULL; s_guard = NULL; }
+}
+void ui_nav_set_back_guard(lv_obj_t *scr, ui_back_guard_t guard)
+{
+    if (s_guard_scr) lv_obj_remove_event_cb(s_guard_scr, guard_scr_deleted);
+    s_guard_scr = guard ? scr : NULL;
+    s_guard = scr ? guard : NULL;
+    if (s_guard_scr) lv_obj_add_event_cb(s_guard_scr, guard_scr_deleted, LV_EVENT_DELETE, NULL);
+}
+
 void ui_nav_back(void)
 {
+    if (s_guard && s_guard_scr && s_guard_scr == lv_screen_active() && s_guard()) return;
     if (s_depth <= 1) { ui_nav_home(); return; }
     s_depth--;
     nav_show_top();
@@ -986,14 +1003,18 @@ static void async_trampoline(void *p)
     a->fn(a->arg);
     free(a);
 }
-void ui_async(lv_async_cb_t fn, void *arg)
+bool ui_async(lv_async_cb_t fn, void *arg)
 {
     async_t *a = malloc(sizeof(*a));
+    if (!a) return false;
     a->fn = fn; a->arg = arg;
+    bool ok = false;
     if (lvgl_port_lock(0)) {
-        lv_async_call(async_trampoline, a);
+        ok = lv_async_call(async_trampoline, a) == LV_RESULT_OK;
         lvgl_port_unlock();
     }
+    if (!ok) free(a);
+    return ok;
 }
 
 static void timer_bind_del_cb(lv_event_t *e)

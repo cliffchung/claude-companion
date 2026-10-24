@@ -93,6 +93,23 @@ lv_obj_t *ui_rail_row(lv_obj_t *parent, const char *label, lv_event_cb_t cb, voi
 lv_obj_t *ui_swatch(lv_obj_t *parent, uint32_t rgb);
 lv_obj_t *ui_footnote(lv_obj_t *parent, const char *text);         /* label muted, wrapped */
 
+/* ---- Terminal ---- */
+/* A host row (spec §5.3): a 72 px line holding the row (flex-grown: a dot, the name in body, meta muted, then a
+ * trailing label that shows hint while the row has the keyboard focus) and, with edit_cb, a 64 px secondary button
+ * labelled edit 8 px to its right. The button is touch only (UI_KEYBOARD_SKIP): the row's LONG_PRESSED (Ctrl+Enter
+ * from the keyboard) also runs edit_cb, so the arrows go row to row. Both get ud. Returns the row. */
+lv_obj_t *ui_host_row(lv_obj_t *parent, const char *name, const char *meta, const char *hint,
+                      lv_event_cb_t cb, lv_event_cb_t edit_cb, const char *edit, void *ud);
+/* The row's dot: -1 none (a LAN host), 0 offline (line grey), 1 online (green). */
+void ui_host_row_dot(lv_obj_t *row, int dot);
+/* The trailing label: note in red (a connect failure), or busy (a spinner and note muted); NULL and !busy goes back
+ * to hint on focus. */
+void ui_host_row_note(lv_obj_t *row, const char *note, bool busy, const char *hint);
+/* "+ Add host": 72 px, a line border, muted text; the whole row is the hit target. */
+lv_obj_t *ui_add_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *ud);
+/* A ui_chip (or a banner's action chip) in the primary style: fg fill, bg text (Save, Turn on). */
+void ui_chip_set_primary(lv_obj_t *chip);
+
 /* ---- text ---- */
 typedef enum { UI_TONE_FG, UI_TONE_MUTED, UI_TONE_GREEN, UI_TONE_RED } ui_tone_t;
 /* A label in a tone: body, or the label role when small. */

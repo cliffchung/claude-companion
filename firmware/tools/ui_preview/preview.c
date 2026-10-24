@@ -17,6 +17,9 @@
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "servers/server_store.h"
+#include "companion/cc_cmd.h"
+#include "ui/ui_host_form.h"
+#include "net/ts_host.h"
 #include "sys/power.h"
 #include "sys/checkin.h"
 #include <assert.h>
@@ -112,7 +115,13 @@ static const ts_peer_t k_preview_peers[] = {
 };
 static int s_peer_reads;
 int tailscale_peer_count(void) { s_peer_reads++; return tailscale_state() == TS_CONNECTED ? 3 : 0; }
-bool tailscale_peer(int i, ts_peer_t *out) { if (tailscale_state() != TS_CONNECTED || i < 0 || i >= 3) return false; *out = k_preview_peers[i]; return true; }
+static bool s_peer_a_offline;   /* terminal on: preview-host-a drops off */
+bool tailscale_peer(int i, ts_peer_t *out) {
+    if (tailscale_state() != TS_CONNECTED || i < 0 || i >= 3) return false;
+    *out = k_preview_peers[i];
+    if (i == 0 && s_peer_a_offline) out->online = false;
+    return true;
+}
 static wifi_saved_t s_preview_saved[4] = { { "Clientre Wi-Fi", "preview-pass-1" }, { "Cabin", "preview-pass-2" } };
 static int s_preview_saved_n = 2;
 static int s_wifi_forget_calls, s_wifi_connect_calls, s_scan_starts;
@@ -156,9 +165,62 @@ void esp_restart(void) {}
 void bsp_display_brightness_set(int v) {}
 bool server_store_set_on_sd(bool on) { return true; }
 void server_store_reload(void) {}
-int server_store_count(void) { return 3; }
-static server_t s_preview_server = { .name = "Mac", .host = "mac", .port = 22, .user = "me", .use_key = true };
-const server_t *server_store_get(int i) { return i >= 0 && i < 3 ? &s_preview_server : NULL; }
+/* The server store: the Host's entry (index 0, Settings › Host), a LAN host and a tailnet host (preview-host-a's
+   address, online). PREVIEW_HOSTS=empty: the Host's entry only. PREVIEW_HOSTS=sd: the LAN host signs in with a key
+   file on the SD card. The add / update / remove calls are recorded. */
+static server_t s_preview_servers[SERVER_MAX] = {
+    { .name = "Mac", .host = "mac", .port = 22, .user = "me", .use_key = true, .keypath = "device" },
+    { .name = "pi-lan", .host = "192.168.1.50", .port = 22, .user = "pi", .use_key = true, .keypath = "device" },
+    { .name = "build-box", .host = "100.64.0.11", .port = 22, .user = "dev", .use_key = true, .keypath = "device" },
+};
+static int s_preview_server_n = -1;
+static int s_store_adds, s_store_updates, s_store_removes;
+static void preview_store_init(void) {
+    if (s_preview_server_n >= 0) return;
+    s_preview_server_n = !strcmp(env_str("PREVIEW_HOSTS", ""), "empty") ? 1 : 3;
+    if (!strcmp(env_str("PREVIEW_HOSTS", ""), "sd")) snprintf(s_preview_servers[1].keypath, sizeof(s_preview_servers[1].keypath), "/sdcard/ssh/id_ed25519");
+}
+int server_store_count(void) { preview_store_init(); return s_preview_server_n; }
+const server_t *server_store_get(int i) { preview_store_init(); return i >= 0 && i < s_preview_server_n ? &s_preview_servers[i] : NULL; }
+int server_store_add(const server_t *s) {
+    preview_store_init(); s_store_adds++;
+    if (s_preview_server_n >= SERVER_MAX) return -1;
+    s_preview_servers[s_preview_server_n] = *s;
+    return s_preview_server_n++;
+}
+bool server_store_update(int i, const server_t *s) {
+    preview_store_init(); s_store_updates++;
+    if (i < 0 || i >= s_preview_server_n) return false;
+    s_preview_servers[i] = *s; return true;
+}
+bool server_store_remove(int i) {
+    preview_store_init(); s_store_removes++;
+    if (i < 0 || i >= s_preview_server_n) return false;
+    memmove(&s_preview_servers[i], &s_preview_servers[i + 1], sizeof(server_t) * (size_t)(s_preview_server_n - i - 1));
+    s_preview_server_n--; return true;
+}
+/* the Host's entry by index or address, as cc_link_is_companion_server decides it */
+bool cc_link_is_companion_server(int idx) {
+    const server_t *s = server_store_get(idx);
+    return s && pv_host() && cc_is_companion_server(idx, s->host, 0, s_preview_servers[0].host);
+}
+/* known hosts: build-box (100.64.0.11:22) has a pin until it is forgotten */
+#define PREVIEW_HOST_FP "SHA256:BuildBoxPreviewPinOnly0123456789abcdefghijk"
+static bool s_kh_pinned = true;
+static int s_kh_forget_calls;
+bool ssh_known_host_fingerprint(const char *host, int port, char *fp, size_t cap) {
+    if (cap) fp[0] = 0;
+    if (!s_kh_pinned || strcmp(host, "100.64.0.11") || port != 22) return false;
+    snprintf(fp, cap, PREVIEW_HOST_FP); return true;
+}
+bool ssh_known_host_forget(const char *host, int port) {
+    s_kh_forget_calls++;
+    bool had = s_kh_pinned && !strcmp(host, "100.64.0.11") && port == 22;
+    s_kh_pinned = false; return had;
+}
+bool tailscale_resolve(const char *host, char *ip, size_t cap) { (void)host; if (cap) ip[0] = 0; return false; }
+static int s_term_opens, s_term_idx = -1;
+lv_obj_t *ui_terminal_create(void *p) { s_term_opens++; s_term_idx = (int)(intptr_t)p; return ui_screen_base(); }
 pr_src_t power_source(int *pct, bool *charging)
 {
     bool chg = env_int("PREVIEW_CHG", 0) != 0;
@@ -245,7 +307,8 @@ int cc_poll_failures(bool *too_big) { if (too_big) *too_big = false; return 0; }
 const char *cc_settings_claude_path(char *o, size_t cap) { snprintf(o, cap, "~/.local/bin/claude"); return o; }
 const char *cc_settings_server_name(char *o, size_t cap) { snprintf(o, cap, "%s", pv_host() ? "my-host" : ""); return o; }
 int cc_settings_server(void) { return pv_host() ? 0 : -1; }
-void cc_link_set_server(const char *n) { (void)n; }
+static int s_set_server_calls; static char s_set_server_name[48];
+void cc_link_set_server(const char *n) { s_set_server_calls++; snprintf(s_set_server_name, sizeof(s_set_server_name), "%s", n ? n : ""); }
 bool cc_link_set_claude_path(const char *p) { (void)p; return true; }
 /* PREVIEW_LOG=long: a 300-character line with no spaces, CJK and a numbered list (Review Focus 3). */
 static int s_paste_calls;
@@ -281,9 +344,6 @@ esp_err_t cc_link_forget_host_key(char *fp, size_t cap, int ms) {
 uint32_t cc_link_forget_done(char *fp, size_t cap) { snprintf(fp, cap, PREVIEW_FP); return (uint32_t)s_forget_calls; }
 bool cc_link_pinned_fingerprint(char *fp, size_t cap) { snprintf(fp, cap, "SHA256:OldPreviewKeyOnly9876543210zyxwvutsrqponm"); return true; }
 esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
-#define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
-SCREEN(ui_hosts_create)
-SCREEN(ui_server_form_create)
 static int snapshot(lv_obj_t *s, const char *path) {
     int w=lv_obj_get_width(s), h=lv_obj_get_height(s);
     lv_draw_buf_t *snap=lv_snapshot_take(s,LV_COLOR_FORMAT_RGB888);
@@ -436,7 +496,7 @@ static void terminal_spacing_check(void) {
         assert(last>=0 && first<32 && 32+first-last-1>=4);
     }
     lv_draw_buf_destroy(snap);
-    assert(snapshot(scr,"terminal.ppm")==0);
+    assert(snapshot(scr,"term-spacing.ppm")==0);
     fonts_set_term_line_height(38);
     term_view_fit(tv,&cols,&rows);
     assert(term_view_cell_h(tv)==38 && rows==13);
@@ -1427,8 +1487,13 @@ static int settings_sub_case(lv_display_t *d, const char *sub, const char *varia
     click_label(d, body, "preview-host-a");
     assert(sheet_rows("preview-host-a") == 1 && find_label(top, "Add as SSH host", false));
     r |= pv_run_checks(d, s, "settings-sub-peers-sheet", false, 0);
-    click_label(d, top, "Add as SSH host");
-    assert(find_label(top, "Add it from Terminal", false));
+    click_label(d, top, "Add as SSH host");   /* Task 9: the host form, prefilled, over Terminal */
+    lv_obj_t *f = lv_screen_active();
+    if (!ui_nav_is_top(ui_host_form_create) || !find_label(f, "preview-host-a", false) || !find_label(f, "100.64.0.11", false)) {
+        printf("check %s: FAIL Add as SSH host didn't open the prefilled form\n", name); return 1;
+    }
+    ui_nav_back(); step(d, 200);
+    assert(ui_nav_is_top(ui_hosts_create));
     lv_obj_clean(top);
     return r;
 }
@@ -1579,6 +1644,334 @@ static int settings_case(lv_display_t *d, int section) {
     return r;
 }
 
+/* ------------------------------------------------------------ Terminal and the host form (Task 9) */
+static lv_obj_t *hosts_body(lv_obj_t *scr) { return lv_obj_get_child(scr, 2); }
+/* The host row (line > row > column > name) whose name is t. */
+static lv_obj_t *host_row(lv_obj_t *o, const char *t) {
+    lv_obj_t *l = find_label(o, t, false);
+    return l ? lv_obj_get_parent(lv_obj_get_parent(l)) : NULL;
+}
+static lv_obj_t *host_edit_button(lv_obj_t *row) { return lv_obj_get_child(lv_obj_get_parent(row), 1); }
+static int host_lines(lv_obj_t *body) {
+    int n = 0;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(body); i++) {
+        lv_obj_t *c = lv_obj_get_child(body, i);
+        n += lv_obj_get_child_count(c) == 2 && lv_obj_check_type(lv_obj_get_child(c, 1), &lv_button_class);
+    }
+    return n;
+}
+/* -1 no dot, 0 line grey, 1 green */
+static int host_dot_of(lv_obj_t *row) {
+    lv_obj_t *dot = lv_obj_get_child(row, 0);
+    if (lv_obj_has_flag(dot, LV_OBJ_FLAG_HIDDEN)) return -1;
+    lv_color_t c = lv_obj_get_style_bg_color(dot, 0);
+    return lv_color_eq(c, lv_color_hex(UI_TK_GREEN)) ? 1 : lv_color_eq(c, lv_color_hex(UI_TK_LINE)) ? 0 : 2;
+}
+static lv_obj_t *host_note(lv_obj_t *row) { lv_obj_t *t = lv_obj_get_child(row, 2); return lv_obj_has_flag(t, LV_OBJ_FLAG_HIDDEN) ? NULL : t; }
+static bool red(lv_obj_t *l) { return l && lv_color_eq(lv_obj_get_style_text_color(l, 0), lv_color_hex(UI_TK_RED)); }
+#define FOOTNOTE "Your Claude host isn't listed here: its sessions are on the Sessions screen. Ctrl+] leaves an SSH session."
+static lv_obj_t *open_terminal(lv_display_t *d) {
+    preview_sessions_load();
+    ui_nav_home(); step(d, 200);
+    ui_nav_push(ui_hosts_create, NULL); step(d, 200);
+    assert(ui_nav_is_top(ui_hosts_create));
+    return lv_screen_active();
+}
+
+/* terminal [on|empty|keys|deleted-event|fail|add]: spec §5.3. The default: Tailscale off. */
+static int terminal_case(lv_display_t *d, const char *v) {
+    char name[48];
+    snprintf(name, sizeof(name), "terminal%s%s", v[0] ? "-" : "", v);
+    bool ts_off = !v[0] || !strcmp(v, "fail");
+    g_settings.ts_enable = !ts_off;
+    setenv("PREVIEW_TS", ts_off ? "0" : "2", 1);
+    int timers0 = -1;
+    if (!strcmp(v, "empty")) setenv("PREVIEW_HOSTS", "empty", 1);
+    lv_obj_t *s = open_terminal(d), *body = hosts_body(s), *banner = lv_obj_get_child(s, 1), *top = lv_layer_top();
+    (void)timers0;
+    assert(find_clickable_shown(s, "\xe2\x86\x90 Sessions") && find_label(s, "Terminal", false));
+    if (find_label(body, "Mac", false) || find_label_has(body, "me@mac", 0)) { printf("check %s: FAIL the Host's entry is listed\n", name); return 1; }
+    if (!find_label(body, FOOTNOTE, false)) { printf("check %s: FAIL no footnote\n", name); return 1; }
+    int r = 0;
+    if (!v[0]) {
+        if (lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN) || !find_label_has(banner, "Tailscale is off", 0) || !find_label(banner, "Turn on", false)) {
+            printf("check %s: FAIL no Tailscale-off banner\n", name); return 1;
+        }
+        if (host_lines(body) != 2) { printf("check %s: FAIL %d host rows\n", name, host_lines(body)); return 1; }
+        assert(find_label(body, "pi-lan", false) && find_label(body, "pi@192.168.1.50", false) && find_label(body, "dev@100.64.0.11", false));
+        assert(host_dot_of(host_row(body, "build-box")) == -1 && host_dot_of(host_row(body, "pi-lan")) == -1);   /* no dots while off */
+        lv_area_t ba, bb; lv_obj_get_coords(banner, &ba); lv_obj_get_coords(body, &bb);
+        assert(bb.y1 >= ba.y2);   /* the list starts under the banner */
+        r |= pv_run_checks(d, s, name, false, 0);
+        click_label(d, banner, "Turn on");
+        if (!g_settings.ts_enable || !lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN)) { printf("check %s: FAIL Turn on\n", name); return 1; }
+        assert(lv_screen_active() == s);   /* in place */
+        printf("%s: banner with Turn on, 2 rows, no Host entry; Turn on switched Tailscale on in place\n", name);
+        return r;
+    }
+    if (!strcmp(v, "on")) {
+        assert(lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN));
+        lv_obj_t *tn = host_row(body, "build-box"), *lan = host_row(body, "pi-lan");
+        if (host_dot_of(tn) != 1 || host_dot_of(lan) != -1) { printf("check %s: FAIL dots tailnet %d LAN %d\n", name, host_dot_of(tn), host_dot_of(lan)); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        /* a peer event: the tailnet host went offline: the dot turns grey in place */
+        s_peer_a_offline = true;
+        lv_obj_t *old_row = tn;
+        int reads = s_peer_reads;
+        s_ts_cb(s_ts_cb_user); s_ts_cb(s_ts_cb_user); step(d, 200);   /* two events, one update */
+        if (host_dot_of(tn) != 0 || host_row(body, "build-box") != old_row) { printf("check %s: FAIL the offline dot after the event (%d, reads %d)\n", name, host_dot_of(tn), s_peer_reads - reads); return 1; }
+        assert(s_peer_reads == reads + 1);
+        printf("%s: tailnet row dotted green, LAN row none; an event turned it grey in place\n", name);
+        return r;
+    }
+    if (!strcmp(v, "empty")) {
+        if (host_lines(body) != 0 || !find_label(body, "+ Add host", false)) { printf("check %s: FAIL rows\n", name); return 1; }
+        assert(lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN));
+        return pv_run_checks(d, s, name, false, 0);
+    }
+    if (!strcmp(v, "keys")) {
+        assert(!preview_have_sink);
+        lv_obj_t *r0 = host_row(body, "pi-lan"), *r1 = host_row(body, "build-box");
+        int n = 0;
+        while (!lv_obj_has_state(r0, LV_STATE_FOCUS_KEY) && n < 4) { press_key(SK_DOWN, 0, false); step(d, 50); n++; }
+        if (!lv_obj_has_state(r0, LV_STATE_FOCUS_KEY)) { printf("check %s: FAIL row 0 never focused\n", name); return 1; }
+        lv_obj_t *hint = host_note(r0);
+        assert(hint && !strcmp(lv_label_get_text(hint), "\xe2\x86\xb5 Connect \xc2\xb7 \xe2\x8c\x83\xe2\x86\xb5 Edit") && !host_note(r1));
+        assert(find_label(body, "\xe2\x86\x91\xe2\x86\x93 move \xc2\xb7 Enter choose \xc2\xb7 Esc back", false));   /* §5.13 hint */
+        press_key(SK_DOWN, 0, false); step(d, 50);
+        if (!lv_obj_has_state(r1, LV_STATE_FOCUS_KEY)) { printf("check %s: FAIL Down did not reach row 1 (the Edit button is touch only)\n", name); return 1; }
+        assert(!host_note(r0) && host_note(r1));
+        r |= pv_run_checks(d, s, name, false, 0);
+        press_key(SK_ENTER, MOD_CTRL, false); step(d, 200);   /* Ctrl+Enter: Edit */
+        if (!ui_nav_is_top(ui_host_form_create) || !find_label(lv_screen_active(), "build-box", false)) { printf("check %s: FAIL Ctrl+Enter did not edit build-box\n", name); return 1; }
+        press_key(SK_ESC, 0, false); step(d, 200);
+        assert(ui_nav_is_top(ui_hosts_create));
+        s = lv_screen_active(); body = hosts_body(s);
+        r1 = host_row(body, "build-box");
+        lv_obj_send_event(r1, LV_EVENT_CLICKED, NULL);   /* Enter: connect */
+        if (!lv_obj_get_child(r1, 3) || !find_label(r1, "Connecting\xe2\x80\xa6", false)) { printf("check %s: FAIL no spinner on the row\n", name); return 1; }
+        step(d, 200);
+        if (s_term_opens != 1 || s_term_idx != 2) { printf("check %s: FAIL connect opened %d (index %d)\n", name, s_term_opens, s_term_idx); return 1; }
+        printf("%s: row 0 after %d Down, Down to row 1, Ctrl+Enter edits, Enter connects index 2\n", name, n);
+        return r;
+    }
+    if (!strcmp(v, "deleted-event")) {
+        if (!s_ts_cb) { printf("check %s: FAIL Terminal doesn't follow Tailscale\n", name); return 1; }
+        ts_event_cb_t old = s_ts_cb; void *old_user = s_ts_cb_user;
+        old(old_user);                 /* queued while Terminal shows ... */
+        ui_nav_back();                 /* ... and Terminal goes before it runs */
+        if (s_ts_cb) { printf("check %s: FAIL the Tailscale slot is set after Terminal went\n", name); return 1; }
+        lv_obj_t *now = lv_screen_active();
+        step(d, 200);
+        old(old_user); step(d, 200);   /* a late event from MicroLink's task */
+        if (lv_screen_active() != now || !ui_nav_is_top(ui_sessions_create) || s_ts_cb) { printf("check %s: FAIL a stale event acted\n", name); return 1; }
+        printf("check %s: ok (slot NULL after Back; a queued and a late event did nothing)\n", name);
+        return 0;
+    }
+    if (!strcmp(v, "fail")) {
+        /* refusals before any socket: a red note on the row, no session screen */
+        lv_obj_t *tn = host_row(body, "build-box");
+        lv_obj_send_event(tn, LV_EVENT_CLICKED, NULL); step(d, 200);
+        lv_obj_t *n = host_note(tn);
+        if (!red(n) || strncmp(lv_label_get_text(n), "Tailscale is off.", 17) || s_term_opens) { printf("check %s: FAIL the Tailscale-off refusal (\"%s\")\n", name, n ? lv_label_get_text(n) : "none"); return 1; }
+        r |= pv_run_checks(d, s, "terminal-refused", false, 0);
+        if (strstr(lv_label_get_text(n), "...") || strstr(lv_label_get_text(n), "\xe2\x80\xa6")) { printf("check %s: FAIL the refusal is cut: \"%s\"\n", name, lv_label_get_text(n)); return 1; }
+        setenv("PREVIEW_WIFI", "0", 1);
+        lv_obj_t *lan = host_row(body, "pi-lan");
+        lv_obj_send_event(lan, LV_EVENT_CLICKED, NULL); step(d, 200);
+        setenv("PREVIEW_WIFI", "1", 1);
+        assert(red(host_note(lan)) && !strcmp(lv_label_get_text(host_note(lan)), "No Wi-Fi") && !s_term_opens);
+        /* a session that failed (B6's missing key file): the reason is on its row when Terminal shows again */
+        ui_hosts_note_failure(1, HF_KEY_FILE_MISSING_MSG);
+        ui_nav_refresh(); step(d, 200);
+        s = lv_screen_active(); body = hosts_body(s); lan = host_row(body, "pi-lan");
+        if (!red(host_note(lan)) || strcmp(lv_label_get_text(host_note(lan)), "Key file not found on SD card")) { printf("check %s: FAIL the failure isn't on the row\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        lv_obj_send_event(lan, LV_EVENT_CLICKED, NULL); step(d, 200);   /* a retry clears it and hands over */
+        assert(s_term_opens == 1 && s_term_idx == 1);
+        ui_nav_back(); step(d, 200);
+        assert(ui_nav_is_top(ui_hosts_create) && !host_note(host_row(hosts_body(lv_screen_active()), "pi-lan")));
+        printf("%s: Tailscale off and no Wi-Fi refused on the row; a session failure shown red on its row\n", name);
+        return r;
+    }
+    if (!strcmp(v, "add")) {
+        click_label(d, body, "+ Add host");
+        if (sheet_rows("Add host") != 2 || !find_label(top, "From your tailnet", false)) { printf("check %s: FAIL the add sheet\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        click_label(d, top, "From your tailnet");
+        assert(sheet_rows("From your tailnet") == 2 && find_label(top, "preview-host-c", false) && !find_label(top, "preview-host-b", false));   /* online only */
+        click_label(d, top, "preview-host-c");
+        lv_obj_t *f = lv_screen_active();
+        if (!ui_nav_is_top(ui_host_form_create) || !find_label(f, "100.64.0.13", false) || !find_label(f, "preview-host-c", false)) { printf("check %s: FAIL the peer didn't prefill the form\n", name); return 1; }
+        lv_obj_clean(top);
+        ui_nav_back(); step(d, 200);   /* prefilled, unchanged: no discard question */
+        assert(ui_nav_is_top(ui_hosts_create));
+        g_settings.ts_enable = 0;
+        click_label(d, hosts_body(lv_screen_active()), "+ Add host");
+        assert(sheet_rows("Add host") == 1 && find_label(top, "Enter manually", false));
+        click_label(d, top, "Enter manually");
+        assert(ui_nav_is_top(ui_host_form_create) && find_label(lv_screen_active(), "Add host", false));
+        lv_obj_clean(top);
+        /* Settings › Network › Peers › Add as SSH host: the form, prefilled, over Terminal */
+        g_settings.ts_enable = 1;
+        ui_settings_add_peer_host(&k_preview_peers[0]); step(d, 200);
+        assert(ui_nav_is_top(ui_host_form_create) && find_label(lv_screen_active(), "100.64.0.11", false));
+        ui_nav_back(); step(d, 200);
+        assert(ui_nav_is_top(ui_hosts_create));
+        printf("%s: tailnet peers (online only) and manual entry; Peers' Add as SSH host opens the form over Terminal\n", name);
+        return r;
+    }
+    fprintf(stderr, "preview: unknown terminal variant %s\n", v);
+    return 2;
+}
+
+/* The value label of the form row labelled t. */
+static const char *form_value(lv_obj_t *scr, const char *t) {
+    lv_obj_t *row = row_labeled(lv_obj_get_child(scr, 1), t);
+    lv_obj_t *v = row ? ui_srow_value(row) : NULL;
+    return v ? lv_label_get_text(v) : NULL;
+}
+/* Clicks the row labelled t (a direct child of panel). */
+static void click_row(lv_display_t *d, lv_obj_t *panel, const char *t) {
+    lv_obj_t *row = row_labeled(panel, t);
+    if (!row) printf("preview: no row \"%s\"\n", t);
+    assert(row);
+    lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 200);
+}
+static void form_set(lv_display_t *d, lv_obj_t *scr, const char *row, const char *text) {
+    click_row(d, lv_obj_get_child(scr, 1), row);
+    prompt_answer(d, text);
+}
+
+/* hostform new|edit-pin|sd-key|settings: spec §5.5. */
+static int hostform_case(lv_display_t *d, const char *v) {
+    char name[48];
+    snprintf(name, sizeof(name), "hostform-%s", v);
+    g_settings.ts_enable = 1;
+    if (!strcmp(v, "sd-key")) setenv("PREVIEW_HOSTS", "sd", 1);
+    lv_obj_t *s = open_terminal(d), *top = lv_layer_top();
+    int r = 0;
+    if (!strcmp(v, "new")) {
+        click_label(d, hosts_body(s), "+ Add host");
+        click_label(d, top, "Enter manually");
+        s = lv_screen_active();
+        assert(ui_nav_is_top(ui_host_form_create) && find_label(s, "Add host", false) && find_clickable_shown(s, "\xe2\x86\x90 Terminal"));
+        if (find_label(s, "Host key", false) || find_label(s, "Delete host", false)) { printf("check %s: FAIL a new host shows Host key or Delete\n", name); return 1; }
+        assert(!strcmp(form_value(s, "Name"), "user@host") && !strcmp(form_value(s, "Port"), "22") && !strcmp(form_value(s, "Sign in with"), "Device key"));
+        assert(!row_labeled(lv_obj_get_child(s, 1), "Password"));   /* only for Password */
+        r |= pv_run_checks(d, s, name, false, 0);
+        form_set(d, s, "Address", " box.local ");
+        form_set(d, s, "User", "me");
+        form_set(d, s, "Port", "70000");
+        assert(!strcmp(form_value(s, "Name"), "me@box.local"));
+        click_label(d, s, "Save");
+        if (!find_label(top, "The port is a number from 1 to 65535", false) || s_store_adds) { printf("check %s: FAIL port 70000 (adds %d)\n", name, s_store_adds); return 1; }
+        lv_obj_clean(top);
+        form_set(d, s, "Address", "MAC");
+        form_set(d, s, "Port", "2222");
+        click_label(d, s, "Save");
+        assert(find_label(top, "That's your Claude host: its sessions are on the Sessions screen.", false) && !s_store_adds);
+        lv_obj_clean(top);
+        form_set(d, s, "Address", "box.local");
+        /* Sign in with: Device key or Password; the password row then shows, masked, starting empty */
+        click_row(d, lv_obj_get_child(s, 1), "Sign in with");
+        assert(sheet_rows("Sign in with") == 2);
+        click_label(d, top, "Password");
+        assert(!strcmp(form_value(s, "Password"), "Not set"));
+        click_row(d, lv_obj_get_child(s, 1), "Password");
+        lv_obj_t *ta = find_shown(top, &lv_textarea_class);
+        assert(ta && lv_textarea_get_password_mode(ta) && !lv_textarea_get_text(ta)[0]);
+        prompt_answer(d, "preview-host-pass");
+        if (find_label_has(s, "preview-host-pass", 0) || strcmp(form_value(s, "Password"), "\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2 set")) {
+            printf("check %s: FAIL the password shows\n", name); return 1;
+        }
+        /* Esc with changes asks; Cancel stays */
+        press_key(SK_ESC, 0, false); step(d, 200);
+        if (!find_label(top, "Discard changes?", false) || !ui_nav_is_top(ui_host_form_create)) { printf("check %s: FAIL no discard question\n", name); return 1; }
+        r |= pv_run_checks(d, s, "hostform-discard", false, 0);
+        click_label(d, top, "Cancel");
+        assert(ui_nav_is_top(ui_host_form_create) && lv_screen_active() == s);
+        click_label(d, s, "Save");
+        const server_t *e = server_store_get(3);
+        if (s_store_adds != 1 || !e || strcmp(e->name, "me@box.local") || e->port != 2222 || e->use_key || strcmp(e->pass, "preview-host-pass")) {
+            printf("check %s: FAIL the saved entry\n", name); return 1;
+        }
+        assert(ui_nav_is_top(ui_hosts_create) && find_label(hosts_body(lv_screen_active()), "me@box.local", false) && !s_set_server_calls);
+        printf("%s: no Host key or Delete; 70000 and the Host refused; masked password; discard asked; saved me@box.local:2222\n", name);
+        return r;
+    }
+    if (!strcmp(v, "edit-pin")) {
+        lv_obj_send_event(host_edit_button(host_row(hosts_body(s), "build-box")), LV_EVENT_CLICKED, NULL); step(d, 200);
+        s = lv_screen_active();
+        assert(ui_nav_is_top(ui_host_form_create) && find_label(s, "Edit host", false));
+        lv_obj_t *fp = find_label(s, PREVIEW_HOST_FP, false);
+        if (!fp || !find_label(lv_obj_get_parent(fp), "Forget", false) || !find_label(s, "Host key", false) || !find_label(s, "Delete host", false)) {
+            printf("check %s: FAIL the Host key row, Forget or Delete host\n", name); return 1;
+        }
+        assert(lv_obj_get_style_text_font(fp, 0) == FONT_MONO);
+        r |= pv_run_checks(d, s, name, false, 0);
+        click_label(d, lv_obj_get_child(s, 1), PREVIEW_HOST_FP);
+        if (!find_label(top, "Forget this host's key?", false) ||
+            !find_label(top, "Only do this if the host's SSH key changed. The Tab5 will trust the next key it sees.", false) || s_kh_forget_calls) {
+            printf("check %s: FAIL the forget confirm\n", name); return 1;
+        }
+        r |= pv_run_checks(d, s, "hostform-forget", false, 0);
+        click_label(d, top, "Forget");
+        if (s_kh_forget_calls != 1 || find_label(s, PREVIEW_HOST_FP, false)) { printf("check %s: FAIL forget called %d times\n", name, s_kh_forget_calls); return 1; }
+        lv_obj_clean(top);
+        /* the store changes under the form (an entry before it goes): Delete still removes build-box */
+        memmove(&s_preview_servers[1], &s_preview_servers[2], sizeof(server_t)); s_preview_server_n--;
+        click_row(d, lv_obj_get_child(s, 1), "Delete host");
+        assert(find_label(top, "Delete build-box?", false) && !s_store_removes);
+        click_label(d, top, "Delete");
+        if (s_store_removes != 1 || s_preview_server_n != 1 || !ui_nav_is_top(ui_hosts_create)) { printf("check %s: FAIL delete\n", name); return 1; }
+        printf("%s: fingerprint in mono with Forget; forget once after OK; delete confirmed, by identity\n", name);
+        return r;
+    }
+    if (!strcmp(v, "sd-key")) {
+        lv_obj_send_event(host_edit_button(host_row(hosts_body(s), "pi-lan")), LV_EVENT_CLICKED, NULL); step(d, 200);
+        s = lv_screen_active();
+        if (strcmp(form_value(s, "Sign in with"), "Key file on SD card")) { printf("check %s: FAIL sign in reads %s\n", name, form_value(s, "Sign in with")); return 1; }
+        assert(!find_label_has(s, "/sdcard", 0) && !find_shown(s, &lv_textarea_class) && !row_labeled(lv_obj_get_child(s, 1), "Password"));   /* read-only */
+        r |= pv_run_checks(d, s, name, false, 0);
+        click_row(d, lv_obj_get_child(s, 1), "Sign in with");
+        assert(sheet_rows("Sign in with") == 3);
+        click_label(d, top, "Key file on SD card");
+        assert(!strcmp(form_value(s, "Sign in with"), "Key file on SD card"));
+        press_key(SK_ESC, 0, false); step(d, 200);   /* unchanged: leaves at once */
+        assert(ui_nav_is_top(ui_hosts_create));
+        printf("%s: Key file on SD card, read-only, kept as a choice\n", name);
+        return r;
+    }
+    if (!strcmp(v, "settings")) {
+        ui_nav_back(); step(d, 200);
+        ui_settings_open(UI_SET_HOST); step(d, 200);
+        click_row(d, settings_panel(lv_screen_active()), "Address");
+        s = lv_screen_active();
+        assert(ui_nav_is_top(ui_host_form_create) && find_clickable_shown(s, "\xe2\x86\x90 Settings") && find_label(s, "Edit host", false));
+        if (find_label(s, "Delete host", false) || find_label(s, "Host key", false)) { printf("check %s: FAIL Delete or Host key on the Host's entry\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        form_set(d, s, "User", "me2");
+        click_label(d, s, "Save");
+        if (s_store_updates != 1 || s_set_server_calls != 1 || strcmp(s_set_server_name, "Mac") || !ui_nav_is_top(ui_settings_create)) {
+            printf("check %s: FAIL the Host's entry save (updates %d, set_server %d)\n", name, s_store_updates, s_set_server_calls); return 1;
+        }
+        /* the Host picker's Add host…: the new entry becomes the Host (P4-6) */
+        click_row(d, settings_panel(lv_screen_active()), "Host");
+        click_label(d, top, "Add host\xe2\x80\xa6");
+        s = lv_screen_active();
+        assert(ui_nav_is_top(ui_host_form_create));
+        form_set(d, s, "Address", "studio.local");
+        form_set(d, s, "User", "me");
+        click_label(d, s, "Save");
+        if (s_store_adds != 1 || s_set_server_calls != 2 || strcmp(s_set_server_name, "me@studio.local")) { printf("check %s: FAIL picker add\n", name); return 1; }
+        printf("%s: the Host's entry from Settings (no Delete, no Host key), save tells the link; picker add sets the Host\n", name);
+        return r;
+    }
+    fprintf(stderr, "preview: unknown hostform variant %s\n", v);
+    return 2;
+}
+
 /* No sink on Settings: the arrows move the focus through ui_keyboard_route's no-sink path (no Ctrl+Tab); the
    footer hint shows while a key was used last; Esc goes back to Sessions. */
 static int keyboard_settings_case(lv_display_t *d) {
@@ -1661,7 +2054,7 @@ int main(int argc,char **argv) {
     }
     if (!strcmp(name,"gesture")) { gesture_check(); return 0; }
     if (!strcmp(name,"art")) { terminal_art_check(); return 0; }
-    if (!strcmp(name,"terminal")) { terminal_spacing_check(); return 0; }
+    if (!strcmp(name,"term-spacing")) { terminal_spacing_check(); return 0; }   /* C12: was "terminal" */
     if (!strcmp(name,"keyboard")) { keyboard_check(); return 0; }
     if (!strcmp(name,"glyphs")) {
         /* Which of Claude Code's interface symbols the terminal font draws. */
@@ -1687,6 +2080,8 @@ int main(int argc,char **argv) {
     if (!strcmp(name,"keyboard-settings")) return keyboard_settings_case(d);
     if (!strcmp(name,"network-live")) return network_live_case(d);
     if (!strcmp(name,"net-sub-open")) return net_sub_open_case(d);
+    if (!strcmp(name,"terminal")) return terminal_case(d, argc>2 ? argv[2] : "");
+    if (!strcmp(name,"hostform")) return hostform_case(d, argc>2 ? argv[2] : "new");
     if (!strcmp(name,"settings-sub")) return settings_sub_case(d, argc>2 ? argv[2] : "networks", argc>3 ? argv[3] : "");
     fprintf(stderr, "preview: unknown case %s\n", argc>1 ? argv[1] : "(none)");
     return 2;

@@ -54,6 +54,10 @@ void ui_nav_home(void);
 bool ui_nav_is_top(ui_screen_create_fn create);
 lv_obj_t *ui_nav_current(void);
 void ui_nav_refresh(void);   /* recreate current screen (e.g. after language change) */
+/* scr's back guard: every ui_nav_back (the back chip, Esc, a swipe) while scr shows asks guard() first, and does
+   nothing more when it returns true (it asked "Discard changes?"). One at a time; cleared when scr is deleted. */
+typedef bool (*ui_back_guard_t)(void);
+void ui_nav_set_back_guard(lv_obj_t *scr, ui_back_guard_t guard);
 
 /* ---- common widgets ---- */
 lv_obj_t *ui_screen_base(void);
@@ -95,17 +99,22 @@ void ui_format_duration(char *buf, size_t len, uint32_t seconds);
 const char *ui_basename(const char *path);
 void ui_lock(void);
 void ui_unlock(void);
-/* Run fn on the LVGL task (safe from other tasks). */
-void ui_async(lv_async_cb_t fn, void *arg);
+/* Run fn on the LVGL task (safe from other tasks). False when it couldn't be queued (no memory, or the LVGL lock
+   wasn't free): fn will not run, so a caller that handed over arg still owns it. */
+bool ui_async(lv_async_cb_t fn, void *arg);
 /* Delete the timer automatically when obj (usually the screen) is deleted. */
 void ui_timer_bind(lv_timer_t *t, lv_obj_t *obj);
 
 /* Screens */
+/* Terminal, the host list (ui_hosts.c, spec §5.3); arg unused. The Host's entry is never listed. */
 lv_obj_t *ui_hosts_create(void *arg);
-lv_obj_t *ui_server_form_create(void *arg);      /* arg: int index or -1 */
+/* An SSH Terminal connect to server index idx failed with msg: Terminal shows it in red on that host's row (by
+   the entry's name, host and port) the next time it shows. */
+void ui_hosts_note_failure(int idx, const char *msg);
 lv_obj_t *ui_terminal_create(void *arg);         /* arg: server index */
-/* The SSH Terminal refuses the companion's Mac (no login shell there) with this toast. */
-#define TERM_COMPANION_REFUSED "Open sessions from the dashboard"
+/* The SSH Terminal refuses the companion's Host (no login shell there) with this toast: the Terminal footnote's
+   first sentence. */
+#define TERM_COMPANION_REFUSED tr(STR_HOSTS_NOT_LISTED)
 /* Full-screen terminal running one command on a pty exec channel (never a login shell).
    Ctrl+] (or Ctrl+Q) leaves without sending anything; on_close runs once when the terminal closes. */
 void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(void *ctx), void *ctx);

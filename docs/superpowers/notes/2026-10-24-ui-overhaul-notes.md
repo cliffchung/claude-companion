@@ -466,3 +466,92 @@ Device name, Control server, Connection, Peers, Forget), every row shown with th
   setting ("The key in the file is too long") is refused whole.
 - M7: `ui net <sub>` with Settings on top switches its section in place (one Back returns to Settings).
 - M8: the `ui_comp_pass_hits` comment no longer claims ui_core and ui_softkbd are its only users.
+
+## Task 9: Terminal host list and host form
+
+**Shape.** `ui_hosts.c` (Terminal, §5.3) and `ui_host_form.c` (§5.5) replace `ui_servers.c` and `ui_server_form.c`.
+Terminal: `ui_header("Terminal", "Sessions")`, a 48 px banner under it (Tailscale off and a listed tailnet host: the
+§5.3 text and a primary Turn on), then one column of 72 px host rows (dot, name, `user@host[:port]`, a trailing label,
+and a 64 px Edit button), "+ Add host", the footnote and the §5.13 key hint. The Host's entry is never listed
+(`cc_link_is_companion_server`). No timer: built on show; the dots and the banner follow Tailscale events in place
+(one coalesced `ui_async`, a NULL-handle check in the handler, the slot cleared in the screen's DELETE). The pure rules
+are `servers/host_rules.c` (host-tested); `hf_tailnet_host` is `ts_host_needs_tailscale` (C16).
+
+**Device gate (Tab5, LAN Host link, Tailscale off unless noted).** Run twice: after the first flash, and again after the
+heap move of the form state (fix on top, same session); the second figures are shown.
+
+| Check | Result | |
+|---|---|---|
+| `key ctrl t`: the Host's entry isn't listed | the store holds 1 entry (the Host; counted in the Host picker); Terminal lists 0 rows, "+ Add host" and the footnote | pass |
+| `ui heapmin` over `key ctrl t` (Sessions → Terminal) | internal min **144,211 B** (gate 40,960; first flash 141,095 B); `ui timers`: the 30 s vitals and the 10 ms drain only (no 300 ms tick) | pass |
+| Host form on an existing entry (Settings › Host › Address, the only entry), read only, Esc | Edit host, "← Settings", Save; Name, Address, Port 22, User, Sign in with · Device key; no Host key row, no Delete host; Esc left at once (no change). Heapmin over the open **166,307 B** | pass |
+| `ts on`: tailnet hosts show dots | no tailnet entry exists to dot (0 listed). Terminal with `ts on`: heapmin **109,139 B** (gate 20,480); "+ Add host" sheet had 2 actions; "From your tailnet" listed 4 peers, the `ts` count of online peers | PENDING (dots), pass (sheet) |
+| `ts off`: the banner shows; Turn on | no listed tailnet host, so no banner (correct by §5.3). Console equivalent `ts on` reported "on (Connected …)"; `ts off` reported off and the link came back on the LAN path | PENDING (banner, tap) |
+| Edit → Forget host key → reconnect → accept | not run (P4C-8): preview `hostform edit-pin` (forget once, after OK) | PENDING |
+| B6 on the device | no entry has an SD key path (the one entry signs in with the device key) | PENDING; `test_key_source_never_falls_back` |
+| 60 s SSH session `ui heapmin` | not run (P4C-8) | PENDING |
+| `idf.py size` (Task 8 fix round → Task 9) | image 7,240,043 → 7,245,083 B (+5,040); DIRAM 187,616 → 188,928 B (+1,312) | |
+
+Final state: `ts off`, `power set defaults`, DHCP, Host link connected on the LAN, brightness 80 and keyboard light
+`0 0 0080ff 1 5` (as found), test sessions stopped. Screenshots in the scratchpad `shots9/` only.
+
+**Rulings and deviations:**
+- T9-1: C16 checked: `ts_host_needs_tailscale` gives the brief's values (100.64.0.1 and box.tail1234.ts.net true;
+  100.128.0.1 and 192.168.1.5 false). No mismatch.
+- T9-2: C12: the old `terminal` spacing case is `term-spacing` (its PNG `term-spacing.png`); `terminal [variant]` is the
+  new one. C11: the preview builds ui_hosts.c, ui_host_form.c and host_rules.c; the two deleted files were never in it
+  (they were `SCREEN()` stubs, now gone; `ui_terminal_create` is a recording stub).
+- T9-3: the Edit control is a 64×64 secondary `ui_btn` 8 px right of the row in a `ui_comp_pass_hits` line (T8-4's
+  pattern), not the spec's 48 px chip: a 48 px body control fails P4C-5. It is touch only (`UI_KEYBOARD_SKIP`); the
+  keyboard edits with Ctrl+Enter on the row (its LONG_PRESSED, which a long touch also gives). So Down goes row to row
+  (`terminal keys`), and the focused row's hint reads "↵ Connect · ⌃↵ Edit" (§5.3 says "↵ Connect"; the second half
+  tells the keyboard user how to reach Edit). The long-press menu is gone.
+- T9-4: the name is in `body` (FONT_BODY): there is no bold body face, as on the Sessions rows.
+- T9-5: "+ Add host" has a 1 px line border, not a dashed one: LVGL draws no dashed borders.
+- T9-6: Connecting: a tap checks the refusals first (the Host, no Wi-Fi, a tailnet host with the switch off:
+  `ts_host_term_refusal`) and shows the reason in red on the row (two lines at most), with no session screen. Otherwise
+  the row shows a spinner and "Connecting…" and the session screen is pushed on the next LVGL cycle; the session
+  screen shows the progress (Task 10 rebuilds it). A session that ends in SSH_ST_ERROR calls
+  `ui_hosts_note_failure(idx, msg)` (ui_terminal.c), and Terminal shows that reason in red on the entry's row (by
+  name, host and port) when it shows again; the next tap clears it.
+- T9-7: "+ Add host" opens an action sheet: "From your tailnet" (only with the switch on) and "Enter manually". "From
+  your tailnet" opens a second sheet of the online peers (a toast "No tailnet peers online" if none); a peer
+  prefills Name with its hostname and Address with its tailnet IP (so `hf_tailnet_host` dots it). Settings › Network ›
+  Peers › Add as SSH host pushes Terminal and then the prefilled form, so Back lands on Terminal.
+- T9-8: rows, Edit and Delete resolve their entry by name, host and port at tap time (`terminal keys`, `hostform
+  edit-pin` removes an earlier entry under the form and Delete still removes the right one). Save on an entry that
+  went toasts "This host was removed".
+- T9-9: Esc, ← and a swipe all go through `ui_nav_back`, which now asks the screen's back guard first
+  (`ui_nav_set_back_guard`, cleared on the screen's DELETE). The form's guard asks "Discard changes?" (Cancel /
+  Discard, destructive) while the draft differs from what was opened.
+- T9-10: Host key and Delete host are shown only from Terminal: from Settings (the Host's entry, or a new Host from
+  the picker) the pin is Settings › Host's own row, which forgets through the link (`ui_sessions_forget_host_key`,
+  pin carry-over aware), and Delete would remove the Host. Saving from Settings › Host › Address or the picker calls
+  `cc_link_set_server(name)` (P4-6); with the name unchanged that keeps the pin carry-over and only reconfigures the
+  link; a rename counts as another Host and clears it (L3, the conservative side).
+- T9-11: Sign in with: Device key or Password; an entry whose key path isn't empty or "device" also offers the
+  read-only "Key file on SD card" (its path is never shown or edited) until another is saved. Password starts empty,
+  masked; an empty answer keeps the saved one; the row shows "•••••••• set" or "Not set". Choosing Device key keeps
+  any saved password (no silent wipe). Name shows the `user@host` it will save as while empty (C19).
+- T9-12: `hf_validate` order: address, port, user, then the Host check; "MAC" from Terminal is refused with "That's
+  your Claude host: its sessions are on the Sessions screen." `TERM_COMPANION_REFUSED` is now
+  `tr(STR_HOSTS_NOT_LISTED)`, the footnote's first sentence.
+- T9-13: B6 in `ssh_client.c`: the ENOENT → device-key fallback is gone. `ssh_task`, before any socket, mounts the card
+  for a `/sdcard/` key path and fails with "Key file not found on SD card" (`HF_KEY_FILE_MISSING_MSG`) when the file
+  is missing; `authenticate` uses `hf_key_source` for the same rule (the race after the check). The device key is
+  used only for an empty or "device" path.
+- T9-14 (Task 8 carry): `ui_async` returns bool (false: no memory, the lock, or `lv_async_call` failed; the wrapper is
+  freed). The SD-key worker frees its job and clears its flag when the post fails; the forget worker clears its
+  flag. Both flags are volatile. The dead `if (!s_sdk_running)` in `key_sd_done_async` is gone.
+- T9-15: the form state and the add-peer list are malloc'd while their screen shows (PSRAM-sized), not .bss: the first
+  build had DIRAM +3.8 KB; now +1.3 KB.
+- T9-16: C10 left as ruled: Ctrl+] in an SSH session still leaves without a confirm until Task 10.
+- T9-17: the old server strings with no users left (`STR_SERVERS`, `ADD_SERVER`, `EDIT_SERVER`, `DEL_SERVER(_Q)`,
+  `NO_SERVERS`, `NAME`, `HOST`, `PORT`, `USERNAME`, `PASSWORD`, `AUTH_KEY`, `KEY_PATH`, `HOST_USER_REQ`, `SAVED`,
+  `SERVER_SAVE_FAILED`, `ERROR`, `WIFI_NOT_CONNECTED`, `NET_ADD_FROM_TERMINAL`) are deleted.
+- T9-18 (device finding, not this task's code): in an action sheet the overlay is the first keyboard control, so a
+  first Down lands on the overlay and Enter there closes the sheet; a second Down reaches the first item. ui_core's
+  modal walk; left for Task 12's keyboard pass.
+- Incident: during the gate a Shift+Tab then Enter on Terminal took the back chip to Sessions, and two Downs then
+  moved the Sessions selection onto a real card (P4C-4). It was moved back to the test session with Up only, within a
+  minute; nothing was opened, sent or expanded (the detail pane loaded that card's recent output, a read).

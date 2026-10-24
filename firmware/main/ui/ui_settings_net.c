@@ -7,10 +7,12 @@
  *
  * No timers. Scan results and peer changes arrive by event (wifi_mgr_set_cb, tailscale_set_event_cb), are
  * moved to the LVGL task with ui_async, and both slots are cleared when the object that set them is
- * deleted. The Tailscale slot is shared with Terminal (one screen alive at a time, B2): only Peers sets it.
+ * deleted. The Tailscale slot is single: the Network panel holds it while its Status row exists, Peers while it
+ * shows, Terminal while it shows (one screen alive at a time, B2).
  *
  * Secrets: the auth key and Wi-Fi passwords are typed masked, never shown, never logged. */
 #include "ui_settings.h"
+#include "ui_host_form.h"
 #include "ui.h"
 #include "ui_comp.h"
 #include "settings/settings.h"
@@ -266,7 +268,7 @@ static void key_prompt_cb(const char *v, void *ud)
    whole: never truncated. The key is never logged. */
 typedef enum { SDK_OK, SDK_NO_CARD, SDK_NO_FILE, SDK_NOT_A_KEY, SDK_TOO_LONG } sdk_result_t;
 typedef struct { sdk_result_t res; char key[sizeof(g_settings.ts_auth_key)]; } sdk_job_t;
-static bool s_sdk_running;   /* LVGL task only */
+static volatile bool s_sdk_running;   /* set on the LVGL task; cleared there, or by the worker when its post fails */
 
 static void key_sd_done_async(void *arg)
 {
@@ -281,7 +283,7 @@ static void key_sd_done_async(void *arg)
     ui_toast(tr(msg[j->res]));
     memset(j, 0, sizeof(*j));
     free(j);
-    if (!s_sdk_running) ui_settings_refill();
+    ui_settings_refill();
 }
 static void key_sd_work(sdk_job_t *j)
 {
@@ -300,7 +302,11 @@ static void key_sd_work(sdk_job_t *j)
         memset(txt, 0, len);
         free(txt);
     }
-    ui_async(key_sd_done_async, j);
+    if (!ui_async(key_sd_done_async, j)) {   /* never posted: nobody else frees the job or clears the flag */
+        memset(j, 0, sizeof(*j));
+        free(j);
+        s_sdk_running = false;
+    }
 }
 #ifndef UI_PREVIEW
 static void key_sd_task(void *arg)
@@ -409,7 +415,8 @@ static void conn_cb(lv_event_t *e)
 
 /* Forget this device: tailscale_forget_node waits for the old instance to be freed (up to 40 s), so it runs
    on a worker task. The auth key is kept (U5): the node registers again with it on the next start. */
-static bool s_forget_running;   /* LVGL task only: a second tap doesn't start a second forget */
+static volatile bool s_forget_running;   /* a second tap doesn't start a second forget; cleared by the done async,
+                                           or by the worker when its post fails */
 static void forget_done_async(void *arg)
 {
     s_forget_running = false;
@@ -419,7 +426,7 @@ static void forget_done_async(void *arg)
 static void forget_work(void)
 {
     bool ok = tailscale_forget_node();
-    ui_async(forget_done_async, ok ? (void *)1 : NULL);
+    if (!ui_async(forget_done_async, ok ? (void *)1 : NULL)) s_forget_running = false;   /* no job to free */
 }
 #ifndef UI_PREVIEW
 static void forget_task(void *arg)
@@ -800,10 +807,19 @@ static void peers_ev(void *user)
 }
 static void refresh_cb(lv_event_t *e) { (void)e; sub_refill(); }
 
+/* Terminal, then its host form prefilled with the peer (its name, and its tailnet IP as the address): Back from the
+   form lands on Terminal, which then lists the new host. */
 void ui_settings_add_peer_host(const ts_peer_t *p)
 {
-    (void)p;   /* Task 9: the Terminal host form, prefilled with p */
-    ui_toast(tr(STR_NET_ADD_FROM_TERMINAL));
+    static hf_arg_t a;
+    if (!p) return;
+    memset(&a, 0, sizeof(a));
+    a.index = -1;
+    a.origin = HF_FROM_TERMINAL;
+    strlcpy(a.prefill_name, p->hostname, sizeof(a.prefill_name));
+    strlcpy(a.prefill_host, p->ip, sizeof(a.prefill_host));
+    ui_nav_push(ui_hosts_create, NULL);
+    ui_nav_push(ui_host_form_create, &a);
 }
 
 /* -------------------------------------------------------------- the page */

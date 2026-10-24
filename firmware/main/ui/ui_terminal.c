@@ -422,7 +422,10 @@ static void pump_cb(lv_timer_t *t)
         case SSH_ST_AUTH: txt = tr(STR_CONNECTING); break;
         case SSH_ST_CONNECTED: txt = tr(STR_CONNECTED); ssh_active(c, true); break;
         case SSH_ST_CLOSED: txt = tr(STR_DISCONNECTED); ssh_active(c, false); break;
-        case SSH_ST_ERROR: snprintf(tmp, sizeof(tmp), "%s %s", tr(STR_SSH_CONN_FAILED), msg); txt = tmp; ssh_active(c, false); break;
+        case SSH_ST_ERROR:
+            snprintf(tmp, sizeof(tmp), "%s %s", tr(STR_SSH_CONN_FAILED), msg); txt = tmp; ssh_active(c, false);
+            ui_hosts_note_failure(c->server_idx, msg);   /* Terminal shows it on the host's row (§5.3) */
+            break;
         default: break;
         }
         if (txt) {

@@ -20,6 +20,8 @@
 #include "net/ts_host.h"
 #include "ssh/device_key.h"
 #include "sys/link_guard.h"
+#include "servers/host_rules.h"
+#include "storage/sd.h"
 
 static const char *TAG = "ssh";
 int libssh_esp32_init(void);
@@ -235,12 +237,15 @@ static int authenticate(ssh_client_t *c)
     if (rc == SSH_AUTH_SUCCESS) return 0;
     int methods = ssh_userauth_list(c->session, NULL);
     if (c->p.use_key) {
-        /* Empty path, "device" or a path that does not exist selects the Tab5's own key (NVS); an existing file is loaded as before. */
+        /* B6: an empty or "device" path is the Tab5's own key (NVS); any other path is that file, and a missing
+           file fails: never the device key for it (ssh_task checked it before connecting; this is the race). */
         struct stat st;
-        bool dev = !c->p.keypath[0] || strcmp(c->p.keypath, "device") == 0 ||
-                   (stat(c->p.keypath, &st) != 0 && errno == ENOENT);
+        hf_key_src_t src = hf_key_source(c->p.keypath, stat(c->p.keypath, &st) == 0);
         ssh_key key = NULL;
-        if (dev) {
+        if (src == HF_KEY_FILE_MISSING) {
+            snprintf(c->err, sizeof(c->err), "%s", HF_KEY_FILE_MISSING_MSG);
+            rc = SSH_ERROR;
+        } else if (src == HF_KEY_DEVICE) {
             rc = (device_key_ensure() == ESP_OK && device_key_get(&key) == ESP_OK) ? SSH_OK : SSH_ERROR;
             if (rc != SSH_OK) snprintf(c->err, sizeof(c->err), "Device key unavailable");
         } else {
@@ -286,6 +291,16 @@ static void ssh_task(void *arg)
         ESP_LOGW(TAG, "%s needs Tailscale, which is off", c->p.host);
         set_state(c, SSH_ST_ERROR, refused);
         goto done;
+    }
+    if (c->p.use_key && hf_key_source(c->p.keypath, true) == HF_KEY_FILE) {
+        /* B6: a key file on the SD card: mount the card on demand, and fail before connecting if the file is gone */
+        if (hf_key_on_sd(c->p.keypath)) sd_mount();
+        struct stat st;
+        if (hf_key_source(c->p.keypath, stat(c->p.keypath, &st) == 0) == HF_KEY_FILE_MISSING) {
+            ESP_LOGW(TAG, "key file for this host not found; not connecting");
+            set_state(c, SSH_ST_ERROR, HF_KEY_FILE_MISSING_MSG);
+            goto done;
+        }
     }
     {
         /* MagicDNS: resolve tailnet peer names from the MicroLink peer list. */

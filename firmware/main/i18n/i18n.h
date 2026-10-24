@@ -40,8 +40,6 @@ X(DISCONNECT, "Disconnect") \
 X(CLOSE, "Close") \
 X(DONE, "Done") \
 X(PLEASE_WAIT, "Please wait...") \
-X(SERVER_SAVE_FAILED, "Could not save the connection. Check storage and the server limit.") \
-X(ERROR, "Error") \
 X(FAILED, "Failed") \
 X(BAD_COLOR, "Use #RRGGBB") \
 X(SUCCESS, "Success") \
@@ -56,23 +54,8 @@ X(CAMERA_SAVING, "Saving photo...") \
 X(CAMERA_SAVED, "Saved to TF/DCIM/ClaudeCompanion") \
 X(CAMERA_FAILED, "Camera could not start") \
 X(CAMERA_SAVE_FAIL, "Could not save photo") \
-X(SERVERS, "SSH Servers") \
-X(ADD_SERVER, "Add Server") \
-X(EDIT_SERVER, "Edit Server") \
-X(DEL_SERVER, "Delete Server") \
-X(DEL_SERVER_Q, "Delete this server?") \
-X(NO_SERVERS, "No servers yet. Tap + to add one.") \
-X(NAME, "Name") \
-X(HOST, "Host / IP") \
-X(PORT, "Port") \
-X(USERNAME, "Username") \
-X(PASSWORD, "Password") \
 X(AUTH_METHOD, "Auth") \
 X(AUTH_PASSWORD, "Password") \
-X(AUTH_KEY, "Private key (SD)") \
-X(KEY_PATH, "Key file path") \
-X(HOST_USER_REQ, "Host and user required.") \
-X(SAVED, "Saved.") \
 X(CONNECTING, "Connecting...") \
 X(CONNECTED, "Connected") \
 X(DISCONNECTED, "Disconnected") \
@@ -80,7 +63,6 @@ X(SSH_CONN_FAILED, "SSH connection failed.") \
 X(SSH_AUTH_FAILED, "Authentication failed.") \
 X(SSH_HOSTKEY_NEW, "New host key. Trust and continue?") \
 X(SSH_HOSTKEY_CHANGED, "HOST KEY CHANGED! Possible attack. Continue?") \
-X(WIFI_NOT_CONNECTED, "WiFi not connected") \
 X(TERM_CLOSE_Q, "Disconnect SSH and return?") \
 X(KEYBOARD, "Keyboard") \
 X(PHYS_KBD_DETECTED, "Physical keyboard detected") \
@@ -439,10 +421,47 @@ X(NET_PEER_DIRECT, "direct") \
 X(NET_PEER_RELAY, "relay") \
 X(NET_REFRESH, "Refresh") \
 X(NET_ADD_SSH_HOST, "Add as SSH host") \
-X(NET_ADD_FROM_TERMINAL, "Add it from Terminal") \
 X(NET_BACK_SETTINGS, "Settings") \
 X(TS_OFF_BANNER, "Tailscale is off. These hosts are reachable only over your tailnet.") \
-X(TS_TURN_ON, "Turn on")
+X(TS_TURN_ON, "Turn on") \
+X(HOSTS_TITLE, "Terminal") \
+X(HOSTS_CONNECT_HINT, "\xe2\x86\xb5 Connect \xc2\xb7 \xe2\x8c\x83\xe2\x86\xb5 Edit") \
+X(HOSTS_CONNECTING, "Connecting\xe2\x80\xa6") \
+X(HOSTS_ADD, "+ Add host") \
+X(HOSTS_ADD_TITLE, "Add host") \
+X(HOSTS_FROM_TAILNET, "From your tailnet") \
+X(HOSTS_MANUAL, "Enter manually") \
+X(HOSTS_NO_PEERS, "No tailnet peers online") \
+X(HOSTS_NOT_LISTED, "Your Claude host isn't listed here: its sessions are on the Sessions screen.") \
+X(HOSTS_LEAVE_NOTE, "Ctrl+] leaves an SSH session.") \
+X(HOSTS_NO_WIFI, "No Wi-Fi") \
+X(HOSTS_GONE, "This host was removed") \
+X(HF_TITLE_ADD, "Add host") \
+X(HF_TITLE_EDIT, "Edit host") \
+X(HF_BACK_TERMINAL, "Terminal") \
+X(HF_NAME, "Name") \
+X(HF_ADDRESS, "Address") \
+X(HF_PORT, "Port") \
+X(HF_USER, "User") \
+X(HF_SIGN_IN, "Sign in with") \
+X(HF_DEVICE_KEY, "Device key") \
+X(HF_PASSWORD, "Password") \
+X(HF_SD_KEY, "Key file on SD card") \
+X(HF_PW_SET, "\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2 set") \
+X(HF_HOST_KEY, "Host key") \
+X(HF_KEY_FORGOTTEN, "Host key forgotten. The next connect asks you to trust the key.") \
+X(HF_DELETE, "Delete host") \
+X(HF_DELETE_Q, "Delete %s?") \
+X(HF_DELETE_BODY, "It goes from the Terminal list. Its saved host key stays.") \
+X(HF_DISCARD_Q, "Discard changes?") \
+X(HF_DISCARD, "Discard") \
+X(HF_SAVE, "Save") \
+X(HF_SAVED, "Saved") \
+X(HF_SAVE_FAILED, "Couldn't save the host. The list holds 24 hosts.") \
+X(HF_ERR_NO_ADDRESS, "Enter the host's address") \
+X(HF_ERR_NO_USER, "Enter a user") \
+X(HF_ERR_BAD_PORT, "The port is a number from 1 to 65535") \
+X(HF_ERR_IS_HOST, "That's your Claude host: its sessions are on the Sessions screen.")
 
 typedef enum {
 #define X(id, en) STR_##id,

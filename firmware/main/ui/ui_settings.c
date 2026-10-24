@@ -8,6 +8,7 @@
 #include "ui_comp.h"
 #include "ui_softkbd.h"
 #include "ui_sessions.h"
+#include "ui_host_form.h"
 #include "settings/settings.h"
 #include "settings/kbd_colour.h"
 #include "sys/sysinfo.h"
@@ -55,7 +56,14 @@ static void host_pick_cb(int i, void *ud)
     (void)ud;
     if (i < 0) return;
     if (i < s_host_n) cc_link_set_server(s_host_names[i]);
-    else if (i == s_host_n) { ui_nav_push(ui_hosts_create, NULL); return; }   /* Add host…: the host form is Task 9 */
+    else if (i == s_host_n) {   /* Add host…: the host form; saving it makes the new entry the Host (P4-6) */
+        static hf_arg_t a;
+        memset(&a, 0, sizeof(a));
+        a.index = -1;
+        a.origin = HF_FROM_HOST_PICKER;
+        ui_nav_push(ui_host_form_create, &a);
+        return;
+    }
     else cc_link_set_server("");
     refill();
 }
@@ -80,7 +88,17 @@ static void host_cb(lv_event_t *e)
     ui_picker(tr(STR_SET_HOST), s_host_ptrs, n + 2, cur, host_pick_cb, NULL);
 }
 
-static void address_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_hosts_create, NULL); }   /* the host form: Task 9 */
+/* Address: the host form on the Host's entry (§5.7); its Save tells the link */
+static void address_cb(lv_event_t *e)
+{
+    (void)e;
+    static hf_arg_t a;
+    memset(&a, 0, sizeof(a));
+    a.index = cc_settings_server();
+    a.origin = HF_FROM_SETTINGS_HOST;
+    if (a.index < 0) return;
+    ui_nav_push(ui_host_form_create, &a);
+}
 
 static void fallback_prompt_cb(const char *v, void *ud)
 {

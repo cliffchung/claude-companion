@@ -23,6 +23,7 @@ static lv_style_t s_row, s_row_sel, s_session_geom, s_srow_geom, s_skeleton, s_s
 /* bars */
 static lv_style_t s_dot_on, s_dot_off, s_scrim, s_spinner_main, s_spinner_ind, s_pressed_destructive;
 static lv_style_t s_green_text, s_red_text, s_mono, s_rail, s_swatch, s_chip_destructive;
+static lv_style_t s_host_geom, s_host_line, s_host_dot, s_dot_green, s_dot_line, s_add_row;
 static lv_style_t s_title, s_bar, s_side_bottom, s_side_top, s_banner_muted, s_banner_red, s_section;
 /* the LVGL widgets the screens create directly (theme layer) */
 static lv_style_t s_w_button, s_w_field, s_w_track, s_w_on, s_w_knob_off, s_w_knob_on, s_w_knob;
@@ -33,6 +34,7 @@ static lv_style_t s_amber_text, s_amber_pill, s_amber_edge, s_row_needs, s_row_n
 static lv_obj_t *plain(lv_obj_t *parent);
 static lv_obj_t *text(lv_obj_t *parent, const char *t, lv_style_t *colour, lv_style_t *font);
 static void pass_hits(lv_obj_t *o, int32_t pad);
+static void tone_apply(lv_obj_t *l, ui_tone_t tone);
 
 static void flex_center(lv_style_t *s)
 {
@@ -63,7 +65,8 @@ void ui_comp_init(void)
                           &s_dot_on, &s_dot_off, &s_scrim, &s_spinner_main, &s_spinner_ind, &s_pressed_destructive,
                           &s_title, &s_bar, &s_side_bottom, &s_side_top, &s_banner_muted, &s_banner_red, &s_section,
                           &s_w_button, &s_w_field, &s_w_track, &s_w_on, &s_w_knob_off, &s_w_knob_on, &s_w_knob,
-                          &s_green_text, &s_red_text, &s_mono, &s_rail, &s_swatch, &s_chip_destructive };
+                          &s_green_text, &s_red_text, &s_mono, &s_rail, &s_swatch, &s_chip_destructive,
+                          &s_host_geom, &s_host_line, &s_host_dot, &s_dot_green, &s_dot_line, &s_add_row };
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
 
     lv_style_set_bg_color(&s_bg, HEX(UI_TK_BG));
@@ -160,6 +163,28 @@ void ui_comp_init(void)
     lv_style_set_width(&s_srow_line, LV_PCT(100));
     lv_style_set_height(&s_srow_line, UI_TK_ROW_H);
     flex_row(&s_srow_line, UI_TK_GAP_S);
+    /* Terminal's host rows: 72 px, a 12 px dot, and the line that holds a row and its Edit button */
+    lv_style_set_height(&s_host_geom, UI_TK_SESSION_ROW_H);
+    lv_style_set_pad_hor(&s_host_geom, 20);
+    flex_row(&s_host_geom, UI_TK_GAP_M);
+    lv_style_set_width(&s_host_line, LV_PCT(100));
+    lv_style_set_height(&s_host_line, UI_TK_SESSION_ROW_H);
+    flex_row(&s_host_line, UI_TK_GAP_S);
+    lv_style_set_width(&s_host_dot, 12);
+    lv_style_set_height(&s_host_dot, 12);
+    lv_style_set_radius(&s_host_dot, LV_RADIUS_CIRCLE);
+    lv_style_set_bg_opa(&s_host_dot, LV_OPA_COVER);
+    lv_style_set_bg_color(&s_dot_green, HEX(UI_TK_GREEN));
+    lv_style_set_bg_color(&s_dot_line, HEX(UI_TK_LINE));
+    /* + Add host: 72 px, a dashed-look line border (LVGL draws no dashed borders), muted */
+    lv_style_set_height(&s_add_row, UI_TK_SESSION_ROW_H);
+    lv_style_set_radius(&s_add_row, UI_TK_RADIUS);
+    lv_style_set_border_color(&s_add_row, HEX(UI_TK_LINE));
+    lv_style_set_border_width(&s_add_row, 1);
+    lv_style_set_pad_hor(&s_add_row, 20);
+    lv_style_set_text_color(&s_add_row, HEX(UI_TK_MUTED));
+    lv_style_set_text_font(&s_add_row, FONT_BODY);
+    flex_row(&s_add_row, UI_TK_GAP_M);
     lv_style_set_height(&s_skeleton, UI_TK_SESSION_ROW_H);
     lv_style_set_radius(&s_skeleton, UI_TK_RADIUS);
 
@@ -412,6 +437,12 @@ lv_obj_t *ui_chip(lv_obj_t *parent, const char *t, lv_event_cb_t cb, void *ud)
     lv_label_set_text(lv_label_create(c), t ? t : "");
     if (cb) lv_obj_add_event_cb(c, cb, LV_EVENT_CLICKED, ud);
     return c;
+}
+
+void ui_chip_set_primary(lv_obj_t *chip)
+{
+    if (!chip) return;
+    lv_obj_add_style(chip, &s_btn_primary, 0);
 }
 
 /* ---------------------------------------------------------------- bars */
@@ -821,6 +852,122 @@ lv_obj_t *ui_srow_chip(lv_obj_t *row, const char *t, bool destructive)
     lv_obj_set_width(c, LV_SIZE_CONTENT);
     text(c, t, NULL, NULL);
     return c;
+}
+
+/* ------------------------------------------------------------- Terminal */
+/* host row children: 0 the dot, 1 the column (name, meta), 2 the trailing label (focus hint, note), 3 the spinner
+   (made on first use); user data: HOST_NOTE while a note or the busy state shows (the focus hint stays hidden) */
+#define HOST_NOTE ((void *)1)
+static void host_focus_cb(lv_event_t *e)
+{
+    lv_obj_t *r = lv_event_get_current_target_obj(e);
+    if (lv_obj_get_user_data(r) == HOST_NOTE) return;
+    set_flag(lv_obj_get_child(r, 2), LV_OBJ_FLAG_HIDDEN, lv_event_get_code(e) != LV_EVENT_FOCUSED);
+}
+
+lv_obj_t *ui_host_row(lv_obj_t *parent, const char *name, const char *meta, const char *hint,
+                      lv_event_cb_t cb, lv_event_cb_t edit_cb, const char *edit, void *ud)
+{
+    lv_obj_t *line = plain(parent);
+    lv_obj_add_style(line, &s_host_line, 0);
+    pass_hits(line, BODY_HIT_PAD);   /* the row and the Edit button keep their 80 px hit areas */
+    lv_obj_t *r = lv_obj_create(line);
+    lv_obj_remove_style_all(r);
+    lv_obj_add_style(r, &s_row, 0);
+    lv_obj_add_style(r, &s_host_geom, 0);
+    lv_obj_add_style(r, &s_pressed, LV_STATE_PRESSED);
+    lv_obj_set_width(r, 1);
+    lv_obj_set_flex_grow(r, 1);
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(r, (UI_TK_HIT - UI_TK_SESSION_ROW_H) / 2);
+    if (cb) lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, ud);
+    lv_obj_add_event_cb(r, host_focus_cb, LV_EVENT_FOCUSED, NULL);
+    lv_obj_add_event_cb(r, host_focus_cb, LV_EVENT_DEFOCUSED, NULL);
+    lv_obj_t *dot = plain(r);
+    lv_obj_add_style(dot, &s_host_dot, 0);
+    lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *col = plain(r);
+    lv_obj_set_size(col, 1, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, 4, 0);
+    lv_obj_t *n = text(col, name, NULL, NULL);
+    lv_obj_set_size(n, LV_PCT(100), lv_font_get_line_height(FONT_BODY));
+    lv_label_set_long_mode(n, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_t *m = text(col, meta, &s_muted, &s_label);
+    lv_obj_set_size(m, LV_PCT(100), lv_font_get_line_height(FONT_SMALL));
+    lv_label_set_long_mode(m, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_t *t = text(r, hint, &s_muted, &s_label);
+    lv_obj_set_style_max_width(t, LV_PCT(60), 0);
+    lv_obj_set_height(t, lv_font_get_line_height(FONT_SMALL));
+    lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_add_flag(t, LV_OBJ_FLAG_HIDDEN);
+    if (edit_cb) {
+        /* touch only: the keyboard reaches Edit by Ctrl+Enter on the row (its LONG_PRESSED), so Down goes row to row */
+        lv_obj_t *b = ui_btn(line, UI_BTN_SECONDARY, edit, edit_cb, ud);
+        lv_obj_add_flag(b, UI_KEYBOARD_SKIP);
+        lv_obj_add_event_cb(r, edit_cb, LV_EVENT_LONG_PRESSED, ud);
+    }
+    return r;
+}
+
+void ui_host_row_dot(lv_obj_t *row, int dot)
+{
+    if (!row) return;
+    lv_obj_t *d = lv_obj_get_child(row, 0);
+    uintptr_t want = (uintptr_t)(dot + 2);   /* 1 none, 2 offline, 3 online */
+    if ((uintptr_t)lv_obj_get_user_data(d) == want) return;
+    lv_obj_set_user_data(d, (void *)want);
+    lv_obj_remove_style(d, &s_dot_green, 0);
+    lv_obj_remove_style(d, &s_dot_line, 0);
+    if (dot >= 0) lv_obj_add_style(d, dot ? &s_dot_green : &s_dot_line, 0);
+    set_flag(d, LV_OBJ_FLAG_HIDDEN, dot < 0);
+}
+
+void ui_host_row_note(lv_obj_t *row, const char *note, bool busy, const char *hint)
+{
+    if (!row) return;
+    lv_obj_t *t = lv_obj_get_child(row, 2), *sp = lv_obj_get_child(row, 3);
+    if (busy && !sp) {
+        sp = lv_spinner_create(row);
+        lv_obj_set_size(sp, 24, 24);
+        lv_spinner_set_anim_params(sp, 1000, 270);
+        lv_obj_remove_flag(sp, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_style(sp, &s_spinner_main, LV_PART_MAIN);
+        lv_obj_add_style(sp, &s_spinner_ind, LV_PART_INDICATOR);
+    }
+    if (sp) {
+        if (busy) lv_obj_remove_flag(sp, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_delete(sp);   /* no animation left running */
+    }
+    lv_obj_set_user_data(row, (note || busy) ? HOST_NOTE : NULL);
+    bool fail = note && !busy;
+    tone_apply(t, fail ? UI_TONE_RED : UI_TONE_MUTED);
+    /* a failure wraps to two lines at most, so a refusal (TS_HOST_OFF_MESSAGE) reads whole; the hint is one line */
+    int32_t lh = lv_font_get_line_height(FONT_SMALL);
+    lv_obj_set_width(t, fail ? LV_PCT(60) : LV_SIZE_CONTENT);
+    lv_obj_set_height(t, fail ? LV_SIZE_CONTENT : lh);
+    lv_obj_set_style_max_height(t, 2 * lh, 0);
+    lv_obj_set_style_text_align(t, fail ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_AUTO, 0);
+    set_text(t, note ? note : hint);
+    set_flag(t, LV_OBJ_FLAG_HIDDEN, !note && !busy && !lv_obj_has_state(row, LV_STATE_FOCUS_KEY));
+}
+
+lv_obj_t *ui_add_row(lv_obj_t *parent, const char *t, lv_event_cb_t cb, void *ud)
+{
+    lv_obj_t *r = lv_obj_create(parent);
+    lv_obj_remove_style_all(r);
+    lv_obj_add_style(r, &s_add_row, 0);
+    lv_obj_add_style(r, &s_pressed, LV_STATE_PRESSED);
+    lv_obj_set_width(r, LV_PCT(100));
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(r, (UI_TK_HIT - UI_TK_SESSION_ROW_H) / 2);
+    lv_obj_t *l = text(r, t, NULL, NULL);
+    lv_obj_set_size(l, 1, lv_font_get_line_height(FONT_BODY));
+    lv_obj_set_flex_grow(l, 1);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    if (cb) lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, ud);
+    return r;
 }
 
 lv_obj_t *ui_rail_row(lv_obj_t *parent, const char *label, lv_event_cb_t cb, void *ud)
