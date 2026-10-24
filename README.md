@@ -178,11 +178,17 @@ from="192.168.1.0/24,100.64.0.0/10" ssh-ed25519 AAAAC3Nza... claude-companion@cl
 
 The directory and file must be private: `chmod 700 ~/.ssh` and `chmod 600 ~/.ssh/authorized_keys`.
 
-`firmware/tools/authorize_device_key.sh "<public key line>"`, run on the Host, does this for you.
+`firmware/tools/authorize_device_key.sh`, run on the Host, does this for you:
+
+```sh
+sh firmware/tools/authorize_device_key.sh --from 192.168.1.0/24 "<public key line>"
+sh firmware/tools/authorize_device_key.sh --from 192.168.1.0/24,100.64.0.0/10 "<public key line>"   # with Tailscale
+```
+
 It creates `~/.ssh` and the file with the right permissions if needed, refuses a key that is
-already there, and appends the line. It writes `from="100.64.0.0/10"`, which allows the Tab5
-**over Tailscale only** (it dates from the earlier Tailscale-only design). For the default
-home-network setup, edit the line afterwards and add your LAN subnet to `from=`, as above.
+already there, and appends the line with `from="<list>"`. `--from` takes a comma-separated list
+of addresses or networks (use your own subnet). Without `--from` the line has no `from=` limit,
+and the script prints a hint recommending one.
 
 ---
 
