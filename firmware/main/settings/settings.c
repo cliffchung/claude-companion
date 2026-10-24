@@ -1,6 +1,6 @@
 #include "settings.h"
 #include "settings_migrate.h"
-#include "ui/ui_theme.h"
+#include "ui/ui_tokens.h"
 #include "input/keyboard.h"
 #include <string.h>
 #include <stdlib.h>
@@ -63,10 +63,13 @@ void settings_reset_defaults(void)
     g_settings.kbd_led_rgb[0] = 0; g_settings.kbd_led_rgb[1] = 128; g_settings.kbd_led_rgb[2] = 255;
     g_settings.creds_on_sd = 0;
     g_settings.term_cursor_style = 0;
-    g_settings.term_cursor_blink = 1;
-    g_settings.term_line_height = 32;   /* 24 px glyphs with readable row spacing */
-    /* The look, including the terminal palette, comes from preset 0. */
-    ui_theme_set_preset(0);
+    g_settings.term_cursor_blink = 0;   /* B1: a steady cursor, no idle redraw */
+    g_settings.term_line_height = UI_TK_TERM_LINE_H;
+    /* Plan 4: one look, no themes. The terminal palette comes from the tokens. */
+    g_settings.term_fg = UI_TK_TERM_FG;
+    g_settings.term_bg = UI_TK_TERM_BG;
+    g_settings.term_cursor = UI_TK_TERM_CURSOR;
+    memcpy(g_settings.term_ansi, ui_tk_term_ansi, sizeof(g_settings.term_ansi));
     g_settings.term_font = 0;
     g_settings.volume = 60;
     g_settings.ota_url[0] = 0;           /* no update manifest yet */
@@ -98,7 +101,7 @@ void settings_init(void)
              * preserve larger spacing and allow subsequent manual adjustments. */
             if (old_version <= 11 && g_settings.term_line_height <= 30)
                 g_settings.term_line_height = 32;
-            if (old_version <= 12) ui_theme_set_terminal_amber();
+            /* v12 and older set the amber terminal palette here; Plan 4 dropped it (amber means NEEDS YOU only) */
             if (old_version <= 13 && (g_settings.term_line_height == 34 || g_settings.term_line_height < 28))
                 g_settings.term_line_height = 32;
             if (old_version <= 14) g_settings.ss_classic = 0;

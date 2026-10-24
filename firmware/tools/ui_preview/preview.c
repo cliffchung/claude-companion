@@ -1,7 +1,8 @@
 #include "ui/ui.h"
 #include "term/term_view.h"
 #include "ui/ui_boot.h"
-#include "ui/ui_motion.h"
+#include "ui/ui_comp.h"
+#include "checks.h"
 #include "settings/settings.h"
 #include "net/tailscale.h"
 #include "input/keyboard.h"
@@ -17,11 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-/* The UI is English only now; the old language switches are no-ops. */
-#define i18n_set_lang(l) ((void)(l))
 app_settings_t g_settings;
 void settings_save(void) {}
-void settings_reset_defaults(void) { ui_theme_set_preset(0); }
+void settings_reset_defaults(void) {}
 bool g_ssh_session_active=false;
 void softkbd_hide_all(void) {}
 int softkbd_height(void) { return 300; }
@@ -92,6 +91,7 @@ static key_sink_t preview_sink; static bool preview_have_sink;   /* dashboard-ke
 void keyboard_set_sink(const key_sink_t *sink) { if (sink) { preview_sink = *sink; preview_have_sink = true; } else preview_have_sink = false; }
 void keyboard_clear_sink(void *user) { if (preview_have_sink && preview_sink.user == user) preview_have_sink = false; }
 void ui_terminal_open_command(int i, const char *c, void (*cb)(void *), void *ctx) { (void)i; (void)c; if (cb) cb(ctx); }
+bool ui_terminal_is_top(void) { return false; }   /* the preview builds no terminal screen yet */
 /* companion link: the dashboard reads the synthetic agents fixture */
 static cc_session_t s_preview_sessions[16];
 static int s_preview_n = -1;
@@ -217,46 +217,6 @@ static void flush(lv_display_t *d,const lv_area_t *a,uint8_t *p) {
 static void step(lv_display_t *d, unsigned ms) {
     lv_tick_inc(ms); lv_timer_handler(); lv_refr_now(d);
 }
-static void motion_check(lv_display_t *d) {
-    ui_nav_home(); step(d, 400);
-    flushed_pixels=0; flushes=0;
-    ui_nav_push(ui_settings_create, NULL);
-    lv_refr_now(d);
-    uint64_t peak=0;
-    const char *capture=getenv("UI_CAPTURE_MOTION");
-    if (capture) snapshot(lv_screen_active(), "motion-00.ppm");
-    for (unsigned i=0;i<12;i++) {
-        uint64_t before=flushed_pixels;
-        step(d,33);
-        if (flushed_pixels-before>peak) peak=flushed_pixels-before;
-        if (capture) {
-            char path[32]; snprintf(path,sizeof(path),"motion-%02u.ppm",i+1);
-            snapshot(lv_screen_active(),path);
-        }
-    }
-    uint64_t sweep=flushed_pixels;
-    printf("EL sweep: %llu pixels, %u flushes, largest animated frame %llu pixels\n",
-           (unsigned long long)sweep, flushes, (unsigned long long)peak);
-    /* No sweep invalidations survive completion. Hardware status is static. */
-    flushed_pixels=0; step(d,400);
-    assert(flushed_pixels==0);
-    ui_nav_home(); step(d,400);
-    flushed_pixels=0; flushes=0;
-    lv_obj_t *next=ui_settings_create(NULL);
-    lv_screen_load_anim(next, LV_SCR_LOAD_ANIM_MOVE_LEFT, 150, 0, true);
-    for(unsigned i=0;i<12;i++) step(d,33);
-    printf("Legacy slide, same widgets: %llu pixels, %u flushes\n",
-           (unsigned long long)flushed_pixels, flushes);
-    assert(sweep < flushed_pixels);
-    /* Interrupt a sweep by navigation and by deleting its screen. */
-    ui_nav_home(); step(d,33); ui_nav_push(ui_settings_create,NULL); step(d,33);
-    ui_theme_set_preset(8); ui_theme_apply(); step(d,400);
-    ui_theme_set_preset(0); ui_theme_apply();
-    ui_motion_start(lv_screen_active(),NULL,true); step(d,33);
-    lv_obj_t *old=lv_screen_active(), *blank=lv_obj_create(NULL);
-    lv_screen_load(blank); lv_obj_delete(old); step(d,400);
-    puts("Motion lifecycle checks passed.");
-}
 static int keyboard_clicks, keyboard_menus, keyboard_releases, keyboard_answer;
 static void keyboard_test_cb(lv_event_t *e) {
     if (lv_event_get_code(e)==LV_EVENT_CLICKED) keyboard_clicks++;
@@ -351,7 +311,7 @@ static void terminal_spacing_check(void) {
         assert(last>=0 && first<32 && 32+first-last-1>=4);
     }
     lv_draw_buf_destroy(snap);
-    assert(snapshot(scr,"/tmp/clientre-terminal-spacing.ppm")==0);
+    assert(snapshot(scr,"terminal.ppm")==0);
     fonts_set_term_line_height(38);
     term_view_fit(tv,&cols,&rows);
     assert(term_view_cell_h(tv)==38 && rows==13);
@@ -410,161 +370,194 @@ static void terminal_art_check(void) {
         assert(p[0] || p[1] || p[2]); /* no seams in solid block artwork */
     }
     lv_draw_buf_destroy(snap);
-    assert(snapshot(scr,"/tmp/clientre-terminal-art.ppm")==0);
+    assert(snapshot(scr,"art.ppm")==0);
     term_view_destroy(tv); vt_destroy(vt);
     puts("CLI triangles are one cell; full-height block artwork has no gaps across columns or rows.");
 }
 
-static void terminal_palette_preview(void) {
-    ui_theme_set_terminal_amber();
-    assert(g_settings.term_bg==0x241200 && g_settings.term_fg==0xFF9800);
-    lv_obj_t *scr=ui_screen_base(); lv_screen_load(scr);
-    lv_obj_set_style_bg_color(scr,lv_color_hex(g_settings.term_bg),0);
-    vt_set_palette(g_settings.term_ansi); fonts_set_term_line_height(32);
-    int columns=(lv_display_get_horizontal_resolution(NULL)-48)/12;
-    vt_t *vt=vt_create(columns,20,0);
-    term_view_t *tv=term_view_create(scr,vt,&g_term_font);
-    lv_obj_set_pos(term_view_obj(tv),24,20); lv_obj_set_size(term_view_obj(tv),columns*12,680);
-    term_view_set_colors(tv,lv_color_hex(g_settings.term_fg),lv_color_hex(g_settings.term_bg));
-    const char *sample=
-        "\033[38;2;215;122;86m ▐▛███▜▌  \033[93mClaude Code\033[37m  CLI color preview\r\n"
-        "\033[38;2;215;122;86m▝▜█████▛▘ \033[37mClientre 5\r\n"
-        "\033[38;2;215;122;86m  ▘▘ ▝▝   \033[37m/home/user\r\n\r\n"
-        "\033[40;97m > hello                                    \033[0m\r\n\r\n"
-        "\033[97m* \033[0mHello! What can I help you with today?\r\n\r\n"
-        "\033[37m  Ready. 日本語の表示もそのままです。\r\n\r\n\r\n\r\n\r\n"
-        "\033[94m                         copied to clipboard\r\n"
-        "\033[90m%s\r\n"
-        "\033[0m> _\r\n"
-        "\033[90m%s\r\n"
-        "\033[37m  Status\r\n\033[93m  ⏵⏵ auto mode on\033[37m (CLI status)\033[?25l";
-    char rule[1024], output[4096];
-    assert(columns*3 < sizeof(rule));
-    for(int i=0;i<columns;i++) memcpy(rule+i*3,"─",3);
-    rule[columns*3]=0;
-    snprintf(output,sizeof(output),sample,rule,rule);
-    vt_feed(vt,(const uint8_t *)output,strlen(output));
-    assert(vt_view_row(vt,14)[columns-1].cp==0x2500);
-    assert(vt_view_row(vt,16)[columns-1].cp==0x2500);
-    assert(snapshot(scr,"/tmp/clientre-cli-amber.ppm")==0);
-    term_view_destroy(tv); vt_destroy(vt);
-    puts("Amber CLI palette preview rendered.");
+/* ---------------------------------------------------------------- nav */
+/* P4-2: a probe screen's create function runs after the previous screen is already deleted. */
+static lv_obj_t *s_probe_prev;
+static unsigned s_probe_runs;
+static lv_obj_t *probe_settings_create(void *arg) {
+    assert(s_probe_prev && !lv_obj_is_valid(s_probe_prev));
+    s_probe_runs++;
+    return ui_settings_create(arg);
+}
+static void noop_cb(lv_event_t *e) { (void)e; }
+static bool s_boot_deleted;
+static void boot_deleted_cb(lv_event_t *e) { (void)e; s_boot_deleted = true; }
+/* Every Task 4 component on one screen, with stub sessions: the checks run on it with no skips. */
+static lv_obj_t *probe_gallery_create(void *arg) {
+    (void)arg;
+    assert(s_probe_prev && !lv_obj_is_valid(s_probe_prev));
+    s_probe_runs++;
+    lv_obj_t *scr = ui_screen_base();
+    lv_obj_t *h = ui_header(scr, "Components", "Sessions");
+    ui_chip(ui_header_slot(h), "Save", noop_cb, NULL);
+    ui_header_needs_you_set(ui_header_needs_you(h), 2);
+    lv_obj_t *banner = ui_banner(scr, UI_TK_HEADER_H);
+    ui_banner_set(banner, UI_BANNER_MUTED, "Updating\xe2\x80\xa6", NULL, NULL, NULL);
+    ui_banner_set(banner, UI_BANNER_RED, "Can't reach the host: connection refused", "Host settings", noop_cb, NULL);
+    lv_obj_t *f = ui_footer(scr);
+    ui_chip(ui_footer_group(f, false), "\xe2\x86\x91\xe2\x86\x93 Select", noop_cb, NULL);
+    ui_chip(ui_footer_group(f, false), "Send", noop_cb, NULL);
+    ui_chip(ui_footer_group(f, true), "Settings", noop_cb, NULL);
+    int top = UI_TK_HEADER_H + UI_TK_BANNER_H + UI_TK_GAP_M;
+    int body_h = 720 - top - UI_TK_FOOTER_H - UI_TK_GAP_M;
+    lv_obj_t *list = lv_obj_create(scr);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_pos(list, UI_TK_MARGIN, top);
+    lv_obj_set_size(list, UI_TK_LIST_W, body_h);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, UI_TK_GAP_S, 0);
+    lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    static cc_session_t ss[4] = {
+        { .id = "a1", .name = "auth-refactor-with-a-name-far-too-long-to-fit-in-the-row", .repo = "api",
+          .state = CC_NEEDS_YOU, .background = true, .live = true },
+        { .id = "b2", .name = "deps-bump", .repo = "web", .state = CC_NEEDS_YOU, .background = true, .live = true },
+        { .id = "c3", .name = "flaky-tests", .repo = "api", .state = CC_WORKING, .background = true, .live = true },
+        { .id = "d4", .name = "docs-pass", .repo = "docs", .state = CC_IDLE, .background = true, .live = true },
+    };
+    const char *meta[4] = { "~/code/api \xc2\xb7 7m", "~/code/web \xc2\xb7 12m", "~/code/api \xc2\xb7 1h", "~/code/docs \xc2\xb7 2d" };
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *r = ui_session_row(list, noop_cb, NULL);
+        ui_session_row_set(r, &ss[i], i == 0, meta[i]);
+        ui_session_row_set(r, &ss[i], i == 0, meta[i]);   /* unchanged: a no-op */
+    }
+    ui_section_header(list, "Section header");
+    ui_srow(list, UI_ROW_ACTION, "Reboot", NULL, noop_cb, NULL);
+    ui_skeleton_row(list);
+    lv_obj_t *col = lv_obj_create(scr);
+    lv_obj_remove_style_all(col);
+    int x = UI_TK_MARGIN + UI_TK_LIST_W + UI_TK_GAP_L;
+    lv_obj_set_pos(col, x, top);
+    lv_obj_set_size(col, 1280 - x - UI_TK_MARGIN, body_h);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, UI_TK_GAP_S, 0);
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *buttons = lv_obj_create(col);
+    lv_obj_remove_style_all(buttons);
+    lv_obj_set_size(buttons, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(buttons, UI_TK_GAP_M, 0);
+    lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
+    ui_btn(buttons, UI_BTN_PRIMARY, "Send", noop_cb, NULL);
+    ui_btn(buttons, UI_BTN_SECONDARY, "Open", noop_cb, NULL);
+    ui_btn(buttons, UI_BTN_DESTRUCTIVE, "Forget", noop_cb, NULL);
+    lv_obj_t *pill = ui_state_pill(buttons);
+    ui_state_pill_set(pill, &ss[2]);
+    ui_srow(col, UI_ROW_VALUE, "Fallback address", "192.168.1.50", noop_cb, NULL);
+    ui_srow(col, UI_ROW_SWITCH, "Tailscale", "on", noop_cb, NULL);
+    ui_srow(col, UI_ROW_NAV, "Host", "my-host.local", noop_cb, NULL);
+    ui_srow_slider(col, "Brightness", 5, 100, 58, noop_cb, NULL);
+    ui_srow(col, UI_ROW_INFO, "Link", "connected over home Wi-Fi", NULL, NULL);
+    ui_footnote(col, "A footnote wraps onto as many lines as it needs, in the muted label role.");
+    return scr;
 }
 
-static void font_policy_check(lv_display_t *d) {
-    lv_font_glyph_dsc_t latin, han;
-
-    i18n_set_lang(LANG_JA);
-    ui_theme_set_preset(0); ui_theme_init(); ui_theme_reinit_lvgl();
-    assert(FONT_BODY->dsc == font_px24.dsc);
-    assert(g_term_font.dsc == font_px24.dsc);
-
-    i18n_set_lang(LANG_ZH_CN);
-    ui_theme_reinit_lvgl();
-    assert(FONT_SMALL == FONT_BODY && FONT_BODY == FONT_TITLE);
-    assert(FONT_BODY->dsc == font_cjk.dsc);
-    assert(g_term_font.dsc == font_cjk.dsc);
-    assert(lv_font_get_glyph_dsc(FONT_BODY,&latin,'A',0));
-    assert(lv_font_get_glyph_dsc(FONT_BODY,&han,0x7CFB,0)); /* 系 */
-    assert(latin.resolved_font == FONT_BODY && han.resolved_font == FONT_BODY);
-    assert(lv_font_get_glyph_dsc(&g_term_font,&latin,'A',0));
-    assert(lv_font_get_glyph_dsc(&g_term_font,&han,0x7CFB,0));
-    assert(latin.resolved_font == &g_term_font && han.resolved_font == &g_term_font);
-    ui_nav_home(); step(d,500);
-    assert(snapshot(lv_screen_active(),"/tmp/clientre-font-zh-pixel.ppm")==0);
-
-    i18n_set_lang(LANG_EN);
-    ui_theme_set_preset(3); ui_theme_init(); ui_theme_reinit_lvgl();
-    assert(FONT_BODY->dsc == lv_font_montserrat_22.dsc);
-    assert(FONT_TITLE->dsc == lv_font_montserrat_30.dsc);
-    assert(g_term_font.dsc == font_cjk.dsc); /* ordinary anti-aliased mono */
-
-    i18n_set_lang(LANG_JA);
-    ui_theme_reinit_lvgl();
-    assert(FONT_BODY->dsc == font_cjk.dsc && FONT_TITLE->dsc == font_cjk.dsc);
-    ui_nav_home(); step(d,500);
-    assert(snapshot(lv_screen_active(),"/tmp/clientre-font-ja-modern.ppm")==0);
-    puts("Font policy: MaruMinya for retro JA, unified Noto for Chinese, smooth fonts for modern themes passed.");
+static int nav_case(lv_display_t *d) {
+    preview_sessions_load();
+    ui_nav_home(); step(d,400);
+    s_probe_prev = lv_screen_active();
+    ui_nav_push(probe_settings_create, NULL); step(d,100);
+    assert(s_probe_runs == 1 && ui_nav_is_top(probe_settings_create));
+    ui_nav_back(); step(d,100);
+    assert(ui_nav_is_top(ui_dashboard_create));
+    s_probe_prev = lv_screen_active();
+    ui_nav_push(probe_gallery_create, NULL); step(d,100);
+    assert(s_probe_runs == 2);
+    /* the toast: one line at the bottom centre */
+    ui_toast("A toast is one line at the bottom centre, cut with dots when it is longer than the screen is wide, "
+             "which this one is");
+    step(d,100);
+    int r = pv_run_checks(d, lv_screen_active(), "nav", true, 0);
+    step(d,3100);
+    assert(lv_obj_get_child_count(lv_layer_top()) == 0);   /* gone after 3 s */
+    /* the picker and the confirm over it */
+    const char *items[] = { "Lowest", "Low", "Medium" };
+    ui_picker("Needs-you light when the screen is dark", items, 3, 1, NULL, NULL);
+    step(d,100);
+    r |= pv_run_checks(d, lv_screen_active(), "picker", false, 0);
+    lv_obj_clean(lv_layer_top());
+    ui_confirm_ex("Forget this host's key? The Tab5 trusts the next key the host offers, so only do this after the key changed.",
+                  "Only do this if the host's SSH key changed.", "Forget", true, NULL, NULL);
+    step(d,100);
+    r |= pv_run_checks(d, lv_screen_active(), "confirm", false, 0);
+    lv_obj_clean(lv_layer_top());
+    return r;
 }
 
 int main(int argc,char **argv) {
     lv_init();
-    int w=argc>3?atoi(argv[3]):1280, h=argc>4?atoi(argv[4]):720;
+    int w=1280, h=720;
     lv_display_t *d=lv_display_create(w,h);
     void *buf=malloc(w*50*4);
     lv_display_set_buffers(d,buf,NULL,w*50*4,LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(d,flush);
     g_settings.brightness=58;
-    g_settings.term_line_height=26;
+    g_settings.term_line_height=32;
     g_settings.kbd_dark_light=5;   /* PT24 default: "Low" */
+    const char *name = argc>1 ? argv[1] : "";
     /* Exercise splash before font runtime copies or the application UI exist. */
-    if (argc>1 && !strcmp(argv[1],"boot")) {
-        ui_theme_set_preset(argc>2?atoi(argv[2]):0);
+    if (!strcmp(name,"boot")) {
+        lv_font_glyph_dsc_t g;
+        assert(lv_font_get_glyph_dsc(&font_px20,&g,0x2026,0) && !g.is_placeholder);   /* "Starting…" */
         ui_boot_show();
         lv_obj_t *boot=lv_screen_active();
-        unsigned child_count=lv_obj_get_child_count(boot);
-        assert(child_count==1);
+        assert(lv_obj_get_child_count(boot)==1);
         flushed_pixels=0; step(d,1000);
         assert(flushed_pixels==0); /* static logo must not schedule redraws */
-        int result=snapshot(boot,"screen.ppm");
+        int result=pv_run_checks(d,boot,"boot",false,0);
+        lv_obj_add_event_cb(boot,boot_deleted_cb,LV_EVENT_DELETE,NULL);
         fonts_init(); ui_init(); ui_nav_home(); step(d,400);
-        assert(lv_screen_active()!=boot);
+        assert(s_boot_deleted && ui_nav_is_top(ui_dashboard_create));   /* P4-2: the splash is deleted */
         puts("Early boot logo and handoff checks passed.");
         return result;
     }
-    fonts_init(); i18n_set_lang(LANG_JA);
-    ui_theme_set_preset(argc>2?atoi(argv[2]):0); ui_init();
-    if (argc>1 && !strcmp(argv[1],"font-policy")) { font_policy_check(d); return 0; }
-    if (argc>1 && !strcmp(argv[1],"sleep-notice")) {
-        /* the pre-Hibernate notice over the dashboard */
-        i18n_set_lang(LANG_EN);
-        preview_sessions_load();
-        ui_nav_home(); step(d,400);
+    fonts_init(); ui_init();
+    g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
+    if (!strcmp(name,"sleep")) {
+        /* the pre-Hibernate notice: full screen, over whatever is shown */
+        lv_obj_t *s=ui_screen_base(); lv_screen_load(s);
         ui_sleep_notice(true); step(d,400);
-        lv_obj_update_layout(lv_layer_top()); lv_refr_now(d);
-        lv_obj_t *notice=lv_obj_get_child(lv_layer_top(),-1);
-        assert(notice);
-        return snapshot(notice,"/tmp/claude-sleep-notice.ppm");
+        return pv_run_checks(d,s,"sleep",false,0);
     }
-    if (argc>1 && !strcmp(argv[1],"cli-colors")) { terminal_palette_preview(); return 0; }
-    if (argc>1 && !strcmp(argv[1],"gesture")) { gesture_check(); return 0; }
-    if (argc>1 && !strcmp(argv[1],"art")) { terminal_art_check(); return 0; }
-    if (argc>1 && !strcmp(argv[1],"terminal")) { terminal_spacing_check(); return 0; }
-    if (argc>1 && !strcmp(argv[1],"keyboard")) { keyboard_check(); return 0; }
-    if (argc>1 && !strcmp(argv[1],"motion")) { motion_check(d); return 0; }
-    if (argc>1 && !strcmp(argv[1],"glyphs")) {
+    if (!strcmp(name,"nav")) return nav_case(d);
+    if (!strcmp(name,"gesture")) { gesture_check(); return 0; }
+    if (!strcmp(name,"art")) { terminal_art_check(); return 0; }
+    if (!strcmp(name,"terminal")) { terminal_spacing_check(); return 0; }
+    if (!strcmp(name,"keyboard")) { keyboard_check(); return 0; }
+    if (!strcmp(name,"glyphs")) {
         /* Which of Claude Code's interface symbols the terminal font draws. */
         static const struct { uint32_t cp; const char *name; } g[] = {
             {0x2500,"box \xe2\x94\x80"},{0x256D,"box \xe2\x95\xad"},{0x273B,"\xe2\x9c\xbb"},{0x23FA,"\xe2\x8f\xba"},
             {0x23BF,"\xe2\x8e\xbf"},{0x2713,"\xe2\x9c\x93"},{0x25CF,"\xe2\x97\x8f"},{0x276F,"\xe2\x9d\xaf"},
             {0x2026,"\xe2\x80\xa6"},{0x00B7,"\xc2\xb7"},{0x2014,"\xe2\x80\x94"},{0x2192,"\xe2\x86\x92"},
+            {0x2190,"\xe2\x86\x90"},{0x2191,"\xe2\x86\x91"},{0x2193,"\xe2\x86\x93"},{0x21B5,"\xe2\x86\xb5"},
+            {0x2303,"\xe2\x8c\x83"},{0x203A,"\xe2\x80\xba"},
             {0x2722,"\xe2\x9c\xa2"},{0x2733,"\xe2\x9c\xb3"},{0x2736,"\xe2\x9c\xb6"},{0x273D,"\xe2\x9c\xbd"},{0x00B7,"spinner dot"} };
-        const lv_font_t *fonts[] = { &g_term_font, FONT_BODY, FONT_SMALL };
-        const char *fn[] = { "terminal", "body", "small" };
-        for (unsigned f=0; f<3; f++) for (unsigned i=0;i<sizeof(g)/sizeof(g[0]);i++) {
+        const lv_font_t *fonts[] = { &g_term_font, FONT_BODY, FONT_SMALL, FONT_TITLE };
+        const char *fn[] = { "terminal", "body", "small", "title" };
+        for (unsigned f=0; f<4; f++) for (unsigned i=0;i<sizeof(g)/sizeof(g[0]);i++) {
             lv_font_glyph_dsc_t dsc;
             bool ok = lv_font_get_glyph_dsc(fonts[f],&dsc,g[i].cp,0) && !dsc.is_placeholder;
             printf("%-8s U+%04X %-12s %s\n", fn[f], (unsigned)g[i].cp, g[i].name, ok ? "yes" : "MISSING");
         }
         return 0;
     }
-    if (argc>1 && !strcmp(argv[1],"dashboard")) {
-        /* The live dashboard against the synthetic fixture; the first card is selected. */
-        i18n_set_lang(LANG_EN);
+    if (!strcmp(name,"dashboard")) {
+        /* The live dashboard against the synthetic fixture; the first card is selected.
+           Not rebuilt until Task 6, so the amber scan and the target sizes are skipped. */
         preview_sessions_load();
-        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
         ui_nav_home(); step(d,400);
         assert(ui_nav_is_top(ui_dashboard_create));
         step(d,400);
-        lv_obj_t *s=lv_screen_active();
-        lv_obj_update_layout(s); lv_refr_now(d);
-        return snapshot(s,"/tmp/claude-dashboard.ppm");
+        return pv_run_checks(d,lv_screen_active(),"dashboard",true,PV_SKIP_AMBER|PV_SKIP_TARGETS);
     }
-    if (argc>1 && !strcmp(argv[1],"dashboard-reconnecting")) {
+    if (!strcmp(name,"dashboard-reconnecting")) {
         /* A key woke it from Radio off: "Reconnecting to Mac…" (muted) over the stale cards, not "No Wi-Fi". */
-        i18n_set_lang(LANG_EN);
         preview_sessions_load();
-        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
         s_rc_preview = true;
         ui_nav_home(); step(d,400);
         assert(ui_nav_is_top(ui_dashboard_create));
@@ -573,12 +566,10 @@ int main(int argc,char **argv) {
         lv_obj_update_layout(s); lv_refr_now(d);
         assert(find_label(s,"Reconnecting to Mac\xe2\x80\xa6",false));
         assert(!find_label(s,"No Wi-Fi",true));
-        printf("dashboard-reconnecting: ok\n");
-        return snapshot(s,"/tmp/claude-dashboard-reconnecting.ppm");
+        return pv_run_checks(d,s,"dashboard-reconnecting",true,PV_SKIP_AMBER|PV_SKIP_TARGETS);
     }
-    if (argc>1 && !strcmp(argv[1],"settings-forget")) {
+    if (!strcmp(name,"settings-forget")) {
         /* Settings -> Companion -> Forget Mac host key: the confirm, then the toast after OK. */
-        i18n_set_lang(LANG_EN);
         preview_sessions_load();
         ui_nav_home(); step(d,400);
         ui_nav_push(ui_settings_create,NULL); step(d,400);
@@ -590,7 +581,7 @@ int main(int argc,char **argv) {
         assert(find_label(s,"Pinned key: SHA256:OldPreviewKey",true));   /* the row shows the pinned key */
         assert(find_label(lv_layer_top(),"Forget Mac host key?",false));
         assert(find_label(lv_layer_top(),"Only do this if your Mac's SSH host key changed. The Tab5 will trust the next key it sees.",false));
-        int r = snapshot_top(s,"settings-forget.ppm");
+        int r = pv_run_checks(d,s,"settings-forget",false,PV_SKIP_AMBER|PV_SKIP_TARGETS);
         assert(s_forget_calls==0);   /* nothing happens before Yes */
         lv_obj_t *ok=find_clickable(lv_layer_top(),tr(STR_OK));
         assert(ok);
@@ -602,20 +593,16 @@ int main(int argc,char **argv) {
         puts("Settings forget host key: confirm, one request after OK, toast passed.");
         return r;
     }
-    if (argc>1 && !strcmp(argv[1],"dashboard-keys")) {
+    if (!strcmp(name,"dashboard-keys")) {
         /* The Ctrl+K shortcuts overlay over the dashboard, opened through the dashboard's own sink. */
-        i18n_set_lang(LANG_EN);
         preview_sessions_load();
-        g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
         ui_nav_home(); step(d,400);
         assert(ui_nav_is_top(ui_dashboard_create) && preview_have_sink);
         key_event_t k = { .type = KEY_EV_CHAR, .cp = 'k', .mods = MOD_CTRL };
         assert(preview_sink.key(&k, preview_sink.user));
         assert(ui_dashboard_keys_overlay_shown());
         step(d,400);
-        lv_obj_t *s=lv_screen_active();
-        lv_obj_update_layout(s); lv_refr_now(d);
-        int r = snapshot(s,"/tmp/claude-dashboard-keys.ppm");
+        int r = pv_run_checks(d,lv_screen_active(),"dashboard-keys",true,PV_SKIP_AMBER|PV_SKIP_TARGETS);
         /* Ctrl+Tab is not taken by buttons mode while the overlay is up; the sink closes it */
         key_event_t ct = { .type = KEY_EV_SPECIAL, .key = SK_TAB, .mods = MOD_CTRL };
         assert(!ui_keyboard_route(&ct, true) && !ui_keyboard_owns_input());
@@ -635,39 +622,32 @@ int main(int argc,char **argv) {
         puts("Dashboard hotkeys: Ctrl+K overlay, any key closes it, Ctrl+P settings, Ctrl+M terminal passed.");
         return r;
     }
-    ui_screen_create_fn create= argc>1 && !strcmp(argv[1],"settings") ? ui_settings_create :
-                 argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create : NULL;
-    if (!create) { fprintf(stderr, "preview: unknown case %s\n", argc>1 ? argv[1] : "(none)"); return 2; }
-    g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;   /* Settings → Network's switch (PREVIEW_TS=0: off) */
-    /* Exercise persisted preset indexes and live theme rebuilds before capture. */
-    ui_nav_push(create, NULL);
-    lv_tick_inc(200); lv_timer_handler();
-    for (int i = 0; i < ui_theme_preset_count(); i++) {
-        ui_theme_set_preset(i); ui_theme_apply(); lv_tick_inc(200); lv_timer_handler();
-    }
-    ui_theme_set_preset(argc>2?atoi(argv[2]):0); ui_theme_apply(); lv_tick_inc(200); lv_timer_handler();
-    lv_obj_t *s = lv_screen_active();
-    if (create == ui_settings_create) {
-        /* Real click events, including selection preservation across rebuilds. */
+    if (!strcmp(name,"settings")) {
+        unsigned category = argc>2 ? (unsigned)atoi(argv[2]) : 0;
+        assert(category < 7);
+        preview_sessions_load();
+        ui_nav_home(); step(d,200);
+        ui_nav_push(ui_settings_create, NULL); step(d,200);
+        lv_obj_t *s = lv_screen_active();
+        /* Real click events through every rail entry: one visible panel, the same screen object. */
         for (unsigned i = 0; i < 7; i++) {
             lv_obj_t *before = s;
             lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
             lv_obj_send_event(lv_obj_get_child(nav, i), LV_EVENT_CLICKED, NULL);
-            lv_tick_inc(200); lv_timer_handler();
+            step(d,200);
             s = lv_screen_active();
-            assert(s == before); /* tab switch must not rebuild the screen */
+            assert(s == before); /* a rail click must not rebuild the screen */
             lv_obj_t *deck = lv_obj_get_child(lv_obj_get_child(s, 1), 1);
             for (unsigned j = 0; j < 7; j++)
                 assert(lv_obj_has_flag(lv_obj_get_child(deck, j), LV_OBJ_FLAG_HIDDEN) == (j != i));
         }
-        unsigned category = argc>5 ? (unsigned)atoi(argv[5]) : 0;
-        assert(category < 7);
         lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
         lv_obj_send_event(lv_obj_get_child(nav, category), LV_EVENT_CLICKED, NULL);
-        lv_tick_inc(200); lv_timer_handler();
-        s = lv_screen_active();
+        step(d,200);
+        assert(lv_screen_active() == s);
+        char n[16]; snprintf(n, sizeof(n), "settings-%u", category);
+        return pv_run_checks(d, s, n, false, PV_SKIP_AMBER|PV_SKIP_TARGETS);
     }
-    step(d,400);
-    lv_obj_update_layout(s); lv_refr_now(d);
-    return snapshot(s, "screen.ppm");
+    fprintf(stderr, "preview: unknown case %s\n", argc>1 ? argv[1] : "(none)");
+    return 2;
 }

@@ -26,7 +26,7 @@ target_compile_options(companion PRIVATE -Wall -Wextra)
 set(MAIN ${CMAKE_CURRENT_SOURCE_DIR}/../../main)
 add_library(pure STATIC ${MAIN}/sys/plog.c ${MAIN}/sys/vitals.c ${MAIN}/sys/power_rules.c ${MAIN}/sys/hib_rules.c ${MAIN}/ui/hotkeys.c ${MAIN}/input/key_log.c ${MAIN}/ssh/kh_rules.c
     ${MAIN}/companion/kh_carry.c ${MAIN}/settings/settings_migrate.c ${MAIN}/net/ts_host.c ${MAIN}/net/fast_rules.c
-    ${MAIN}/sys/link_guard.c ${MAIN}/companion/cc_park.c)
+    ${MAIN}/sys/link_guard.c ${MAIN}/companion/cc_park.c ${MAIN}/ui/ui_tokens.c)
 target_include_directories(pure PUBLIC ${MAIN} ${MAIN}/sys)
 target_link_libraries(pure PUBLIC companion)
 target_compile_options(pure PRIVATE -Wall -Wextra)
@@ -72,6 +72,9 @@ foreach(t test_kh_carry test_settings_migrate test_ts_host test_fast_rules test_
     target_link_libraries(${t} pure unity)
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# The UI lint (Plan 4): amber only through ui_comp, Host command lines only from cc_cmd.
+add_test(NAME ui_lint COMMAND python3 ${MAIN}/../tools/ui_lint.py ${MAIN})
 
 # Prints cc_cmd_watch's output for firmware/tools/test_watch_loop.py (not a test itself).
 add_executable(cc_cmd_print cc_cmd_print.c)

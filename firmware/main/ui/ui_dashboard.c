@@ -9,7 +9,7 @@
  * "needs you" and nothing else. */
 #include "ui.h"
 #include "ui_dashboard.h"
-#include "ui_motion.h"
+#include "ui_comp.h"
 #include "ui_vitals.h"
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
@@ -39,16 +39,7 @@
 
 static const char *TAG = "dash";
 
-/* spec D9 */
-#define C_BG     0x0e1116
-#define C_PANEL  0x161b22
-#define C_PANEL2 0x1b212b
-#define C_LINE   0x2a323d
-#define C_FG     0xe9e7e1
-#define C_MUTED  0x8a94a2
-#define C_AMBER  0xf4b545   /* needs you, nothing else */
-#define C_GREEN  0x54d08a
-#define C_RED    0xef6f6f
+/* spec D9 / §8.1: the tokens (ui_tokens.h); amber only through ui_needs_you_color() */
 #define HEX(h)   lv_color_hex(h)
 
 #define SNAP_CAP        128
@@ -426,20 +417,22 @@ static void pill(lv_obj_t *parent, const cc_session_t *sess)
     lv_obj_set_style_pad_ver(p, 3, 0);
     lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(p, 1, 0);
-    uint32_t fg, bg, border;
+    uint32_t fg, bg;
     lv_opa_t bg_opa = LV_OPA_20;
     switch (st) {
     case CC_NEEDS_YOU:
-        if (amber) { fg = C_BG; bg = C_AMBER; border = C_AMBER; bg_opa = LV_OPA_COVER; }
-        else { fg = C_MUTED; bg = C_LINE; border = C_LINE; bg_opa = LV_OPA_40; }
+        if (amber) { fg = UI_TK_BG; bg = 0; bg_opa = LV_OPA_COVER; }
+        else { fg = UI_TK_MUTED; bg = UI_TK_LINE; bg_opa = LV_OPA_40; }
         break;
-    case CC_WORKING:   fg = C_GREEN; bg = C_GREEN; border = C_GREEN; break;
-    case CC_ENDED:     fg = C_RED;   bg = C_RED;   border = C_RED;   break;
-    default:           fg = C_MUTED; bg = C_LINE;  border = C_LINE;  bg_opa = LV_OPA_40; break;
+    case CC_WORKING:   fg = UI_TK_GREEN; bg = UI_TK_GREEN; break;
+    case CC_ENDED:     fg = UI_TK_RED;   bg = UI_TK_RED;   break;
+    default:           fg = UI_TK_MUTED; bg = UI_TK_LINE;  bg_opa = LV_OPA_40; break;
     }
-    lv_obj_set_style_bg_color(p, HEX(bg), 0);
+    lv_color_t c = amber ? ui_needs_you_color() : HEX(bg);   /* amber: NEEDS YOU only */
+    if (amber) lv_obj_add_flag(p, UI_NEEDS_YOU_PART);
+    lv_obj_set_style_bg_color(p, c, 0);
     lv_obj_set_style_bg_opa(p, bg_opa, 0);
-    lv_obj_set_style_border_color(p, HEX(border), 0);
+    lv_obj_set_style_border_color(p, c, 0);
     lv_obj_set_style_border_opa(p, amber ? LV_OPA_COVER : LV_OPA_50, 0);
     text(p, pill_text(sess), FONT_SMALL, fg);
 }
@@ -479,27 +472,27 @@ static void build_expanded(lv_obj_t *card, const cc_session_t *s)
     if (s->background && s->id[0]) {
         lv_obj_t *lb = box(card);
         lv_obj_set_size(lb, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(lb, HEX(C_BG), 0);
+        lv_obj_set_style_bg_color(lb, HEX(UI_TK_BG), 0);
         lv_obj_set_style_bg_opa(lb, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(lb, 8, 0);
         lv_obj_set_style_pad_hor(lb, 12, 0);
         lv_obj_set_style_pad_ver(lb, 8, 0);
         lv_obj_set_style_border_width(lb, 1, 0);
-        lv_obj_set_style_border_color(lb, HEX(C_LINE), 0);
-        s_logs_lbl = text(lb, "", FONT_MONO, C_MUTED);
+        lv_obj_set_style_border_color(lb, HEX(UI_TK_LINE), 0);
+        s_logs_lbl = text(lb, "", FONT_MONO, UI_TK_MUTED);
         lv_obj_set_width(s_logs_lbl, LV_PCT(100));
         lv_label_set_long_mode(s_logs_lbl, LV_LABEL_LONG_CLIP);
         set_logs_text();
     }
     if (!s->background) {
-        text(card, "On your Mac \xe2\x80\x94 run /bg there to take it over here.", FONT_SMALL, C_MUTED);
+        text(card, "On your Mac \xe2\x80\x94 run /bg there to take it over here.", FONT_SMALL, UI_TK_MUTED);
         return;
     }
     note_t *n = note_find(key_of(s));
     if (!actionable(s)) {
         /* an action that just failed says why (e.g. "Session has stopped") */
-        if (n && n->kind == NOTE_ERROR) text(card, n->text, FONT_SMALL, C_RED);
-        else text(card, "Stopped", FONT_SMALL, C_MUTED);
+        if (n && n->kind == NOTE_ERROR) text(card, n->text, FONT_SMALL, UI_TK_RED);
+        else text(card, "Stopped", FONT_SMALL, UI_TK_MUTED);
         return;
     }
     if (field_visible(s)) {
@@ -509,21 +502,21 @@ static void build_expanded(lv_obj_t *card, const cc_session_t *s)
         lv_textarea_set_placeholder_text(s_ta, s->state == CC_NEEDS_YOU ? "Type an answer\xe2\x80\xa6" : "Type a message\xe2\x80\xa6");
         lv_textarea_set_text(s_ta, s_draft);
         lv_obj_set_style_text_font(s_ta, FONT_BODY, 0);
-        lv_obj_set_style_bg_color(s_ta, HEX(C_BG), 0);
+        lv_obj_set_style_bg_color(s_ta, HEX(UI_TK_BG), 0);
         lv_obj_set_style_bg_opa(s_ta, LV_OPA_COVER, 0);
-        lv_obj_set_style_text_color(s_ta, HEX(C_FG), 0);
-        lv_obj_set_style_text_color(s_ta, HEX(C_MUTED), LV_PART_TEXTAREA_PLACEHOLDER);
+        lv_obj_set_style_text_color(s_ta, HEX(UI_TK_FG), 0);
+        lv_obj_set_style_text_color(s_ta, HEX(UI_TK_MUTED), LV_PART_TEXTAREA_PLACEHOLDER);
         /* the theme's focus colours (its accent) must not leak in: amber is for needs-you */
-        lv_obj_set_style_border_color(s_ta, HEX(C_MUTED), LV_STATE_FOCUSED);
-        lv_obj_set_style_border_color(s_ta, HEX(C_MUTED), 0);
+        lv_obj_set_style_border_color(s_ta, HEX(UI_TK_MUTED), LV_STATE_FOCUSED);
+        lv_obj_set_style_border_color(s_ta, HEX(UI_TK_MUTED), 0);
         lv_obj_set_style_border_width(s_ta, 1, LV_STATE_FOCUSED);
         lv_obj_set_style_border_width(s_ta, 1, 0);
         lv_obj_set_style_outline_width(s_ta, 0, LV_STATE_FOCUSED);
         lv_obj_set_style_shadow_width(s_ta, 0, LV_STATE_FOCUSED);
         lv_obj_set_style_shadow_width(s_ta, 0, 0);
         lv_obj_set_style_radius(s_ta, 9, 0);
-        lv_obj_set_style_bg_color(s_ta, HEX(C_FG), LV_PART_CURSOR);
-        lv_obj_set_style_border_color(s_ta, HEX(C_FG), LV_PART_CURSOR);
+        lv_obj_set_style_bg_color(s_ta, HEX(UI_TK_FG), LV_PART_CURSOR);
+        lv_obj_set_style_border_color(s_ta, HEX(UI_TK_FG), LV_PART_CURSOR);
         lv_obj_remove_flag(s_ta, LV_OBJ_FLAG_CLICKABLE);   /* keys come from the sink */
         lv_obj_add_state(s_ta, LV_STATE_FOCUSED);          /* shows the cursor */
     }
@@ -532,12 +525,12 @@ static void build_expanded(lv_obj_t *card, const cc_session_t *s)
         const char *t = n->kind == NOTE_SENT ? "Sent" :
                         n->kind == NOTE_APPROVE ? "Open to approve" :
                         n->kind == NOTE_OPEN_TO_ANSWER ? "Open the session to answer" : n->text;
-        text(r, t, FONT_SMALL, n->kind == NOTE_ERROR ? C_RED : C_MUTED);
+        text(r, t, FONT_SMALL, n->kind == NOTE_ERROR ? UI_TK_RED : UI_TK_MUTED);
     }
     const char *hint = field_visible(s) ? "Enter sends  \xc2\xb7  Ctrl+O opens the session" :
                        "Enter opens the session  \xc2\xb7  R sends a message";
     if (note_says_open(s)) hint = "Enter opens the session";
-    text(r, hint, FONT_SMALL, C_MUTED);
+    text(r, hint, FONT_SMALL, UI_TK_MUTED);
 }
 
 static void build_card(int i)
@@ -547,11 +540,12 @@ static void build_card(int i)
     lv_obj_t *card = lv_obj_create(s_list);
     lv_obj_remove_style_all(card);
     lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(card, HEX(C_PANEL2), 0);
+    lv_obj_set_style_bg_color(card, HEX(UI_TK_PANEL2), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 14, 0);
     lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, HEX(cc_session_needs_you(s) ? C_AMBER : C_LINE), 0);
+    lv_obj_set_style_border_color(card, cc_session_needs_you(s) ? ui_needs_you_color() : HEX(UI_TK_LINE), 0);
+    if (cc_session_needs_you(s)) lv_obj_add_flag(card, UI_NEEDS_YOU_PART);
     lv_obj_set_style_border_opa(card, cc_session_needs_you(s) ? LV_OPA_60 : LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(card, 16, 0);
     lv_obj_set_style_pad_ver(card, 10, 0);
@@ -561,26 +555,26 @@ static void build_card(int i)
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(card, card_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     /* Ctrl+Tab focus: neutral, never the theme's orange accent (amber means "needs you") */
-    lv_obj_set_style_outline_color(card, HEX(C_FG), LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_color(card, HEX(UI_TK_FG), LV_STATE_FOCUS_KEY);
     lv_obj_set_style_outline_opa(card, LV_OPA_COVER, LV_STATE_FOCUS_KEY);
     if (sel) {
         lv_obj_set_style_outline_width(card, 2, 0);
-        lv_obj_set_style_outline_color(card, HEX(C_FG), 0);
+        lv_obj_set_style_outline_color(card, HEX(UI_TK_FG), 0);
         lv_obj_set_style_outline_opa(card, LV_OPA_50, 0);
         lv_obj_set_style_outline_pad(card, 2, 0);
     }
     s_cards[i] = card;
     lv_obj_t *h = row(card, 16);
-    lv_obj_t *name = text(h, s->name, FONT_BODY, C_FG);
+    lv_obj_t *name = text(h, s->name, FONT_BODY, UI_TK_FG);
     lv_obj_set_width(name, 1);
     lv_obj_set_flex_grow(name, 1);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_set_height(name, lv_font_get_line_height(FONT_BODY));
-    lv_obj_t *repo = text(h, s->repo, FONT_SMALL, C_MUTED);
+    lv_obj_t *repo = text(h, s->repo, FONT_SMALL, UI_TK_MUTED);
     lv_label_set_long_mode(repo, LV_LABEL_LONG_DOT);
     lv_obj_set_style_max_width(repo, 320, 0);
     lv_obj_set_height(repo, lv_font_get_line_height(FONT_SMALL));
-    s_ages[i] = text(h, "", FONT_SMALL, C_MUTED);
+    s_ages[i] = text(h, "", FONT_SMALL, UI_TK_MUTED);
     lv_obj_set_style_min_width(s_ages[i], 48, 0);
     lv_obj_set_style_text_align(s_ages[i], LV_TEXT_ALIGN_RIGHT, 0);
     set_age(s_ages[i], s);
@@ -824,7 +818,7 @@ void ui_dashboard_keys_overlay(bool show)
     if (s_keys_ov || !s_scr) return;
     lv_obj_t *o = box(s_scr);
     lv_obj_set_size(o, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(o, HEX(C_BG), 0);
+    lv_obj_set_style_bg_color(o, HEX(UI_TK_BG), 0);
     lv_obj_set_style_bg_opa(o, LV_OPA_80, 0);
     lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE | UI_KEYBOARD_SKIP);
     lv_obj_add_event_cb(o, keys_ov_clicked, LV_EVENT_CLICKED, NULL);
@@ -834,10 +828,10 @@ void ui_dashboard_keys_overlay(bool show)
     lv_obj_set_size(p, LV_PCT(92), LV_SIZE_CONTENT);
     lv_obj_set_style_max_width(p, 900, 0);
     lv_obj_center(p);
-    lv_obj_set_style_bg_color(p, HEX(C_PANEL), 0);
+    lv_obj_set_style_bg_color(p, HEX(UI_TK_PANEL), 0);
     lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(p, 1, 0);
-    lv_obj_set_style_border_color(p, HEX(C_LINE), 0);
+    lv_obj_set_style_border_color(p, HEX(UI_TK_LINE), 0);
     lv_obj_set_style_radius(p, 14, 0);
     lv_obj_set_style_pad_hor(p, 32, 0);
     lv_obj_set_style_pad_ver(p, 24, 0);
@@ -846,7 +840,7 @@ void ui_dashboard_keys_overlay(bool show)
     lv_obj_remove_flag(p, LV_OBJ_FLAG_CLICKABLE);   /* a touch anywhere reaches the backdrop */
     lv_obj_add_flag(p, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    lv_obj_t *t = text(p, "Keyboard shortcuts", FONT_BODY, C_FG);
+    lv_obj_t *t = text(p, "Keyboard shortcuts", FONT_BODY, UI_TK_FG);
     lv_obj_set_style_pad_bottom(t, 8, 0);
     for (int i = 0; hk_overlay_lines[i]; i++) {
         /* "<keys>  <what it does>": the keys in muted, the rest in fg */
@@ -858,14 +852,14 @@ void ui_dashboard_keys_overlay(bool show)
         memcpy(keys, line, kn);
         keys[kn] = 0;
         lv_obj_t *r = row(p, 16);
-        lv_obj_t *k = text(r, keys, FONT_SMALL, C_MUTED);
+        lv_obj_t *k = text(r, keys, FONT_SMALL, UI_TK_MUTED);
         lv_obj_set_width(k, LV_PCT(46));
         lv_label_set_long_mode(k, LV_LABEL_LONG_WRAP);
-        lv_obj_t *dsc = text(r, gap ? gap + 2 : line, FONT_SMALL, C_FG);
+        lv_obj_t *dsc = text(r, gap ? gap + 2 : line, FONT_SMALL, UI_TK_FG);
         lv_obj_set_flex_grow(dsc, 1);
         lv_label_set_long_mode(dsc, LV_LABEL_LONG_WRAP);
     }
-    lv_obj_t *h = text(p, "Any key or a touch closes this", FONT_SMALL, C_MUTED);
+    lv_obj_t *h = text(p, "Any key or a touch closes this", FONT_SMALL, UI_TK_MUTED);
     lv_obj_set_style_pad_top(h, 8, 0);
     s_keys_ov = o;
 }
@@ -995,7 +989,7 @@ static void update_status(void)
     cc_settings_server_name(name, sizeof(name));
     bool up = cc_link_connected();
     int64_t now = mono_ms();
-    uint32_t dot = C_MUTED, color = C_FG;
+    uint32_t dot = UI_TK_MUTED, color = UI_TK_FG;
     pr_cards_t view = cards_view();
     /* woken from Radio off: the radio comes back first, so say so over the stale cards (Task 8) */
     bool reconnecting = name[0] && checkin_woke_parked() && view == PR_CARDS_STALE;
@@ -1009,7 +1003,7 @@ static void update_status(void)
         cc_link_status_text(st, sizeof(st));
         if (st[0] >= 'a' && st[0] <= 'z') st[0] = (char)(st[0] - 'a' + 'A');
         snprintf(line, sizeof(line), "%s.", st);
-        color = dot = C_RED;
+        color = dot = UI_TK_RED;
         s_down_since_ms = 0;
     } else if (!up) {
         /* The clock starts once the network could reach the Mac: Tailscale takes about a
@@ -1023,44 +1017,46 @@ static void update_status(void)
         else if (!s_down_since_ms) s_down_since_ms = now;
         if (reconnecting) {
             snprintf(line, sizeof(line), "Reconnecting to %s\xe2\x80\xa6", name);
-            color = C_MUTED;
+            color = UI_TK_MUTED;
         } else if (!wifi && !wifi_mgr_is_connecting()) {
             snprintf(line, sizeof(line), "No Wi-Fi, so the Tab5 can't reach %s.", name);
-            color = dot = C_RED;
+            color = dot = UI_TK_RED;
         } else if (s_down_since_ms && now - s_down_since_ms >= UNREACHABLE_MS) {
             snprintf(line, sizeof(line), "Can't reach %s. Is your Mac awake?", name);
-            color = dot = C_RED;
+            color = dot = UI_TK_RED;
         } else if (view == PR_CARDS_WAKING) {
             strlcpy(line, "Waking: reconnecting to Mac", sizeof(line));
-            color = C_MUTED;
+            color = UI_TK_MUTED;
         } else {
             snprintf(line, sizeof(line), "Connecting to %s\xe2\x80\xa6", name);
-            color = C_MUTED;
+            color = UI_TK_MUTED;
         }
     } else {
         s_down_since_ms = 0;
-        dot = C_GREEN;
+        dot = UI_TK_GREEN;
         bool too_big = false;
         int fails = cc_poll_failures(&too_big);
         if (too_big) {
             /* the cards below are from the last poll that fit: not current */
             strlcpy(line, "Session list too large to load, so these cards aren't updating.", sizeof(line));
-            color = dot = C_RED;
+            color = dot = UI_TK_RED;
         } else if (fails >= CC_POLL_FAILS_SHOWN) {
             snprintf(line, sizeof(line), "Can't load sessions from %s, so these cards aren't updating.", name);
-            color = dot = C_RED;
-        } else if (view == PR_CARDS_WAKING) { strlcpy(line, "Waking: reconnecting to Mac", sizeof(line)); color = C_MUTED; }
-        else if (reconnecting) { snprintf(line, sizeof(line), "Reconnecting to %s\xe2\x80\xa6", name); color = C_MUTED; }
-        else if (view == PR_CARDS_STALE && s_n >= 0) { strlcpy(line, "Updating\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
-        else if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = C_MUTED; }
+            color = dot = UI_TK_RED;
+        } else if (view == PR_CARDS_WAKING) { strlcpy(line, "Waking: reconnecting to Mac", sizeof(line)); color = UI_TK_MUTED; }
+        else if (reconnecting) { snprintf(line, sizeof(line), "Reconnecting to %s\xe2\x80\xa6", name); color = UI_TK_MUTED; }
+        else if (view == PR_CARDS_STALE && s_n >= 0) { strlcpy(line, "Updating\xe2\x80\xa6", sizeof(line)); color = UI_TK_MUTED; }
+        else if (s_n < 0) { strlcpy(line, "Loading sessions\xe2\x80\xa6", sizeof(line)); color = UI_TK_MUTED; }
         else if (s_n == 0) snprintf(line, sizeof(line), "No sessions on %s. Start one on your Mac with claude --bg.", name);
         else cc_summary(s_items, s_n, line, sizeof(line));
     }
     if (s_summary) {
         if (strcmp(lv_label_get_text(s_summary), line)) lv_label_set_text(s_summary, line);
-        lv_obj_set_style_text_color(s_summary, HEX(color), 0);
+        /* style writes redraw: only on a change, so a static dashboard stays idle */
+        if (!lv_color_eq(lv_obj_get_style_text_color(s_summary, 0), HEX(color)))
+            lv_obj_set_style_text_color(s_summary, HEX(color), 0);
     }
-    if (s_dot) lv_obj_set_style_bg_color(s_dot, HEX(dot), 0);
+    if (s_dot && !lv_color_eq(lv_obj_get_style_bg_color(s_dot, 0), HEX(dot))) lv_obj_set_style_bg_color(s_dot, HEX(dot), 0);
     if (s_host && strcmp(lv_label_get_text(s_host), name[0] ? name : "No Mac"))
         lv_label_set_text(s_host, name[0] ? name : "No Mac");
     if (s_list && (int)view != s_view_shown) {   /* a style write redraws the list: only on a change */
@@ -1128,14 +1124,14 @@ static lv_obj_t *footer_button(lv_obj_t *parent, const char *label, lv_event_cb_
     lv_obj_set_size(b, LV_SIZE_CONTENT, 38);
     lv_obj_set_style_pad_hor(b, 18, 0);
     lv_obj_set_style_radius(b, 9, 0);
-    lv_obj_set_style_bg_color(b, HEX(C_PANEL2), 0);
+    lv_obj_set_style_bg_color(b, HEX(UI_TK_PANEL2), 0);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(b, HEX(C_LINE), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(b, HEX(UI_TK_LINE), LV_STATE_PRESSED);
     lv_obj_set_style_border_width(b, 1, 0);
-    lv_obj_set_style_border_color(b, HEX(C_LINE), 0);
-    lv_obj_set_style_outline_color(b, HEX(C_FG), LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_border_color(b, HEX(UI_TK_LINE), 0);
+    lv_obj_set_style_outline_color(b, HEX(UI_TK_FG), LV_STATE_FOCUS_KEY);
     lv_obj_set_ext_click_area(b, 6);
-    lv_obj_t *l = text(b, label, FONT_SMALL, C_FG);
+    lv_obj_t *l = text(b, label, FONT_SMALL, UI_TK_FG);
     lv_obj_center(l);
     lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
     return b;
@@ -1162,33 +1158,32 @@ lv_obj_t *ui_dashboard_create(void *arg)
     init_once();
     int W = lv_display_get_horizontal_resolution(NULL), H = lv_display_get_vertical_resolution(NULL);
     lv_obj_t *scr = ui_screen_base();
-    ui_motion_plain(scr);
     s_scr = scr;
-    lv_obj_set_style_bg_color(scr, HEX(C_BG), 0);
-    lv_obj_set_style_text_color(scr, HEX(C_FG), 0);
+    lv_obj_set_style_bg_color(scr, HEX(UI_TK_BG), 0);
+    lv_obj_set_style_text_color(scr, HEX(UI_TK_FG), 0);
     lv_obj_add_event_cb(scr, scr_delete_cb, LV_EVENT_DELETE, NULL);
     ui_screen_set_gesture(scr, dash_gesture_cb);
 
     /* vitals */
     lv_obj_t *v = box(scr);
     lv_obj_set_size(v, W, VITALS_H);
-    lv_obj_set_style_bg_color(v, HEX(C_PANEL), 0);
+    lv_obj_set_style_bg_color(v, HEX(UI_TK_PANEL), 0);
     lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
     lv_obj_set_style_border_side(v, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_border_width(v, 1, 0);
-    lv_obj_set_style_border_color(v, HEX(C_LINE), 0);
+    lv_obj_set_style_border_color(v, HEX(UI_TK_LINE), 0);
     lv_obj_set_style_pad_hor(v, 18, 0);
     lv_obj_set_flex_flow(v, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(v, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(v, 18, 0);
-    lv_obj_t *brand = text(v, "Claude Companion", FONT_BODY, C_FG);
+    lv_obj_t *brand = text(v, "Claude Companion", FONT_BODY, UI_TK_FG);
     lv_obj_set_flex_grow(brand, 1);
     s_vitals = ui_vitals_create(v);
     s_dot = ui_vitals_link_dot(s_vitals);
     s_host = ui_vitals_link_host(s_vitals);
 
     /* summary or status line */
-    s_summary = text(scr, "", FONT_BODY, C_FG);
+    s_summary = text(scr, "", FONT_BODY, UI_TK_FG);
     lv_obj_set_pos(s_summary, 20, VITALS_H + 10);
     lv_obj_set_width(s_summary, W - 40);
     lv_label_set_long_mode(s_summary, LV_LABEL_LONG_DOT);
@@ -1210,16 +1205,16 @@ lv_obj_t *ui_dashboard_create(void *arg)
     lv_obj_t *f = box(scr);
     lv_obj_set_size(f, W, FOOTER_H);
     lv_obj_set_pos(f, 0, H - FOOTER_H);
-    lv_obj_set_style_bg_color(f, HEX(C_PANEL), 0);
+    lv_obj_set_style_bg_color(f, HEX(UI_TK_PANEL), 0);
     lv_obj_set_style_bg_opa(f, LV_OPA_COVER, 0);
     lv_obj_set_style_border_side(f, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_width(f, 1, 0);
-    lv_obj_set_style_border_color(f, HEX(C_LINE), 0);
+    lv_obj_set_style_border_color(f, HEX(UI_TK_LINE), 0);
     lv_obj_set_style_pad_hor(f, 18, 0);
     lv_obj_set_flex_flow(f, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(f, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(f, 12, 0);
-    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 " HK_DASH_HINT, FONT_SMALL, C_MUTED);
+    lv_obj_t *keys = text(f, "Up/Down select \xc2\xb7 Enter send / open \xc2\xb7 " HK_DASH_HINT, FONT_SMALL, UI_TK_MUTED);
     lv_obj_set_flex_grow(keys, 1);
     lv_label_set_long_mode(keys, LV_LABEL_LONG_DOT);
     lv_obj_set_height(keys, lv_font_get_line_height(FONT_SMALL));

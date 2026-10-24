@@ -40,13 +40,13 @@ typedef struct {
     uint8_t  ts_direct;          /* try direct UDP paths (experimental); 0 = DERP relay only */
     uint8_t  status_items;       /* reserved (Plan 4): the fork status bar was removed */
     uint8_t  creds_on_sd;        /* keep the SSH server list on the TF card, not in NVS */
-    uint8_t  theme_preset;       /* index into the preset table, UI_THEME_CUSTOM for custom */
-    uint32_t theme_colors[8];    /* used when the preset is custom */
-    uint8_t  theme_radius;       /* corner rounding, 0..24 */
-    uint8_t  theme_density;      /* ui_density_t: padding scale */
-    uint8_t  theme_tile_accent;  /* tint the home tiles with the accent colour */
-    uint8_t  theme_glow;         /* coloured halo behind cards and buttons */
-    uint8_t  theme_scanlines;    /* CRT/EL scan lines drawn over every screen */
+    uint8_t  theme_preset;       /* reserved (Plan 4): the theme presets were removed */
+    uint32_t theme_colors[8];    /* reserved (Plan 4) */
+    uint8_t  theme_radius;       /* reserved (Plan 4) */
+    uint8_t  theme_density;      /* reserved (Plan 4) */
+    uint8_t  theme_tile_accent;  /* reserved (Plan 4) */
+    uint8_t  theme_glow;         /* reserved (Plan 4) */
+    uint8_t  theme_scanlines;    /* reserved (Plan 4) */
     uint32_t term_fg, term_bg, term_cursor;
     uint32_t term_ansi[16];
     uint8_t  term_cursor_style;  /* 0 block, 1 underline, 2 bar */

@@ -157,3 +157,63 @@ status bar. Replaced by the grep (no `ui_statusbar_attach` anywhere) plus `ui ti
 `key ctrl m` opens the server list and `key esc` returns to the dashboard (timers 2000 ms → 300 ms). `ui settings`, then
 Network › Wi-Fi networks opens the Wi-Fi screen. The first key after the screen dims is swallowed as the wake key, as designed,
 so device scripts must check the screen before relying on a key. No test sessions were created, and no card was selected or opened.
+
+## Task 4: tokens, components, instant navigation and the preview checks
+
+**Added.** `ui_tokens.h/.c` (pure C: the §8.1 colours and sizes, the terminal values and `ui_tk_term_ansi`, and
+`ui_tk_needs_you_hex()`, the one amber literal in `ui/`), and `ui_comp.h/.c` (every component in the brief, on
+file-static styles built once by `ui_comp_init()`). `ui_lint.py` (rules `amber-literal`, `amber-accessor`,
+`exec-outside-cc_cmd`) runs as the host test `ui_lint`; `ui_tokens.c` joins the host `pure` library.
+
+**Removed.** `ui_theme.c/.h` (presets, density, glow, the widget theme), `ui_appearance.c` (Appearance and the ANSI
+editor), `ui_motion.c/.h` (the 33 ms phosphor sweep and scan lines), `fonts_select` / `fonts_set_pixel_icons`, the
+Display › Appearance row, the `cli-colors` and `font-policy` preview cases (C8), the preset cycling, the `motion` case and
+the width/height/preset arguments. Montserrat 22 and 30 are off; the LVGL default font is Montserrat 14.
+
+**Navigation (B2, P4-2).** `nav_show_top` loads a blank screen, deletes the old one, then creates and loads the new one.
+The splash is deleted the same way at the first `ui_nav_home`.
+
+**Implementer rulings (T4-a to T4-f).**
+- T4-a: `ui_comp.h` has five calls beyond the brief, so the rail and `ui_core.c` use shared styles too:
+  `ui_srow_set_selected` (the rail's panel-2 + 50 % fg outline), `ui_comp_install_theme`, `ui_comp_focus_ring`,
+  `ui_comp_screen` and `ui_comp_sheet`. Cost if wrong: names to fold later.
+- T4-b: `ui_picker` and `ui_confirm_ex` are declared in `ui_comp.h` but live in `ui_core.c`, beside the modal overlay
+  that `ui_keyboard_route` recognises. Cost if wrong: a move.
+- T4-c: the `ui_theme_radius(x)` shim keeps 0 as 0 (bars stay square) and maps anything else to `UI_TK_RADIUS` (C5
+  says `UI_TK_RADIUS`; a literal reading would round the terminal's bars).
+- T4-d: `UI_ROW_SWITCH` starts on when `value` is non-NULL and non-empty; a tap on the row toggles the switch and sends
+  `LV_EVENT_VALUE_CHANGED` to it, so existing switch callbacks (`lv_event_get_target_obj` = the switch) keep working.
+- T4-e: `CONFIG_LV_THEME_DEFAULT_TRANSITION_TIME=0` and `CONFIG_LV_THEME_DEFAULT_GROW=n` (and the same in the preview's
+  `lv_conf.h`): the default theme's 80 ms transitions animate `BG_OPA`, which §11 rules out.
+- T4-f: the soft keyboard attaches as before; `softkbd_attach_textarea` already shows the keyboard only when
+  `!keyboard_any_present()`, checked each time the field is focused (a keyboard plugged in later still counts).
+- The dashboard and the vitals now write a style or a HIDDEN flag only on a change. Before, every 300 ms tick re-set the
+  summary colour and the link dot, and every 900 ms the vitals, which redrew a static dashboard (the idle check caught it).
+
+**Preview.** `./preview <case> [variant]` at 1280 × 720. `boot`, `sleep`, `nav` (also writes `picker` and `confirm`),
+`dashboard` and `settings 0`–`6` print `check <name>: ok`; `dashboard*` and `settings*` pass `PV_SKIP_AMBER |
+PV_SKIP_TARGETS` until Tasks 6 and 7. `nav` pushes Settings and a component gallery from home through probe screens whose
+create functions assert that the previous screen is no longer valid. `run_all.sh $PV` runs every case and writes the PNGs.
+Negative check: an amber label without `UI_NEEDS_YOU_PART` in the gallery failed the amber scan (392 px), and an
+overflowing footnote failed the fit check.
+
+**Glyphs.** MaruMinya (body, label and title) draws ← ↑ ↓ › ● … ↵ ⌃ ·, so the header's "← Sessions", the count
+"● N need you", the rail's "›" and the boot "Starting…" need no fallback. Only ⏺ is missing outside the terminal.
+
+**Device** (P4 flashed; Tailscale off, LAN Host link):
+
+| Item | Task 3 | Task 4 | Delta |
+|---|---|---|---|
+| Total image | 7,282,043 B | 7,217,227 B | −64,816 B (`.rodata` −61,552, `.text` −3,200) |
+| DIRAM | 192,400 B | 192,520 B | +120 B (`.bss` +184: the static styles; `.data` −64) |
+| `ui heapmin` over opening Settings › Network | 121,979 B | 157,935 B (largest 63,488) | gate 66,560: pass |
+| `ts` internal free on the dashboard, before and after 10 × (`ui settings`, `key esc`) | | 160,107 → 159,991 B | −116 B: no leak |
+| `ui timers`, dashboard | 300, 500, 10, 16 ×3 | the same | no sweep timer |
+
+§7.1 expected 8.2 KB of code and 70 KB of fonts for rows 23–25; the measured drop is 63.3 KB in all, most of it the two
+Montserrat sizes. Static internal RAM rose 0.1 KB instead of falling 0.2 KB, because the component styles are static.
+The 1 s boot splash can't be captured: the console starts after `ui_nav_home`, so the splash check is the preview's
+`boot.png` (fg on bg, no orange) and stays PENDING for the visit. `ui settings` then `key esc` is instant. A key sent while
+the screen has dimmed is swallowed as the wake key (rule 7), so scripted Esc loops must keep the screen awake; one early loop
+lost two Escs that way. No test sessions were made, and no card was selected or opened. Final state: `ts off`,
+`power set defaults`, static address off (DHCP), Host link connected on the LAN.

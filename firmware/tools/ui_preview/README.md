@@ -1,69 +1,50 @@
 # Firmware UI preview
 
-A headless macOS renderer that compiles the actual LVGL, fonts, theme, dashboard,
-settings and appearance sources. It uses mock hardware responses and stub screens
-for unrelated features. It does not connect to WiFi, Tailscale or a device, and
-does not verify touch hardware, networking, audio or GPU/display performance.
+A headless macOS renderer that compiles the actual LVGL, fonts, tokens, components (`ui_comp`),
+dashboard and settings sources at 1280 × 720. It uses mock hardware responses and stub screens for
+unrelated features. It does not connect to Wi-Fi, Tailscale or a device, and does not verify touch
+hardware, networking or display performance. Stub data only: never real sessions.
 
-Requires CMake, Ninja, a C/C++ compiler and the managed LVGL component downloaded
-by the firmware build. Run from the repository root:
-
-```sh
-cmake -S firmware/tools/ui_preview -B /tmp/tab5-ui-preview -G Ninja
-cmake --build /tmp/tab5-ui-preview -j 8
-cd /tmp/tab5-ui-preview
-./preview settings 0 1280 720 1
-sips -s format png screen.ppm --out settings.png   # Network; PREVIEW_TS=0 for the switch off
-./preview settings 8 1280 720 1
-sips -s format png screen.ppm --out classic.png
-./preview appearance 0 1280 720
-```
-
-Arguments: screen (`settings`, `appearance`), preset index (0 = Orange EL,
-8 = Classic), width, height, settings category (0–6: System, Network, Display, Power, Input, Security, About).
-The display is always landscape (1280 × 720) since Plan 4 Task 3 fixed the rotation. Output: `screen.ppm` in the
-working directory; Japanese labels and simulated status values are used.
-
-Before each capture, the renderer cycles all presets through live theme rebuilds.
-Settings sends real LVGL click events through all seven categories and asserts
-that exactly the selected panel remains visible. The normal firmware build remains the compile/link check for
-all other screens and the ESP32-P4 target.
-
-## Motion / redraw regression checks
+Requires CMake, Ninja, a C compiler and the managed LVGL component downloaded by the firmware
+build. Run from the repository root:
 
 ```sh
-./preview motion 0 1280 720
-UI_CAPTURE_MOTION=1 ./preview motion 0 1280 720  # optional motion-00..12.ppm frames
+cmake -S firmware/tools/ui_preview -B "$PV" -G Ninja
+cmake --build "$PV" -j 8
+cd "$PV" && ./preview <case> [variant]
+firmware/tools/ui_preview/run_all.sh "$PV"     # every case; PNGs in $PV/png
 ```
 
-The preview now uses partial 50-line buffers, as on the board. The motion check
-counts pixels submitted to the display flush callback, compares an EL sweep
-against the previous 150 ms slide using the **same current widgets**, asserts
-that idle animation invalidations stop, and interrupts sweeps by navigation,
-theme switching and screen deletion. Settings checks also assert that clicking
-a category keeps the same screen object.
+## Cases
 
-Measured host redraw workload (includes the initial new-screen draw):
+| Case | What it shows and asserts |
+|---|---|
+| `boot` | The splash before `fonts_init()`/`ui_init()`: logo and name in fg, "Starting…" muted, on bg; no redraw once drawn; the hand-off deletes it |
+| `sleep` | The pre-Hibernate notice |
+| `nav` | Pushes Settings and a component gallery from home; each probe screen's create function asserts the previous screen is already deleted (P4-2). Writes `nav`, `picker` and `confirm` (a toast, the picker sheet and a destructive confirm over the gallery) |
+| `dashboard` | The old dashboard on the synthetic fixture (NEEDS YOU expected) |
+| `settings <0..6>` | Clicks every rail entry (one visible panel, the same screen object), then shows that section |
+| `dashboard-reconnecting`, `dashboard-keys`, `settings-forget` | The reconnecting line, the Ctrl+K overlay and hotkeys, the forget-host-key confirm and toast |
+| `keyboard`, `gesture`, `art`, `terminal`, `glyphs` | Keyboard routing, touch gestures, terminal artwork and row spacing (assertions only); `glyphs` lists the symbols each font draws |
 
-| Resolution | EL sweep pixels | Legacy slide pixels | Largest sweep frame after initial draw |
-|---|---:|---:|---:|
-| 1280 × 720 | 3,522,560 | 4,608,000 | 288,000 (31.25%) |
+## Checks
 
-These are drawing-area measurements, **not ESP32-P4 FPS or latency measurements**.
-The host uses 32-bit pixels and synchronous mock flush completion. Real panel,
-PSRAM, RGB565 blending, PPA/DMA and network load must be profiled on the device.
-The comparison isolates the transition; it does not quantify the additional
-benefit of removing blurred shadows or avoiding category screen rebuilds.
+Every screen case ends in `pv_run_checks` (`checks.c`), prints `check <name>: ok`, writes
+`<name>.ppm` and exits nonzero on a failure:
 
-## Early boot splash
+1. **Amber:** no pixel within CIE76 ΔE ≤ 10 of the NEEDS YOU amber outside a `UI_NEEDS_YOU_PART`
+   object; with NEEDS YOU expected, some amber is drawn.
+2. **Touch targets:** body controls ≥ 64 px visible and ≥ 80 px hit, `UI_BAR_CONTROL` ≥ 48 and ≥ 80,
+   neighbours ≥ 8 px apart.
+3. **Fit:** no label extends past its parent; a wrapped label is never clipped.
+4. **Idle:** nothing is redrawn over the second after the first draw.
+5. **Timers:** none under 300 ms (the pty pump excepted while a terminal is open), and the 300 ms
+   tick only while Sessions is shown.
 
-```sh
-./preview boot 0 1280 720
-./preview boot 8 1280 720
-```
+`PV_SKIP_AMBER` and `PV_SKIP_TARGETS` exist only for the screens not rebuilt yet: the `dashboard*`
+and `settings*` cases pass them until Task 6 (Sessions) and Task 7 (Settings) rebuild those screens.
 
-This path draws before `fonts_init()` and `ui_init()`, checks that the static
-splash triggers no periodic redraw, captures it to `screen.ppm`, then initializes
-the UI and checks the navigation handoff. It uses no hardware/service mocks to
-construct the logo. Startup duration and the real LCD/backlight handoff still
-require a physical Tab5 check.
+`run_all.sh $PV` runs every case and converts each `.ppm` to `$PV/png/<name>.png` with `sips`.
+Compare the PNGs by eye with `docs/superpowers/specs/mockups/`. These are drawing checks on the
+host, not ESP32-P4 timings: the real panel, RGB565 blending and the device's RAM are checked on
+the Tab5.

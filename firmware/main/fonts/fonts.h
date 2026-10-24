@@ -15,16 +15,12 @@ LV_FONT_DECLARE(font_cjk);
 LV_FONT_DECLARE(font_icons16);
 LV_FONT_DECLARE(font_icons32);
 extern const lv_font_t *FONT_ICON;
-void fonts_set_pixel_icons(bool pixel);
-/* Select a coherent face for the current theme and language. Chinese always
- * uses the complete CJK face, because mixing missing MaruMinya glyphs inline
- * is much more distracting than changing the whole screen consistently. */
-void fonts_select(bool pixel_theme, lang_t lang);
 
-extern const lv_font_t *FONT_SMALL;   /* 24 px MaruMinya */
-extern const lv_font_t *FONT_BODY;    /* 24 px pixel */
-extern const lv_font_t *FONT_TITLE;   /* 36 px pixel, bold */
-extern const lv_font_t *FONT_MONO;    /* 24 px pixel, 12 px cells (terminal) */
+/* Fixed roles (spec §8.3). Font selection lives here and in ui_comp only. */
+extern const lv_font_t *FONT_SMALL;   /* label role: font_px20 */
+extern const lv_font_t *FONT_BODY;    /* font_px24 */
+extern const lv_font_t *FONT_TITLE;   /* font_px36b, bold */
+extern const lv_font_t *FONT_MONO;    /* g_term_font: 24 px, 12 px cells (terminal) */
 extern lv_font_t g_term_font;         /* FONT_MONO with an adjustable line height */
 
 void fonts_init(void);

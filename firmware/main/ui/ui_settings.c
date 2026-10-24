@@ -1,6 +1,6 @@
 #include "sys/link_down.h"
 #include "ui.h"
-#include "ui_motion.h"
+#include "ui_comp.h"
 #include "ui_softkbd.h"
 #include "settings/settings.h"
 #include "sys/sysinfo.h"
@@ -90,7 +90,6 @@ static void led_color_cb(lv_event_t *e)
     const char *items[] = { "Blue", "White", "Red", "Green", "Magenta", "Cyan" };
     ui_menu(tr(STR_SET_KBD_LED), items, 6, led_color_menu_cb, NULL);
 }
-static void appearance_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_appearance_create, NULL); }
 
 static void creds_sd_cb(lv_event_t *e)
 {
@@ -405,7 +404,6 @@ static void panel_fill(lv_obj_t *c, unsigned category)
     }
     case 2: {
         slider_row(c, tr(STR_SET_BRIGHTNESS), 5, 100, g_settings.brightness, bright_cb);
-        ui_setting_row(c, tr(STR_SET_THEME), "", appearance_cb, NULL);
         break;
     }
     case 3: {
@@ -470,21 +468,16 @@ static void category_cb(lv_event_t *e)
 {
     unsigned next = (unsigned)(uintptr_t)lv_event_get_user_data(e);
     if (next >= sizeof(s_categories) / sizeof(s_categories[0]) || next == s_category) return;
-    lv_obj_t *nav = lv_obj_get_parent(lv_event_get_target_obj(e));
+    lv_obj_t *nav = lv_obj_get_parent(lv_event_get_current_target_obj(e));
     lv_obj_t *deck = lv_obj_get_child(lv_obj_get_parent(nav), 1);
     unsigned previous = s_category;
     lv_obj_add_flag(lv_obj_get_child(deck, previous), LV_OBJ_FLAG_HIDDEN);
     panel_clear(lv_obj_get_child(deck, previous), previous);
     panel_fill(lv_obj_get_child(deck, next), next);
     lv_obj_remove_flag(lv_obj_get_child(deck, next), LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t *old_button = lv_obj_get_child(nav, previous);
-    lv_obj_t *new_button = lv_obj_get_child(nav, next);
-    lv_obj_set_style_bg_color(old_button, UI_CARD_HI, 0);
-    lv_obj_set_style_text_color(old_button, UI_TEXT, 0);
-    lv_obj_set_style_bg_color(new_button, UI_ACCENT, 0);
-    lv_obj_set_style_text_color(new_button, ui_theme_pixel() ? UI_BG : UI_TEXT, 0);
+    ui_srow_set_selected(lv_obj_get_child(nav, previous), false);
+    ui_srow_set_selected(lv_obj_get_child(nav, next), true);
     s_category = next;
-    ui_motion_start(lv_obj_get_screen(deck), deck, next < previous);
 }
 static lv_obj_t *settings_panel(lv_obj_t *deck, unsigned category)
 {
@@ -504,7 +497,7 @@ lv_obj_t *ui_settings_create(void *arg)
     ui_topbar(scr, tr(STR_SETTINGS), true);
     lv_obj_t *body = ui_content(scr);
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(body, ui_theme_pad(14), 0);
+    lv_obj_set_style_pad_column(body, UI_TK_GAP_M, 0);
     lv_obj_remove_flag(body, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *nav = ui_card(body);
     lv_obj_set_width(nav, LV_PCT(24));
@@ -513,16 +506,10 @@ lv_obj_t *ui_settings_create(void *arg)
     lv_obj_add_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(nav, LV_DIR_VER);
     for (unsigned i = 0; i < sizeof(s_categories) / sizeof(s_categories[0]); i++) {
-        lv_obj_t *b = ui_button_colored(nav, tr(s_categories[i]),
-                                       i == s_category ? UI_ACCENT : UI_CARD_HI,
-                                       category_cb, (void *)(uintptr_t)i);
-        lv_obj_set_width(b, LV_PCT(100));
-        lv_obj_set_height(b, 64);
-        lv_obj_t *label = lv_obj_get_child(b, 0);
-        lv_obj_set_width(label, LV_PCT(100));
-        lv_obj_set_style_text_font(label, FONT_SMALL, 0);
-        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+        /* the rail: nav rows, the selection in panel-2 with a 50 % fg outline (no hue) */
+        lv_obj_t *r = ui_srow(nav, UI_ROW_NAV, tr(s_categories[i]), NULL, category_cb, (void *)(uintptr_t)i);
+        lv_obj_set_height(r, UI_TK_RAIL_ROW_H);
+        ui_srow_set_selected(r, i == s_category);
     }
     lv_obj_t *deck = lv_obj_create(body);
     lv_obj_remove_style_all(deck);

@@ -2,7 +2,7 @@
 #include "lvgl.h"
 #include "i18n/i18n.h"
 #include "fonts/fonts.h"
-#include "ui/ui_theme.h"
+#include "ui/ui_tokens.h"
 #include <stdbool.h>
 #include "input/keyboard.h"
 #ifdef __cplusplus
@@ -10,17 +10,22 @@ extern "C" {
 #endif
 
 /* ---- colours ----
- * These resolve through the runtime theme, so every widget follows a theme
- * change without touching its call site. */
-#define UI_BG          ui_theme_color(UI_C_BG)
-#define UI_CARD        ui_theme_color(UI_C_CARD)
-#define UI_CARD_HI     ui_theme_color(UI_C_CARD_HI)
-#define UI_ACCENT      ui_theme_color(UI_C_ACCENT)
-#define UI_ACCENT2     ui_theme_color(UI_C_ACCENT2)
-#define UI_DANGER      ui_theme_color(UI_C_DANGER)
+ * Compatibility aliases onto the tokens (ui_tokens.h) for the screens not rebuilt yet; Task 12
+ * removes them. New code uses UI_TK_* and the ui_comp components. */
+#define UI_BG          lv_color_hex(UI_TK_BG)
+#define UI_CARD        lv_color_hex(UI_TK_PANEL)
+#define UI_CARD_HI     lv_color_hex(UI_TK_PANEL2)
+#define UI_ACCENT      lv_color_hex(UI_TK_FG)
+#define UI_ACCENT2     lv_color_hex(UI_TK_MUTED)
+#define UI_DANGER      lv_color_hex(UI_TK_RED)
 #define UI_WARN        UI_ACCENT2
-#define UI_TEXT        ui_theme_color(UI_C_TEXT)
-#define UI_MUTED       ui_theme_color(UI_C_MUTED)
+#define UI_TEXT        lv_color_hex(UI_TK_FG)
+#define UI_MUTED       lv_color_hex(UI_TK_MUTED)
+/* Shims for the deleted theme engine (ruling C5), used by ui_wifi.c and ui_tailscale.c until Task 8
+ * and ui_terminal.c until Task 10; Task 12 removes them. A zero radius (bars) stays square. */
+#define ui_theme_pad(design)     (design)
+#define ui_theme_radius(design)  ((design) ? UI_TK_RADIUS : 0)
+#define ui_theme_pixel()         true
 #define UI_TOPBAR_H    56
 /* Exclude a touch-only subtree from physical keyboard navigation. */
 #define UI_KEYBOARD_SKIP LV_OBJ_FLAG_USER_4
@@ -30,7 +35,6 @@ typedef lv_obj_t *(*ui_screen_create_fn)(void *arg);
 void ui_init(void);
 bool ui_keyboard_route(const key_event_t *ev, bool terminal);
 bool ui_keyboard_owns_input(void);
-void ui_theme_reinit_lvgl(void);   /* re-applies the LVGL theme after a colour change */
 
 /* Screen gestures. LVGL only walks up from the touched widget while every
  * object in between has LV_OBJ_FLAG_GESTURE_BUBBLE, which is brittle across
@@ -53,7 +57,7 @@ lv_obj_t *ui_screen_base(void);
 lv_obj_t *ui_topbar(lv_obj_t *parent, const char *title, bool back_button);
 lv_obj_t *ui_topbar_add_button(lv_obj_t *topbar, const char *symbol, lv_event_cb_t cb, void *user_data);
 lv_obj_t *ui_content(lv_obj_t *parent);  /* scrollable column below the top bar */
-lv_obj_t *ui_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *user_data);
+lv_obj_t *ui_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *user_data);   /* secondary */
 lv_obj_t *ui_button_colored(lv_obj_t *parent, const char *text, lv_color_t color, lv_event_cb_t cb, void *user_data);
 lv_obj_t *ui_card(lv_obj_t *parent);
 lv_obj_t *ui_label(lv_obj_t *parent, const char *text, const lv_font_t *font, lv_color_t color);
@@ -64,7 +68,7 @@ lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_c
 lv_obj_t *ui_section_title(lv_obj_t *parent, const char *text);
 lv_obj_t *ui_list_item(lv_obj_t *parent, const char *icon, const char *title, const char *subtitle, lv_event_cb_t cb, void *user_data);
 
-void ui_toast(const char *text);                  /* ui_toast_ms(text, 2200) */
+void ui_toast(const char *text);                  /* ui_toast_ms(text, 3000) */
 void ui_toast_ms(const char *text, uint32_t ms);
 void ui_toastf(const char *fmt, ...);
 typedef void (*ui_confirm_cb_t)(bool yes, void *user_data);
@@ -73,7 +77,7 @@ void ui_alert(const char *title, const char *text);
 typedef void (*ui_prompt_cb_t)(const char *text, void *user_data);
 void ui_prompt(const char *title, const char *placeholder, const char *initial, bool password, ui_prompt_cb_t cb, void *user_data);
 typedef void (*ui_menu_cb_t)(int index, void *user_data);
-void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_t cb, void *user_data);
+void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_t cb, void *user_data);   /* ui_picker, current -1 */
 lv_obj_t *ui_busy(const char *text);      /* returns overlay; delete to dismiss */
 void ui_busy_close(lv_obj_t *busy);
 
@@ -109,8 +113,6 @@ void ui_dashboard_keys_overlay(bool show);
 bool ui_dashboard_keys_overlay_shown(void);     /* up on the current dashboard */
 lv_obj_t *ui_wifi_create(void *arg);
 lv_obj_t *ui_settings_create(void *arg);
-lv_obj_t *ui_appearance_create(void *arg);
-lv_obj_t *ui_ansi_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);
 /* The pre-Hibernate notice: a full-screen bg object on lv_layer_top with the centred fg text
    "Sleeping to save battery. Press the side button to wake." (power lights the panel first). */
