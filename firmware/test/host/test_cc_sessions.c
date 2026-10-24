@@ -120,8 +120,8 @@ static void test_parse_real_capture(void)
     int n = cc_sessions_parse(j, s, 16);
     free(j);
     TEST_ASSERT_GREATER_OR_EQUAL(2, n);
-    /* companion-test-input was blocked at capture time; companion-test-perm had finished
-       (the real Claude Code never produced a permission prompt for it, see task-4 report) */
+    /* companion-test-input was blocked/idle at capture time (its turn had ended, no question on screen: IDLE);
+       companion-test-perm had finished (the real Claude Code never produced a permission prompt for it) */
     for (int i = 0; i < n; i++) TEST_ASSERT_TRUE(s[i].background);
     const cc_session_t *in = NULL, *perm = NULL;
     for (int i = 0; i < n; i++) {
@@ -130,10 +130,32 @@ static void test_parse_real_capture(void)
     }
     TEST_ASSERT_NOT_NULL(in);
     TEST_ASSERT_NOT_NULL(perm);
-    TEST_ASSERT_EQUAL(CC_NEEDS_YOU, in->state);
+    TEST_ASSERT_EQUAL(CC_IDLE, in->state);
     TEST_ASSERT_EQUAL(CC_DONE, perm->state);
-    TEST_ASSERT_EQUAL(CC_NEEDS_YOU, s[0].state);
-    TEST_ASSERT_EQUAL_STRING("companion-test-input", s[0].name);
+    for (int i = 0; i < n; i++) TEST_ASSERT_NOT_EQUAL(CC_NEEDS_YOU, s[i].state);
+}
+
+/* Claude Code 2.1.310, captured from companion-test sessions: only a question on screen needs you */
+static void test_parse_waiting_is_the_only_needs_you(void)
+{
+    char *j = slurp("agents_waiting.json");
+    cc_session_t s[8];
+    int n = cc_sessions_parse(j, s, 8);
+    free(j);
+    TEST_ASSERT_EQUAL(5, n);
+    const cc_session_t *by[6] = { 0 };
+    for (int i = 0; i < n; i++) by[s[i].id[7] - '0'] = &s[i];
+    TEST_ASSERT_EQUAL(CC_NEEDS_YOU, by[1]->state);   /* status waiting, waitingFor "input needed" */
+    TEST_ASSERT_TRUE(cc_session_needs_you(by[1]));
+    TEST_ASSERT_EQUAL(CC_IDLE, by[2]->state);        /* blocked + idle: the turn ended, no question */
+    TEST_ASSERT_FALSE(cc_session_needs_you(by[2]));
+    TEST_ASSERT_EQUAL(CC_DONE, by[3]->state);
+    TEST_ASSERT_EQUAL(CC_IDLE, by[4]->state);        /* blocked, no pid, no status: stopped mid-wait */
+    TEST_ASSERT_EQUAL(CC_WORKING, by[5]->state);
+    char out[64];
+    cc_summary(s, n, out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("1 needs you \xC2\xB7 1 working", out);
+    TEST_ASSERT_EQUAL_STRING("aaaaaaa1", s[0].id);   /* NEEDS_YOU sorts first */
 }
 
 static void test_visible_limits_finished(void)
@@ -242,6 +264,7 @@ int main(void)
     RUN_TEST(test_parse_invalid_json);
     RUN_TEST(test_parse_cap);
     RUN_TEST(test_parse_real_capture);
+    RUN_TEST(test_parse_waiting_is_the_only_needs_you);
     RUN_TEST(test_visible_limits_finished);
     RUN_TEST(test_summary_text);
     RUN_TEST(test_summary_stopped_blocked_not_counted);

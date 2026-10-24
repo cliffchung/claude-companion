@@ -24,10 +24,14 @@ static const char *jstr(const cJSON *o, const char *key)
     return (cJSON_IsString(v) && v->valuestring) ? v->valuestring : NULL;
 }
 
+/* "needs you" is a question on screen: status "waiting" (Claude Code 2.1.310 adds waitingFor, e.g.
+   "input needed"). state "blocked" with status "idle" only means the turn ended and the session waits for
+   your next message, so it is IDLE. */
 static cc_state_t map_state(const char *s)
 {
     if (!s) return CC_IDLE;
-    if (!strcmp(s, "blocked") || !strcmp(s, "waiting")) return CC_NEEDS_YOU;
+    if (!strcmp(s, "waiting")) return CC_NEEDS_YOU;
+    if (!strcmp(s, "blocked")) return CC_IDLE;
     if (!strcmp(s, "working") || !strcmp(s, "busy")) return CC_WORKING;
     if (!strcmp(s, "done")) return CC_DONE;
     if (!strcmp(s, "failed") || !strcmp(s, "stopped")) return CC_ENDED;
@@ -96,8 +100,10 @@ int cc_sessions_parse(const char *json, cc_session_t *out, int cap)
         basename_of(cwd ? cwd : "", s->repo, sizeof(s->repo));
         const char *name = jstr(e, "name");
         copy_trunc(s->name, sizeof(s->name), (name && name[0]) ? name : s->repo);
-        const char *state = jstr(e, "state");
-        s->state = map_state(state ? state : jstr(e, "status"));
+        const char *state = jstr(e, "state"), *status = jstr(e, "status");
+        const char *wfor = jstr(e, "waitingFor");
+        bool asking = (status && !strcmp(status, "waiting")) || (wfor && wfor[0]);
+        s->state = asking ? CC_NEEDS_YOU : map_state(state ? state : status);
         s->background = bg;
         const cJSON *st = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "startedAt");
         s->started_ms = cJSON_IsNumber(st) ? (int64_t)st->valuedouble : 0;
