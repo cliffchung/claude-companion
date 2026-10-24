@@ -1,0 +1,19 @@
+[
+  {"pid": 1001, "id": "aaaaaaa1", "cwd": "/Users/you/repo", "kind": "background", "startedAt": 1792881600000,
+   "sessionId": "aaaaaaa1-0000-4000-8000-000000000001", "name": "companion-test-auq",
+   "status": "waiting", "waitingFor": "input needed", "state": "blocked"},
+  {"pid": 1002, "id": "aaaaaaa2", "cwd": "/Users/you/repo", "kind": "background", "startedAt": 1792881700000,
+   "sessionId": "aaaaaaa2-0000-4000-8000-000000000002", "name": "companion-test-text",
+   "status": "idle", "state": "blocked"},
+  {"pid": 1003, "id": "aaaaaaa3", "cwd": "/Users/you/repo", "kind": "background", "startedAt": 1792881800000,
+   "sessionId": "aaaaaaa3-0000-4000-8000-000000000003", "name": "companion-test-perm2",
+   "status": "idle", "state": "done"},
+  {"id": "aaaaaaa4", "cwd": "/Users/you/repo", "kind": "background", "startedAt": 1792881900000,
+   "sessionId": "aaaaaaa4-0000-4000-8000-000000000004", "name": "companion-test-old", "state": "blocked"},
+  {"pid": 1005, "id": "aaaaaaa5", "cwd": "/Users/you/repo", "kind": "background", "startedAt": 1792882000000,
+   "sessionId": "aaaaaaa5-0000-4000-8000-000000000005", "name": "companion-test-busy",
+   "status": "busy", "state": "working"},
+  {"pid": 1006, "id": "aaaaaaa6", "cwd": "/Users/you/repo", "kind": "background", "startedAt": 1792882100000,
+   "sessionId": "aaaaaaa6-0000-4000-8000-000000000006", "name": "companion-test-stale",
+   "status": "idle", "state": "working"}
+]

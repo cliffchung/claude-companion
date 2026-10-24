@@ -17,16 +17,19 @@ typedef struct {
 } cc_session_t;
 
 /* Returns the count (<= cap), or -1 if the input isn't a JSON array.
-   State comes from "state" if present, else "status", else idle:
-     blocked / waiting -> NEEDS_YOU;  working / busy -> WORKING;  idle -> IDLE;
+   status "waiting" or a non-empty "waitingFor" (a question on screen) -> NEEDS_YOU, whatever "state" says.
+   Then the live process's status wins over a stale state: busy -> WORKING; idle -> DONE if state is "done",
+   else IDLE. Otherwise (no status: no live process) state comes from "state" if present, else idle:
+     waiting -> NEEDS_YOU;  blocked (the turn ended, waiting for your next message) -> IDLE;
+     working / busy -> WORKING;  idle -> IDLE;
      done -> DONE;  failed / stopped -> ENDED;  anything else -> IDLE.
    Background entries whose id or sessionId fails validation are skipped; other kinds
    (interactive) are kept with empty ids and background = false.
    Order: NEEDS_YOU, WORKING, IDLE, DONE, ENDED; newest startedAt first within each state. */
 int cc_sessions_parse(const char *json, cc_session_t *out, int cap);
-/* The one definition of "needs you": a background session with a live process that is blocked.
+/* The one definition of "needs you": a background session with a live process that is waiting on a question.
    Used by cc_summary, the dashboard's pill and amber styling, and the keyboard light. A stopped
-   or interactive session that is blocked does not count. */
+   or interactive session that is waiting does not count. */
 bool cc_session_needs_you(const cc_session_t *s);
 /* Compacts in place: every active session plus the newest max_finished DONE/ENDED; keeps order. */
 int cc_sessions_visible(cc_session_t *s, int n, int max_finished);

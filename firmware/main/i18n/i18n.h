@@ -270,7 +270,7 @@ X(HOSTS_FROM_TAILNET, "From your tailnet") \
 X(HOSTS_MANUAL, "Enter manually") \
 X(HOSTS_NO_PEERS, "No tailnet peers online") \
 X(HOSTS_NOT_LISTED, "The Host isn't listed here: its sessions are on the Sessions screen.") \
-X(HOSTS_LEAVE_NOTE, "Ctrl+] leaves an SSH session.") \
+X(HOSTS_LEAVE_NOTE, "Ctrl+Q leaves an SSH session.") \
 X(HOSTS_NO_WIFI, "No Wi-Fi") \
 X(HOSTS_GONE, "This host was removed") \
 X(TERM_LEAVE, "\xe2\x86\x90 Leave") \
@@ -281,9 +281,9 @@ X(TERM_KEY_UP, "\xe2\x86\x91") \
 X(TERM_KEY_DOWN, "\xe2\x86\x93") \
 X(TERM_STILL_RUNNING, "Session still running on the Host") \
 X(TERM_OPENING, "Opening the session on the Host\xe2\x80\xa6") \
-X(TERM_OPENING_HINT, "Ctrl+] or \xe2\x86\x90 Leave returns to Sessions; the session keeps running.") \
+X(TERM_OPENING_HINT, "Ctrl+Q or \xe2\x86\x90 Leave returns to Sessions; the session keeps running.") \
 X(TERM_CONNECTING_TO, "Connecting to %s@%s:%d\xe2\x80\xa6") \
-X(TERM_SSH_HINT, "Ctrl+] or \xe2\x86\x90 Leave disconnects.") \
+X(TERM_SSH_HINT, "Ctrl+Q or \xe2\x86\x90 Leave disconnects.") \
 X(TERM_DISCONNECT_Q, "Disconnect from %s?") \
 X(TERM_LINK_LOST, "Link lost, reconnecting\xe2\x80\xa6") \
 X(TERM_DISCONNECTED_FROM, "Disconnected from %s") \
@@ -363,7 +363,7 @@ X(HK_K_CTRL_SPACE, "Ctrl+Space") \
 X(HK_W_CTRL_SPACE, "voice input (coming later)") \
 X(HK_K_ESC, "Esc") \
 X(HK_W_ESC, "clear the answer, or go back") \
-X(HK_K_CTRL_BRACKET, "Ctrl+]") \
+X(HK_K_CTRL_BRACKET, "Ctrl+Q") \
 X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
 X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
