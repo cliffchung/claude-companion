@@ -5,17 +5,13 @@
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
 #include "settings/settings.h"
+#include "companion/cc_link.h"
+#include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
 
-#define C_PANEL 0x161b22
-#define C_LINE  0x2a323d
-#define C_FG    0xe9e7e1
-#define C_MUTED 0x8a94a2
-#define C_GREEN 0x54d08a
-#define C_RED   0xef6f6f
 #define HEX(h)  lv_color_hex(h)
 
 #define BAT_W   28
@@ -25,10 +21,39 @@
 #define BAR_N   4
 #define BAR_W   4
 #define BAR_GAP 2
+#define VITALS_MS   30000   /* B1: one shared timer for every cluster */
+#define MAX_CLUSTERS 4      /* one per header; the old screen is deleted before the new one (P4-2) */
 
 typedef struct {
     lv_obj_t *bat, *fill, *pct, *bolt, *bars[BAR_N], *wifi, *ts, *dot, *host, *clock;
 } vitals_t;
+
+/* The live clusters, and the one timer that refreshes them: created with the first cluster, deleted
+   with the last. LVGL is paused with the screen off (lvgl_port_stop), so it never fires then. */
+static vitals_t *s_live[MAX_CLUSTERS];
+static lv_timer_t *s_timer;
+
+static void update(vitals_t *v);
+
+static void vitals_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    for (int i = 0; i < MAX_CLUSTERS; i++)
+        if (s_live[i]) update(s_live[i]);
+}
+
+static void track(vitals_t *v, bool on)
+{
+    int live = 0;
+    for (int i = 0; i < MAX_CLUSTERS; i++) {
+        if (on && !s_live[i]) { s_live[i] = v; on = false; }
+        else if (!on && s_live[i] == v) s_live[i] = NULL;
+        live += s_live[i] != NULL;
+    }
+    if (on) ESP_LOGW("vitals", "more than %d live clusters: this one is never refreshed", MAX_CLUSTERS);
+    if (live && !s_timer) s_timer = lv_timer_create(vitals_timer_cb, VITALS_MS, NULL);
+    else if (!live && s_timer) { lv_timer_delete(s_timer); s_timer = NULL; }
+}
 
 static const int k_bar_h[BAR_N] = { 5, 9, 13, 17 };
 static const lv_point_precise_t k_bolt_pts[] = { { 6, 0 }, { 0, 9 }, { 5, 9 }, { 3, 17 }, { 10, 6 }, { 5, 6 }, { 6, 0 } };
@@ -53,6 +78,7 @@ static lv_obj_t *label(lv_obj_t *parent, const char *t, const lv_font_t *font, u
 static void vitals_delete_cb(lv_event_t *e)
 {
     vitals_t *v = lv_event_get_user_data(e);
+    track(v, false);
     lv_free(v);
 }
 
@@ -73,26 +99,26 @@ lv_obj_t *ui_vitals_create(lv_obj_t *parent)
     lv_obj_t *body = plain(v->bat);
     lv_obj_set_size(body, BAT_W, BAT_H);
     lv_obj_set_style_border_width(body, 2, 0);
-    lv_obj_set_style_border_color(body, HEX(C_MUTED), 0);
+    lv_obj_set_style_border_color(body, HEX(UI_TK_MUTED), 0);
     lv_obj_set_style_radius(body, 3, 0);
     lv_obj_t *nub = plain(v->bat);
     lv_obj_set_size(nub, NUB_W, NUB_H);
     lv_obj_set_pos(nub, BAT_W, (BAT_H - NUB_H) / 2);
-    lv_obj_set_style_bg_color(nub, HEX(C_MUTED), 0);
+    lv_obj_set_style_bg_color(nub, HEX(UI_TK_MUTED), 0);
     lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
     v->fill = plain(v->bat);
     lv_obj_set_pos(v->fill, 3, 3);
     lv_obj_set_size(v->fill, 1, BAT_H - 6);
-    lv_obj_set_style_bg_color(v->fill, HEX(C_FG), 0);
+    lv_obj_set_style_bg_color(v->fill, HEX(UI_TK_FG), 0);
     lv_obj_set_style_bg_opa(v->fill, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(v->fill, 1, 0);
-    v->pct = label(g, "", FONT_SMALL, C_FG);
+    v->pct = label(g, "", FONT_SMALL, UI_TK_FG);
 
     /* charging bolt */
     v->bolt = lv_line_create(g);
     lv_line_set_points(v->bolt, k_bolt_pts, sizeof(k_bolt_pts) / sizeof(k_bolt_pts[0]));
     lv_obj_set_style_line_width(v->bolt, 2, 0);
-    lv_obj_set_style_line_color(v->bolt, HEX(C_FG), 0);
+    lv_obj_set_style_line_color(v->bolt, HEX(UI_TK_FG), 0);
     lv_obj_set_style_line_rounded(v->bolt, true, 0);
     lv_obj_add_flag(v->bolt, LV_OBJ_FLAG_HIDDEN);
 
@@ -104,14 +130,14 @@ lv_obj_t *ui_vitals_create(lv_obj_t *parent)
         lv_obj_set_size(v->bars[i], BAR_W, k_bar_h[i]);
         lv_obj_set_pos(v->bars[i], i * (BAR_W + BAR_GAP), 17 - k_bar_h[i]);
         lv_obj_set_style_bg_opa(v->bars[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(v->bars[i], HEX(C_LINE), 0);
+        lv_obj_set_style_bg_color(v->bars[i], HEX(UI_TK_LINE), 0);
         lv_obj_set_style_radius(v->bars[i], 1, 0);
     }
 
     v->ts = ui_tailscale_icon(g, 4, 2);
-    ui_tailscale_icon_set_color(v->ts, HEX(C_MUTED), LV_OPA_COVER);
+    ui_tailscale_icon_set_color(v->ts, HEX(UI_TK_MUTED), LV_OPA_COVER);
 
-    /* the link dot and host (the dashboard colours them) */
+    /* the link dot and the word "Host" */
     lv_obj_t *link = plain(g);
     lv_obj_set_size(link, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(link, LV_FLEX_FLOW_ROW);
@@ -121,26 +147,41 @@ lv_obj_t *ui_vitals_create(lv_obj_t *parent)
     lv_obj_set_size(v->dot, 12, 12);
     lv_obj_set_style_radius(v->dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(v->dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(v->dot, HEX(C_MUTED), 0);
-    v->host = label(link, "", FONT_SMALL, C_MUTED);
+    lv_obj_set_style_bg_color(v->dot, HEX(UI_TK_MUTED), 0);
+    v->host = label(link, tr(STR_SET_HOST), FONT_SMALL, UI_TK_MUTED);
 
-    v->clock = label(g, "--:--", FONT_BODY, C_FG);
-    ui_vitals_update(g);
+    v->clock = label(g, "--:--", FONT_BODY, UI_TK_FG);
+    update(v);
+    track(v, true);
     return g;
 }
-
-lv_obj_t *ui_vitals_link_dot(lv_obj_t *bar) { vitals_t *v = lv_obj_get_user_data(bar); return v ? v->dot : NULL; }
-lv_obj_t *ui_vitals_link_host(lv_obj_t *bar) { vitals_t *v = lv_obj_get_user_data(bar); return v ? v->host : NULL; }
 
 static void set_text(lv_obj_t *l, const char *t)
 {
     if (strcmp(lv_label_get_text(l), t)) lv_label_set_text(l, t);
 }
 
-void ui_vitals_update(lv_obj_t *bar)
+/* Writes only on a change: a style write or a flag change redraws, and a static screen must not (§11). */
+static void set_shown(lv_obj_t *o, bool on)
 {
-    vitals_t *v = bar ? lv_obj_get_user_data(bar) : NULL;
-    if (!v) return;
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) == on) {
+        if (on) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void set_bg(lv_obj_t *o, uint32_t c)
+{
+    if (!lv_color_eq(lv_obj_get_style_bg_color(o, 0), HEX(c))) lv_obj_set_style_bg_color(o, HEX(c), 0);
+}
+
+static void set_fg(lv_obj_t *o, uint32_t c)
+{
+    if (!lv_color_eq(lv_obj_get_style_text_color(o, 0), HEX(c))) lv_obj_set_style_text_color(o, HEX(c), 0);
+}
+
+static void update(vitals_t *v)
+{
     char b[16];
 
     /* battery */
@@ -148,38 +189,37 @@ void ui_vitals_update(lv_obj_t *bar)
     int pct = pw.valid ? pw.percent : -1;
     bool charging = pw.valid && vitals_charging((int)lroundf(pw.current_a * 1000.0f));   /* PT23 */
     vitals_bat_level_t lv = vitals_bat_level(pct, charging);
-    if (lv == VB_NONE) {
-        lv_obj_add_flag(v->bat, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(v->pct, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_remove_flag(v->bat, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(v->pct, LV_OBJ_FLAG_HIDDEN);
-        uint32_t col = lv == VB_LOW ? C_RED : C_FG;
-        lv_obj_set_style_bg_color(v->fill, HEX(col), 0);
-        lv_obj_set_style_text_color(v->pct, HEX(col), 0);
+    set_shown(v->bat, lv != VB_NONE);
+    set_shown(v->pct, lv != VB_NONE);
+    if (lv != VB_NONE) {
+        uint32_t col = lv == VB_LOW ? UI_TK_RED : UI_TK_FG;
+        set_bg(v->fill, col);
+        set_fg(v->pct, col);
         int w = pct * (BAT_W - 6) / 100;
         lv_obj_set_width(v->fill, w < 1 ? 1 : w);
         snprintf(b, sizeof(b), "%d%%", pct);
         set_text(v->pct, b);
     }
-    if (charging) lv_obj_remove_flag(v->bolt, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(v->bolt, LV_OBJ_FLAG_HIDDEN);
+    set_shown(v->bolt, charging);
 
     /* Wi-Fi */
     bool up = wifi_mgr_is_connected();
     int bars = vitals_wifi_bars(up, up ? sysinfo_rssi_cached() : 0);
     for (int i = 0; i < BAR_N; i++)
-        lv_obj_set_style_bg_color(v->bars[i], HEX(i < bars ? C_FG : C_LINE), 0);
+        set_bg(v->bars[i], i < bars ? UI_TK_FG : UI_TK_LINE);
 
     /* Tailscale */
     ts_state_t ts = tailscale_state();
-    if (!g_settings.ts_enable) {
-        lv_obj_add_flag(v->ts, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_remove_flag(v->ts, LV_OBJ_FLAG_HIDDEN);
-        uint32_t col = ts == TS_CONNECTED ? C_GREEN : ts == TS_ERROR ? C_RED : C_MUTED;
+    set_shown(v->ts, g_settings.ts_enable);
+    if (g_settings.ts_enable) {
+        uint32_t col = ts == TS_CONNECTED ? UI_TK_GREEN : ts == TS_ERROR ? UI_TK_RED : UI_TK_MUTED;
         ui_tailscale_icon_set_color(v->ts, HEX(col), LV_OPA_COVER);
     }
+
+    /* the link: green while connected, red on a failure waking the Host won't fix, muted otherwise */
+    uint32_t link = cc_link_connected() ? UI_TK_GREEN : cc_link_failure() != CC_LINK_FAIL_NONE ? UI_TK_RED : UI_TK_MUTED;
+    set_bg(v->dot, link);
+    set_fg(v->host, link);
 
     /* clock */
     time_t t = time(NULL);

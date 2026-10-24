@@ -9,8 +9,9 @@
 #include "sys/debug_console.h"
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
+#include "settings/settings.h"
 #include "ui/ui.h"
-#include "ui/ui_dashboard.h"
+#include "ui/ui_sessions.h"
 #include "net/ts_host.h"
 #include "net/fast_rules.h"
 #include "esp_netif.h"
@@ -19,7 +20,7 @@
 #include "freertos/task.h"
 
 /* Console commands for the companion link: companion, sessions, reply, logs, wifi, ts.
- * Everything that reaches the Mac goes through cc_link and a cc_cmd_* builder. */
+ * Everything that reaches the Host goes through cc_link and a cc_cmd_* builder. */
 
 #define SNAP_CAP 128
 #define LOGS_CAP (16 * 1024)
@@ -54,9 +55,9 @@ static char s_takeover_id[16];
 static void takeover_async(void *arg)
 {
     (void)arg;
-    int r = ui_dashboard_open_test_session(s_takeover_id);
-    if (r == UI_DASH_TEST_NOT_SHOWING) printf("takeover: dashboard not showing\n");
-    else if (r != UI_DASH_TEST_OK) printf("takeover: no companion-test-* card %s on the dashboard\n", s_takeover_id);
+    int r = ui_sessions_open_test_session(s_takeover_id);
+    if (r == UI_SESS_TEST_NOT_SHOWING) printf("takeover: Sessions not showing\n");
+    else if (r != UI_SESS_TEST_OK) printf("takeover: no companion-test-* row %s on Sessions\n", s_takeover_id);
 }
 
 static int cmd_companion(int argc, char **argv)
@@ -118,11 +119,11 @@ static int cmd_companion(int argc, char **argv)
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "resolve") == 0) {
-        /* how the link would resolve a Mac host: literal, MagicDNS, mDNS, DNS or the fallback */
+        /* how the link would resolve the Host's name: literal, MagicDNS, mDNS, DNS or the fallback */
         char ip[16];
         const char *how = "";
-        if (cc_link_resolve_test(argv[2], ip, sizeof(ip), &how)) printf("mac: %s -> %s (%s)\n", argv[2], ip, how);
-        else printf("mac: %s doesn't resolve (no fallback address)\n", argv[2]);
+        if (cc_link_resolve_test(argv[2], ip, sizeof(ip), &how)) printf("host: %s -> %s (%s)\n", argv[2], ip, how);
+        else printf("host: %s doesn't resolve (no fallback address)\n", argv[2]);
         return 0;
     }
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "server-host") == 0) {
@@ -156,13 +157,13 @@ static int cmd_companion(int argc, char **argv)
     if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "forget") == 0) {
         char fp[80];
         esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
-        if (e == ESP_OK) printf("New Mac key pinned: %s\n", fp);
+        if (e == ESP_OK) printf("New host key pinned: %s\n", fp);
         else if (e == ESP_ERR_TIMEOUT) printf("Old key forgotten; reconnecting...\n");
         else printf("No Host set up\n");
         return e == ESP_OK || e == ESP_ERR_TIMEOUT ? 0 : 1;
     }
     if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "corrupt") == 0) {
-        /* debug: shows the changed-key path without touching the Mac */
+        /* debug: shows the changed-key path without touching the Host */
         char hp[160];
         if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No Host set up\n"); return 1; }
         printf("debug: host key pin for %s overwritten; reconnecting\n", hp);
@@ -378,6 +379,13 @@ static int cmd_ts(int argc, char **argv)
     }
     const char *ip = tailscale_vpn_ip();
     printf("ts: %s (%s%s%s)\n", tailscale_enabled() ? "on" : "off", tailscale_state_text(), ip[0] ? " " : "", ip);
+    /* set or not set only: the key itself is never printed (spec §3 rule 3) */
+    int peers = tailscale_peer_count(), online = 0;
+    for (int i = 0; i < peers; i++) {
+        ts_peer_t p;
+        if (tailscale_peer(i, &p) && p.online) online++;
+    }
+    printf("auth key: %s; peers: %d, %d online\n", g_settings.ts_auth_key[0] ? "set" : "not set", peers, online);
     /* what MicroLink costs: compare with the switch off and on */
     printf("heap: internal free %u B, min %u B, largest %u B\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));

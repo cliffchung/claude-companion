@@ -81,7 +81,7 @@ static bool sha_matches(const char *path, const char *hex)
 
 bool ota_download(const char *url, const char *path, const char *sha256, uint32_t expect_size, ota_progress_cb_t cb, void *user, char *err, size_t err_cap)
 {
-    if (!sd_is_mounted()) { snprintf(err, err_cap, "TF card not mounted"); return false; }
+    if (!sd_mount()) { snprintf(err, err_cap, "TF card not mounted"); return false; }   /* on demand (Plan 4) */
     uint64_t tot, fr;
     if (sd_space(SD_MOUNT, &tot, &fr) && fr < 20ull * 1024 * 1024) { snprintf(err, err_cap, "TF card has less than 20MB free"); return false; }
     fs_mkdir_p(SD_MOUNT_OTA);
@@ -126,7 +126,7 @@ static bool read_app_desc_file(const char *path, esp_app_desc_t *desc)
 
 bool ota_package_ready(const char *sha256, char *ver_out, size_t cap)
 {
-    if (!fs_exists(OTA_APP_FILE)) return false;
+    if (!sd_mount() || !fs_exists(OTA_APP_FILE)) return false;
     esp_app_desc_t d;
     if (!read_app_desc_file(OTA_APP_FILE, &d)) return false;
     if (strcmp(d.project_name, sysinfo_app_project()) != 0) return false;

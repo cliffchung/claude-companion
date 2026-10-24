@@ -31,9 +31,6 @@ const wifi_saved_t *wifi_mgr_saved(int i);
 void wifi_mgr_forget(int i);
 void wifi_mgr_set_cb(wifi_ev_cb_t cb, void *user);          /* UI screen slot */
 void wifi_mgr_set_global_cb(wifi_ev_cb_t cb, void *user);   /* app-wide slot */
-/* Serialization for backup */
-char *wifi_mgr_export_json(void);           /* caller frees */
-bool wifi_mgr_import_json(const char *json);
 const char *wifi_mgr_last_error(void);
 
 /* ---- Plan 2 Task 8: background reconnect, the parked radio, modem power save ----
@@ -62,7 +59,7 @@ void wifi_mgr_reconnect_text(char *buf, size_t cap);
 /* ---- Plan 3 Task 3 ---- */
 /* The optional static IPv4 address (Settings > Network > Wi-Fi > Advanced), off by default. Addresses in
    network byte order (lwIP's ip4_addr_t.addr). Applied from the next join. One address for every network
-   (not per SSID): with it on, another network gets it too and no DHCP. Not in the backup JSON. */
+   (not per SSID): with it on, another network gets it too and no DHCP. */
 typedef struct { uint8_t on, pad[3]; uint32_t ip, mask, gw, dns; } wifi_static_ip_t;
 bool wifi_mgr_static_ip_get(wifi_static_ip_t *out);
 bool wifi_mgr_static_ip_set(const wifi_static_ip_t *in);   /* NULL or on = 0 turns it off; false if invalid */

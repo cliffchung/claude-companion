@@ -4,10 +4,11 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "companion/cc_sessions.h"
+#include "servers/host_rules.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* The companion's own SSH link to the Mac (separate from the terminal's session).
+/* The companion's own SSH link to the Host (separate from the terminal's session).
  * One task owns the libssh session; every call below hands its work to that task
  * and waits for the answer, so callers never touch libssh themselves.
  * Every channel is an exec with an explicit command: never an interactive login shell. */
@@ -22,42 +23,42 @@ bool cc_link_connected(void);
    "connected <host>" | "connected <host>; session list over 256 KB, not updating" |
    "connected <host>; session list not updating (N polls failed)" |
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
-   "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
+   "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Host set up", where <failure>
    is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting",
-   "new host key SHA256:... for <ip>; Forget host key to trust it" (a LAN address with no key to carry over),
-   "Host not found at <host> (set its address in Settings → Network)" (the name doesn't resolve, no fallback),
+   "new host key SHA256:... for <ip>; forget the old key in Settings › Host to trust it" (a LAN address with no key to carry over),
+   "Host not found at <host> (set its fallback address in Settings › Host)" (the name doesn't resolve, no fallback),
    "Host not at <fallback> (fallback for <host>)" (the name didn't resolve and the fallback doesn't answer),
-   "no server named '<name>' in Servers", "<name> refused the device key" or CC_LINK_TS_OFF_TEXT. */
+   "no Host entry named '<name>' (Settings › Host)", "<name> refused the device key" or CC_LINK_TS_OFF_TEXT. */
 const char *cc_link_status_text(char *buf, size_t cap);
 /* Why the link is down when it isn't reachability (the status text has the words). */
 typedef enum {
     CC_LINK_FAIL_NONE,        /* connected, or unreachable / no Wi-Fi / still trying */
     CC_LINK_FAIL_NO_ENTRY,    /* no server with the configured name */
-    CC_LINK_FAIL_HOSTKEY,     /* the Mac's host key doesn't match its pin, or the pin is unreadable */
-    CC_LINK_FAIL_AUTH,        /* the Mac refused the device key */
-    CC_LINK_FAIL_TS_OFF,      /* the Mac entry is a tailnet host and the Tailscale switch is off */
-    CC_LINK_FAIL_NOT_FOUND,   /* the Mac's name doesn't resolve, or its fallback address doesn't answer */
+    CC_LINK_FAIL_HOSTKEY,     /* the Host's host key doesn't match its pin, or the pin is unreadable */
+    CC_LINK_FAIL_AUTH,        /* the Host refused the device key */
+    CC_LINK_FAIL_TS_OFF,      /* the Host entry is a tailnet host and the Tailscale switch is off */
+    CC_LINK_FAIL_NOT_FOUND,   /* the Host's name doesn't resolve, or its fallback address doesn't answer */
 } cc_link_fail_t;
-#define CC_LINK_TS_OFF_TEXT "the Host is a tailnet host and Tailscale is off (Settings \xe2\x86\x92 Network)"
+#define CC_LINK_TS_OFF_TEXT "the Host is a tailnet host and Tailscale is off (Settings \xe2\x80\xba Network)"
 cc_link_fail_t cc_link_failure(void);
-/* Forgets the Mac's host key: erases the link's pin (the address it connects to) and the
+/* Forgets the Host's host key: erases the link's pin (the address it connects to) and the
    terminal's (the server entry's host string, and its MagicDNS address), then has the link task
    drop the session (the Tab5's own close: never counted toward the watch fallback) and connect
    again at once, pinning the key it meets as new. ESP_OK with fp_out "SHA256:..." when that
    connect happened within timeout_ms, ESP_ERR_TIMEOUT if not (the pins are cleared either way,
    and the forget stays pending: see cc_link_forget_done). It counts as link-busy while it waits.
-   ESP_ERR_INVALID_STATE when no Mac is set up. Blocks: never call it from the LVGL task. */
+   ESP_ERR_INVALID_STATE when no Host is set up. Blocks: never call it from the LVGL task. */
 esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms);
 #define CC_FORGET_TIMEOUT_MS 30000   /* the UI and console wait: a tunnel wait (20 s) plus a connect */
 /* A forget that timed out stays pending until the link's next connect pins a key. This counts
    the forgets done so far (it only grows) and copies the key the last one pinned; the UI polls
-   it and toasts "New Mac key pinned: SHA256:..." when it grows. Safe from any task. */
+   it and toasts "New host key pinned: SHA256:..." when it grows. Safe from any task. */
 uint32_t cc_link_forget_done(char *fp_out, size_t fp_cap);
-/* The fingerprint now pinned for the Mac ("SHA256:..."), false if none or unreadable. Reads
+/* The fingerprint now pinned for the Host ("SHA256:..."), false if none or unreadable. Reads
    NVS: fine from the LVGL task, but not every frame. */
 bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap);
 /* Debug (`companion hostkey corrupt`): overwrites the link's own pin with a wrong value and
-   reconnects, so the changed-key path shows without touching the Mac. host_out gets host:port. */
+   reconnects, so the changed-key path shows without touching the Host. host_out gets host:port. */
 esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap);
 /* Failed polls in a row while connected (0 when not connected); *too_big (may be NULL) is
    set when the last one failed because `agents` output didn't fit the poll buffer. */
@@ -112,7 +113,7 @@ typedef void (*cc_sessions_cb_t)(const cc_session_t *s, int n, void *ctx);
 void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx);
 /* Copies the last successful poll; returns the count, or -1 if there hasn't been one. */
 int cc_poll_snapshot(cc_session_t *out, int cap);
-/* The esp_timer time (ms) of the last successful result from the Mac (a poll, a watch block or a
+/* The esp_timer time (ms) of the last successful result from the Host (a poll, a watch block or a
    watch heartbeat after a good block), or 0 if there has been none.
    Safe from any task; it does not block. */
 int64_t cc_poll_last_ok_ms(void);
@@ -124,9 +125,16 @@ void cc_link_on_wifi(bool connected);
 const char *cc_settings_claude_path(char *out, size_t cap);   /* default "~/.local/bin/claude" */
 int cc_settings_server(void);                /* index in the fork's server list, or -1 */
 const char *cc_settings_server_name(char *out, size_t cap);   /* the configured name, "" when none */
-/* True when server idx is the companion's Mac: its index, or the same host as the companion
-   entry (also after a MagicDNS lookup). The SSH Terminal opens no login shell there. */
+/* True when server idx is the companion's Host: its index, or an address cc_same_host matches with any address the
+   link knows the Host by (cc_link_host_addresses; also after a MagicDNS lookup of the entry's name). Terminal never
+   lists it and the SSH Terminal opens no login shell there (hard rule 1). */
 bool cc_link_is_companion_server(int idx);
+/* Every address the link knows the Host by: the entry's host and its tailnet IP, the LAN fallback, mac_ts_ip and the
+   carry address, the last verified and pinned addresses, the last LAN address, the host cache. Empty with no Host. */
+void cc_link_host_addresses(hf_host_addrs_t *out);
+/* The Host's entry was renamed (the same entry): follows it without clearing the pin carry-over. False (nothing
+   changed) unless the configured name was old_name. */
+bool cc_link_rename_server(const char *old_name, const char *new_name);
 /* Store a new server name / Claude path and reconnect (server) as needed. */
 void cc_link_set_server(const char *name);
 bool cc_link_set_claude_path(const char *path);   /* false unless cc_path_valid */
@@ -156,23 +164,23 @@ esp_err_t cc_link_poll_now(int timeout_ms);
    retry. Console `companion kick on|off` (RAM only, default on). */
 void cc_link_set_kick(bool on);
 bool cc_link_kick_on(void);
-/* The last 8 link down/up events with wall-clock time, one per line (for the Mac sleep measurement). */
+/* The last 8 link down/up events with wall-clock time, one per line (for the Host sleep measurement). */
 const char *cc_link_reconnect_log(char *buf, size_t cap);
-/* The Mac's address for a check-in: the address the link last pinned (a tailnet IP after MagicDNS),
-   else the server entry's host. False when no Mac is set up. */
+/* The Host's address for a check-in: the address the link last pinned (a tailnet IP after MagicDNS),
+   else the server entry's host. False when no Host is set up. */
 bool cc_link_mac_address(char *out, size_t cap);
 
 /* ---- Plan 3 Task 1: the local link ---- */
 /* Which path the link uses now: "lan <ip>" or "tailnet <ip>" while connected (true), else "none". */
 bool cc_link_mac_path(char *out, size_t cap);
-/* Debug (`companion resolve <host>`): resolves host the way the link resolves the Mac's (L2). Blocks. */
+/* Debug (`companion resolve <host>`): resolves host the way the link resolves the Host's (L2). Blocks. */
 bool cc_link_resolve_test(const char *host, char *out, size_t cap, const char **how);
-/* `companion server-host <host> [fallback-ip]`: sets the Mac entry's host (fallback NULL keeps the
+/* `companion server-host <host> [fallback-ip]`: sets the Host entry's host (fallback NULL keeps the
    fallback address, "none" clears it), first remembering the entry's tailnet address so its pin
    carries over to the LAN; then reconnects. ESP_ERR_INVALID_ARG for a bad host or fallback,
-   ESP_ERR_INVALID_STATE with no Mac entry, ESP_FAIL when the server list didn't save. */
+   ESP_ERR_INVALID_STATE with no Host entry, ESP_FAIL when the server list didn't save. */
 esp_err_t cc_link_set_server_host(const char *host, const char *fallback);
-/* The Mac's fallback LAN address, used when its name doesn't resolve: "" clears it. False unless
+/* The Host's fallback LAN address, used when its name doesn't resolve: "" clears it. False unless
    "" or a private IPv4 address. Retries the link at once. */
 bool cc_link_set_lan_fallback(const char *ip);
 const char *cc_link_lan_fallback(char *out, size_t cap);

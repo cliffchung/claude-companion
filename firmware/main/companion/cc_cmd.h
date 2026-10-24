@@ -50,7 +50,7 @@ bool cc_screen_input_ready(const char *plain);
    and one trailing dot, or one is a bare name (with a letter, no dot) that is the other's first
    DNS label (MagicDNS "mac" and "mac.tail1234.ts.net"). Empty or NULL never matches. */
 bool cc_same_host(const char *a, const char *b);
-/* The SSH Terminal's guard (no interactive shell on the companion's Mac): true when server idx
+/* The SSH Terminal's guard (no interactive shell on the companion's Host): true when server idx
    with host is the companion server, by index (comp_idx >= 0) or by cc_same_host(host,
    comp_host). comp_host may be NULL or "" when the companion entry is missing. */
 bool cc_is_companion_server(int idx, const char *host, int comp_idx, const char *comp_host);

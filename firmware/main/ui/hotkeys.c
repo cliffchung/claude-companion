@@ -12,7 +12,7 @@ hk_term_t hk_takeover(const key_event_t *ev, bool takeover)
 {
     if (!ev) return HK_T_NONE;
     if (ev->type == KEY_EV_CHAR) {
-        if (takeover && (ev->mods & MOD_CTRL) && (ev->cp == ']' || lower(ev->cp) == 'q'))
+        if ((ev->mods & MOD_CTRL) && (ev->cp == ']' || lower(ev->cp) == 'q'))
             return HK_T_LEAVE;
         return HK_T_NONE;
     }
@@ -29,25 +29,27 @@ hk_term_t hk_takeover(const key_event_t *ev, bool takeover)
 hk_dash_t hk_dashboard(const key_event_t *ev)
 {
     if (!ev || ev->type != KEY_EV_CHAR || !(ev->mods & (MOD_CTRL | MOD_META))) return HK_D_NONE;
+    if (ev->cp == ' ' && (ev->mods & MOD_CTRL)) return HK_D_VOICE;
     switch (lower(ev->cp)) {
     case 'o': return HK_D_OPEN;
     case 'p': return HK_D_SETTINGS;
-    case 'm': return HK_D_MORE;
+    case 't':
+    case 'm': return HK_D_TERMINAL;
     case 'k': return HK_D_KEYS;
     default:  return HK_D_LOCAL;
     }
 }
 
-const char *const hk_overlay_lines[] = {
-    "Up / Down  move between cards",
-    "Enter  send the answer",
-    "Ctrl+O  open the session",
-    "Ctrl+P  settings",
-    "Ctrl+M  more",
-    "Ctrl+K  this list",
-    "Esc  back (Settings, More)",
-    "In a session: Ctrl+]  leave (it keeps running)",
-    "In a session: Shift+Up / Down  scroll back",
-    "Ctrl+Tab  buttons mode",
-    NULL,
+const hk_line_t hk_overlay[] = {
+    { STR_HK_K_UPDOWN, STR_HK_W_UPDOWN },
+    { STR_HK_K_ENTER, STR_HK_W_ENTER },
+    { STR_HK_K_CTRL_O, STR_HK_W_CTRL_O },
+    { STR_HK_K_CTRL_T, STR_HK_W_CTRL_T },
+    { STR_HK_K_CTRL_P, STR_HK_W_CTRL_P },
+    { STR_HK_K_CTRL_K, STR_HK_W_CTRL_K },
+    { STR_HK_K_CTRL_SPACE, STR_HK_W_CTRL_SPACE },
+    { STR_HK_K_ESC, STR_HK_W_ESC },
+    { STR_HK_K_CTRL_BRACKET, STR_HK_W_CTRL_BRACKET },
+    { STR_HK_K_SHIFT_UPDOWN, STR_HK_W_SHIFT_UPDOWN },
 };
+const int hk_overlay_n = (int)(sizeof(hk_overlay) / sizeof(hk_overlay[0]));

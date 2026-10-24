@@ -1,10 +1,12 @@
 #include "ui_boot.h"
+#include "ui_tokens.h"
 #include "fonts/fonts.h"
+#include "i18n/i18n.h"
 
-#define BOOT_BG     0x000000
-#define BOOT_ACCENT 0xFF8C00
-#define BOOT_TEXT   0xFFA836
-#define BOOT_MUTED  0x9A5F14
+/* Spec §5.13: the logo and the name in fg, "Starting…" muted, on bg. No amber. */
+#define BOOT_BG     UI_TK_BG
+#define BOOT_FG     UI_TK_FG
+#define BOOT_MUTED  UI_TK_MUTED
 
 /* A terminal monogram, stored as 32 bytes rather than a decoded splash image. */
 static const uint16_t s_mark[16] = {
@@ -22,7 +24,7 @@ static void mark_draw(lv_event_t *e)
     int pixel = lv_obj_get_width(obj) / 16;
     lv_draw_rect_dsc_t d;
     lv_draw_rect_dsc_init(&d);
-    d.bg_color = lv_color_hex(BOOT_ACCENT);
+    d.bg_color = lv_color_hex(BOOT_FG);
     d.bg_opa = LV_OPA_COVER;
     lv_layer_t *layer = lv_event_get_layer(e);
     /* Consecutive lit pixels become one rectangle. No blur/alpha/image decode. */
@@ -72,8 +74,8 @@ void ui_boot_show(void)
     lv_obj_remove_flag(mark, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(mark, mark_draw, LV_EVENT_DRAW_MAIN, NULL);
     /* Const fonts can be used before their runtime fallback copies exist. */
-    boot_label(group, "Claude Companion", &font_px36b, BOOT_TEXT);
-    boot_label(group, "STARTING", &font_px20, BOOT_MUTED);
+    boot_label(group, tr(STR_APP_TITLE), &font_px36b, BOOT_FG);
+    boot_label(group, tr(STR_BOOT_STARTING), &font_px20, BOOT_MUTED);
     lv_obj_center(group);
 
     lv_obj_t *previous = lv_screen_active();

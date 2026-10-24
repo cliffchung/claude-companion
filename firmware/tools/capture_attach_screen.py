@@ -3,7 +3,7 @@
 
 Usage: capture_attach_screen.py <short-id> <out.bin>
 
-Runs on the Mac. It spawns `~/.local/bin/claude attach <id>` under a pty at
+Runs on the Host. It spawns `~/.local/bin/claude attach <id>` under a pty at
 120x40 with TERM=xterm-256color, reads until the output has been quiet for
 1.0 s (at most 5 s), then detaches with Ctrl+Z only (never Left or a bare Esc,
 which a dialog would take as an answer). The raw bytes are written with $HOME

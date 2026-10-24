@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include "libssh/libssh.h"
 #include "ssh/kh_rules.h"
+#include "servers/host_rules.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,14 +33,18 @@ ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh
                                ssh_hostkey_cb_t hostkey_cb, void *user);
 void ssh_client_send(ssh_client_t *c, const uint8_t *data, size_t len);
 void ssh_client_resize(ssh_client_t *c, int cols, int rows);
-void ssh_client_stop(ssh_client_t *c);        /* async; object freed by the task */
+/* Detaches the callbacks and waits (bounded, 3 s) for one in flight on the SSH task to return; the session then closes
+   and the task frees the object. True: no callback runs again, so their user context may be freed. False: one is
+   still running (stuck), so the caller must not free that context. Never call it while holding a lock a callback
+   takes. */
+bool ssh_client_stop(ssh_client_t *c);
 ssh_state_t ssh_client_state(ssh_client_t *c);
 const char *ssh_client_error(ssh_client_t *c);
 /* Command mode: the remote exit status once the state is CLOSED, or -1 if unknown. */
 int ssh_client_exit_status(ssh_client_t *c);
 /* Final review C1: registers the live clients' closer with the close-before-down guard (sys/link_guard.h):
    every path that takes the link down first closes each open SSH Terminal and take-over session and waits
-   (bounded) for its disconnect. Its state then ends as SSH_ST_ERROR "the network is going down". Called
+   (bounded) for its disconnect. Its state then ends as SSH_ST_ERROR STR_SSH_NET_DOWN ("The network went down."). Called
    once at boot, before any client starts. */
 void ssh_client_guard_init(void);
 /* known hosts (NVS "kh"): key = hash of host:port, value = SHA256 of the server key */
@@ -58,6 +63,15 @@ bool ssh_known_host_trust(ssh_session session, const char *host, int port);
 bool ssh_known_host_fingerprint(const char *host, int port, char *fp_out, size_t fp_cap);
 /* Erases the pin for host:port; true if there was one. */
 bool ssh_known_host_forget(const char *host, int port);
+/* P4C-10: the keys the companion link ever pinned (SHA256, a FIFO of HF_HOSTKEYS_MAX in NVS "cc"/"hostkeys"; it
+   survives Forget and Host switches). init makes the lock (once, at cc_link_start); load gives NONE, FOUND (n set) or
+   ERROR; add appends a key the link authenticated on and never writes over a list it couldn't read. An interactive
+   SSH Terminal session is refused before it authenticates when the server presents one of them, or when the list
+   can't be read. type_note keeps the type of that key; interactive sessions prefer it (SSH_OPTIONS_HOSTKEYS). */
+void ssh_host_keys_init(void);
+hf_deny_read_t ssh_host_keys_load(uint8_t out[HF_HOSTKEYS_MAX][32], int *n);
+void ssh_host_keys_add(const uint8_t hash[32]);
+void ssh_host_key_type_note(ssh_session session);
 /* Debug: overwrites the pin for host:port with a wrong hash, so the next connect sees a
    changed key (`companion hostkey corrupt`). */
 bool ssh_known_host_set_debug(const char *host, int port);

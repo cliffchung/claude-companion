@@ -63,7 +63,7 @@ typedef struct {
 power_state_t pr_next_state(const pr_in_t *in);
 
 typedef enum { PR_CARDS_LIVE, PR_CARDS_STALE, PR_CARDS_WAKING } pr_cards_t;
-/* hibernate_boot && gen_now == 0 -> WAKING (no cards, "Waking: reconnecting to Mac");
+/* hibernate_boot && gen_now == 0 -> WAKING (no cards, "Waking: reconnecting to host");
    gen_now > gen_at_wake -> LIVE; needs_you_wake -> LIVE (its block is fresh); else STALE */
 pr_cards_t pr_cards_view(bool hibernate_boot, uint32_t gen_now, uint32_t gen_at_wake, bool needs_you_wake);
 

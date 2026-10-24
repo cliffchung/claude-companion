@@ -7,24 +7,12 @@
 extern "C" {
 #endif
 
-/* Status bar elements, as a bitmask in app_settings_t.status_items. */
-#define STATUS_WIFI      (1u << 0)
-#define STATUS_TAILSCALE (1u << 1)
-#define STATUS_IP        (1u << 2)
-#define STATUS_BATTERY   (1u << 3)
-#define STATUS_KEYBOARD  (1u << 4)
-#define STATUS_CLOCK     (1u << 5)
-#define STATUS_DATE      (1u << 6)
-#define STATUS_YEAR      (1u << 7)
-#define STATUS_DEFAULT   (STATUS_WIFI | STATUS_TAILSCALE | STATUS_IP | STATUS_BATTERY | \
-                          STATUS_KEYBOARD | STATUS_CLOCK | STATUS_DATE)
-
 typedef struct {
     /* Reserved fields keep the NVS blob layout of older builds; unused. */
     uint8_t  lang;              /* reserved (was lang_t): English only */
     uint8_t  reserved_src;          /* reserved: formerly the input source */
     uint8_t  reserved_kana_mode;    /* reserved: formerly the kana mode */
-    uint8_t  rotation;          /* 0..3 -> lv_display_rotation_t */
+    uint8_t  rotation;          /* reserved (Plan 4): the display is always LV_DISPLAY_ROTATION_90 */
     uint8_t  brightness;        /* 5..100 */
     /* ss_*: reserved, so old blobs keep their layout; the fork's screensaver was removed (Plan 2) */
     uint8_t  ss_enable;         /* reserved */
@@ -39,35 +27,37 @@ typedef struct {
     uint8_t  kbd_led_mode;      /* 0=bind, 1=user */
     uint8_t  kbd_led_bright;    /* 0..100 */
     uint8_t  kbd_led_rgb[3];
-    uint8_t  term_font;         /* 0=22px (only size shipped) */
-    uint8_t  volume;            /* 0..100 */
+    uint8_t  term_font;         /* reserved (Plan 4, U8): one terminal face */
+    uint8_t  volume;            /* 0..100; live with no UI (Plan 4: kept for voice) */
     uint8_t  reserved_autostart;        /* reserved: formerly a web service autostart */
     uint8_t  reserved_dict_sd;          /* reserved: formerly a dictionary option */
-    char     ota_url[160];
-    uint8_t  ssh_bell;
+    char     ota_url[160];      /* the OTA manifest URL: live, console only (`ota url`), no Settings row (Plan 4) */
+    uint8_t  ssh_bell;          /* reserved (Plan 4, U8) */
     uint8_t  ts_enable;          /* the Tailscale switch: sticky (tailscale_set_enabled saves it); v21 turned it off once */
     char     ts_auth_key[160];
     char     ts_device_name[40];
     char     ts_ctrl_host[96];
     uint8_t  ts_direct;          /* try direct UDP paths (experimental); 0 = DERP relay only */
-    uint8_t  status_items;       /* STATUS_* bitmask */
-    uint8_t  creds_on_sd;        /* keep the SSH server list on the TF card, not in NVS */
-    uint8_t  theme_preset;       /* index into the preset table, UI_THEME_CUSTOM for custom */
-    uint32_t theme_colors[8];    /* used when the preset is custom */
-    uint8_t  theme_radius;       /* corner rounding, 0..24 */
-    uint8_t  theme_density;      /* ui_density_t: padding scale */
-    uint8_t  theme_tile_accent;  /* tint the home tiles with the accent colour */
-    uint8_t  theme_glow;         /* coloured halo behind cards and buttons */
-    uint8_t  theme_scanlines;    /* CRT/EL scan lines drawn over every screen */
+    uint8_t  status_items;       /* reserved (Plan 4): the fork status bar was removed */
+    uint8_t  creds_on_sd;        /* reserved (Plan 4): was "hosts on the TF card"; CFG 23 imports them once, then 0 */
+    uint8_t  theme_preset;       /* reserved (Plan 4): the theme presets were removed */
+    uint32_t theme_colors[8];    /* reserved (Plan 4) */
+    uint8_t  theme_radius;       /* reserved (Plan 4) */
+    uint8_t  theme_density;      /* reserved (Plan 4) */
+    uint8_t  theme_tile_accent;  /* reserved (Plan 4) */
+    uint8_t  theme_glow;         /* reserved (Plan 4) */
+    uint8_t  theme_scanlines;    /* reserved (Plan 4) */
+    /* term_*: fixed values (Plan 4): CFG 23 writes the tokens in, nothing edits them and the terminal draws
+       the tokens, not these. term_line_height still sets the boot line height (fonts_init). */
     uint32_t term_fg, term_bg, term_cursor;
     uint32_t term_ansi[16];
-    uint8_t  term_cursor_style;  /* 0 block, 1 underline, 2 bar */
-    uint8_t  term_cursor_blink;
-    uint8_t  term_line_height;   /* 28..40 px, MaruMinya 24px glyphs + leading */
+    uint8_t  term_cursor_style;  /* 0 block */
+    uint8_t  term_cursor_blink;  /* 0: steady (B1) */
+    uint8_t  term_line_height;   /* 32 */
     uint8_t ss_classic;          /* reserved (the removed screensaver's layout) */
-    uint8_t  kbd_layout;         /* kbd_layout_t: STOCK follows the keycaps */
-    char     companion_server[48];   /* name of the Mac in the server list; "" = none */
-    char     claude_path[64];        /* Claude CLI on the Mac; must pass cc_path_valid */
+    uint8_t  kbd_layout;         /* kbd_layout_t: STOCK follows the keycaps; live, console only (`key layout`) */
+    char     companion_server[48];   /* name of the Host in the server list; "" = none */
+    char     claude_path[64];        /* Claude CLI on the Host; must pass cc_path_valid */
     /* Plan 2 (v18) */
     char     tz_rule[48];        /* POSIX TZ, default "PST8PDT,M3.2.0,M11.1.0" */
     uint16_t pw_dim_s;           /* 30 */
@@ -80,15 +70,15 @@ typedef struct {
     uint8_t  pw_radio_off;       /* 0; gated, set in Task 10 */
     uint16_t pw_radio_off_min;   /* 20 */
     uint16_t pw_checkin_min;     /* 5 */
-    uint8_t  pw_light_sleep;     /* 0; gated (Task 6, Task 10) */
+    uint8_t  pw_light_sleep;     /* reserved (Plan 4, U8); Reset settings still resets it */
     uint16_t pw_deep_idle_min;   /* 60; 0 = never */
     uint8_t  pw_hibernate_h;     /* 2; 0 = never (the battery <= 10% trigger stays) */
     uint8_t  pw_hibernate_checkin_h; /* reserved (v18): uint8 hours can't hold 15-720 min; see below */
     /* v19 (Task 8, PT16) */
     uint16_t pw_hibernate_checkin_min; /* spec hibernate_checkin: 15; 0 = off; clamped by pr_hib_checkin_clamp_min to 0 or 15-720 */
     /* v21 (Plan 3 Task 1, local link) */
-    char     mac_lan_ip[16];     /* the Mac's fallback LAN address when its name doesn't resolve; "" = none */
-    char     mac_ts_ip[16];      /* the Mac entry's last tailnet address: its pin carries over to the LAN (L3) */
+    char     mac_lan_ip[16];     /* the Host's fallback LAN address when its name doesn't resolve; "" = none */
+    char     mac_ts_ip[16];      /* the Host entry's last tailnet address: its pin carries over to the LAN (L3) */
 } app_settings_t;
 
 #define TZ_DEFAULT "PST8PDT,M3.2.0,M11.1.0"
@@ -96,10 +86,20 @@ typedef struct {
 extern app_settings_t g_settings;
 
 void settings_init(void);         /* load from NVS or defaults */
+/* The migration step that needs the device key and the card (CFG 23 step 3: the TF-card hosts, while creds_on_sd
+   is 1; settings_sd_import_step). Call after secure_store_init and server_store_init; checkin_boot: a Hibernate
+   timer check-in, which skips it. */
+void settings_post_load_migrate(bool checkin_boot);
 void settings_save(void);
 /* The Plan 2 power settings (pw_*, kbd_needs_light, kbd_dark_light) back to their defaults; the time zone stays. */
 void settings_power_defaults(void);
 void settings_reset_defaults(void);
+/* Every field's default (what settings_reset_defaults puts in g_settings). */
+void settings_defaults(app_settings_t *out);
+/* Settings › About › Reset settings: settings_reset_scope against the defaults, saved, then the brightness,
+   the keyboard light and the power settings applied. Wi-Fi, the hosts, the pins, Tailscale and the time
+   zone stay. */
+void settings_reset_user(void);
 
 /* Generic small NVS helpers used by other modules. */
 bool nvs_get_blob_alloc(const char *ns, const char *key, void **out, size_t *len);

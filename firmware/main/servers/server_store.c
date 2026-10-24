@@ -3,44 +3,83 @@
 #include <stdlib.h>
 #include "cJSON.h"
 #include "esp_log.h"
-#include "settings/settings.h"
+#include "settings/settings.h"   /* the NVS helpers */
 #include "crypto/secure_store.h"
 #include "storage/sd.h"
-#include <unistd.h>
+#include "servers/host_rules.h"
+#include <strings.h>
+#include <stdio.h>
 
 static const char *TAG = "servers";
 static server_t s_list[SERVER_MAX];
 static int s_n = 0;
 
-/* With "credentials on the TF card" the whole list -- hosts, user names, key
- * paths and passwords -- is encrypted with the device key and written here, and
- * the NVS copy is erased. The key never leaves NVS, so neither the card alone
- * nor the device alone is enough to read it back. Without the card the app
- * starts with no servers and picks them up again when it is put back. */
-#define SRV_SD_DIR  SD_MOUNT "/.tab5"
-#define SRV_SD_FILE SRV_SD_DIR "/servers.enc"
+/* NVS ("srv"/"list") is the only store (Plan 4). Builds before it could keep the whole list on the TF card
+ * instead ("credentials on the TF card", creds_on_sd), encrypted with the device key, with the NVS copy
+ * erased. The CFG 23 migration imports that file once (server_store_import_sd_once) and leaves it as it is:
+ * nothing here writes, moves or deletes a file on the card. */
+#define SRV_SD_FILE SD_MOUNT "/.tab5/servers.enc"
 
-static bool save_to_sd(const char *json)
+/* The list as saved: each password encrypted with the device key. Caller frees. */
+static char *export_json(void)
 {
-    char *blob = secure_encrypt_str(json);
-    if (!blob) return false;
-    bool ok = fs_mkdir_p(SRV_SD_DIR) && fs_write_all(SRV_SD_FILE, blob, strlen(blob));
-    free(blob);
-    return ok;
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(root, "servers");
+    for (int i = 0; i < s_n; i++) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "name", s_list[i].name);
+        cJSON_AddStringToObject(o, "host", s_list[i].host);
+        cJSON_AddNumberToObject(o, "port", s_list[i].port);
+        cJSON_AddStringToObject(o, "user", s_list[i].user);
+        char *enc = secure_encrypt_str(s_list[i].pass);
+        cJSON_AddStringToObject(o, "pass", enc ? enc : "");
+        free(enc);
+        cJSON_AddStringToObject(o, "key", s_list[i].keypath);
+        cJSON_AddBoolToObject(o, "use_key", s_list[i].use_key);
+        cJSON_AddItemToArray(arr, o);
+    }
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return s;
+}
+
+/* Parses a saved list into out (at most max entries; an entry with no host is dropped). -1 when it isn't
+   a list. */
+static int parse_list(const char *json, server_t *out, int max)
+{
+    cJSON *root = cJSON_Parse(json);
+    if (!root) return -1;
+    cJSON *arr = cJSON_GetObjectItem(root, "servers");
+    if (!cJSON_IsArray(arr)) { cJSON_Delete(root); return -1; }
+    int n = 0;
+    cJSON *o;
+    cJSON_ArrayForEach(o, arr) {
+        if (n >= max) break;
+        server_t *s = &out[n];
+        memset(s, 0, sizeof(*s));
+        const char *v;
+        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "name")))) strlcpy(s->name, v, sizeof(s->name));
+        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "host")))) strlcpy(s->host, v, sizeof(s->host));
+        cJSON *p = cJSON_GetObjectItem(o, "port"); s->port = cJSON_IsNumber(p) ? p->valueint : 22;
+        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "user")))) strlcpy(s->user, v, sizeof(s->user));
+        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "pass")))) {
+            char *dec = secure_decrypt_str(v);
+            if (dec) { strlcpy(s->pass, dec, sizeof(s->pass)); memset(dec, 0, strlen(dec)); free(dec); }
+        }
+        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "key")))) strlcpy(s->keypath, v, sizeof(s->keypath));
+        s->use_key = cJSON_IsTrue(cJSON_GetObjectItem(o, "use_key"));
+        if (!s->host[0]) continue;
+        n++;
+    }
+    cJSON_Delete(root);
+    return n;
 }
 
 static bool save(void)
 {
-    char *json = server_store_export_json(false);
+    char *json = export_json();
     if (!json) return false;
-    bool ok;
-    if (g_settings.creds_on_sd) {
-        ok = save_to_sd(json);
-        if (ok) nvs_erase_key_ns("srv", "list");   /* leave nothing on the device */
-        else ESP_LOGW(TAG, "could not write %s; the list is only in RAM", SRV_SD_FILE);
-    } else {
-        ok = nvs_set_str_ns("srv", "list", json);
-    }
+    bool ok = nvs_set_str_ns("srv", "list", json);
     free(json);
     return ok;
 }
@@ -49,43 +88,73 @@ void server_store_init(void)
 {
     char *json = NULL;
     s_n = 0;
-    if (g_settings.creds_on_sd) {
-        char *blob = NULL; size_t len = 0;
-        if (sd_is_mounted() && fs_read_all(SRV_SD_FILE, &blob, &len, 256 * 1024)) {
-            json = secure_decrypt_str(blob);
-            free(blob);
-            if (!json) ESP_LOGW(TAG, "%s does not decrypt with this device's key", SRV_SD_FILE);
-        } else {
-            ESP_LOGI(TAG, "credentials live on the TF card and it is not readable; starting with none");
-        }
-    } else {
-        nvs_get_str_alloc("srv", "list", &json);
-    }
-    if (json) {
-        server_store_import_json(json);
+    if (nvs_get_str_alloc("srv", "list", &json)) {
+        int n = parse_list(json, s_list, SERVER_MAX);
         free(json);
+        s_n = n > 0 ? n : 0;
         ESP_LOGI(TAG, "%d servers loaded", s_n);
     }
 }
 
-void server_store_reload(void) { server_store_init(); }
-
-bool server_store_set_on_sd(bool on)
+/* The same entry: its name is taken (hf_name_taken: case-insensitive, as the host form's rule, the Host's name
+   included), or the same user at the same host and port. */
+static bool have_entry(const server_t *e)
 {
-    if ((bool)g_settings.creds_on_sd == on) return true;
-    char *json = server_store_export_json(false);
-    if (!json) return false;
-    bool ok;
-    if (on) {
-        ok = sd_is_mounted() && save_to_sd(json);
-        if (ok) { nvs_erase_key_ns("srv", "list"); g_settings.creds_on_sd = 1; }
-    } else {
-        ok = nvs_set_str_ns("srv", "list", json);
-        if (ok) { unlink(SRV_SD_FILE); g_settings.creds_on_sd = 0; }
+    const char *names[SERVER_MAX];
+    for (int i = 0; i < s_n; i++) names[i] = s_list[i].name;
+    if (hf_name_taken(e->name, names, s_n, -1)) return true;
+    for (int i = 0; i < s_n; i++)
+        if (!strcasecmp(s_list[i].host, e->host) && s_list[i].port == e->port && !strcmp(s_list[i].user, e->user))
+            return true;
+    return false;
+}
+
+/* M4: the host form's rules (hf_validate: an address, a user, port 1..65535; the Host check is the link's at run
+   time, cc_link_is_companion_server) and, for a key entry, a device key or a file under /sdcard/ (hf_key_source). */
+static bool valid_entry(const server_t *e)
+{
+    char port[12];
+    snprintf(port, sizeof(port), "%d", e->port);
+    if (hf_validate(e->host, port, e->user, true, NULL, NULL) != HF_OK) return false;
+    if (e->use_key && hf_key_source(e->keypath, true) != HF_KEY_DEVICE && hf_key_source(e->keypath, true) != HF_KEY_FILE)
+        return false;
+    return true;
+}
+
+int server_store_import_sd_once(void)
+{
+    char *blob = NULL;
+    size_t len = 0;
+    if (!sd_is_mounted() || !fs_read_all(SRV_SD_FILE, &blob, &len, 256 * 1024)) {
+        ESP_LOGW(TAG, "the TF card's host list can't be read");
+        return -1;
     }
+    char *json = secure_decrypt_str(blob);
+    free(blob);
+    if (!json) { ESP_LOGW(TAG, "the TF card's host list doesn't decrypt with this device's key"); return -1; }
+    server_t *in = calloc(SERVER_MAX, sizeof(server_t));   /* about 13 KB: PSRAM, and only for this call */
+    int n = in ? parse_list(json, in, SERVER_MAX) : -1;
+    memset(json, 0, strlen(json));   /* it holds the passwords in the clear */
     free(json);
-    if (ok) settings_save();
-    return ok;
+    if (n < 0) { free(in); ESP_LOGW(TAG, "the TF card's host list isn't a host list"); return -1; }
+    int added = 0, skipped = 0, invalid = 0;
+    for (int i = 0; i < n; i++) {
+        if (!valid_entry(&in[i])) { invalid++; continue; }
+        if (s_n >= SERVER_MAX || have_entry(&in[i])) { skipped++; continue; }
+        s_list[s_n++] = in[i];
+        added++;
+    }
+    memset(in, 0, SERVER_MAX * sizeof(server_t));
+    free(in);
+    if (added && !save()) {
+        s_n -= added;
+        memset(&s_list[s_n], 0, (size_t)added * sizeof(server_t));
+        ESP_LOGE(TAG, "the imported hosts could not be saved");
+        return -1;
+    }
+    ESP_LOGI(TAG, "hosts on the card: %d added, %d already here (or the list is full), %d invalid", added, skipped,
+             invalid);
+    return added;
 }
 
 int server_store_count(void) { return s_n; }
@@ -126,56 +195,4 @@ void server_store_move(int from, int to)
     if (from < to) memmove(&s_list[from], &s_list[from + 1], (to - from) * sizeof(server_t));
     else memmove(&s_list[to + 1], &s_list[to], (from - to) * sizeof(server_t));
     s_list[to] = t; save();
-}
-
-char *server_store_export_json(bool plain)
-{
-    cJSON *root = cJSON_CreateObject();
-    cJSON *arr = cJSON_AddArrayToObject(root, "servers");
-    for (int i = 0; i < s_n; i++) {
-        cJSON *o = cJSON_CreateObject();
-        cJSON_AddStringToObject(o, "name", s_list[i].name);
-        cJSON_AddStringToObject(o, "host", s_list[i].host);
-        cJSON_AddNumberToObject(o, "port", s_list[i].port);
-        cJSON_AddStringToObject(o, "user", s_list[i].user);
-        if (plain) cJSON_AddStringToObject(o, "pass", s_list[i].pass);
-        else { char *enc = secure_encrypt_str(s_list[i].pass); cJSON_AddStringToObject(o, "pass", enc ? enc : ""); free(enc); }
-        cJSON_AddStringToObject(o, "key", s_list[i].keypath);
-        cJSON_AddBoolToObject(o, "use_key", s_list[i].use_key);
-        cJSON_AddItemToArray(arr, o);
-    }
-    char *s = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    return s;
-}
-
-bool server_store_import_json(const char *json)
-{
-    cJSON *root = cJSON_Parse(json);
-    if (!root) return false;
-    cJSON *arr = cJSON_GetObjectItem(root, "servers");
-    if (!cJSON_IsArray(arr)) { cJSON_Delete(root); return false; }
-    s_n = 0;
-    cJSON *o;
-    cJSON_ArrayForEach(o, arr) {
-        if (s_n >= SERVER_MAX) break;
-        server_t *s = &s_list[s_n];
-        memset(s, 0, sizeof(*s));
-        const char *v;
-        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "name")))) strlcpy(s->name, v, sizeof(s->name));
-        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "host")))) strlcpy(s->host, v, sizeof(s->host));
-        cJSON *p = cJSON_GetObjectItem(o, "port"); s->port = cJSON_IsNumber(p) ? p->valueint : 22;
-        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "user")))) strlcpy(s->user, v, sizeof(s->user));
-        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "pass")))) {
-            char *dec = secure_decrypt_str(v);
-            if (dec) { strlcpy(s->pass, dec, sizeof(s->pass)); free(dec); }
-        }
-        if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(o, "key")))) strlcpy(s->keypath, v, sizeof(s->keypath));
-        s->use_key = cJSON_IsTrue(cJSON_GetObjectItem(o, "use_key"));
-        if (!s->host[0]) continue;
-        s_n++;
-    }
-    cJSON_Delete(root);
-    save();
-    return true;
 }

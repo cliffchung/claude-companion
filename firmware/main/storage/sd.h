@@ -6,11 +6,13 @@
 extern "C" {
 #endif
 #define SD_MOUNT "/sdcard"
-#define USB_MOUNT "/usb"
+/* On demand (never at boot): true when the card is mounted, now or already, and the caller is then one of its
+   users until its sd_unmount. Safe from any task; a failed try (false: no user, don't unmount) can be repeated (a
+   card put in later mounts). */
 bool sd_mount(void);
+/* Ends one successful sd_mount; the last user's call unmounts the card (the SD driver and its LDO go off). The
+   OTA functions mount without a matching call: the card stays up until ota_install_via_updater's restart. */
 void sd_unmount(void);
-void sd_unmount_keep_card(void);   /* detach FATFS but keep the SDMMC card initialised */
-void sd_remount_after_msc(void);
 bool sd_is_mounted(void);
 bool sd_space(const char *path, uint64_t *total, uint64_t *free_bytes);
 bool sd_card_info(char *buf, size_t len);   /* name/type/size */

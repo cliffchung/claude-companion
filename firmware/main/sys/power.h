@@ -62,7 +62,9 @@ void power_settings_defaults(void);         /* every Plan 2 power setting back t
 void power_settings_text(char *buf, size_t cap);   /* name=value ... on one line */
 void power_sim_battery(int pct);            /* RAM only: pct >= 0 overrides battery_pct and on_battery; < 0 ends it */
 void power_sim_idle(int seconds);           /* moves last input (and off_since when Off) that far back */
-bool power_sim_touch(void);                 /* a press and release at the selected card, through a virtual pointer */
+/* A press and release through a virtual pointer: at screen point x,y, or (x < 0) at the selected card (the screen centre
+   without one). The console allows the card form only while the screen is dim or off (a wake test, P4C-4). */
+bool power_sim_touch(int32_t x, int32_t y);
 void power_touch_text(char *buf, size_t cap);   /* "touch: poll on|off, reads=<n> errors=<n> last=..." */
 void power_wakes_print(void);               /* the last 8 wakes: "<seconds ago> <reason> swallowed=<n>" */
 void power_touch_poll_pause(bool pause);    /* bench: Off with the poll stopped */
@@ -70,7 +72,7 @@ typedef enum { POWER_BENCH_LIGHT_NONE, POWER_BENCH_LIGHT_AMBER, POWER_BENCH_LIGH
 void power_bench_light(power_bench_light_t l);
 
 /* ---- Task 8: Radio off and the check-ins (sys/checkin.h) ---- */
-bool power_needs_you(void);                 /* pr_any_needs_you of the last result from the Mac */
+bool power_needs_you(void);                 /* pr_any_needs_you of the last result from the Host */
 bool power_battery_low(void);               /* pr_battery_low now (the sim battery counts): the 10% trigger */
 /* The power source as the rules see it (the sim battery counts as battery): UNKNOWN until vitals has
    settled after a boot (about 10 s of battery-like samples; USB and charging read as USB at once). */

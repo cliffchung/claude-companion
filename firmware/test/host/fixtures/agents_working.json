@@ -1,0 +1,32 @@
+[
+ {
+  "pid": 20001,
+  "id": "b0000001",
+  "cwd": "/Users/me/code/ci",
+  "kind": "background",
+  "startedAt": 1792700300000,
+  "sessionId": "b0000001-0001-4001-8001-000000000001",
+  "name": "flaky-tests",
+  "state": "working"
+ },
+ {
+  "pid": 20002,
+  "id": "b0000002",
+  "cwd": "/Users/me/code/site",
+  "kind": "background",
+  "startedAt": 1792700200000,
+  "sessionId": "b0000002-0002-4002-8002-000000000002",
+  "name": "docs-pass",
+  "state": "idle"
+ },
+ {
+  "pid": 20003,
+  "id": "b0000003",
+  "cwd": "/Users/me/code/api",
+  "kind": "background",
+  "startedAt": 1792700100000,
+  "sessionId": "b0000003-0003-4003-8003-000000000003",
+  "name": "release-notes",
+  "state": "done"
+ }
+]

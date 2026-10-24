@@ -23,7 +23,7 @@
 #include "sys/checkin.h"
 #include "net/wifi_mgr.h"
 #include "ui/ui.h"
-#include "ui/ui_dashboard.h"
+#include "ui/ui_sessions.h"
 
 static const char *TAG = "power";
 
@@ -414,7 +414,7 @@ void power_bench_light(power_bench_light_t l)
     notify();
 }
 
-/* ---- results from the Mac ------------------------------------------------ */
+/* ---- results from the Host ----------------------------------------------- */
 
 /* On the poll task: copy what we need and wake our own task. No cc_link calls. */
 static void on_sessions(const cc_session_t *s, int n, void *ctx)
@@ -646,13 +646,13 @@ static void leave_dark(void)
     s_dark = false;
 }
 
-/* LVGL task: a needs-you wake goes to the dashboard. Built here, not on the power task's 4 KB
+/* LVGL task: a needs-you wake goes to Sessions. Built here, not on the power task's 4 KB
    stack: a screen build and the old screen's delete were sized for the LVGL task's 16 KB. */
 static void nav_home_async(void *arg)
 {
     (void)arg;
-    /* off the dashboard polling is slow; an SSH Terminal is left alone (it would close) */
-    if (!ui_nav_is_top(ui_dashboard_create) && !ui_terminal_is_top()) ui_nav_home();
+    /* off Sessions polling is slow; an SSH Terminal is left alone (it would close) */
+    if (!ui_nav_is_top(ui_sessions_create) && !ui_terminal_is_top()) ui_nav_home();
 }
 
 /* The wake. The state stays non-Active until the last step, so the drain keeps swallowing. */
@@ -666,7 +666,7 @@ static void do_wake(void)
     power_state_t target = why == PW_NEEDS_YOU ? PS_DIM : PS_ACTIVE;
     if (s_dark) leave_dark();
     bsp_display_brightness_set(target == PS_DIM ? pr_dim_brightness(g_settings.brightness) : g_settings.brightness);
-    /* before the dashboard can be built below: it reads these */
+    /* before Sessions can be built below: it reads these */
     s_wake_gen = cc_poll_generation();
     s_woke_from = from;
     s_last_reason = why;
@@ -972,7 +972,7 @@ void power_settings_defaults(void)
     for (int i = 0; i < PCFG_N; i++) s_cfg_ram[i] = -1;
     settings_power_defaults();
     settings_save();
-    power_kbd_light_refresh();
+    power_kbd_light_refresh();   /* also wakes the power task, so the ladder takes the default timings now */
 }
 
 void power_settings_text(char *buf, size_t cap)
@@ -1012,7 +1012,21 @@ static void vptr_read(lv_indev_t *indev, lv_indev_data_t *data)
     data->state = s_vstate;
 }
 
-bool power_sim_touch(void)
+/* LVGL turns a pointer's raw point into screen coordinates (lv_display_rotate_point); the virtual pointer reports
+   the raw point that lands on screen point x,y. W and H are the screen's (rotated) width and height. */
+static void sim_raw_point(int32_t x, int32_t y, lv_point_t *raw)
+{
+    lv_display_t *d = lv_display_get_default();
+    int32_t W = lv_display_get_horizontal_resolution(d), H = lv_display_get_vertical_resolution(d);
+    switch (lv_display_get_rotation(d)) {
+    case LV_DISPLAY_ROTATION_90:  raw->x = y;         raw->y = W - 1 - x; break;
+    case LV_DISPLAY_ROTATION_180: raw->x = W - 1 - x; raw->y = H - 1 - y; break;
+    case LV_DISPLAY_ROTATION_270: raw->x = H - 1 - y; raw->y = x;         break;
+    default:                      raw->x = x;         raw->y = y;         break;
+    }
+}
+
+bool power_sim_touch(int32_t x, int32_t y)
 {
     dlock(__LINE__);
     if (!s_vptr) {
@@ -1022,12 +1036,11 @@ bool power_sim_touch(void)
         lv_indev_set_mode(s_vptr, LV_INDEV_MODE_EVENT);   /* read only when asked below */
         lv_indev_add_event_cb(s_vptr, indev_cb, LV_EVENT_ALL, NULL);
     }
-    int32_t x, y;
-    if (!ui_dashboard_selected_center(&x, &y)) {
+    if (x < 0 && !ui_sessions_selected_center(&x, &y)) {
         x = lv_display_get_horizontal_resolution(NULL) / 2;
         y = lv_display_get_vertical_resolution(NULL) / 2;
     }
-    s_vpt.x = x; s_vpt.y = y;
+    sim_raw_point(x, y, &s_vpt);   /* x,y are screen coordinates (the display is rotated) */
     s_vstate = LV_INDEV_STATE_PRESSED;
     lv_indev_read(s_vptr);
     s_vstate = LV_INDEV_STATE_RELEASED;

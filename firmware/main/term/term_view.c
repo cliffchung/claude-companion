@@ -1,5 +1,4 @@
 #include "term_view.h"
-#include "settings/settings.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -120,13 +119,8 @@ static void draw_cb(lv_event_t *e)
                 int width = row[i].attr & VT_ATTR_WIDE ? 2 : 1;
                 lv_area_t ta = {obj_area.x1+i*tv->cell_w, ry,
                                 obj_area.x1+(i+width)*tv->cell_w-1, ry+tv->cell_h-1};
-                /* Orange EL: recolor Claude's salmon mascot blocks only;
-                 * keep application error reds and other true colors intact. */
-                lv_color_t art_fg = fg;
-                if (g_settings.theme_preset == 0 && !inv &&
-                    (c0->fg == 0xD77A56 || c0->fg == 0xD77757) && cp >= 0x2580 && cp <= 0x259F)
-                    art_fg = lv_color_hex(g_settings.term_fg);
-                if (draw_cell_art(layer,cp,&ta,art_fg)) { i+=width; continue; }
+                /* Claude Code's own colours are content: drawn as sent (spec §5.2), its mascot included. */
+                if (draw_cell_art(layer,cp,&ta,fg)) { i+=width; continue; }
                 int n=0;
                 if (cp >= 0x20 && cp < 0x7f) {
                     do { txt[n++]=(char)(row[i].cp ? row[i].cp : ' '); i++; }
@@ -222,7 +216,7 @@ term_view_t *term_view_create(lv_obj_t *parent, vt_t *vt, const lv_font_t *font)
     if (tv->cell_w <= 0) tv->cell_w = 11;
     tv->cell_h = lv_font_get_line_height(font);
     tv->blink_on = true;
-    tv->cursor_blink = true;
+    tv->cursor_blink = false;   /* B1: steady; term_view_set_cursor makes the blink timer only when asked to */
     tv->obj = lv_obj_create(parent);
     lv_obj_set_style_bg_color(tv->obj, tv->bg, 0);
     lv_obj_set_style_bg_opa(tv->obj, LV_OPA_COVER, 0);
@@ -235,7 +229,6 @@ term_view_t *term_view_create(lv_obj_t *parent, vt_t *vt, const lv_font_t *font)
     lv_obj_add_event_cb(tv->obj, touch_cb, LV_EVENT_PRESSED, tv);
     lv_obj_add_event_cb(tv->obj, touch_cb, LV_EVENT_PRESSING, tv);
     lv_obj_add_event_cb(tv->obj, delete_cb, LV_EVENT_DELETE, tv);
-    tv->blink_timer = lv_timer_create(blink_cb, 550, tv);
     return tv;
 }
 
@@ -278,6 +271,9 @@ void term_view_set_cursor(term_view_t *tv, term_cursor_t style, bool blink, lv_c
     tv->cursor_blink = blink;
     tv->cursor_col = color;
     tv->cursor_col_set = true;
+    /* No blink, no timer (B1: a steady cursor never redraws on its own). */
+    if (blink && !tv->blink_timer) tv->blink_timer = lv_timer_create(blink_cb, 550, tv);
+    if (!blink && tv->blink_timer) { lv_timer_delete(tv->blink_timer); tv->blink_timer = NULL; }
     if (!blink) tv->blink_on = true;
     lv_obj_invalidate(tv->obj);
 }

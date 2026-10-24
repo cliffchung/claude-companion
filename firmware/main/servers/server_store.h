@@ -15,19 +15,18 @@ typedef struct {
     bool use_key;
 } server_t;
 
-void server_store_init(void);
-void server_store_reload(void);          /* re-read after the TF card came back */
-/* Moves the list between NVS and the TF card. False when the card is not usable
- * and nothing was changed. */
-bool server_store_set_on_sd(bool on);
+void server_store_init(void);            /* reads NVS only */
+/* The CFG 23 migration (spec §10 step 3), once: the hosts an older build kept on the TF card (creds_on_sd) are
+ * added to the NVS list (an entry whose name, or user, host and port, is already there is skipped) and saved.
+ * The card must be mounted first (sd_mount); its file is never changed. Returns the count added, or -1 when
+ * the card or its file can't be read (the NVS list is then unchanged). */
+int  server_store_import_sd_once(void);
 int  server_store_count(void);
 const server_t *server_store_get(int i);
 int  server_store_add(const server_t *s);       /* returns index */
 bool server_store_update(int i, const server_t *s);
 bool server_store_remove(int i);
 void server_store_move(int from, int to);
-char *server_store_export_json(bool plain);      /* caller frees */
-bool  server_store_import_json(const char *json);
 #ifdef __cplusplus
 }
 #endif

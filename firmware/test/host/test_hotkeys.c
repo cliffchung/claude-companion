@@ -24,8 +24,40 @@ static void test_takeover_leave(void)
     e = ch('q', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, true));
     e = ch('Q', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, true));
     e = ch(']', 0);        TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, true));
-    e = ch(']', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, false));
     e = ch('c', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, true));   /* Claude Code gets it */
+}
+
+static void test_ssh_ctrl_bracket_leaves(void)
+{
+    key_event_t e;
+    e = ch(']', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, false));
+    e = ch('q', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, false));
+}
+
+static void test_terminal_passes_host_keys(void)
+{
+    key_event_t e;
+    for (int t = 0; t < 2; t++) {
+        e = ch('k', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = ch('t', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = ch(' ', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+    }
+}
+
+static void test_dashboard_terminal_keys(void)
+{
+    key_event_t e;
+    e = ch('t', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_TERMINAL, hk_dashboard(&e));
+    e = ch('T', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_TERMINAL, hk_dashboard(&e));
+    e = ch('m', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_TERMINAL, hk_dashboard(&e));
+}
+
+static void test_ctrl_space_is_voice(void)
+{
+    key_event_t e = ch(' ', MOD_CTRL);
+    TEST_ASSERT_EQUAL(HK_D_VOICE, hk_dashboard(&e));
+    e = ch(' ', 0);
+    TEST_ASSERT_EQUAL(HK_D_NONE, hk_dashboard(&e));
 }
 
 static void test_takeover_scroll(void)
@@ -44,7 +76,7 @@ static void test_dashboard_keys(void)
     key_event_t e;
     e = ch('o', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_OPEN, hk_dashboard(&e));
     e = ch('P', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_SETTINGS, hk_dashboard(&e));
-    e = ch('m', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_MORE, hk_dashboard(&e));
+    e = ch('m', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_TERMINAL, hk_dashboard(&e));
     e = ch('k', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_KEYS, hk_dashboard(&e));
     e = ch('p', MOD_META); TEST_ASSERT_EQUAL(HK_D_SETTINGS, hk_dashboard(&e));
     e = ch('x', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_LOCAL, hk_dashboard(&e));
@@ -65,45 +97,37 @@ static void test_dashboard_ctrl_never_typed(void)
 static void test_ctrl_m_is_not_enter(void)
 {
     key_event_t e = ch('m', MOD_CTRL);
-    TEST_ASSERT_EQUAL(HK_D_MORE, hk_dashboard(&e));
+    TEST_ASSERT_EQUAL(HK_D_TERMINAL, hk_dashboard(&e));
     e = sk(SK_ENTER, MOD_CTRL);
     TEST_ASSERT_EQUAL(HK_D_NONE, hk_dashboard(&e));   /* Ctrl+Enter keeps today's meaning */
 }
 
-static bool any_line_has(const char *needle)
-{
-    for (int i = 0; hk_overlay_lines[i]; i++)
-        if (strstr(hk_overlay_lines[i], needle)) return true;
-    return false;
-}
-
 static void test_overlay_lists_every_shortcut(void)
 {
-    int n = 0;
-    while (hk_overlay_lines[n]) n++;
+    const char *need[] = { "Up / Down", "Enter", "Ctrl+O", "Ctrl+T", "Ctrl+P", "Ctrl+K", "Ctrl+Space",
+                           "Esc", "Ctrl+]", "Shift+Up / Down" };
+    int n = hk_overlay_n;
     TEST_ASSERT_EQUAL(10, n);
-    const char *need[] = { "Ctrl+]", "Ctrl+P", "Ctrl+M", "Ctrl+K", "Ctrl+O", "Shift+Up" };
-    for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++)
-        TEST_ASSERT_TRUE_MESSAGE(any_line_has(need[i]), need[i]);
-}
-
-/* The spec's strings, pinned (review M3) */
-static void test_hint_and_toast_strings(void)
-{
-    TEST_ASSERT_EQUAL_STRING("Ctrl+O open \xc2\xb7 Ctrl+P settings \xc2\xb7 Ctrl+K keys", HK_DASH_HINT);
-    TEST_ASSERT_EQUAL_STRING("Ctrl+] to leave", HK_TAKEOVER_TOAST);
-    TEST_ASSERT_EQUAL(3000, HK_TAKEOVER_TOAST_MS);
+    for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
+        bool found = false;
+        for (int k = 0; k < n; k++)
+            if (strstr(tr(hk_overlay[k].keys), need[i]) && tr(hk_overlay[k].what)[0]) found = true;
+        TEST_ASSERT_TRUE_MESSAGE(found, need[i]);
+    }
 }
 
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_takeover_leave);
+    RUN_TEST(test_ssh_ctrl_bracket_leaves);
+    RUN_TEST(test_terminal_passes_host_keys);
+    RUN_TEST(test_dashboard_terminal_keys);
+    RUN_TEST(test_ctrl_space_is_voice);
     RUN_TEST(test_takeover_scroll);
     RUN_TEST(test_dashboard_keys);
     RUN_TEST(test_dashboard_ctrl_never_typed);
     RUN_TEST(test_ctrl_m_is_not_enter);
     RUN_TEST(test_overlay_lists_every_shortcut);
-    RUN_TEST(test_hint_and_toast_strings);
     return UNITY_END();
 }

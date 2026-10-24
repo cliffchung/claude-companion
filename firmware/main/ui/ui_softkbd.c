@@ -1,5 +1,6 @@
 #include "ui_softkbd.h"
 #include "ui.h"
+#include "ui_comp.h"
 #include "input/keyboard.h"
 #include <string.h>
 
@@ -57,22 +58,13 @@ static lv_obj_t *mk_key(lv_obj_t *row, const char *label, int type, uint32_t cp,
 {
     key_def_t *d = lv_malloc(sizeof(key_def_t));
     d->label = label; d->type = type; d->cp = cp; d->sk = sk; d->w = grow;
-    lv_obj_t *b = lv_button_create(row);
-    lv_obj_set_height(b, LV_PCT(100));
+    /* the token buttons: a toggled modifier is primary (fg fill), every other key secondary */
+    lv_obj_t *b = ui_btn(row, active ? UI_BTN_PRIMARY : UI_BTN_SECONDARY, label, key_cb, NULL);
+    lv_obj_set_size(b, 1, LV_PCT(100));
     lv_obj_set_flex_grow(b, grow);
-    lv_obj_set_style_radius(b, ui_theme_radius(8), 0);
-    lv_obj_set_style_shadow_width(b, 0, 0);
-    lv_obj_set_style_pad_all(b, ui_theme_pad(0), 0);
-    lv_obj_set_style_bg_color(b, active ? UI_ACCENT : (type == KT_CHAR ? UI_CARD_HI : UI_CARD), 0);
-    lv_obj_set_style_bg_color(b, UI_ACCENT, LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(b, active && ui_theme_pixel() ? UI_BG : UI_TEXT, 0);
-    lv_obj_set_style_text_color(b, ui_theme_pixel() ? UI_BG : UI_TEXT, LV_STATE_PRESSED);
+    lv_obj_set_style_min_width(b, 0, 0);
+    lv_obj_set_style_pad_hor(b, 0, 0);   /* keeps ui_btn's 8 px hit pad: 65 px keys hit 80 (P4C-5) */
     lv_obj_set_user_data(b, d);
-    lv_obj_t *l = lv_label_create(b);
-    lv_label_set_text(l, label);
-    lv_obj_set_style_text_font(l, FONT_BODY, 0);
-    lv_obj_center(l);
-    lv_obj_add_event_cb(b, key_cb, LV_EVENT_CLICKED, NULL);
     return b;
 }
 
@@ -129,26 +121,27 @@ lv_obj_t *softkbd_create(lv_obj_t *parent)
     kbd_t *k = lv_calloc(1, sizeof(kbd_t));
     s_kbd = k;
     k->root = lv_obj_create(parent);
+    lv_obj_remove_style_all(k->root);   /* first: it drops local styles, the size and alignment included */
     lv_obj_set_size(k->root, LV_PCT(100), KBD_H);
     lv_obj_align(k->root, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(k->root, UI_CARD, 0);
+    lv_obj_set_style_bg_color(k->root, lv_color_hex(UI_TK_PANEL), 0);
     lv_obj_set_style_bg_opa(k->root, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(k->root, 0, 0);
-    lv_obj_set_style_radius(k->root, 0, 0);
-    lv_obj_set_style_pad_all(k->root, 6, 0);
-    lv_obj_set_style_pad_row(k->root, 6, 0);
+    lv_obj_set_style_border_color(k->root, lv_color_hex(UI_TK_LINE), 0);
+    lv_obj_set_style_border_width(k->root, 1, 0);
+    lv_obj_set_style_border_side(k->root, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_pad_all(k->root, UI_TK_GAP_S, 0);
+    lv_obj_set_style_pad_row(k->root, UI_TK_GAP_S, 0);
     lv_obj_set_flex_flow(k->root, LV_FLEX_FLOW_COLUMN);
     lv_obj_remove_flag(k->root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(k->root, UI_KEYBOARD_SKIP);
     lv_obj_add_event_cb(k->root, kbd_delete_cb, LV_EVENT_DELETE, NULL);
     for (int r = 0; r < 4; r++) {
         lv_obj_t *row = lv_obj_create(k->root);
+        lv_obj_remove_style_all(row);
         lv_obj_set_width(row, LV_PCT(100));
         lv_obj_set_flex_grow(row, 1);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, ui_theme_pad(0), 0);
-        lv_obj_set_style_pad_column(row, ui_theme_pad(5), 0);
+        lv_obj_set_style_pad_column(row, UI_TK_GAP_S, 0);
+        ui_comp_pass_hits(row);   /* the keys' hit area crosses the row's edges; the root's 8 px padding holds it */
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         k->rows[r] = row;

@@ -17,7 +17,6 @@
 #include "ui/ui_boot.h"
 #include "sys/sysinfo.h"
 #include "net/wifi_mgr.h"
-#include "storage/sd.h"
 #include "input/keyboard.h"
 #include "servers/server_store.h"
 #include "crypto/secure_store.h"
@@ -32,7 +31,6 @@
 #include "sys/imu.h"
 #include "sys/display_ctl.h"
 #include "sys/usb_mgr.h"
-#include "media/audio_player.h"
 #include "net/tailscale.h"
 #include "companion/cc_link.h"
 #include "sys/boot_phase.h"
@@ -101,7 +99,7 @@ static bool display_init_early(void)
 static void display_apply_settings(void)
 {
     bsp_display_lock(0);
-    lv_display_set_rotation(s_display, (lv_display_rotation_t)(g_settings.rotation & 3));
+    lv_display_set_rotation(s_display, LV_DISPLAY_ROTATION_90);   /* landscape, USB-C on the left (Plan 4: fixed) */
     lv_refr_now(s_display);
     bsp_display_unlock();
     bsp_display_brightness_set(s_dark_boot ? 0 : g_settings.brightness);
@@ -173,8 +171,9 @@ void app_main(void)
     secure_store_init();
     sysinfo_init();
     imu_suspend();   /* nothing uses the BMI270 (PT15); it keeps whatever an earlier firmware left running */
-    sd_mount();
-    server_store_init();   /* may live on the card, so only after it is mounted */
+    /* No sd_mount here (spec §7.1, P4-7): the card is mounted on demand (Load from SD, a key file on the card) */
+    server_store_init();   /* NVS only */
+    settings_post_load_migrate(s_dark_boot);   /* CFG 23: the hosts an older build kept on the card (not on a check-in) */
 
     bsp_display_lock(0);
     fonts_init();
@@ -185,7 +184,6 @@ void app_main(void)
     link_down_init();   /* final review C1: every link-down path closes SSH first */
     wifi_mgr_init();
     usb_mgr_init();
-    audio_player_init();
     tailscale_init();
     /* Services are initialized; connection establishment continues in their
      * background tasks. Keep the logo for one second from backlight-on, with
@@ -194,7 +192,6 @@ void app_main(void)
     bsp_display_lock(0);
     ui_init();
     lv_display_trigger_activity(NULL);
-    screenshot_init();
     ui_nav_home();
     bsp_display_unlock();
     debug_console_start();

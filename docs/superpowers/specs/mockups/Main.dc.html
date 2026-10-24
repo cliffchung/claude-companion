@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sessions home</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#e9e7e1}a:hover{color:#ffffff}
+</style>
+</helmet>
+<div style="width: 1280px; height: 720px; box-sizing: border-box; background: #0e1116; color: #e9e7e1; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; display: flex; flex-direction: column">
+<header style="height: 56px; box-sizing: border-box; padding: 0 24px; background: #161b22; border-bottom: 1px solid #2a323d; display: flex; align-items: center; gap: 20px; font-size: 22px">
+<span style="font-weight: 700">Sessions</span>
+<span style="display: flex; align-items: center; gap: 8px; color: #f4b545; font-size: 20px"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="6" fill="#f4b545"></circle></svg>2 need you</span>
+<span style="flex-grow: 1"></span>
+<span style="display: flex; align-items: center; gap: 8px; font-size: 20px" aria-label="Battery 78 percent, charging"><svg width="34" height="18" viewBox="0 0 34 18" aria-hidden="true"><rect x="1" y="1" width="28" height="16" rx="3" fill="none" stroke="#e9e7e1" stroke-width="2"></rect><rect x="30" y="6" width="3" height="6" rx="1" fill="#e9e7e1"></rect><rect x="4" y="4" width="18" height="10" rx="1" fill="#54d08a"></rect></svg>78%</span>
+<span style="display: flex; align-items: flex-end; gap: 3px; height: 20px" aria-label="Wi-Fi strong"><span style="width: 5px; height: 6px; background: #e9e7e1"></span><span style="width: 5px; height: 11px; background: #e9e7e1"></span><span style="width: 5px; height: 16px; background: #e9e7e1"></span><span style="width: 5px; height: 20px; background: #2a323d"></span></span>
+<span style="display: flex; align-items: center; gap: 8px; color: #54d08a; font-size: 20px"><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="5" fill="#54d08a"></circle></svg>Host</span>
+<span style="font-weight: 700">21:20</span>
+</header>
+<div style="flex-grow: 1; display: flex; min-height: 0">
+<nav aria-label="Sessions" style="width: 440px; box-sizing: border-box; padding: 16px 8px 16px 24px; display: flex; flex-direction: column; gap: 8px; border-right: 1px solid #2a323d">
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 16px; border-radius: 12px; background: #1b212b; border: 2px solid #f4b545; display: flex; align-items: center; gap: 12px; cursor: pointer"><span style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0"><span style="font-size: 22px; font-weight: 700">auth-refactor</span><span style="font-size: 18px; color: #8a94a2">api · 7m</span></span><span style="font-size: 16px; font-weight: 700; color: #0e1116; background: #f4b545; padding: 4px 10px; border-radius: 8px">NEEDS YOU</span></button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 16px; border-radius: 12px; background: #161b22; border: 1px solid rgba(244,181,69,0.6); display: flex; align-items: center; gap: 12px; cursor: pointer"><span style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0"><span style="font-size: 22px; font-weight: 700">deps-bump</span><span style="font-size: 18px; color: #8a94a2">web · 14m</span></span><span style="font-size: 16px; font-weight: 700; color: #0e1116; background: #f4b545; padding: 4px 10px; border-radius: 8px">NEEDS YOU</span></button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 16px; border-radius: 12px; background: #161b22; border: 1px solid #2a323d; display: flex; align-items: center; gap: 12px; cursor: pointer"><span style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0"><span style="font-size: 22px; font-weight: 700">flaky-tests</span><span style="font-size: 18px; color: #8a94a2">ci · 21m</span></span><span style="font-size: 16px; font-weight: 700; color: #54d08a; border: 1px solid #54d08a; padding: 3px 9px; border-radius: 8px">WORKING</span></button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 16px; border-radius: 12px; background: #161b22; border: 1px solid #2a323d; display: flex; align-items: center; gap: 12px; cursor: pointer"><span style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0"><span style="font-size: 22px; font-weight: 700">docs-pass</span><span style="font-size: 18px; color: #8a94a2">site · 40m</span></span><span style="font-size: 16px; color: #8a94a2; border: 1px solid #2a323d; padding: 3px 9px; border-radius: 8px">IDLE</span></button>
+<button style="all: unset; box-sizing: border-box; height: 72px; padding: 0 16px; border-radius: 12px; background: #161b22; border: 1px solid #2a323d; display: flex; align-items: center; gap: 12px; cursor: pointer"><span style="flex-grow: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0"><span style="font-size: 22px; font-weight: 700">release-notes</span><span style="font-size: 18px; color: #8a94a2">api · 1h</span></span><span style="font-size: 16px; color: #8a94a2; border: 1px solid #2a323d; padding: 3px 9px; border-radius: 8px">DONE</span></button>
+</nav>
+<main style="flex-grow: 1; box-sizing: border-box; padding: 16px 24px; display: flex; flex-direction: column; gap: 16px; min-width: 0">
+<div style="display: flex; align-items: center; gap: 12px"><span style="font-size: 26px; font-weight: 700">auth-refactor</span><span style="font-size: 18px; color: #8a94a2">~/code/api · 7m</span><span style="flex-grow: 1"></span><span style="font-size: 16px; font-weight: 700; color: #0e1116; background: #f4b545; padding: 4px 10px; border-radius: 8px">NEEDS YOU</span></div>
+<div style="flex-grow: 1; box-sizing: border-box; background: #161b22; border: 1px solid #2a323d; border-radius: 12px; padding: 16px 20px; font-size: 19px; line-height: 30px; color: #c9cdd3; display: flex; flex-direction: column; overflow: hidden">
+<span><span style="color: #54d08a">⏺</span> Read 3 files</span>
+<span style="color: #8a94a2">  ⎿ src/auth/session.ts, src/auth/token.ts, test/auth.test.ts</span>
+<span><span style="color: #54d08a">⏺</span> Update src/auth/session.ts (+42 −18)</span>
+<span><span style="color: #e9e7e1">⏺</span> Tests pass. Should I also remove the legacy cookie path?</span>
+<span style="color: #8a94a2">  1. Yes, remove it   2. Keep it behind a flag   3. Leave as is</span>
+</div>
+<div style="display: flex; gap: 12px; align-items: center">
+<label style="flex-grow: 1; height: 64px; box-sizing: border-box; background: #1b212b; border: 2px solid #e9e7e1; border-radius: 12px; display: flex; align-items: center; padding: 0 18px; font-size: 22px; color: #8a94a2">Type an answer…<input aria-label="Answer" style="position: absolute; opacity: 0; width: 1px; height: 1px"></label>
+<button aria-label="Hold to talk (voice, coming later)" style="all: unset; box-sizing: border-box; width: 64px; height: 64px; border-radius: 12px; background: #1b212b; border: 1px dashed #2a323d; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#8a94a2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg></button>
+</div>
+<div style="display: flex; gap: 12px; align-items: center">
+<button style="all: unset; box-sizing: border-box; height: 64px; padding: 0 28px; border-radius: 12px; background: #e9e7e1; color: #0e1116; font-size: 22px; font-weight: 700; display: flex; align-items: center; cursor: pointer">↵ Send</button>
+<button style="all: unset; box-sizing: border-box; height: 64px; padding: 0 28px; border-radius: 12px; background: #1b212b; border: 1px solid #2a323d; font-size: 22px; display: flex; align-items: center; cursor: pointer">⌃O Open</button>
+<span style="flex-grow: 1"></span>
+<span style="font-size: 18px; color: #8a94a2">1–3 picks an option</span>
+</div>
+</main>
+</div>
+<footer style="height: 64px; box-sizing: border-box; padding: 0 24px; background: #161b22; border-top: 1px solid #2a323d; display: flex; align-items: center; gap: 12px; font-size: 18px">
+<button style="all: unset; height: 48px; padding: 0 16px; border-radius: 8px; background: #1b212b; display: flex; align-items: center; cursor: pointer">↑↓ Select</button>
+<button style="all: unset; height: 48px; padding: 0 16px; border-radius: 8px; background: #1b212b; display: flex; align-items: center; cursor: pointer">↵ Send</button>
+<button style="all: unset; height: 48px; padding: 0 16px; border-radius: 8px; background: #1b212b; display: flex; align-items: center; cursor: pointer">⌃O Open</button>
+<span style="flex-grow: 1"></span>
+<a href="Terminal.dc.html" style="height: 48px; padding: 0 16px; border-radius: 8px; background: #1b212b; display: flex; align-items: center; text-decoration: none">⌃T Terminal</a>
+<a href="Settings.dc.html" style="height: 48px; padding: 0 16px; border-radius: 8px; background: #1b212b; display: flex; align-items: center; text-decoration: none">⌃P Settings</a>
+<button style="all: unset; height: 48px; padding: 0 16px; border-radius: 8px; background: #1b212b; display: flex; align-items: center; cursor: pointer">⌃K Keys</button>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":720}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
