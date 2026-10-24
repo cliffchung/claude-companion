@@ -43,7 +43,6 @@ static void nav_show_top(lv_screen_load_anim_t anim)
     lv_obj_t *scr = e->create(e->arg);
     if (!scr) { ESP_LOGE(TAG, "screen create failed"); return; }
     load_screen(scr, anim);
-    ui_music_bar_update();
 }
 
 void ui_nav_push(ui_screen_create_fn create, void *arg)
@@ -727,7 +726,6 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
     }
     keyboard_walk_t walk = {0};
     keyboard_walk(scope, &walk);
-    if (!modal) keyboard_walk(lv_layer_top(), &walk); /* mini player */
     bool had_focus = walk.found;
     if (!had_focus) keyboard_focus_set(walk.first);
     lv_obj_t *obj = s_keyboard_focus;

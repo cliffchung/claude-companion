@@ -1,12 +1,10 @@
 #include "ui/ui.h"
 #include "term/term_view.h"
 #include "media/image_loader.h"
-#include "media/camera.h"
 #include "ui/ui_boot.h"
 #include "ui/ui_motion.h"
 #include "settings/settings.h"
 #include "net/tailscale.h"
-#include "media/audio_player.h"
 #include "input/keyboard.h"
 #include "sys/sysinfo.h"
 #include "net/wifi_mgr.h"
@@ -25,7 +23,6 @@
 app_settings_t g_settings;
 void settings_save(void) {}
 void settings_reset_defaults(void) { ui_theme_set_preset(0); }
-void ui_music_bar_update(void) {}
 bool g_ssh_session_active=false;
 void softkbd_hide_all(void) {}
 int softkbd_height(void) { return 300; }
@@ -46,6 +43,10 @@ bool wifi_mgr_is_connected(void) { return !s_rc_preview; }
 bool wifi_mgr_is_connecting(void) { return false; }
 void wifi_mgr_get_ip4(char *b, size_t n) { snprintf(b,n,"192.168.1.25"); }
 void wifi_mgr_disconnect(void) {}
+/* Plan 3 surfaces Settings calls (the preview stopped linking at 8b94efb without them). */
+bool wifi_mgr_static_ip_get(wifi_static_ip_t *out) { if (out) memset(out, 0, sizeof(*out)); return true; }
+bool wifi_mgr_static_ip_set(const wifi_static_ip_t *in) { (void)in; return true; }
+void link_down_restart(const char *why) { (void)why; exit(0); }
 bool keyboard_present(void) { return true; }
 bool keyboard_usb_present(void) { return false; }
 static void *focused_textarea;
@@ -77,8 +78,6 @@ bool tailscale_stopping(void) { return false; }
 void tailscale_set_enabled(bool on) { g_settings.ts_enable = on; }
 const char *tailscale_state_text(void) { return tailscale_state() == TS_CONNECTED ? "Connected" : tailscale_state() == TS_OFF ? "Off" : "Connecting"; }
 const char *tailscale_vpn_ip(void) { return tailscale_state() == TS_CONNECTED ? "100.101.102.103" : ""; }
-void audio_player_toggle(void) {}
-ap_state_t audio_player_state(void) { return AP_STOPPED; }
 void softkbd_attach_textarea(lv_obj_t *a,lv_obj_t *b) {}
 void esp_restart(void) {}
 void bsp_display_brightness_set(int v) {}
@@ -161,25 +160,11 @@ uint32_t cc_link_forget_done(char *fp, size_t cap) { snprintf(fp, cap, PREVIEW_F
 bool cc_link_pinned_fingerprint(char *fp, size_t cap) { snprintf(fp, cap, "SHA256:OldPreviewKeyOnly9876543210zyxwvutsrqponm"); return true; }
 esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
-SCREEN(ui_servers_create) SCREEN(ui_files_create) SCREEN(ui_music_create)
+SCREEN(ui_servers_create) SCREEN(ui_files_create)
 SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create)
-SCREEN(ui_usb_create) SCREEN(ui_ota_create) SCREEN(ui_devinfo_create)
+SCREEN(ui_ota_create) SCREEN(ui_devinfo_create)
 SCREEN(ui_server_form_create)
 SCREEN(ui_backup_create)
-bool camera_start(void) { return true; }
-void camera_stop(void) {}
-camera_state_t camera_state(void) { return CAMERA_STATE_RUNNING; }
-const char *camera_error(void) { return ""; }
-bool camera_copy_frame(void *dst,size_t cap,uint32_t *w,uint32_t *h,uint32_t *seq) {
-    if(cap<1280U*720U*2U) return false;
-    uint16_t *pixels=dst;
-    for(unsigned y=0;y<720;y++) for(unsigned x=0;x<1280;x++)
-        pixels[y*1280+x]=(uint16_t)((((x*31)/1279)<<11)|(((y*63)/719)<<5)|((x+y)&31));
-    if(w)*w=1280; if(h)*h=720; if(seq)(*seq)++;
-    return true;
-}
-bool camera_take_photo(void) { return true; }
-camera_photo_state_t camera_photo_state(char *path,size_t len) { if(path&&len)*path=0; return CAMERA_PHOTO_IDLE; }
 static int snapshot(lv_obj_t *s, const char *path) {
     int w=lv_obj_get_width(s), h=lv_obj_get_height(s);
     lv_draw_buf_t *snap=lv_snapshot_take(s,LV_COLOR_FORMAT_RGB888);
@@ -547,10 +532,6 @@ int main(int argc,char **argv) {
     }
     fonts_init(); i18n_set_lang(LANG_JA);
     ui_theme_set_preset(argc>2?atoi(argv[2]):0); ui_init();
-    if (argc>1 && !strcmp(argv[1],"camera")) {
-        ui_nav_push(ui_camera_create,NULL); step(d,500);
-        return snapshot(lv_screen_active(),"screen.ppm");
-    }
     if (argc>1 && !strcmp(argv[1],"font-policy")) { font_policy_check(d); return 0; }
     if (argc>1 && !strcmp(argv[1],"sleep-notice")) {
         /* the pre-Hibernate notice over the dashboard */
@@ -673,8 +654,7 @@ int main(int argc,char **argv) {
         return r;
     }
     ui_screen_create_fn create= argc>1 && !strcmp(argv[1],"settings") ? ui_settings_create :
-                 argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create :
-                 argc>1 && !strcmp(argv[1],"camera") ? ui_camera_create : ui_home_create;
+                 argc>1 && !strcmp(argv[1],"appearance") ? ui_appearance_create : ui_home_create;
     g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;   /* Settings → Network's switch (PREVIEW_TS=0: off) */
     /* Exercise persisted preset indexes and live theme rebuilds before capture. */
     ui_nav_push(create, NULL);
@@ -709,7 +689,7 @@ int main(int argc,char **argv) {
     if (create == ui_home_create) {
         lv_obj_t *content = lv_obj_get_child(s, 1);
         unsigned tiles = lv_obj_get_child_count(content);
-        assert(tiles >= 9);
+        assert(tiles >= 6);   /* Plan 4 Task 1 removed Music, Camera and USB */
         for (unsigned i = 0; i < tiles; i++) {
             lv_area_t a; lv_obj_get_coords(lv_obj_get_child(content, i), &a);
             assert(a.x1 >= 0 && a.x2 < w && a.y1 >= UI_TOPBAR_H && a.y2 < h);

@@ -117,18 +117,14 @@ bool ui_dashboard_keys_overlay_shown(void);     /* up on the current dashboard *
 lv_obj_t *ui_files_create(void *arg);            /* arg: const char *path or NULL */
 lv_obj_t *ui_image_create(void *arg);            /* arg: const char *path */
 lv_obj_t *ui_text_create(void *arg);
-lv_obj_t *ui_music_create(void *arg);
-lv_obj_t *ui_camera_create(void *arg);
 lv_obj_t *ui_wifi_create(void *arg);
 lv_obj_t *ui_settings_create(void *arg);
 lv_obj_t *ui_appearance_create(void *arg);
 lv_obj_t *ui_ansi_create(void *arg);
 lv_obj_t *ui_ota_create(void *arg);
 lv_obj_t *ui_devinfo_create(void *arg);
-lv_obj_t *ui_usb_create(void *arg);
 lv_obj_t *ui_backup_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);
-void ui_music_bar_update(void);   /* background playback bar */
 /* The pre-Hibernate notice: a full-screen bg object on lv_layer_top with the centred fg text
    "Sleeping to save battery. Press the side button to wake." (power lights the panel first). */
 void ui_sleep_notice(bool show);

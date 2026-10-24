@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 #include "ui/ui.h"
+#include "esp_heap_caps.h"
+#include "lvgl.h"
+#include "src/misc/lv_timer_private.h" /* LVGL 9.6 has no public period/last-run accessor. */
 
 /* `key <name>` and `key text <string>`: inject events into the same queue the
  * A164 keyboard feeds, so the UI cannot tell them apart. */
@@ -78,11 +81,17 @@ static int cmd_key(int argc, char **argv)
         printf("key: ctrl+%s\n", argv[2]);
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "ctrl") == 0 && strcmp(argv[2], "space") == 0) {
+        key_event_t ev = { .type = KEY_EV_CHAR, .cp = ' ', .mods = MOD_CTRL };
+        if (!keyboard_post(&ev)) { printf("key: queue full\n"); return 1; }
+        printf("key: ctrl+space\n");
+        return 0;
+    }
     int rc;
     if (argc == 3 && strcmp(argv[1], "ctrl") == 0 && post_named(argv[2], MOD_CTRL, "ctrl+", &rc)) return rc;
     if (argc == 3 && strcmp(argv[1], "shift") == 0 && post_named(argv[2], MOD_SHIFT, "shift+", &rc)) return rc;
     if (argc == 2 && post_named(argv[1], 0, "", &rc)) return rc;
-    printf("usage: key <name> | key ctrl <char>|<name> | key shift <name> | key text <string> | key log on|off\n"
+    printf("usage: key <name> | key ctrl <char>|<name>|space | key shift <name> | key text <string> | key log on|off\n"
            "  names: up down left right enter esc tab backspace pgup pgdn home end\n");
     return 1;
 }
@@ -93,12 +102,58 @@ static int cmd_key(int argc, char **argv)
 static void ui_refresh_async(void *arg) { (void)arg; ui_nav_refresh(); }
 static void ui_home_async(void *arg) { (void)arg; ui_nav_home(); }
 static void ui_settings_async(void *arg) { (void)arg; ui_nav_push(ui_settings_create, NULL); }
+/* `ui heapmin start|stop`: the internal-RAM low-water mark over an action (the B2 RAM gate).
+ * Reads heap counters only, so it takes no LVGL lock. */
+static int ui_heapmin(const char *arg)
+{
+    if (strcmp(arg, "start") == 0) {
+        if (heap_caps_monitor_local_minimum_free_size_start() != ESP_OK) {
+            printf("heapmin: already started\n");
+            return 1;
+        }
+        printf("heapmin: started\n");
+        return 0;
+    }
+    if (strcmp(arg, "stop") == 0) {
+        size_t min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+        if (heap_caps_monitor_local_minimum_free_size_stop() != ESP_OK) {
+            printf("heapmin: not started\n");
+            return 1;
+        }
+        printf("heapmin: internal min %u B, largest %u B, now %u B\n", (unsigned)min,
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        return 0;
+    }
+    printf("usage: ui heapmin start|stop\n");
+    return 1;
+}
+
+/* `ui timers`: every LVGL timer with its period, so a gate can count the fast ones (B1). */
+static int ui_timers(void)
+{
+    ui_lock();
+    uint32_t now = lv_tick_get();
+    int n = 0, fast = 0;
+    for (lv_timer_t *t = lv_timer_get_next(NULL); t; t = lv_timer_get_next(t)) {
+        printf("timer %u ms, last run %u ms ago, paused=%d\n", (unsigned)t->period,
+               (unsigned)lv_tick_diff(now, t->last_run), t->paused ? 1 : 0);
+        n++;
+        if (t->period < 300) fast++;
+    }
+    ui_unlock();
+    printf("timers: %d, under 300 ms: %d\n", n, fast);
+    return 0;
+}
+
 static int cmd_ui(int argc, char **argv)
 {
+    if (argc == 3 && strcmp(argv[1], "heapmin") == 0) return ui_heapmin(argv[2]);
+    if (argc == 2 && strcmp(argv[1], "timers") == 0) return ui_timers();
     if (argc == 2 && strcmp(argv[1], "refresh") == 0) { ui_async(ui_refresh_async, NULL); printf("ui: refresh\n"); return 0; }
     if (argc == 2 && strcmp(argv[1], "home") == 0) { ui_async(ui_home_async, NULL); printf("ui: home\n"); return 0; }
     if (argc == 2 && strcmp(argv[1], "settings") == 0) { ui_async(ui_settings_async, NULL); printf("ui: settings\n"); return 0; }
-    printf("usage: ui refresh | ui home | ui settings\n");
+    printf("usage: ui refresh | ui home | ui settings | ui heapmin start|stop | ui timers\n");
     return 1;
 }
 
@@ -106,14 +161,14 @@ void key_console_init(void)
 {
     const esp_console_cmd_t ui_cmd = {
         .command = "ui",
-        .help = "ui refresh: rebuild the current screen; ui home: go to the dashboard; ui settings: open Settings",
+        .help = "ui refresh: rebuild the current screen; ui home: go to the dashboard; ui settings: open Settings; ui heapmin start|stop: internal RAM low over an action; ui timers: list LVGL timers",
         .hint = NULL,
         .func = cmd_ui,
     };
     debug_console_register(&ui_cmd);
     const esp_console_cmd_t cmd = {
         .command = "key",
-        .help = "Inject a key as if typed on the keyboard: <name>, ctrl <char>|<name>, shift <name>, text <string>; log on|off prints every decoded key",
+        .help = "Inject a key as if typed on the keyboard: <name>, ctrl <char>|<name>|space, shift <name>, text <string>; log on|off prints every decoded key",
         .hint = NULL,
         .func = cmd_key,
     };

@@ -2,8 +2,6 @@
 #include "ui.h"
 #include "ui_softkbd.h"
 #include "storage/sd.h"
-#include "sys/usb_mgr.h"
-#include "media/audio_player.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -70,7 +68,6 @@ static const char *icon_for(const entry_t *e)
     return LV_SYMBOL_FILE;
 }
 static bool is_image(const char *n) { const char *x = fs_ext(n); return !strcmp(x, "jpg") || !strcmp(x, "jpeg") || !strcmp(x, "png") || !strcmp(x, "bmp") || !strcmp(x, "gif"); }
-static bool is_audio(const char *n) { const char *x = fs_ext(n); return !strcmp(x, "mp3") || !strcmp(x, "flac") || !strcmp(x, "wav"); }
 static bool is_text(const char *n)
 {
     static const char *t[] = { "txt","log","md","json","ini","cfg","conf","csv","c","h","cpp","hpp","py","js","html","css","xml","yaml","yml","sh","pub","", NULL };
@@ -92,7 +89,6 @@ static void item_cb(lv_event_t *e)
     if (it->dir) { open_path(full); return; }
     free(s_arg_path); s_arg_path = strdup(full);
     if (is_image(it->name)) ui_nav_push(ui_image_create, s_arg_path);
-    else if (is_audio(it->name)) { audio_player_play(full); ui_nav_push(ui_music_create, s_arg_path); }
     else if (is_text(it->name) || it->size < 256 * 1024) ui_nav_push(ui_text_create, s_arg_path);
     else ui_toast(tr(STR_FILE_TOO_LARGE));
 }
@@ -219,19 +215,19 @@ static void toolbar_menu_cb(int m, void *ud)
     case 1: ui_prompt(tr(STR_NEW_FILE), tr(STR_FILE_NAME), "", false, newfile_cb, NULL); break;
     case 2: paste_cb(NULL); break;
     case 3: s_fm.select_mode = true; rebuild(); break;
-    case 4: open_path(usb_mgr_msc_mounted() ? USB_MOUNT : SD_MOUNT); break;
+    case 4: open_path(SD_MOUNT); break;
     }
 }
 static void toolbar_cb(lv_event_t *e)
 {
     (void)e;
-    const char *items[] = { tr(STR_NEW_FOLDER), tr(STR_NEW_FILE), tr(STR_PASTE), tr(STR_SELECT), usb_mgr_msc_mounted() ? tr(STR_USB_DRIVE) : tr(STR_TF_CARD) };
+    const char *items[] = { tr(STR_NEW_FOLDER), tr(STR_NEW_FILE), tr(STR_PASTE), tr(STR_SELECT), tr(STR_TF_CARD) };
     ui_menu(tr(STR_FILES), items, 5, toolbar_menu_cb, NULL);
 }
 static void up_cb(lv_event_t *e)
 {
     (void)e;
-    if (!strcmp(s_fm.path, SD_MOUNT) || !strcmp(s_fm.path, USB_MOUNT)) { ui_nav_back(); return; }
+    if (!strcmp(s_fm.path, SD_MOUNT)) { ui_nav_back(); return; }
     char *p = strrchr(s_fm.path, '/');
     if (p && p != s_fm.path) *p = 0;
     s_fm.select_mode = false; load_dir(); rebuild();
@@ -270,8 +266,7 @@ static void rebuild(void)
     }
     char a[48], b[48], line[200]; uint64_t tot = 0, fr = 0;
     ui_format_size(a, sizeof(a), total);
-    const char *root = strncmp(s_fm.path, USB_MOUNT, strlen(USB_MOUNT)) == 0 ? USB_MOUNT : SD_MOUNT;
-    if (sd_space(root, &tot, &fr)) { char f1[32], f2[32]; ui_format_size(f1, 32, fr); ui_format_size(f2, 32, tot); snprintf(b, sizeof(b), tr(STR_FREE_SPACE), f1, f2); } else b[0] = 0;
+    if (sd_space(SD_MOUNT, &tot, &fr)) { char f1[32], f2[32]; ui_format_size(f1, 32, fr); ui_format_size(f2, 32, tot); snprintf(b, sizeof(b), tr(STR_FREE_SPACE), f1, f2); } else b[0] = 0;
     snprintf(line, sizeof(line), tr(STR_ITEMS_TOTAL), (unsigned)s_fm.n, a);
     strlcat(line, "   ", sizeof(line)); strlcat(line, b, sizeof(line));
     lv_label_set_text(s_fm.footer, line);
@@ -284,9 +279,7 @@ lv_obj_t *ui_files_create(void *arg)
 {
     const char *path = arg;
     if (!path || !*path) path = s_fm.path[0] ? s_fm.path : SD_MOUNT;
-    if (!sd_is_mounted() && !strncmp(path, SD_MOUNT, strlen(SD_MOUNT)) && !sd_mount()) {
-        if (usb_mgr_msc_mounted()) path = USB_MOUNT;
-    }
+    if (!sd_is_mounted() && !strncmp(path, SD_MOUNT, strlen(SD_MOUNT))) sd_mount();
     lv_obj_t *scr = ui_screen_base();
     s_fm.scr = scr;
     lv_obj_add_event_cb(scr, del_cb, LV_EVENT_DELETE, NULL);
@@ -309,7 +302,7 @@ lv_obj_t *ui_files_create(void *arg)
     lv_obj_set_width(s_fm.list, LV_PCT(100)); lv_obj_set_height(s_fm.list, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(s_fm.list, 0, 0); lv_obj_set_style_border_width(s_fm.list, 0, 0); lv_obj_set_style_pad_all(s_fm.list, 0, 0);
     lv_obj_set_flex_flow(s_fm.list, LV_FLEX_FLOW_COLUMN); lv_obj_set_style_pad_row(s_fm.list, 6, 0);
-    if (!sd_is_mounted() && !usb_mgr_msc_mounted()) {
+    if (!sd_is_mounted()) {
         lv_label_set_text(s_fm.title, tr(STR_FILES));
         ui_label(c, tr(STR_TF_NOT_MOUNTED), FONT_BODY, UI_WARN);
         lv_obj_add_flag(s_fm.selbar, LV_OBJ_FLAG_HIDDEN);

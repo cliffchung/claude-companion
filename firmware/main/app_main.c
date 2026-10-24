@@ -32,7 +32,6 @@
 #include "sys/imu.h"
 #include "sys/display_ctl.h"
 #include "sys/usb_mgr.h"
-#include "media/audio_player.h"
 #include "net/tailscale.h"
 #include "companion/cc_link.h"
 #include "sys/boot_phase.h"
@@ -185,7 +184,6 @@ void app_main(void)
     link_down_init();   /* final review C1: every link-down path closes SSH first */
     wifi_mgr_init();
     usb_mgr_init();
-    audio_player_init();
     tailscale_init();
     /* Services are initialized; connection establishment continues in their
      * background tasks. Keep the logo for one second from backlight-on, with

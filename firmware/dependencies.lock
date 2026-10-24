@@ -37,16 +37,6 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.6
-  espressif/esp_audio_codec:
-    component_hash: 16e2880dbdd5a72264051f750f33a6e5a38fd25621c83e3a32a85a152d2d2643
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.4'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 2.5.0
   espressif/esp_cam_sensor:
     component_hash: 902c305b77f7c42b60fff5a084e397694f8a3fd6e6b72299996a7c856666e983
     dependencies:
@@ -259,26 +249,6 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.2
-  espressif/esp_tinyusb:
-    component_hash: cfb066b239957ebfba5f7a7764e534b3000d3b400fd42d11bedb6ee5e6eaf3c9
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    - name: espressif/tinyusb
-      registry_url: https://components.espressif.com
-      require: public
-      version: '>=0.17.0~2'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    targets:
-    - esp32s2
-    - esp32s3
-    - esp32p4
-    - esp32h4
-    - esp32s31
-    version: 2.4.0
   espressif/esp_video:
     component_hash: ba8f4aa63ad9bda3cc18a3afe1b9ba5b39c7359a6ad79392a94e42ba8cf9e5f8
     dependencies:
@@ -430,22 +400,6 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.1.5
-  espressif/tinyusb:
-    component_hash: 16c8d774dab1f484d3e0c0f61105624d2424bbae864efd19818baf7b451b41e7
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    targets:
-    - esp32s2
-    - esp32s3
-    - esp32p4
-    - esp32h4
-    - esp32s31
-    version: 0.21.0~2
   espressif/usb:
     component_hash: 99eee72ea224d9117d4c342442717a1f20bf8112e2ab5d7d7038b827874f4c92
     dependencies:
@@ -487,30 +441,6 @@ dependencies:
     - esp32s31
     - linux
     version: 1.2.1
-  espressif/usb_host_msc:
-    component_hash: d8765c212bb4915d42560886fac3cc5059d61a0bfa14152b32ea9a5258e7a0c9
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    - name: espressif/usb
-      registry_url: https://components.espressif.com
-      require: public
-      rules:
-      - if: idf_version >=6.0
-      - if: target not in ["linux"]
-      version: ^1.0.0
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    targets:
-    - esp32s2
-    - esp32s3
-    - esp32p4
-    - esp32h4
-    - esp32s31
-    - linux
-    version: 1.3.0
   espressif/usb_host_uvc:
     component_hash: f20c4e4dea50536e2e29daaf589b5f5984402284c155867daef27d6b64869f78
     dependencies:
@@ -584,16 +514,13 @@ dependencies:
       type: service
     version: 9.6.0~1
 direct_dependencies:
-- espressif/esp_audio_codec
 - espressif/esp_hosted
 - espressif/esp_lvgl_port
-- espressif/esp_tinyusb
 - espressif/esp_wifi_remote
 - espressif/m5stack_tab5
 - espressif/usb_host_hid
-- espressif/usb_host_msc
 - idf
 - lvgl/lvgl
-manifest_hash: cca20895cea6c4303a76b55655231ce28fe20cecf9d8be4bb74ec0fd53d3c7a0
+manifest_hash: 1bf250521eb1301d4177fdde309e45e95e2fca2d3efc404879b6598121188b11
 target: esp32p4
 version: 2.0.0

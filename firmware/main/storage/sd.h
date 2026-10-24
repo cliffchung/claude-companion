@@ -6,7 +6,6 @@
 extern "C" {
 #endif
 #define SD_MOUNT "/sdcard"
-#define USB_MOUNT "/usb"
 bool sd_mount(void);
 void sd_unmount(void);
 void sd_unmount_keep_card(void);   /* detach FATFS but keep the SDMMC card initialised */

@@ -4,7 +4,6 @@
 #include "net/wifi_mgr.h"
 #include "storage/sd.h"
 #include "input/keyboard.h"
-#include "media/audio_player.h"
 #include "net/tailscale.h"
 #include <stdio.h>
 #include <time.h>
@@ -20,12 +19,6 @@ static void tile_cb(lv_event_t *e)
 
 /* Long-pressing a tile runs its most useful shortcut instead of opening it. */
 static void quick_new_server(void) { ui_nav_push(ui_server_form_create, (void *)(intptr_t)-1); }
-static void quick_usb_files(void)  { ui_nav_push(ui_files_create, (void *)USB_MOUNT); }
-static void quick_music(void)
-{
-    audio_player_toggle();
-    ui_toast(audio_player_state() == AP_PLAYING ? tr(STR_PLAY) : tr(STR_PAUSE));
-}
 static void quick_wifi(void)
 {
     if (wifi_mgr_is_connected()) { wifi_mgr_disconnect(); ui_toast(tr(STR_DISCONNECTED)); }
@@ -64,12 +57,9 @@ lv_obj_t *ui_home_create(void *arg)
 
     const tile_t all_tiles[] = {
         { STR_HOME_SSH,      LV_SYMBOL_KEYBOARD, ui_servers_create,  lv_color_hex(0x2F6FED), quick_new_server },
-        { STR_HOME_FILES,    LV_SYMBOL_DIRECTORY, ui_files_create,   lv_color_hex(0xF59E0B), quick_usb_files },
-        { STR_HOME_MUSIC,    LV_SYMBOL_AUDIO,    ui_music_create,    lv_color_hex(0x0EA5A4), quick_music },
-        { STR_HOME_CAMERA,   LV_SYMBOL_IMAGE,    ui_camera_create,   lv_color_hex(0xD97706) },
+        { STR_HOME_FILES,    LV_SYMBOL_DIRECTORY, ui_files_create,   lv_color_hex(0xF59E0B) },
         { STR_HOME_WIFI,     LV_SYMBOL_WIFI,     ui_wifi_create,     lv_color_hex(0x8B5CF6), quick_wifi },
         { STR_TAILSCALE,     NULL,               ui_tailscale_create, lv_color_hex(0x6366F1), quick_tailscale },   /* NULL: drawn mark */
-        { STR_HOME_USB,      LV_SYMBOL_USB,      ui_usb_create,      lv_color_hex(0x64748B) },
         { STR_HOME_OTA,      LV_SYMBOL_DOWNLOAD, ui_ota_create,      lv_color_hex(0xEC4899) },   /* shown only with a manifest URL */
         { STR_HOME_DEVINFO,  LV_SYMBOL_LIST,     ui_devinfo_create,  lv_color_hex(0x0284C7) },
         { STR_HOME_SETTINGS, LV_SYMBOL_SETTINGS, ui_settings_create, lv_color_hex(0x475569), quick_appearance },
