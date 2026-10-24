@@ -1979,7 +1979,20 @@ static int terminal_case(lv_display_t *d, const char *v) {
     if (!strcmp(v, "empty")) {
         if (host_lines(body) != 0 || !find_label(body, "+ Add host", false)) { printf("check %s: FAIL rows\n", name); return 1; }
         assert(lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN));
-        return pv_run_checks(d, s, name, false, 0);
+        r |= pv_run_checks(d, s, name, false, 0);
+        /* T13-4: the first Down lands on "+ Add host", never the header's "← Sessions" */
+        lv_obj_t *add = find_clickable_shown(body, "+ Add host"), *back = find_clickable_shown(s, "\xe2\x86\x90 Sessions");
+        press_key(SK_DOWN, 0, false); step(d, 50);
+        if (!lv_obj_has_state(add, LV_STATE_FOCUS_KEY) || lv_obj_has_state(back, LV_STATE_FOCUS_KEY)) {
+            printf("check %s: FAIL the first Down didn't land on + Add host\n", name); return 1;
+        }
+        press_key(SK_ENTER, 0, false); step(d, 200);
+        if (!ui_nav_is_top(ui_hosts_create) || !find_label(top, "Add host", false)) {
+            printf("check %s: FAIL Down, Enter didn't open the add sheet\n", name); return 1;
+        }
+        lv_obj_clean(top);
+        printf("%s: the first Down lands on + Add host; Enter opens the add sheet\n", name);
+        return r;
     }
     if (!strcmp(v, "keys")) {
         assert(!preview_have_sink);
