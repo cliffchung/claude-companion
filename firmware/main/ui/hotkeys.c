@@ -47,9 +47,9 @@ const hk_line_t hk_overlay[] = {
     { "Ctrl+T", "terminal (Ctrl+M also)" },
     { "Ctrl+P", "settings" },
     { "Ctrl+K", "this list" },
-    { "Ctrl+Space", "voice input" },
+    { "Ctrl+Space", "voice input (coming later)" },
     { "Esc", "clear the answer, or go back" },
-    { "Ctrl+]", "leave a session (it keeps running)" },
+    { "Ctrl+]", "leave a take-over or SSH session" },
     { "Shift+Up / Down", "scroll back in a take-over" },
     { NULL, NULL },
 };

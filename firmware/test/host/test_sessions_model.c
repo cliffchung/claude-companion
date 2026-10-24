@@ -110,6 +110,48 @@ static void test_drafts_evict_least_recent(void)
     TEST_ASSERT_EQUAL_STRING("", sm_draft_get(&ds, "k3"));
 }
 
+static void test_same_name_interactive_sessions_are_distinct(void)
+{
+    cc_session_t a[2] = { inter("desk", 2, CC_IDLE), inter("desk", 1, CC_IDLE) };
+    char k1[SM_KEY_MAX], k2[SM_KEY_MAX];
+    sm_key(&a[0], k1, sizeof(k1)); sm_key(&a[1], k2, sizeof(k2));
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(k1, k2));
+    TEST_ASSERT_EQUAL(1, sm_select(a, 2, k2, 0));
+    static sm_drafts_t ds;
+    memset(&ds, 0, sizeof(ds));
+    sm_draft_set(&ds, k1, "one");
+    sm_draft_set(&ds, k2, "two");
+    TEST_ASSERT_EQUAL_STRING("one", sm_draft_get(&ds, k1));
+    TEST_ASSERT_EQUAL_STRING("two", sm_draft_get(&ds, k2));
+}
+
+static void test_draft_being_typed_survives_eviction(void)
+{
+    static sm_drafts_t ds;
+    memset(&ds, 0, sizeof(ds));
+    char k[16];
+    sm_draft_set(&ds, "sel", "typing");
+    for (int i = 0; i < 40; i++) {   /* other drafts churn; the selected one is re-set as the user types */
+        snprintf(k, sizeof(k), "o%d", i);
+        sm_draft_set(&ds, k, "t");
+        sm_draft_set(&ds, "sel", "typing");
+    }
+    TEST_ASSERT_EQUAL_STRING("typing", sm_draft_get(&ds, "sel"));
+}
+
+static void test_draft_cut_keeps_utf8_whole(void)
+{
+    static sm_drafts_t ds;
+    static char big[SM_ANSWER_MAX + 8];
+    memset(&ds, 0, sizeof(ds));
+    memset(big, 'a', SM_ANSWER_MAX - 1);
+    memcpy(big + SM_ANSWER_MAX - 1, "\xe3\x81\x82\xe3\x81\x82", 6);   /* a 3-byte char straddles the cap */
+    big[SM_ANSWER_MAX + 5] = 0;
+    sm_draft_set(&ds, "k", big);
+    const char *t = sm_draft_get(&ds, "k");
+    TEST_ASSERT_EQUAL(SM_ANSWER_MAX - 1, strlen(t));
+}
+
 static void test_next_needs_you_wraps(void)
 {
     cc_session_t a[4] = { bg("1", CC_WORKING, true), bg("2", CC_NEEDS_YOU, true), bg("3", CC_WORKING, true), bg("4", CC_NEEDS_YOU, true) };
@@ -142,40 +184,75 @@ static sm_in_t ok(void)
     return i;
 }
 
+static sm_banner_t with(void (*mod)(sm_in_t *))
+{
+    sm_in_t i = ok();
+    mod(&i);
+    return sm_banner(&i);
+}
+static void f_nowifi(sm_in_t *i) { i->wifi_up = false; }
+static void f_connecting(sm_in_t *i) { i->wifi_up = false; i->wifi_connecting = true; }
+static void f_nohost(sm_in_t *i) { i->host_set = false; }
+static void f_failed(sm_in_t *i) { i->link_failed = true; }
+static void f_pollfail(sm_in_t *i) { i->poll_failing = true; }
+static void f_down30(sm_in_t *i) { i->link_up = false; i->down_ms = SM_UNREACHABLE_MS; }
+static void f_lowbat(sm_in_t *i) { i->low_battery_shown = true; }
+static void f_reconn(sm_in_t *i) { i->reconnecting = true; }
+static void f_waking(sm_in_t *i) { i->waking = true; }
+static void f_nolist(sm_in_t *i) { i->have_list = false; }
+static void f_stale(sm_in_t *i) { i->stale = true; }
+static void f_empty(sm_in_t *i) { i->n = 0; }
+
+/* each row of the table against every row below it: the higher one must win */
 static void test_banner_precedence(void)
 {
     sm_in_t i = ok();
     TEST_ASSERT_EQUAL(SM_B_LIVE, sm_banner(&i));
-    i = ok(); i.wifi_up = false; i.host_set = false; i.link_failed = true; i.low_battery_shown = true;
-    TEST_ASSERT_EQUAL(SM_B_NO_WIFI, sm_banner(&i));
-    i = ok(); i.wifi_up = false; i.wifi_connecting = true;
-    TEST_ASSERT_EQUAL(SM_B_NO_WIFI, sm_banner(&i));
-    i = ok(); i.host_set = false;
+    typedef struct { void (*set)(sm_in_t *); sm_banner_t want; } row_t;
+    const row_t t[] = {
+        { f_nowifi, SM_B_NO_WIFI }, { f_nohost, SM_B_NO_HOST }, { f_failed, SM_B_UNREACHABLE },
+        { f_lowbat, SM_B_LOW_BATTERY }, { f_reconn, SM_B_RECONNECTING }, { f_nolist, SM_B_LOADING },
+        { f_stale, SM_B_STALE }, { f_empty, SM_B_EMPTY },
+    };
+    int n = (int)(sizeof(t) / sizeof(t[0]));
+    for (int a = 0; a < n; a++) {
+        TEST_ASSERT_EQUAL_MESSAGE(t[a].want, with(t[a].set), "alone");
+        for (int b = a + 1; b < n; b++) {
+            sm_in_t x = ok();
+            t[a].set(&x); t[b].set(&x);
+            TEST_ASSERT_EQUAL_MESSAGE(t[a].want, sm_banner(&x), "pair");
+        }
+    }
+    /* the other triggers of the same rows */
+    TEST_ASSERT_EQUAL(SM_B_UNREACHABLE, with(f_pollfail));
+    TEST_ASSERT_EQUAL(SM_B_UNREACHABLE, with(f_down30));
+    TEST_ASSERT_EQUAL(SM_B_RECONNECTING, with(f_waking));
+    { sm_in_t x = ok(); f_down30(&x); f_lowbat(&x); f_nowifi(&x); f_connecting(&x);
+      TEST_ASSERT_EQUAL(SM_B_UNREACHABLE, sm_banner(&x)); }
+}
+
+static void test_banner_wifi_connecting_is_not_no_wifi(void)
+{
+    sm_in_t i = ok(); f_connecting(&i);
+    TEST_ASSERT_EQUAL(SM_B_RECONNECTING, sm_banner(&i));   /* with a list */
+    i.have_list = false;
+    TEST_ASSERT_EQUAL(SM_B_LOADING, sm_banner(&i));
+    i.have_list = true; i.waking = true;
+    TEST_ASSERT_EQUAL(SM_B_RECONNECTING, sm_banner(&i));
+    i = ok(); f_connecting(&i); f_nohost(&i);
     TEST_ASSERT_EQUAL(SM_B_NO_HOST, sm_banner(&i));
-    i = ok(); i.link_up = false; i.link_failed = true;
-    TEST_ASSERT_EQUAL(SM_B_UNREACHABLE, sm_banner(&i));
-    i = ok(); i.link_up = false; i.down_ms = 30000;
-    TEST_ASSERT_EQUAL(SM_B_UNREACHABLE, sm_banner(&i));
-    i = ok(); i.link_up = false; i.down_ms = 29999; i.have_list = false;
-    TEST_ASSERT_EQUAL(SM_B_LOADING, sm_banner(&i));
-    i = ok(); i.link_up = false; i.down_ms = 29999;
+}
+
+static void test_banner_down_within_grace(void)
+{
+    sm_in_t i = ok(); i.link_up = false; i.down_ms = 29999;
     TEST_ASSERT_EQUAL(SM_B_RECONNECTING, sm_banner(&i));
-    i = ok(); i.poll_failing = true;
-    TEST_ASSERT_EQUAL(SM_B_UNREACHABLE, sm_banner(&i));
-    i = ok(); i.low_battery_shown = true;
+    i.have_list = false;
+    TEST_ASSERT_EQUAL(SM_B_LOADING, sm_banner(&i));
+    i.low_battery_shown = true;
+    TEST_ASSERT_EQUAL(SM_B_LOW_BATTERY, sm_banner(&i));   /* low battery outranks both */
+    i = ok(); i.low_battery_shown = true; i.link_up = false; i.waking = true;
     TEST_ASSERT_EQUAL(SM_B_LOW_BATTERY, sm_banner(&i));
-    i = ok(); i.low_battery_shown = true; i.link_failed = true;
-    TEST_ASSERT_EQUAL(SM_B_UNREACHABLE, sm_banner(&i));
-    i = ok(); i.reconnecting = true;
-    TEST_ASSERT_EQUAL(SM_B_RECONNECTING, sm_banner(&i));
-    i = ok(); i.waking = true;
-    TEST_ASSERT_EQUAL(SM_B_RECONNECTING, sm_banner(&i));
-    i = ok(); i.have_list = false;
-    TEST_ASSERT_EQUAL(SM_B_LOADING, sm_banner(&i));
-    i = ok(); i.stale = true;
-    TEST_ASSERT_EQUAL(SM_B_STALE, sm_banner(&i));
-    i = ok(); i.n = 0;
-    TEST_ASSERT_EQUAL(SM_B_EMPTY, sm_banner(&i));
 }
 
 static void test_lowbat_once_per_discharge(void)
@@ -235,6 +312,32 @@ static void test_wrap_utf8_counts_chars(void)
     TEST_ASSERT_EQUAL_STRING("\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\n  \xc3\xa9", o);
 }
 
+static void test_wrap_cjk_three_byte(void)
+{
+    char o[128];
+    const char *in = "\xe3\x81\x82\xe3\x81\x84\xe3\x81\x86\xe3\x81\x88\xe3\x81\x8a";   /* 5 chars */
+    int n = sm_wrap_tail(in, 3, 10, o, sizeof(o));
+    TEST_ASSERT_EQUAL(3, n);
+    TEST_ASSERT_EQUAL_STRING("\xe3\x81\x82\xe3\x81\x84\xe3\x81\x86\n  \xe3\x81\x88\n  \xe3\x81\x8a", o);
+}
+
+static void test_wrap_short_buffer_drops_oldest(void)
+{
+    char o[12];
+    int n = sm_wrap_tail("one\ntwo\nthree\nfour\n", 20, 10, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING("three\nfour", o);   /* 10 bytes + NUL fits; adding "two\n" would not */
+    TEST_ASSERT_EQUAL(2, n);
+    char tiny[4];
+    TEST_ASSERT_EQUAL(0, sm_wrap_tail("abcdefgh\n", 20, 10, tiny, sizeof(tiny)));
+}
+
+static void test_wrap_crlf(void)
+{
+    char o[64];
+    TEST_ASSERT_EQUAL(2, sm_wrap_tail("ab\r\ncd\r\n", 4, 10, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING("ab\ncd", o);
+}
+
 static void test_tail_options(void)
 {
     TEST_ASSERT_EQUAL(3, sm_tail_options("Pick\n1. A\n2. B\n3. C\n"));
@@ -254,14 +357,22 @@ int main(void)
     RUN_TEST(test_draft_follows_key_across_resort);
     RUN_TEST(test_draft_cleared_on_send_and_removal);
     RUN_TEST(test_drafts_evict_least_recent);
+    RUN_TEST(test_same_name_interactive_sessions_are_distinct);
+    RUN_TEST(test_draft_being_typed_survives_eviction);
+    RUN_TEST(test_draft_cut_keeps_utf8_whole);
     RUN_TEST(test_next_needs_you_wraps);
     RUN_TEST(test_pill_text_rules);
     RUN_TEST(test_banner_precedence);
+    RUN_TEST(test_banner_wifi_connecting_is_not_no_wifi);
+    RUN_TEST(test_banner_down_within_grace);
     RUN_TEST(test_lowbat_once_per_discharge);
     RUN_TEST(test_wrap_hanging_indent);
     RUN_TEST(test_wrap_keeps_newest_rows);
     RUN_TEST(test_wrap_unbroken_line);
     RUN_TEST(test_wrap_utf8_counts_chars);
+    RUN_TEST(test_wrap_cjk_three_byte);
+    RUN_TEST(test_wrap_short_buffer_drops_oldest);
+    RUN_TEST(test_wrap_crlf);
     RUN_TEST(test_tail_options);
     return UNITY_END();
 }

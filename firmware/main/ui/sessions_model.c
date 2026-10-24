@@ -69,6 +69,16 @@ void sm_draft_set(sm_drafts_t *ds, const char *key, const char *text)
         snprintf(d->key, sizeof(d->key), "%s", key);
     }
     snprintf(d->text, sizeof(d->text), "%s", text);
+    size_t n = strlen(d->text);
+    if (n == sizeof(d->text) - 1 && strlen(text) > n) {   /* a cut must not leave half a UTF-8 sequence */
+        size_t k = n;
+        while (k > 0 && (((unsigned char)d->text[k - 1]) & 0xC0) == 0x80) k--;
+        if (k > 0) {
+            unsigned char lead = (unsigned char)d->text[k - 1];
+            size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+            if ((k - 1) + need > n) d->text[k - 1] = 0;
+        }
+    }
     d->used = ++ds->clock;
 }
 
@@ -102,14 +112,15 @@ const char *sm_pill_text(const cc_session_t *s)
 
 sm_banner_t sm_banner(const sm_in_t *in)
 {
-    if (!in->wifi_up) return SM_B_NO_WIFI;
+    /* §5.1 order. While Wi-Fi is still associating (a wake) it is not "No Wi-Fi": the link counts as down. */
+    if (!in->wifi_up && !in->wifi_connecting) return SM_B_NO_WIFI;
     if (!in->host_set) return SM_B_NO_HOST;
     if (in->link_failed || in->poll_failing || in->down_ms >= SM_UNREACHABLE_MS) return SM_B_UNREACHABLE;
-    bool down = !in->link_up || in->down_ms > 0;
-    if (in->low_battery_shown && !down) return SM_B_LOW_BATTERY;
+    if (in->low_battery_shown) return SM_B_LOW_BATTERY;
+    bool down = !in->wifi_up || !in->link_up || in->down_ms > 0;
     if (in->reconnecting || in->waking) return SM_B_RECONNECTING;
-    if (down) return in->have_list ? SM_B_RECONNECTING : SM_B_LOADING;
     if (!in->have_list) return SM_B_LOADING;
+    if (down) return SM_B_RECONNECTING;
     if (in->stale) return SM_B_STALE;
     if (in->n == 0) return SM_B_EMPTY;
     return SM_B_LIVE;
@@ -147,45 +158,53 @@ static size_t next_row(const char **p, const char *end, int width)
     return len;
 }
 
+/* One pass over the rows: counts them when out is NULL, else writes all but the first `skip`.
+   Returns the rows seen/written, or -1 when out is too small. */
+static int wrap_pass(const char *in, int cols, int skip, char *out, size_t cap)
+{
+    const char *p = in, *stop = in + strlen(in);
+    int count = 0, emitted = 0;
+    size_t o = 0;
+    while (p < stop) {
+        const char *nl = memchr(p, '\n', (size_t)(stop - p));
+        const char *end = nl ? nl : stop;
+        const char *next = nl ? nl + 1 : stop;
+        if (end > p && end[-1] == '\r') end--;   /* CRLF */
+        const char *q = p;
+        bool first = true;
+        do {
+            size_t len = next_row(&q, end, first ? cols : cols - 2);
+            count++;
+            if (out && count > skip) {
+                size_t ind = first ? 0 : 2;
+                if (o + (emitted ? 1 : 0) + ind + len + 1 > cap) return -1;
+                if (emitted) out[o++] = '\n';
+                memset(out + o, ' ', ind); o += ind;
+                memcpy(out + o, q - len, len); o += len;
+                out[o] = 0;
+                emitted++;
+            }
+            first = false;
+        } while (q < end);
+        p = next;
+    }
+    return out ? emitted : count;
+}
+
 int sm_wrap_tail(const char *in, int cols, int rows, char *out, size_t cap)
 {
     if (!cap) return 0;
     out[0] = 0;
     if (!in || rows <= 0) return 0;
     if (cols < 3) cols = 3;
-    size_t total = strlen(in);
-    /* pass 0 counts the rows, pass 1 emits all but the oldest */
-    int count = 0, skip = 0, emitted = 0;
-    size_t o = 0;
-    for (int pass = 0; pass < 2; pass++) {
-        const char *p = in, *stop = in + total;
-        while (p < stop) {
-            const char *nl = memchr(p, '\n', (size_t)(stop - p));
-            const char *end = nl ? nl : stop;
-            const char *q = p;
-            bool first = true;
-            do {
-                int w = first ? cols : cols - 2;
-                size_t len = next_row(&q, end, w);
-                if (pass == 0) count++;
-                else if (skip > 0) skip--;
-                else {
-                    size_t ind = first ? 0 : 2;
-                    if (o + (emitted ? 1 : 0) + ind + len + 1 <= cap) {
-                        if (emitted) out[o++] = '\n';
-                        memset(out + o, ' ', ind); o += ind;
-                        memcpy(out + o, q - len, len); o += len;
-                        out[o] = 0;
-                        emitted++;
-                    }
-                }
-                first = false;
-            } while (q < end);
-            p = nl ? nl + 1 : stop;
-        }
-        if (pass == 0) skip = count > rows ? count - rows : 0;
+    int total = wrap_pass(in, cols, 0, NULL, 0);
+    int skip = total > rows ? total - rows : 0;
+    /* a short buffer drops the oldest rows first, never a row in the middle */
+    for (;; skip++) {
+        out[0] = 0;
+        int n = wrap_pass(in, cols, skip, out, cap);
+        if (n >= 0) return n;
     }
-    return emitted;
 }
 
 /* ------------------------------------------------------------ options */
