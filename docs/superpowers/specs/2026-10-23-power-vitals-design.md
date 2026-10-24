@@ -272,7 +272,7 @@ states follow Radio off.
 
 | State | Enter when (on battery only) | What changes |
 |---|---|---|
-| Deep idle | no input for `deep_idle_min` (default 60) | Check-ins back off: 5 → 15 → 30 min. The keyboard light is off unless something needs you, then at most 30%. The display is torn down and the CPU runs at its lowest frequency, if the spike shows that works. |
+| Deep idle | no input for `deep_idle_min` (default 60) | Check-ins back off: 5 → 15 → 30 min. The keyboard light is off unless something needs you, then at the dark brightness (PT24). The display is torn down and the CPU runs at its lowest frequency, if the spike shows that works. |
 | Hibernate | no input for `hibernate_h` (default 2 h), or battery ≤ 10% | The whole device powers down: a full power-off if the board supports it, else ESP deep sleep. Wi-Fi and the link are dropped. |
 
 - **Waking from Hibernate.** The keyboard INT (GPIO50) and the touch INT (GPIO23) are not LP GPIOs,
@@ -290,7 +290,7 @@ states follow Radio off.
   poll; nothing stale is shown as live.
 - **Needs-you during Hibernate: a periodic check-in, on by default (PT16).** It runs every 15 min
   by default (PT18: user set 15 min, 2026-10-23) (setting: 15 min to 12 h, or Off). A check-in cold-boots, connects and polls, then:
-  - **Something needs you:** it lights the keyboard amber (at most 30%). If Task 6 Step 4c shows the
+  - **Something needs you:** it lights the keyboard amber (the dark brightness, PT24). If Task 6 Step 4c shows the
     keyboard rail survives deep sleep with the light held, it goes back to Hibernate with that rail
     kept. Otherwise it stays in Deep idle (radio parked, light amber) until input, or until a later
     poll shows nothing needs you, and then hibernates again.
@@ -378,9 +378,12 @@ the first thing to do after it.
   and saves the user's choice in `kbd_led_mode`, `kbd_led_bright` and `kbd_led_rgb`.
 - **Rule** (one owner, the power/vitals module, fed by the session list):
   - any live background session NEEDS YOU → steady amber `#f4b545` (mode 1, the user's colour)
-    at the user's light brightness, minimum 30%, even if the user set brightness 0;
+    at the user's light brightness, minimum 30%, even if the user set brightness 0, while the screen is
+    on; with the screen dark (Off and below) at "Needs-you light when dark", Lowest 2%, Low 5% (default)
+    or Medium 15% *(PT24, P122)*;
   - otherwise → the user's own setting, unchanged.
-  - Steady, not blinking *(my call)*: amber is a state, not an alarm. It uses no colour other than
+  - Steady, not blinking *(my call)*: amber is a state, not an alarm. (PT24: the user asked for a slow
+    pulse if possible; the A164 has no breathe mode, only bind and custom, so it stays steady, P120.) It uses no colour other than
     amber, so the keyboard light never says anything the dashboard doesn't.
 - **It holds in every power state.** In Off and Radio off this is the main way to see that
   something needs you. During Radio off it reflects the last check-in, so it can be up to
@@ -393,10 +396,10 @@ the first thing to do after it.
 - **Hot-plug.** A keyboard plugged in later, or re-probed, picks up the current state. Today
   `keyboard_set_led` runs only from probe with the saved settings, so the probe path must ask
   the owner for the current colour.
-- **Register meaning is inferred** from the fork's code; there is no vendor doc. Mode 0 ("bind")
-  lets the keyboard firmware drive the light itself; mode 1 uses the written colour.
-  `{0x60, 0,r,g,b, 0,r,g,b}` looks like two LEDs. Probe once on hardware what mode 0 shows, and
-  record it.
+- **Registers (PT24, from M5Stack's A164 firmware and protocol doc, P120, P121).** 0x03 brightness
+  0..100 scales every channel (`c * bright / 100`); 0x11 mode 0 bind (the keyboard's own
+  indicators) or 1 custom, nothing else; 0x60..0x67 two LEDs as B, G, R, unused. The fork wrote
+  `0,r,g,b`, which swapped the colours; it now writes `b,g,r,0`.
 - **Drop the gold (0xFFD700) and orange (0xFF8000) light presets**, so the user's own colour can't
   pass for amber.
 - **Setting:** "Keyboard light shows needs-you", on by default.

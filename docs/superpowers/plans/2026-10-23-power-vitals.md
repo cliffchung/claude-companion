@@ -1485,7 +1485,7 @@ The reconnect time is link-up minus the Mac wake. If it is over 30 s, run the sl
 "Off" below is `off-touch-poll`, the Off that ships on v2.
   - **Radio off:** on by default only if `pr_radio_off_worth_it(a, b, c, 5, checkin_s)` is true for the measured handshake path, where a is Off, b is `radio-off`, and c and the check-in time come from `checkin-handshake`.
   - **Light sleep:** on by default only if Task 6 kept it and its bench step shows a lower draw than Off, with the link still up afterwards.
-  - **`kbd_off_cap`:** if `off-light-amber` minus `off-light-off` is over 5% of Off, cap it at the lowest brightness the user still saw clearly (default 30).
+  - **`kbd_dark_light`** (was `kbd_off_cap`; PT24, P123): the user looks at the needs-you amber at Lowest (2%), Low (5%) and Medium (15%) with the screen off (`power set dark-light <n>`) and the default becomes the lowest one they still saw clearly; report `off-light-amber` minus `off-light-off` at that brightness. Also confirm the colour is amber, not yellow-green (P121).
   - **Hibernate after (`pw_hibernate_h`):**
     - 0 if Step 6 needed the reset button;
     - otherwise 1 h if `(deep-idle − hibernate) mW × 1 h > 3 × E_boot`, where E_boot is the `hibernate` row's boot-to-live seconds × the `active` step's mW (an estimate), because the spec's Priority leans to battery after an hour;
