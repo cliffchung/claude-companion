@@ -2355,6 +2355,59 @@ static int keyboard_settings_case(lv_display_t *d) {
     return r;
 }
 
+/* T13-3: a rebuild of Settings › Network (the Tailscale switch's refill, an event's) or of Peers keeps the keyboard
+   focus on its row, found again by its label, so a bare Enter never falls to "← Sessions". */
+static bool focused_in(lv_obj_t *row) { lv_obj_t *f = ui_keyboard_focused(); while (f && f != row) f = lv_obj_get_parent(f); return f != NULL; }
+static int network_focus_case(lv_display_t *d) {
+    const char *name = "network-focus";
+    g_settings.ts_enable = 0;
+    preview_sessions_load();
+    ui_nav_home(); step(d, 200);
+    ui_settings_open(UI_SET_NETWORK); step(d, 200);
+    lv_obj_t *s = lv_screen_active(), *back = find_clickable_shown(s, "\xe2\x86\x90 Sessions");
+    lv_obj_t *sw = row_labeled(settings_panel(s), "Tailscale");   /* the row is the switch's control */
+    int n = 0;
+    while (!lv_obj_has_state(sw, LV_STATE_FOCUS_KEY) && n < 30) { press_key(SK_DOWN, 0, false); step(d, 50); n++; }
+    if (!lv_obj_has_state(sw, LV_STATE_FOCUS_KEY)) { printf("check %s: FAIL the switch never focused\n", name); return 1; }
+    press_key(SK_ENTER, 0, false); step(d, 200);   /* on: saved, toasted and the panel refilled */
+    lv_obj_t *panel = settings_panel(s);
+    lv_obj_t *sw2 = row_labeled(panel, "Tailscale");
+    if (!g_settings.ts_enable) { printf("check %s: FAIL the switch didn't turn on\n", name); return 1; }
+    if (ui_keyboard_focused() != sw2 || !lv_obj_has_state(sw2, LV_STATE_FOCUS_KEY) || lv_obj_has_state(back, LV_STATE_FOCUS_KEY)) {
+        printf("check %s: FAIL the focus after the switch's refill is not on the switch\n", name); return 1;
+    }
+    /* a refill as an event makes it: the focused row (Device name) is found again by its label */
+    while (!focused_in(row_labeled(panel, "Device name")) && n < 60) { press_key(SK_DOWN, 0, false); step(d, 50); n++; }
+    assert(focused_in(row_labeled(panel, "Device name")));
+    ui_settings_refill(); step(d, 100);
+    panel = settings_panel(s);
+    if (!focused_in(row_labeled(panel, "Device name"))) { printf("check %s: FAIL a refill lost the Device name row's focus\n", name); return 1; }
+    /* and a bare Enter acts on that row, never "← Sessions" */
+    press_key(SK_ENTER, 0, false); step(d, 200);
+    if (!ui_nav_is_top(ui_settings_create) || !find_shown(lv_layer_top(), &lv_textarea_class)) {
+        printf("check %s: FAIL Enter after the refill didn't open Device name\n", name); return 1;
+    }
+    press_key(SK_ESC, 0, false); step(d, 200);
+    int r = pv_run_checks(d, s, name, false, 0);
+    /* Peers: a Tailscale event rebuilds the list; the focused peer keeps the focus */
+    ui_nav_push(ui_settings_sub_create, (void *)(intptr_t)UI_NET_SUB_PEERS); step(d, 200);
+    lv_obj_t *ps = lv_screen_active(), *body = lv_obj_get_child(ps, 1);
+    lv_obj_t *pb = lv_obj_get_parent(find_label(body, "preview-host-b", false));
+    while (pb && lv_obj_get_parent(pb) != body) pb = lv_obj_get_parent(pb);
+    int m = 0;
+    while (!focused_in(pb) && m < 20) { press_key(SK_DOWN, 0, false); step(d, 50); m++; }
+    if (!focused_in(pb)) { printf("check %s: FAIL preview-host-b never focused\n", name); return 1; }
+    assert(s_ts_cb);
+    s_ts_cb(s_ts_cb_user); step(d, 200);
+    lv_obj_t *pb2 = lv_obj_get_parent(find_label(body, "preview-host-b", false));
+    while (pb2 && lv_obj_get_parent(pb2) != body) pb2 = lv_obj_get_parent(pb2);
+    if (!focused_in(pb2)) { printf("check %s: FAIL a Tailscale event lost the peer's focus\n", name); return 1; }
+    if (lv_obj_has_state(find_clickable_shown(ps, "\xe2\x86\x90 Settings"), LV_STATE_FOCUS_KEY)) { printf("check %s: FAIL focus on Back\n", name); return 1; }
+    printf("%s: the switch, Device name and a peer keep the focus across their rebuilds\n", name);
+    g_settings.ts_enable = 0;
+    return r;
+}
+
 /* ------------------------------------------------------------ take-over and SSH session (Task 10) */
 static int s_takeover_closed;
 static void takeover_closed_cb(void *ctx) { (void)ctx; s_takeover_closed++; }
@@ -2641,6 +2694,7 @@ int main(int argc,char **argv) {
     if (!strcmp(name,"settings")) return settings_case(d, argc>2 ? atoi(argv[2]) : 0);
     if (!strcmp(name,"keyboard-settings")) return keyboard_settings_case(d);
     if (!strcmp(name,"network-live")) return network_live_case(d);
+    if (!strcmp(name,"network-focus")) return network_focus_case(d);
     if (!strcmp(name,"picker-fresh")) return picker_fresh_case(d);
     if (!strcmp(name,"net-sub-open")) return net_sub_open_case(d);
     if (!strcmp(name,"terminal")) return terminal_case(d, argc>2 ? argv[2] : "");

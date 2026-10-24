@@ -22,9 +22,10 @@ firmware/tools/ui_preview/run_all.sh "$PV"     # every case; PNGs in $PV/png
 | `boot` | The splash before `fonts_init()`/`ui_init()`: logo and name in fg, "Starting…" muted, on bg; no redraw once drawn; the hand-off deletes it |
 | `sleep` | The pre-Hibernate notice |
 | `nav` | Pushes Settings and a component gallery from home; each probe screen's create function asserts the previous screen is already deleted (P4-2). Writes `nav`, `picker` and `confirm` (a toast, the picker sheet and a destructive confirm over the gallery) |
-| `sessions <variant>` | Sessions (spec §5.1) on a host-test fixture (`PREVIEW_FIXTURE`, default `agents_synthetic.json`), one case per state: `live`, `selected-needs-you`, `working`, `loading`, `stale`, `reconnecting`, `no-wifi`, `not-found`, `no-host`, `empty`, `interactive`, `sent`, `low-battery`, `16`, `long`, `resort`, `keys`, `idle`, `forget`. Each asserts its own labels and behaviour (the re-sort keeps the selection and draft, Review Focus 1; `long` checks the CJK cell width and the wrap, Review Focus 3) before the checks |
+| `sessions <variant>` | Sessions (spec §5.1) on a host-test fixture (`PREVIEW_FIXTURE`, default `agents_synthetic.json`), one case per state: `live`, `selected-needs-you`, `working`, `loading`, `stale`, `reconnecting`, `no-wifi`, `not-found`, `no-host`, `empty`, `interactive`, `sent`, `low-battery`, `16`, `long`, `resort`, `keys`, `idle`, `forget`, `new-key` (the first-run banner points at Settings › Host). Each asserts its own labels and behaviour (the re-sort keeps the selection and draft, Review Focus 1; `long` checks the CJK cell width and the wrap, Review Focus 3) before the checks |
 | `ctrlk` | The Ctrl+K shortcuts overlay over Sessions: two columns, nothing wrapped |
 | `settings <0..6>` | Clicks every rail entry (one visible panel, the same screen object), then shows that section |
+| `network-focus` | T13-3: the Tailscale switch's refill, a refill as an event makes it, and a Peers rebuild keep the keyboard focus on the same row; Enter then acts on it |
 | `keyboard`, `gesture`, `art`, `terminal`, `glyphs` | Keyboard routing, touch gestures, terminal artwork and row spacing (assertions only); `glyphs` lists the symbols each font draws |
 
 ## Checks

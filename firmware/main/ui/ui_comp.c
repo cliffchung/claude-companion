@@ -859,6 +859,47 @@ void ui_settings_column(lv_obj_t *o)
     lv_obj_set_scroll_dir(o, LV_DIR_VER);
 }
 
+/* The first label's text under obj, depth first ("" when none). */
+static const char *first_label_text(lv_obj_t *obj)
+{
+    if (lv_obj_check_type(obj, &lv_label_class)) return lv_label_get_text(obj);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++) {
+        const char *t = first_label_text(lv_obj_get_child(obj, i));
+        if (t[0]) return t;
+    }
+    return "";
+}
+
+void ui_focus_save(lv_obj_t *column, ui_focus_key_t *k)
+{
+    memset(k, 0, sizeof(*k));
+    lv_obj_t *row = ui_keyboard_focused();
+    while (row && lv_obj_get_parent(row) != column) row = lv_obj_get_parent(row);
+    if (!column || !row) return;
+    k->ctl = ui_keyboard_focus_index(row);
+    if (k->ctl < 0) return;
+    strlcpy(k->text, first_label_text(row), sizeof(k->text));
+    for (uint32_t i = 0; i < lv_obj_get_child_count(column); i++) {
+        lv_obj_t *c = lv_obj_get_child(column, i);
+        if (c == row) break;
+        if (!strcmp(first_label_text(c), k->text)) k->nth++;
+    }
+    k->had = true;
+}
+
+void ui_focus_restore(lv_obj_t *column, const ui_focus_key_t *k)
+{
+    if (!column || !k->had || ui_keyboard_focused()) return;   /* nothing was focused there, or it survived */
+    int nth = k->nth;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(column); i++) {
+        lv_obj_t *c = lv_obj_get_child(column, i);
+        if (strcmp(first_label_text(c), k->text) || nth-- > 0) continue;
+        if (ui_keyboard_focus_in(c, k->ctl) || ui_keyboard_focus_in(c, 0)) return;
+        break;
+    }
+    ui_keyboard_focus_in(column, 0);
+}
+
 lv_obj_t *ui_srow_line(lv_obj_t *parent)
 {
     lv_obj_t *l = plain(parent);

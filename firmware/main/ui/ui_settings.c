@@ -639,9 +639,12 @@ void ui_settings_refill(void)
 {
     if (!s_panel) return;
     int32_t y = lv_obj_get_scroll_y(s_panel);
+    ui_focus_key_t k;
+    ui_focus_save(s_panel, &k);   /* T13-3: the keyboard focus stays on its row (the Tailscale switch's refill) */
     panel_fill();
     lv_obj_update_layout(s_panel);
     lv_obj_scroll_to_y(s_panel, y, LV_ANIM_OFF);
+    ui_focus_restore(s_panel, &k);
 }
 
 static void select_section(ui_set_section_t next)

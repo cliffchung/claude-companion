@@ -77,6 +77,13 @@ lv_obj_t *ui_srow_slider(lv_obj_t *parent, const char *label, int min, int max, 
 /* Styles o (an object with its styles removed) as a Settings column: 24 px top and bottom, 32 sideways, 8 between
  * rows, a vertical flex column that scrolls. Settings' panel and the Network sub-pages. */
 void ui_settings_column(lv_obj_t *o);
+/* A column rebuilt in place keeps the keyboard focus on its row (T13-3), by a stable key, never by object pointer:
+ * the row's first label text, its count among the column's rows with that text, and the control's number in the
+ * row. Save before cleaning the column, restore after filling it. A row that went gets the column's first control,
+ * so the focus never falls back to the header's "← Sessions"; a focus outside the column (or none) is left alone. */
+typedef struct { bool had; char text[64]; int nth, ctl; } ui_focus_key_t;
+void ui_focus_save(lv_obj_t *column, ui_focus_key_t *k);
+void ui_focus_restore(lv_obj_t *column, const ui_focus_key_t *k);
 /* A 64 px line for a row (flex-grow it) and a trailing 64 px button, 8 px apart; both keep their 80 px hit. */
 lv_obj_t *ui_srow_line(lv_obj_t *parent);
 /* The row's value label (the switch of a UI_ROW_SWITCH row, the slider of a ui_srow_slider row). */

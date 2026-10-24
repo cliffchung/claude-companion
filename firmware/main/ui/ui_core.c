@@ -647,13 +647,23 @@ typedef struct {
     bool found;
 } keyboard_walk_t;
 
-static void keyboard_walk(lv_obj_t *obj, keyboard_walk_t *walk)
+static bool keyboard_skipped(lv_obj_t *obj)
 {
-    if ((lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) || lv_obj_has_flag(obj, UI_KEYBOARD_SKIP)) || lv_obj_has_state(obj, LV_STATE_DISABLED)) return;
-    bool control = lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE) &&
+    return lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) || lv_obj_has_flag(obj, UI_KEYBOARD_SKIP) || lv_obj_has_state(obj, LV_STATE_DISABLED);
+}
+
+static bool keyboard_control(lv_obj_t *obj)
+{
+    return lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE) &&
         (has_handler(obj, LV_EVENT_CLICKED) || has_handler(obj, LV_EVENT_SHORT_CLICKED) || has_handler(obj, LV_EVENT_LONG_PRESSED) || has_handler(obj, LV_EVENT_KEY) ||
          lv_obj_check_type(obj, &lv_textarea_class) || lv_obj_check_type(obj, &lv_slider_class) ||
          lv_obj_has_flag(obj, LV_OBJ_FLAG_CHECKABLE));
+}
+
+static void keyboard_walk(lv_obj_t *obj, keyboard_walk_t *walk)
+{
+    if (keyboard_skipped(obj)) return;
+    bool control = keyboard_control(obj);
     if (control && obj != walk->root) {
         if (!walk->first) walk->first = obj;
         if (!walk->preferred && lv_obj_has_flag(obj, UI_KEYBOARD_FIRST)) walk->preferred = obj;
@@ -663,6 +673,39 @@ static void keyboard_walk(lv_obj_t *obj, keyboard_walk_t *walk)
     }
     for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++)
         keyboard_walk(lv_obj_get_child(obj, i), walk);
+}
+
+lv_obj_t *ui_keyboard_focused(void) { return s_keyboard_focus; }
+
+/* The controls under obj in walk order: *n counts them; the one numbered want goes to *hit, and the focused one's
+   number to *at. */
+static void keyboard_nth(lv_obj_t *obj, int want, int *n, lv_obj_t **hit, int *at)
+{
+    if (keyboard_skipped(obj)) return;
+    if (keyboard_control(obj)) {
+        if (*n == want && !*hit) *hit = obj;
+        if (obj == s_keyboard_focus) *at = *n;
+        (*n)++;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++) keyboard_nth(lv_obj_get_child(obj, i), want, n, hit, at);
+}
+
+int ui_keyboard_focus_index(lv_obj_t *root)
+{
+    int n = 0, at = -1;
+    lv_obj_t *hit = NULL;
+    if (root && s_keyboard_focus) keyboard_nth(root, -1, &n, &hit, &at);
+    return at;
+}
+
+lv_obj_t *ui_keyboard_focus_in(lv_obj_t *root, int nth)
+{
+    if (!root || nth < 0) return NULL;
+    int n = 0, at = -1;
+    lv_obj_t *hit = NULL;
+    keyboard_nth(root, nth, &n, &hit, &at);
+    if (hit) keyboard_focus_set(hit);
+    return hit;
 }
 
 bool ui_keyboard_route(const key_event_t *ev, bool terminal)
