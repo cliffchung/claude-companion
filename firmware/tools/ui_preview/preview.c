@@ -1829,7 +1829,7 @@ static int host_dot_of(lv_obj_t *row) {
 }
 static lv_obj_t *host_note(lv_obj_t *row) { lv_obj_t *t = lv_obj_get_child(row, 2); return lv_obj_has_flag(t, LV_OBJ_FLAG_HIDDEN) ? NULL : t; }
 static bool red(lv_obj_t *l) { return l && lv_color_eq(lv_obj_get_style_text_color(l, 0), lv_color_hex(UI_TK_RED)); }
-#define FOOTNOTE "The Host isn't listed here: its sessions are on the Sessions screen. Ctrl+Q leaves an SSH session."
+#define FOOTNOTE "The Host isn't listed here: its sessions are on the Sessions screen. Ctrl+\xe2\x86\x90 leaves an SSH session."
 static lv_obj_t *open_terminal(lv_display_t *d) {
     preview_sessions_load();
     ui_nav_home(); step(d, 200);
