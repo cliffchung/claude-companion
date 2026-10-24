@@ -20,14 +20,17 @@ static lv_style_t s_btn, s_btn_primary, s_btn_secondary, s_btn_destructive, s_pr
 static lv_style_t s_pill, s_pill_working;
 static lv_style_t s_row, s_row_sel, s_session_geom, s_srow_geom, s_skeleton;
 /* bars */
+static lv_style_t s_dot_on, s_dot_off, s_scrim, s_spinner_main, s_spinner_ind, s_pressed_destructive;
 static lv_style_t s_title, s_bar, s_side_bottom, s_side_top, s_banner_muted, s_banner_red, s_section;
 /* the LVGL widgets the screens create directly (theme layer) */
 static lv_style_t s_w_button, s_w_field, s_w_track, s_w_on, s_w_knob_off, s_w_knob_on, s_w_knob;
-static lv_style_transition_dsc_t s_no_transition;
-static const lv_style_prop_t s_no_props[] = { 0 };
 /* NEEDS YOU: built on first use by the three components that may draw amber */
 static bool s_amber_ready;
 static lv_style_t s_amber_text, s_amber_pill, s_amber_edge, s_row_needs, s_row_needs_sel;
+
+static lv_obj_t *plain(lv_obj_t *parent);
+static lv_obj_t *text(lv_obj_t *parent, const char *t, lv_style_t *colour, lv_style_t *font);
+static void pass_hits(lv_obj_t *o, int32_t pad);
 
 static void flex_center(lv_style_t *s)
 {
@@ -55,10 +58,10 @@ void ui_comp_init(void)
     lv_style_t *all[] = { &s_bg, &s_panel, &s_panel2, &s_line_border, &s_fg_text, &s_muted, &s_label, &s_focus,
                           &s_btn, &s_btn_primary, &s_btn_secondary, &s_btn_destructive, &s_pressed, &s_chip,
                           &s_pill, &s_pill_working, &s_row, &s_row_sel, &s_session_geom, &s_srow_geom, &s_skeleton,
+                          &s_dot_on, &s_dot_off, &s_scrim, &s_spinner_main, &s_spinner_ind, &s_pressed_destructive,
                           &s_title, &s_bar, &s_side_bottom, &s_side_top, &s_banner_muted, &s_banner_red, &s_section,
                           &s_w_button, &s_w_field, &s_w_track, &s_w_on, &s_w_knob_off, &s_w_knob_on, &s_w_knob };
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
-    lv_style_transition_dsc_init(&s_no_transition, s_no_props, lv_anim_path_linear, 0, 0, NULL);
 
     lv_style_set_bg_color(&s_bg, HEX(UI_TK_BG));
     lv_style_set_bg_opa(&s_bg, LV_OPA_COVER);
@@ -147,6 +150,26 @@ void ui_comp_init(void)
     lv_style_set_radius(&s_skeleton, UI_TK_RADIUS);
 
     lv_style_set_text_font(&s_title, FONT_TITLE);
+    /* dialogs: the radio dots, the scrim, the busy spinner; destructive keeps its red when pressed */
+    lv_style_set_width(&s_dot_on, 20);
+    lv_style_set_height(&s_dot_on, 20);
+    lv_style_set_radius(&s_dot_on, LV_RADIUS_CIRCLE);
+    lv_style_set_bg_color(&s_dot_on, HEX(UI_TK_FG));
+    lv_style_set_bg_opa(&s_dot_on, LV_OPA_COVER);
+    lv_style_set_width(&s_dot_off, 20);
+    lv_style_set_height(&s_dot_off, 20);
+    lv_style_set_radius(&s_dot_off, LV_RADIUS_CIRCLE);
+    lv_style_set_border_color(&s_dot_off, HEX(UI_TK_LINE));
+    lv_style_set_border_width(&s_dot_off, 2);
+    lv_style_set_bg_color(&s_scrim, HEX(UI_TK_BG));
+    lv_style_set_bg_opa(&s_scrim, LV_OPA_70);
+    lv_style_set_arc_color(&s_spinner_main, HEX(UI_TK_LINE));
+    lv_style_set_arc_width(&s_spinner_main, 4);
+    lv_style_set_arc_color(&s_spinner_ind, HEX(UI_TK_FG));
+    lv_style_set_arc_width(&s_spinner_ind, 4);
+    lv_style_set_bg_color(&s_pressed_destructive, HEX(UI_TK_RED));
+    lv_style_set_bg_opa(&s_pressed_destructive, UI_TK_RED_BG_OPA);
+    lv_style_set_text_color(&s_pressed_destructive, HEX(UI_TK_RED));
     /* bars: panel with a hairline, 24 px margins */
     lv_style_set_bg_color(&s_bar, HEX(UI_TK_PANEL));
     lv_style_set_bg_opa(&s_bar, LV_OPA_COVER);
@@ -168,7 +191,8 @@ void ui_comp_init(void)
     lv_style_set_pad_top(&s_section, UI_TK_GAP_L);
     lv_style_set_pad_bottom(&s_section, UI_TK_GAP_S);
 
-    /* the theme layer for widgets created directly: no shadow, no transition, the tokens */
+    /* the theme layer for widgets created directly: no shadow, the tokens (the default theme's
+     * transitions are off in sdkconfig: CONFIG_LV_THEME_DEFAULT_TRANSITION_TIME=0) */
     lv_style_set_bg_color(&s_w_button, HEX(UI_TK_PANEL2));
     lv_style_set_bg_opa(&s_w_button, LV_OPA_COVER);
     lv_style_set_border_color(&s_w_button, HEX(UI_TK_LINE));
@@ -176,7 +200,6 @@ void ui_comp_init(void)
     lv_style_set_radius(&s_w_button, UI_TK_RADIUS);
     lv_style_set_text_color(&s_w_button, HEX(UI_TK_FG));
     lv_style_set_shadow_width(&s_w_button, 0);
-    lv_style_set_transition(&s_w_button, &s_no_transition);
     lv_style_set_bg_color(&s_w_field, HEX(UI_TK_PANEL2));
     lv_style_set_bg_opa(&s_w_field, LV_OPA_COVER);
     lv_style_set_border_color(&s_w_field, HEX(UI_TK_LINE));
@@ -186,7 +209,6 @@ void ui_comp_init(void)
     lv_style_set_bg_color(&s_w_track, HEX(UI_TK_LINE));
     lv_style_set_bg_opa(&s_w_track, LV_OPA_COVER);
     lv_style_set_radius(&s_w_track, LV_RADIUS_CIRCLE);
-    lv_style_set_transition(&s_w_track, &s_no_transition);
     lv_style_set_bg_color(&s_w_on, HEX(UI_TK_FG));
     lv_style_set_bg_opa(&s_w_on, LV_OPA_COVER);
     lv_style_set_radius(&s_w_on, LV_RADIUS_CIRCLE);
@@ -252,6 +274,32 @@ void ui_comp_sheet(lv_obj_t *obj)
     lv_obj_add_style(obj, &s_fg_text, 0);
 }
 
+lv_obj_t *ui_comp_radio_dot(lv_obj_t *parent, bool on)
+{
+    lv_obj_t *d = plain(parent);
+    lv_obj_add_style(d, on ? &s_dot_on : &s_dot_off, 0);
+    return d;
+}
+
+void ui_comp_scrim(lv_obj_t *ov) { lv_obj_add_style(ov, &s_scrim, 0); }
+
+void ui_comp_busy(lv_obj_t *spinner, lv_obj_t *label)
+{
+    lv_obj_add_style(spinner, &s_spinner_main, LV_PART_MAIN);
+    lv_obj_add_style(spinner, &s_spinner_ind, LV_PART_INDICATOR);
+    lv_obj_add_style(label, &s_muted, 0);
+}
+
+lv_obj_t *ui_comp_body(lv_obj_t *parent, const char *t)
+{
+    lv_obj_t *l = text(parent, t, &s_muted, NULL);
+    lv_obj_set_width(l, LV_PCT(100));
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
+    return l;
+}
+
+void ui_comp_pass_hits(lv_obj_t *o) { pass_hits(o, BODY_HIT_PAD); }
+
 lv_color_t ui_needs_you_color(void) { return HEX(ui_tk_needs_you_hex()); }
 
 /* Built from the colour the caller passes, so amber reaches the styles only from the NEEDS YOU setters. */
@@ -312,7 +360,7 @@ lv_obj_t *ui_btn(lv_obj_t *parent, ui_btn_kind_t kind, const char *t, lv_event_c
     lv_obj_add_style(b, &s_btn, 0);
     lv_obj_add_style(b, kind == UI_BTN_PRIMARY ? &s_btn_primary : kind == UI_BTN_DESTRUCTIVE ? &s_btn_destructive
                                                                                           : &s_btn_secondary, 0);
-    lv_obj_add_style(b, &s_pressed, LV_STATE_PRESSED);
+    lv_obj_add_style(b, kind == UI_BTN_DESTRUCTIVE ? &s_pressed_destructive : &s_pressed, LV_STATE_PRESSED);
     lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_ext_click_area(b, BODY_HIT_PAD);
     lv_label_set_text(lv_label_create(b), t ? t : "");
@@ -336,6 +384,18 @@ lv_obj_t *ui_chip(lv_obj_t *parent, const char *t, lv_event_cb_t cb, void *ud)
 
 /* ---------------------------------------------------------------- bars */
 static void back_cb(lv_event_t *e) { (void)e; ui_nav_back(); }
+
+static void hit_pad_cb(lv_event_t *e) { lv_event_set_ext_draw_size(e, (int32_t)(intptr_t)lv_event_get_user_data(e)); }
+
+/* A container must not clip its controls' extended hit area: LVGL only searches a parent's children within
+ * the parent's coords, grown by its ext draw size when it is OVERFLOW_VISIBLE. Used on the groups inside a bar
+ * (the bar itself still clips, so a chip's hit area is the bar's full height, P4C-5) and on a slider's row. */
+static void pass_hits(lv_obj_t *o, int32_t pad)
+{
+    lv_obj_add_flag(o, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_add_event_cb(o, hit_pad_cb, LV_EVENT_REFR_EXT_DRAW_SIZE, (void *)(intptr_t)pad);
+    lv_obj_refresh_ext_draw_size(o);
+}
 
 static lv_obj_t *bar(lv_obj_t *scr, int32_t h, lv_style_t *side)
 {
@@ -362,8 +422,9 @@ lv_obj_t *ui_header(lv_obj_t *scr, const char *title, const char *back_label)
     lv_obj_set_flex_flow(slot, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(slot, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(slot, UI_TK_GAP_S, 0);
+    pass_hits(slot, BAR_HIT_PAD);
     lv_obj_set_user_data(h, slot);
-    ui_vitals_update(ui_vitals_create(h));
+    ui_vitals_create(h);   /* filled at create */
     return h;
 }
 
@@ -453,6 +514,7 @@ lv_obj_t *ui_footer(lv_obj_t *scr)
         lv_obj_set_flex_flow(g, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(g, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(g, 12, 0);
+        pass_hits(g, BAR_HIT_PAD);
     }
     return f;
 }
@@ -675,6 +737,8 @@ lv_obj_t *ui_srow_slider(lv_obj_t *parent, const char *label, int min, int max, 
     lv_obj_t *box = plain(r);
     lv_obj_set_size(box, LV_PCT(55), UI_TK_ROW_H);
     lv_obj_set_style_pad_hor(box, 12, 0);
+    pass_hits(r, BODY_HIT_PAD);   /* the slider's 80 px hit area crosses its row and box */
+    pass_hits(box, BODY_HIT_PAD);
     lv_obj_t *track = plain(box);   /* the slider's main part is transparent so its hit area can be 64 px */
     lv_obj_add_style(track, &s_w_track, 0);
     lv_obj_set_size(track, LV_PCT(100), 8);

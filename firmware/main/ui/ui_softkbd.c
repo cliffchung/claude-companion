@@ -63,8 +63,7 @@ static lv_obj_t *mk_key(lv_obj_t *row, const char *label, int type, uint32_t cp,
     lv_obj_set_size(b, 1, LV_PCT(100));
     lv_obj_set_flex_grow(b, grow);
     lv_obj_set_style_min_width(b, 0, 0);
-    lv_obj_set_style_pad_hor(b, 0, 0);
-    lv_obj_set_ext_click_area(b, 0);
+    lv_obj_set_style_pad_hor(b, 0, 0);   /* keeps ui_btn's 8 px hit pad: 65 px keys hit 80 (P4C-5) */
     lv_obj_set_user_data(b, d);
     return b;
 }
@@ -122,9 +121,9 @@ lv_obj_t *softkbd_create(lv_obj_t *parent)
     kbd_t *k = lv_calloc(1, sizeof(kbd_t));
     s_kbd = k;
     k->root = lv_obj_create(parent);
+    lv_obj_remove_style_all(k->root);   /* first: it drops local styles, the size and alignment included */
     lv_obj_set_size(k->root, LV_PCT(100), KBD_H);
     lv_obj_align(k->root, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_remove_style_all(k->root);
     lv_obj_set_style_bg_color(k->root, lv_color_hex(UI_TK_PANEL), 0);
     lv_obj_set_style_bg_opa(k->root, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(k->root, lv_color_hex(UI_TK_LINE), 0);
@@ -138,10 +137,11 @@ lv_obj_t *softkbd_create(lv_obj_t *parent)
     lv_obj_add_event_cb(k->root, kbd_delete_cb, LV_EVENT_DELETE, NULL);
     for (int r = 0; r < 4; r++) {
         lv_obj_t *row = lv_obj_create(k->root);
+        lv_obj_remove_style_all(row);
         lv_obj_set_width(row, LV_PCT(100));
         lv_obj_set_flex_grow(row, 1);
-        lv_obj_remove_style_all(row);
-        lv_obj_set_style_pad_column(row, 6, 0);
+        lv_obj_set_style_pad_column(row, UI_TK_GAP_S, 0);
+        ui_comp_pass_hits(row);   /* the keys' hit area crosses the row's edges; the root's 8 px padding holds it */
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         k->rows[r] = row;

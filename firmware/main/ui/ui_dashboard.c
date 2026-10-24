@@ -1137,9 +1137,9 @@ static lv_obj_t *footer_button(lv_obj_t *parent, const char *label, lv_event_cb_
     return b;
 }
 
-/* The dashboard can be rebuilt over itself (ui_nav_refresh, ui_nav_home from the
-   dashboard): the new screen is created before the old one is deleted, so the old one's
-   delete must leave the new one's widgets, key sink and poll rate alone. */
+/* The dashboard can be rebuilt over itself (ui_nav_refresh, ui_nav_home from the dashboard).
+   Since Plan 4 (P4-2) the old screen is deleted before the new one is created; the checks
+   below still keep a stale delete from touching a newer screen's widgets, key sink and poll rate. */
 static void scr_delete_cb(lv_event_t *e)
 {
     lv_obj_t *scr = lv_event_get_target_obj(e);

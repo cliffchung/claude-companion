@@ -3,6 +3,7 @@
 #include "ui/ui_boot.h"
 #include "ui/ui_comp.h"
 #include "checks.h"
+#include "ui/ui_softkbd.h"
 #include "settings/settings.h"
 #include "net/tailscale.h"
 #include "input/keyboard.h"
@@ -22,8 +23,6 @@ app_settings_t g_settings;
 void settings_save(void) {}
 void settings_reset_defaults(void) {}
 bool g_ssh_session_active=false;
-void softkbd_hide_all(void) {}
-int softkbd_height(void) { return 300; }
 const char *sysinfo_power_src_text(void) { return "USB-C"; }
 const char *wifi_mgr_ssid(void) { return "Clientre Wi-Fi"; }
 bool sd_is_mounted(void) { return true; }
@@ -73,7 +72,8 @@ bool tailscale_stopping(void) { return false; }
 void tailscale_set_enabled(bool on) { g_settings.ts_enable = on; }
 const char *tailscale_state_text(void) { return tailscale_state() == TS_CONNECTED ? "Connected" : tailscale_state() == TS_OFF ? "Off" : "Connecting"; }
 const char *tailscale_vpn_ip(void) { return tailscale_state() == TS_CONNECTED ? "100.101.102.103" : ""; }
-void softkbd_attach_textarea(lv_obj_t *a,lv_obj_t *b) {}
+bool keyboard_any_present(void) { return true; }
+void keyboard_inject(const key_event_t *ev) { (void)ev; }
 void esp_restart(void) {}
 void bsp_display_brightness_set(int v) {}
 bool server_store_set_on_sd(bool on) { return true; }
@@ -407,6 +407,7 @@ static lv_obj_t *probe_gallery_create(void *arg) {
     int body_h = 720 - top - UI_TK_FOOTER_H - UI_TK_GAP_M;
     lv_obj_t *list = lv_obj_create(scr);
     lv_obj_remove_style_all(list);
+    lv_obj_set_style_pad_all(list, UI_TK_GAP_S, 0);   /* room for the 80 px hit areas */
     lv_obj_set_pos(list, UI_TK_MARGIN, top);
     lv_obj_set_size(list, UI_TK_LIST_W, body_h);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
@@ -430,6 +431,7 @@ static lv_obj_t *probe_gallery_create(void *arg) {
     ui_skeleton_row(list);
     lv_obj_t *col = lv_obj_create(scr);
     lv_obj_remove_style_all(col);
+    lv_obj_set_style_pad_all(col, UI_TK_GAP_S, 0);   /* room for the 80 px hit areas */
     int x = UI_TK_MARGIN + UI_TK_LIST_W + UI_TK_GAP_L;
     lv_obj_set_pos(col, x, top);
     lv_obj_set_size(col, 1280 - x - UI_TK_MARGIN, body_h);
@@ -438,6 +440,7 @@ static lv_obj_t *probe_gallery_create(void *arg) {
     lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *buttons = lv_obj_create(col);
     lv_obj_remove_style_all(buttons);
+    lv_obj_set_style_pad_all(buttons, UI_TK_GAP_S, 0);   /* room for the 80 px hit areas */
     lv_obj_set_size(buttons, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(buttons, UI_TK_GAP_M, 0);
@@ -488,6 +491,37 @@ static int nav_case(lv_display_t *d) {
     return r;
 }
 
+/* P4C-5: a hit area LVGL clips at a parent does not count. A 64 px button in a container of exactly its
+ * size gets 64 px of hit area whatever its ext_click_area, so the check must fail it; the bars' chips must
+ * reach the full bar height and 80 px across. */
+static int targets_clip_case(lv_display_t *d) {
+    char why[256];
+    lv_obj_t *scr = ui_screen_base(); lv_screen_load(scr);
+    lv_obj_t *box = lv_obj_create(scr);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_pos(box, 200, 300);
+    lv_obj_set_size(box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    ui_btn(box, UI_BTN_PRIMARY, "Clipped", noop_cb, NULL);
+    lv_obj_update_layout(scr); lv_refr_now(d);
+    int clipped = pv_touch_targets(scr, why, sizeof(why));
+    printf("targets-clip: clipped button -> %s\n", clipped ? why : "passed (wrong)");
+    lv_obj_delete(box);
+    /* the real bars: every chip reaches the bar's full height and 80 px across */
+    lv_obj_t *h = ui_header(scr, "Bars", "Sessions");
+    ui_chip(ui_header_slot(h), "Save", noop_cb, NULL);
+    lv_obj_t *f = ui_footer(scr);
+    ui_chip(ui_footer_group(f, false), "Send", noop_cb, NULL);
+    ui_chip(ui_footer_group(f, true), "Keys", noop_cb, NULL);
+    lv_obj_t *b = ui_banner(scr, UI_TK_HEADER_H);
+    ui_banner_set(b, UI_BANNER_RED, "Can't reach the host", "Host settings", noop_cb, NULL);
+    lv_obj_update_layout(scr); lv_refr_now(d);
+    int bars = pv_touch_targets(scr, why, sizeof(why));
+    printf("targets-clip: bars -> %s\n", bars ? why : "ok");
+    if (!clipped || bars) { printf("check targets-clip: FAIL\n"); return 1; }
+    printf("check targets-clip: ok\n");
+    return 0;
+}
+
 int main(int argc,char **argv) {
     lv_init();
     int w=1280, h=720;
@@ -524,6 +558,13 @@ int main(int argc,char **argv) {
         return pv_run_checks(d,s,"sleep",false,0);
     }
     if (!strcmp(name,"nav")) return nav_case(d);
+    if (!strcmp(name,"targets-clip")) return targets_clip_case(d);
+    if (!strcmp(name,"softkbd")) {
+        /* the soft keyboard (a fallback with no physical keyboard): touch-only, so the touch rules apply */
+        lv_obj_t *s=ui_screen_base(); lv_screen_load(s);
+        softkbd_create(s); step(d,100);
+        return pv_run_checks(d,s,"softkbd",false,0);
+    }
     if (!strcmp(name,"gesture")) { gesture_check(); return 0; }
     if (!strcmp(name,"art")) { terminal_art_check(); return 0; }
     if (!strcmp(name,"terminal")) { terminal_spacing_check(); return 0; }

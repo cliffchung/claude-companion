@@ -4,6 +4,8 @@
 #include "src/core/lv_obj_private.h"     /* ext_click_pad: LVGL has no public getter */
 #include "src/misc/lv_timer_private.h"   /* period: LVGL has no public getter */
 #include "src/misc/lv_event_private.h"   /* the event filter */
+#include "src/core/lv_obj_draw_private.h" /* lv_obj_get_ext_draw_size */
+#include "src/misc/lv_area_private.h"      /* lv_area_intersect */
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -101,12 +103,43 @@ static bool is_control(lv_obj_t *o)
             lv_obj_check_type(o, &lv_slider_class) || lv_obj_has_flag(o, LV_OBJ_FLAG_CHECKABLE));
 }
 
+/* Every control, touch-only subtrees (UI_KEYBOARD_SKIP: the soft keyboard, overlays) included. */
 static int collect_ctrls(lv_obj_t *o, lv_obj_t **out, int n)
 {
-    if (!shown(o) || lv_obj_has_flag(o, UI_KEYBOARD_SKIP)) return n;
+    if (!shown(o)) return n;
     if (is_control(o) && n < MAX_CTRLS) out[n++] = o;
     for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) n = collect_ctrls(lv_obj_get_child(o, i), out, n);
     return n;
+}
+
+/* The area LVGL really delivers to o: its coords grown by ext_click_area, then clipped to every ancestor,
+ * because lv_indev_search_obj only looks at a parent's children for a point on the parent's coords (grown
+ * by its ext draw size only when the parent is OVERFLOW_VISIBLE; lv_indev.c). */
+static lv_area_t hit_area(lv_obj_t *o)
+{
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    int32_t pad = o->spec_attr ? o->spec_attr->ext_click_pad : 0;
+    lv_area_increase(&a, pad, pad);
+    for (lv_obj_t *p = lv_obj_get_parent(o); p; p = lv_obj_get_parent(p)) {
+        lv_area_t c;
+        lv_obj_get_coords(p, &c);
+        if (lv_obj_has_flag(p, LV_OBJ_FLAG_OVERFLOW_VISIBLE)) {
+            int32_t e = lv_obj_get_ext_draw_size(p);
+            lv_area_increase(&c, e, e);
+        }
+        if (!lv_area_intersect(&a, &a, &c)) { a.x2 = a.x1 - 1; a.y2 = a.y1 - 1; break; }
+    }
+    return a;
+}
+
+/* The bar a bar control sits in: its ancestor that is a direct child of the screen (or layer). */
+static lv_obj_t *bar_of(lv_obj_t *o, lv_obj_t *root)
+{
+    lv_obj_t *p = lv_obj_get_parent(o);
+    while (p && lv_obj_get_parent(p) && lv_obj_get_parent(p) != root && lv_obj_get_parent(lv_obj_get_parent(p)))
+        p = lv_obj_get_parent(p);
+    return p;
 }
 
 static bool ancestor(lv_obj_t *a, lv_obj_t *b)
@@ -127,25 +160,34 @@ static const char *ctrl_name(lv_obj_t *o, char *buf, size_t cap)
     return buf;
 }
 
+/* P4C-5 (amends spec §8.1): a body control is >= 64 px visible with >= 80 px of hit area each way; a bar
+ * control (UI_BAR_CONTROL) is >= 48 px visible, and its hit area is the bar's full height and >= 80 px wide. */
 int pv_touch_targets(lv_obj_t *root, char *why, size_t cap)
 {
     static lv_obj_t *c[MAX_CTRLS];
     int n = collect_ctrls(root, c, 0);
     char nm[64], nm2[64];
     for (int i = 0; i < n; i++) {
-        lv_area_t a;
+        lv_area_t a, hit = hit_area(c[i]);
         lv_obj_get_coords(c[i], &a);
         int32_t w = lv_area_get_width(&a), h = lv_area_get_height(&a);
-        int32_t pad = c[i]->spec_attr ? c[i]->spec_attr->ext_click_pad : 0;
+        int32_t hw = lv_area_get_width(&hit), hh = lv_area_get_height(&hit);
+        if (hw < 0) hw = 0;
+        if (hh < 0) hh = 0;
         bool bar = lv_obj_has_flag(c[i], UI_BAR_CONTROL);
         int32_t min_vis = bar ? UI_TK_BAR_CTRL : UI_TK_TARGET;
         if (w < min_vis || h < min_vis) {
             say(why, cap, "%s is %dx%d visible, under %d", ctrl_name(c[i], nm, sizeof(nm)), (int)w, (int)h, (int)min_vis);
             return 1;
         }
-        if (w + 2 * pad < UI_TK_HIT || h + 2 * pad < UI_TK_HIT) {
-            say(why, cap, "%s hits %dx%d, under %d", ctrl_name(c[i], nm, sizeof(nm)), (int)(w + 2 * pad),
-                (int)(h + 2 * pad), UI_TK_HIT);
+        int32_t need_h = UI_TK_HIT;
+        if (bar) {
+            lv_obj_t *b = bar_of(c[i], root);
+            need_h = b ? lv_obj_get_height(b) : UI_TK_HIT;
+        }
+        if (hw < UI_TK_HIT || hh < need_h) {
+            say(why, cap, "%s hits %dx%d after clipping, needs %dx%d", ctrl_name(c[i], nm, sizeof(nm)), (int)hw,
+                (int)hh, UI_TK_HIT, (int)need_h);
             return 1;
         }
     }
@@ -314,7 +356,7 @@ int pv_run_checks(lv_display_t *d, lv_obj_t *scr, const char *name, bool needs_y
     }
     unsigned idle = pv_idle_pixels(d, 1000);
     if (idle) { printf("check %s: FAIL idle: %u px redrawn on a static screen\n", name, idle); fails++; }
-    bool sessions = !strncmp(name, "dashboard", 9) || !strncmp(name, "sessions", 8);
+    bool sessions = ui_nav_is_top(ui_dashboard_create) && lv_screen_active() == scr;   /* Task 6: ui_sessions_create */
     if (pv_timers(sessions, why, sizeof(why))) { printf("check %s: FAIL timers: %s\n", name, why); fails++; }
     char path[128];
     snprintf(path, sizeof(path), "%s.ppm", name);

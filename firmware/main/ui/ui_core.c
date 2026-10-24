@@ -23,6 +23,7 @@ static nav_entry_t s_stack[NAV_MAX];
 static int s_depth = 0;
 static lv_obj_t *s_current = NULL;
 
+static lv_obj_t *s_keyboard_scope;
 static lv_obj_t *s_blank;   /* P4-2: active while the old screen is deleted and the next one built */
 
 /* Spec §16 B2: instant, and never two screens alive at once. Load the blank, delete the old
@@ -38,9 +39,15 @@ static void nav_show_top(void)
         lv_obj_delete(old);
     }
     s_current = NULL;
+    s_keyboard_scope = NULL;   /* the next screen may reuse the deleted one's address */
     nav_entry_t *e = &s_stack[s_depth - 1];
     lv_obj_t *scr = e->create(e->arg);
-    if (!scr) { ESP_LOGE(TAG, "screen create failed"); return; }
+    if (!scr) {
+        /* never leave the blank up: fall back one level (home stays on the blank if it can't be built) */
+        ESP_LOGE(TAG, "screen create failed");
+        if (s_depth > 1) { s_depth--; nav_show_top(); }
+        return;
+    }
     lv_screen_load(scr);
     s_current = scr;
 }
@@ -282,7 +289,7 @@ lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_c
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     lv_obj_set_flex_grow(l, 1);
     lv_obj_t *sw = lv_switch_create(r);
-        if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
     if (cb) lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, user_data);
     lv_obj_set_user_data(r, sw);
     return r;
@@ -442,11 +449,9 @@ static lv_obj_t *modal_overlay(void)
     lv_obj_t *ov = lv_obj_create(lv_layer_top());
     s_modal_count++;
     lv_obj_add_event_cb(ov, modal_del_cb, LV_EVENT_DELETE, NULL);
+    lv_obj_remove_style_all(ov);
     lv_obj_set_size(ov, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(ov, lv_color_hex(UI_TK_BG), 0);
-    lv_obj_set_style_bg_opa(ov, LV_OPA_70, 0);
-    lv_obj_set_style_border_width(ov, 0, 0);
-    lv_obj_set_style_radius(ov, 0, 0);
+    ui_comp_scrim(ov);
     lv_obj_remove_flag(ov, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(ov, LV_OBJ_FLAG_CLICKABLE);
     return ov;
@@ -483,15 +488,11 @@ static lv_obj_t *dialog_buttons(lv_obj_t *box)
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, UI_TK_GAP_M, 0);
-    lv_obj_set_style_pad_top(row, UI_TK_GAP_S, 0);
+    lv_obj_set_style_pad_ver(row, (UI_TK_HIT - UI_TK_TARGET) / 2, 0);   /* the buttons' 80 px hit area fits */
     return row;
 }
 
-static lv_obj_t *dialog_body(lv_obj_t *box, const char *text)
-{
-    lv_obj_t *l = ui_label(box, text, FONT_BODY, UI_MUTED);
-    return l;
-}
+static lv_obj_t *dialog_body(lv_obj_t *box, const char *text) { return ui_comp_body(box, text); }
 
 void ui_confirm_ex(const char *title, const char *body, const char *action, bool destructive,
                    ui_confirm_cb_t cb, void *ud)
@@ -599,20 +600,8 @@ void ui_picker(const char *title, const char *const *items, int count, int curre
     for (int i = 0; i < count; i++) {
         lv_obj_t *r = ui_srow(box, UI_ROW_ACTION, items[i], NULL, menu_item_cb, c);
         lv_obj_set_user_data(r, (void *)(intptr_t)i);
-        lv_obj_t *dot = lv_obj_create(r);
-        lv_obj_remove_style_all(dot);
-        lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_size(dot, 20, 20);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_move_to_index(dot, 0);
-        if (i == current) {
-            lv_obj_set_style_bg_color(dot, lv_color_hex(UI_TK_FG), 0);
-            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-            cur = r;
-        } else {
-            lv_obj_set_style_border_color(dot, lv_color_hex(UI_TK_LINE), 0);
-            lv_obj_set_style_border_width(dot, 2, 0);
-        }
+        lv_obj_move_to_index(ui_comp_radio_dot(r, i == current), 0);
+        if (i == current) cur = r;
     }
     if (cur) {
         lv_obj_update_layout(box);
@@ -636,13 +625,9 @@ lv_obj_t *ui_busy(const char *text)
     lv_obj_set_style_pad_column(box, UI_TK_GAP_M, 0);
     lv_obj_t *sp = lv_spinner_create(box);
     lv_obj_set_size(sp, 40, 40);
-    lv_obj_set_style_arc_color(sp, lv_color_hex(UI_TK_LINE), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(sp, lv_color_hex(UI_TK_FG), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(sp, 4, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(sp, 4, LV_PART_INDICATOR);
     lv_obj_t *l = lv_label_create(box);
     lv_label_set_text(l, text ? text : tr(STR_PLEASE_WAIT));
-    lv_obj_set_style_text_color(l, UI_MUTED, 0);
+    ui_comp_busy(sp, l);
     lv_obj_set_user_data(ov, l);
     return ov;
 }
@@ -652,7 +637,6 @@ void ui_busy_close(lv_obj_t *busy) { if (busy) lv_obj_delete(busy); }
  * dynamically populated lists and hidden settings panels without stale groups.
  * Only the topmost modal is reachable while a dialog is open. */
 static lv_obj_t *s_keyboard_focus;
-static lv_obj_t *s_keyboard_scope;
 
 static bool has_handler(lv_obj_t *obj, lv_event_code_t code)
 {

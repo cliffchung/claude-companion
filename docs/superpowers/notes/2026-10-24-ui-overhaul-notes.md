@@ -217,3 +217,13 @@ The 1 s boot splash can't be captured: the console starts after `ui_nav_home`, s
 the screen has dimmed is swallowed as the wake key (rule 7), so scripted Esc loops must keep the screen awake; one early loop
 lost two Escs that way. No test sessions were made, and no card was selected or opened. Final state: `ts off`,
 `power set defaults`, static address off (DHCP), Host link connected on the LAN.
+
+**Task 4 fix round 1 (ruling P4C-5, amends spec §8.1).** A bar control's hit area is the bar's full height (header 56,
+footer 64, banner 48) and ≥ 80 px wide; rows keep 64 visible / 80 hit. `pv_touch_targets` now clips each control's
+extended area to every ancestor the way `lv_indev_search_obj` does (a parent's children are searched only on its coords,
+grown by its ext draw size when `OVERFLOW_VISIBLE`). The header slot, footer groups and the slider row are made
+`OVERFLOW_VISIBLE` with an ext draw size so their children's hit area isn't clipped; the bar itself still clips.
+New preview cases `targets-clip` (fails a clipped button, passes the real bars) and `softkbd` (which found that
+`softkbd_create` dropped its own size: `lv_obj_remove_style_all` must come first). `run_all.sh` fails on LVGL warnings.
+Deviation kept: dialog titles use the regular 24 px body face; the family has no bold 24 px face.
+Device after the fix: Settings › Network heapmin min 157,735 B.
