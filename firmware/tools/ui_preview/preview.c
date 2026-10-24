@@ -1,6 +1,5 @@
 #include "ui/ui.h"
 #include "term/term_view.h"
-#include "media/image_loader.h"
 #include "ui/ui_boot.h"
 #include "ui/ui_motion.h"
 #include "settings/settings.h"
@@ -29,9 +28,6 @@ int softkbd_height(void) { return 300; }
 const char *sysinfo_power_src_text(void) { return "USB-C"; }
 const char *wifi_mgr_ssid(void) { return "Clientre Wi-Fi"; }
 bool sd_is_mounted(void) { return true; }
-const char *fs_ext(const char *p) { (void)p; return ""; }
-lv_image_dsc_t *image_loader_jpeg(const char *p,int w,int h,char *s,int cap) { return NULL; }
-void image_loader_free(lv_image_dsc_t *p) {}
 static int env_int(const char *n, int d) { const char *e = getenv(n); return e && *e ? atoi(e) : d; }
 int sysinfo_battery_percent(void) { return env_int("PREVIEW_BAT", 52); }
 int sysinfo_rssi_cached(void) { return env_int("PREVIEW_RSSI", -60); }
@@ -160,11 +156,10 @@ uint32_t cc_link_forget_done(char *fp, size_t cap) { snprintf(fp, cap, PREVIEW_F
 bool cc_link_pinned_fingerprint(char *fp, size_t cap) { snprintf(fp, cap, "SHA256:OldPreviewKeyOnly9876543210zyxwvutsrqponm"); return true; }
 esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
-SCREEN(ui_servers_create) SCREEN(ui_files_create)
+SCREEN(ui_servers_create)
 SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create)
 SCREEN(ui_ota_create) SCREEN(ui_devinfo_create)
 SCREEN(ui_server_form_create)
-SCREEN(ui_backup_create)
 static int snapshot(lv_obj_t *s, const char *path) {
     int w=lv_obj_get_width(s), h=lv_obj_get_height(s);
     lv_draw_buf_t *snap=lv_snapshot_take(s,LV_COLOR_FORMAT_RGB888);
@@ -666,7 +661,7 @@ int main(int argc,char **argv) {
     lv_obj_t *s = lv_screen_active();
     if (create == ui_settings_create) {
         /* Real click events, including selection preservation across rebuilds. */
-        for (unsigned i = 0; i < 9; i++) {
+        for (unsigned i = 0; i < 8; i++) {
             lv_obj_t *before = s;
             lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
             lv_obj_send_event(lv_obj_get_child(nav, i), LV_EVENT_CLICKED, NULL);
@@ -674,11 +669,11 @@ int main(int argc,char **argv) {
             s = lv_screen_active();
             assert(s == before); /* tab switch must not rebuild the screen */
             lv_obj_t *deck = lv_obj_get_child(lv_obj_get_child(s, 1), 1);
-            for (unsigned j = 0; j < 9; j++)
+            for (unsigned j = 0; j < 8; j++)
                 assert(lv_obj_has_flag(lv_obj_get_child(deck, j), LV_OBJ_FLAG_HIDDEN) == (j != i));
         }
         unsigned category = argc>5 ? (unsigned)atoi(argv[5]) : 0;
-        assert(category < 9);
+        assert(category < 8);
         lv_obj_t *nav = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
         lv_obj_send_event(lv_obj_get_child(nav, category), LV_EVENT_CLICKED, NULL);
         lv_tick_inc(200); lv_timer_handler();
@@ -689,7 +684,7 @@ int main(int argc,char **argv) {
     if (create == ui_home_create) {
         lv_obj_t *content = lv_obj_get_child(s, 1);
         unsigned tiles = lv_obj_get_child_count(content);
-        assert(tiles >= 6);   /* Plan 4 Task 1 removed Music, Camera and USB */
+        assert(tiles >= 5);   /* Plan 4 Tasks 1-2 removed Music, Camera, USB and Files */
         for (unsigned i = 0; i < tiles; i++) {
             lv_area_t a; lv_obj_get_coords(lv_obj_get_child(content, i), &a);
             assert(a.x1 >= 0 && a.x2 < w && a.y1 >= UI_TOPBAR_H && a.y2 < h);

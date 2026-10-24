@@ -91,3 +91,30 @@ The HID host is unchanged and still installs at boot.
 - **Left for later tasks.** `sd_unmount_keep_card()` and `sd_remount_after_msc()` in `storage/sd.c` have no callers now.
   T11 owns `sd.c`. The unused `HOME_MUSIC`, `HOME_CAMERA`, `HOME_USB`, `USB_*` and `PLAY`/`PAUSE` strings stay in `i18n.h`
   for T3 and T12. The More launcher still reserves its 56 px bottom strip, which the mini player used to fill. T3 deletes the launcher.
+
+## Task 2: Files, the viewers, the SD screenshot and Backup
+
+**Removed.** `ui_files.c`, `ui_image.c`, `ui_text.c`, `ui_backup.c`, `storage/backup.*`, `media/` (image_loader, exif, tjpgd),
+the three-finger SD screenshot (`screenshot_init`, `screenshot_take`, `write_bmp`, the 60 ms poll), `wifi_mgr_export_json` /
+`wifi_mgr_import_json`, the Files tile, the Backup category (rail is 8 entries), the "three-finger tap" note in Display, 44 `STR_*`
+entries, and LVGL's LODEPNG, BMP, TJPGD, GIF and FS_STDIO (`CONFIG_LV_CACHE_DEF_SIZE=0`). The `screenshot` console verb
+(`screenshot_dump_usb`) stays. `ui_files.c`'s stale header comment and its audio-to-text-viewer routing went with the file.
+
+**Ruling C2 applied.** `server_store_export_json` / `server_store_import_json` stay: `save()`, `server_store_init()` and
+`set_on_sd` in `server_store.c` persist the host list through them, and T11's `server_store_import_sd_once()` needs the parser.
+Only the Backup callers are gone, so the plan's Step 1 grep still finds those two names (expected). `ui_preview/CMakeLists.txt`
+(C11) listed none of the removed sources, so it needed no edit. The preview's tile assert drops 6 to 5, and the settings loops go from 9 to 8.
+
+**Measurements** (Task 1 values from the table above).
+
+| Item | Task 1 | Task 2 | Delta |
+|---|---|---|---|
+| Total image | 7,439,121 B | 7,341,993 B | −97,128 B (−975,256 B against the Plan 3 baseline) |
+| `ts` free internal, dashboard, about 1 to 2 min after boot (no sessions on screen) | 144,395 B (after 2 min idle) | 160,899 B | +16,504 B |
+| `ui timers` | 8 timers, 6 under 300 ms | 6 timers, 4 under 300 ms (300, 500, 10 ms and the pty pump set); no 60 ms | the 60 ms timer is gone |
+| `screenshot` | `@@SHOT jpeg` | `@@SHOT jpeg` | same |
+
+The measured gain (+16.5 KB) is well over the spec's expected 5.7 KB (Files 5.1 + viewers 0.6). The extra is most likely LVGL's
+decoders and file-system driver state plus the image cache bookkeeping, now compiled out. Caveat: the Task 1 figure came after
+2 min idle with three test sessions and the screen off, and this one after a fresh flash, so the two are not like for like.
+After the flash `companion status` is unchanged (connected, LAN 192.168.1.50, host key SHA256:EXAM...), and the heartbeat resumed.

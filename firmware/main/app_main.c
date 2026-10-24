@@ -192,7 +192,6 @@ void app_main(void)
     bsp_display_lock(0);
     ui_init();
     lv_display_trigger_activity(NULL);
-    screenshot_init();
     ui_nav_home();
     bsp_display_unlock();
     debug_console_start();

@@ -44,7 +44,7 @@ void tailscale_tcp_probe(const char *ip, int port, int timeout_ms);
 /* MagicDNS-style lookup of a tailnet hostname; returns false if unknown. */
 bool tailscale_resolve(const char *host, char *ip_out, size_t cap);
 void tailscale_set_event_cb(ts_event_cb_t cb, void *user);
-/* Final review C1: called around every stop of a live instance (the switch, `ts off`, a backup restore,
+/* Final review C1: called around every stop of a live instance (the switch, `ts off`,
    tailscale_stop, a node forget), before the tunnel goes: hook(stop, ctx) must close the SSH sessions over
    tailnet addresses and then call stop(ctx) exactly once. Not called with s_ctl held. */
 typedef void (*ts_stop_hook_t)(void (*stop)(void *ctx), void *ctx);

@@ -50,7 +50,6 @@ X(OFF, "Off") \
 X(NONE, "None") \
 X(UNKNOWN, "Unknown") \
 X(HOME_SSH, "SSH Terminal") \
-X(HOME_FILES, "File Manager") \
 X(HOME_MUSIC, "Music") \
 X(HOME_CAMERA, "Camera") \
 X(HOME_WIFI, "WiFi") \
@@ -94,41 +93,13 @@ X(WIFI_NOT_CONNECTED, "WiFi not connected") \
 X(TERM_CLOSE_Q, "Disconnect SSH and return?") \
 X(KEYBOARD, "Keyboard") \
 X(PHYS_KBD_DETECTED, "Physical keyboard detected") \
-X(FILES, "Files") \
-X(TF_CARD, "TF Card") \
 X(USB_DRIVE, "USB Drive") \
 X(TF_NOT_MOUNTED, "TF card not mounted") \
-X(EMPTY_FOLDER, "Empty folder") \
-X(COPY, "Copy") \
-X(CUT, "Cut") \
-X(PASTE, "Paste") \
-X(RENAME, "Rename") \
-X(NEW_FOLDER, "New Folder") \
-X(NEW_FILE, "New File") \
-X(SELECT, "Select") \
-X(SELECT_ALL, "Select All") \
-X(CANCEL_SELECT, "Cancel Select") \
-X(DELETE_SELECTED, "Delete Selected") \
-X(DELETE_Q, "Delete %d item(s)? This cannot be undone.") \
-X(CLIPBOARD_EMPTY, "Clipboard is empty") \
-X(PASTE_DONE, "Paste done") \
 X(COPYING, "Copying %s") \
-X(OP_FAILED, "Operation failed: %s") \
-X(TARGET_EXISTS, "Target exists") \
-X(INTO_ITSELF, "Cannot move into itself") \
-X(FILE_NAME, "File name") \
-X(FOLDER_NAME, "Folder name") \
-X(ITEMS_TOTAL, "%u items, %s") \
-X(FREE_SPACE, "Free %s / %s") \
 X(OPEN_WITH, "Open") \
 X(IMAGE_VIEWER, "Image Viewer") \
-X(TEXT_VIEWER, "Text Viewer") \
-X(FILE_TOO_LARGE, "File too large") \
 X(CANNOT_READ, "Cannot read file.") \
-X(LOADING_IMAGE, "Loading image...") \
-X(IMAGE_LOAD_FAILED, "Image load failed") \
 X(EXIF_INFO, "EXIF") \
-X(NO_EXIF, "No EXIF data") \
 X(ROTATE, "Rotate") \
 X(MUSIC_PLAYER, "Music Player") \
 X(NOW_PLAYING, "Now Playing") \
@@ -168,7 +139,6 @@ X(SET_DISPLAY, "Display") \
 X(SET_NETWORK, "Network") \
 X(SET_POWER, "Power") \
 X(SET_INPUT, "Input") \
-X(SET_BACKUP, "Backup") \
 X(SET_BRIGHTNESS, "Brightness") \
 X(SET_ROTATION, "Screen rotation") \
 X(SET_TIME, "Time") \
@@ -176,9 +146,6 @@ X(SET_UTC_OFFSET, "UTC offset") \
 X(SET_UTC_NOTE, "UTC+ means local time is ahead of UTC. Japan is UTC+9.") \
 X(SET_NTP, "Sync time (NTP)") \
 X(SET_TIME_SYNCED, "Time synchronized") \
-X(SET_SCREENSHOT_NOTE, "Three-finger tap saves a screenshot to SD/ScreenShots.") \
-X(SCREENSHOT_SAVED, "Saved to SD/ScreenShots") \
-X(SCREENSHOT_FAILED, "Screenshot failed") \
 X(SET_STATUSBAR, "Status bar") \
 X(SB_WIFI, "WiFi icon") \
 X(SB_TAILSCALE, "Tailscale icon") \
@@ -232,17 +199,6 @@ X(SET_KBD_LAYOUT_NOTE, "JIS reads the raw key matrix and maps the layout on this
 X(PRESENT, "present") \
 X(ABSENT, "not detected") \
 X(SET_TERM_FONT, "Terminal font size") \
-X(BACKUP_EXPORT_ENC, "Export Encrypted") \
-X(BACKUP_EXPORT_PLAIN, "Export Plain") \
-X(BACKUP_IMPORT, "Import from SD") \
-X(BACKUP_PASSWORD, "Backup password") \
-X(BACKUP_PW_NOTE, "Enter 4-64 letters/digits. This password protects SSH/WiFi passwords.") \
-X(BACKUP_WRITTEN, "Backup written to %s") \
-X(BACKUP_IMPORTED, "Backup imported. Rebooting...") \
-X(BACKUP_NOT_FOUND, "No backup found on SD.") \
-X(BACKUP_ENC_FOUND, "Encrypted backup found. Enter password to import.") \
-X(BACKUP_BAD_PW, "Wrong password or damaged data") \
-X(BACKUP_PLAIN_WARN, "Plain backups contain passwords in clear text.") \
 X(OTA_TITLE, "Firmware Update") \
 X(OTA_CURRENT, "Current: %s") \
 X(OTA_LATEST, "Latest: %s") \

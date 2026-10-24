@@ -114,16 +114,12 @@ lv_obj_t *ui_dashboard_create(void *arg);        /* home: the Mac's Claude sessi
 /* The dashboard's Ctrl+K shortcuts overlay (any key or a touch closes it). For the preview. */
 void ui_dashboard_keys_overlay(bool show);
 bool ui_dashboard_keys_overlay_shown(void);     /* up on the current dashboard */
-lv_obj_t *ui_files_create(void *arg);            /* arg: const char *path or NULL */
-lv_obj_t *ui_image_create(void *arg);            /* arg: const char *path */
-lv_obj_t *ui_text_create(void *arg);
 lv_obj_t *ui_wifi_create(void *arg);
 lv_obj_t *ui_settings_create(void *arg);
 lv_obj_t *ui_appearance_create(void *arg);
 lv_obj_t *ui_ansi_create(void *arg);
 lv_obj_t *ui_ota_create(void *arg);
 lv_obj_t *ui_devinfo_create(void *arg);
-lv_obj_t *ui_backup_create(void *arg);
 lv_obj_t *ui_tailscale_create(void *arg);
 /* The pre-Hibernate notice: a full-screen bg object on lv_layer_top with the centred fg text
    "Sleeping to save battery. Press the side button to wake." (power lights the panel first). */

@@ -57,7 +57,6 @@ lv_obj_t *ui_home_create(void *arg)
 
     const tile_t all_tiles[] = {
         { STR_HOME_SSH,      LV_SYMBOL_KEYBOARD, ui_servers_create,  lv_color_hex(0x2F6FED), quick_new_server },
-        { STR_HOME_FILES,    LV_SYMBOL_DIRECTORY, ui_files_create,   lv_color_hex(0xF59E0B) },
         { STR_HOME_WIFI,     LV_SYMBOL_WIFI,     ui_wifi_create,     lv_color_hex(0x8B5CF6), quick_wifi },
         { STR_TAILSCALE,     NULL,               ui_tailscale_create, lv_color_hex(0x6366F1), quick_tailscale },   /* NULL: drawn mark */
         { STR_HOME_OTA,      LV_SYMBOL_DOWNLOAD, ui_ota_create,      lv_color_hex(0xEC4899) },   /* shown only with a manifest URL */

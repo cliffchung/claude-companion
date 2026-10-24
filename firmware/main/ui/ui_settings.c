@@ -106,7 +106,6 @@ static void led_color_cb(lv_event_t *e)
     ui_menu(tr(STR_SET_KBD_LED), items, 6, led_color_menu_cb, NULL);
 }
 static void appearance_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_appearance_create, NULL); }
-static void backup_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_backup_create, NULL); }
 
 static void creds_sd_cb(lv_event_t *e)
 {
@@ -377,7 +376,7 @@ static void sb_bit_cb(lv_event_t *e)
 static unsigned s_category;
 static const str_id_t s_categories[] = {
     STR_SET_SYSTEM, STR_SET_NETWORK, STR_SET_DISPLAY, STR_SET_POWER, STR_SET_STATUSBAR, STR_SET_INPUT,
-    STR_SET_SECURITY, STR_SET_BACKUP, STR_ABOUT
+    STR_SET_SECURITY, STR_ABOUT
 };
 /* Only the visible category is built: LVGL's small objects land in internal RAM, which TLS and
    the Wi-Fi link need, and the dashboard is built before Settings is freed when going home. */
@@ -431,7 +430,6 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         snprintf(buf, sizeof(buf), "%d°", g_settings.rotation * 90);
         ui_setting_row(c, tr(STR_SET_ROTATION), buf, rot_cb, NULL);
         ui_setting_row(c, tr(STR_SET_THEME), "", appearance_cb, NULL);
-        ui_label(c, tr(STR_SET_SCREENSHOT_NOTE), FONT_SMALL, UI_MUTED);
         break;
     }
     case 3: {
@@ -490,10 +488,6 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         break;
     }
     case 7: {
-        ui_setting_row(c, tr(STR_SET_BACKUP), "", backup_cb, NULL);
-        break;
-    }
-    case 8: {
         snprintf(buf, sizeof(buf), "v%s", sysinfo_app_version());
         ui_setting_row(c, tr(STR_ABOUT), buf, about_cb, NULL);
         ui_button_colored(c, tr(STR_REBOOT), UI_DANGER, reboot_cb, NULL);

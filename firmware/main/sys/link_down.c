@@ -14,7 +14,7 @@ static int64_t clk_now(void) { return esp_timer_get_time() / 1000; }
 static void clk_sleep(int ms) { vTaskDelay(pdMS_TO_TICKS(ms > 0 ? ms : 1)); }
 static const lg_clock_t s_clk = { clk_now, clk_sleep };
 
-/* Tailscale off (the switch, `ts off`, a backup restore, a node forget): close the sessions over tailnet
+/* Tailscale off (the switch, `ts off`, a node forget): close the sessions over tailnet
    addresses while the tunnel still carries their close, then stop it; the link reconnects on the LAN. */
 static void ts_stop_hook(void (*stop)(void *ctx), void *ctx)
 {

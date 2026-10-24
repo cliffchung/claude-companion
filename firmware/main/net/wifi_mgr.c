@@ -560,47 +560,6 @@ void wifi_mgr_set_cb(wifi_ev_cb_t cb, void *user) { s_cb = cb; s_cb_user = user;
 void wifi_mgr_set_global_cb(wifi_ev_cb_t cb, void *user) { s_gcb = cb; s_gcb_user = user; }
 const char *wifi_mgr_last_error(void) { return s_err; }
 
-char *wifi_mgr_export_json(void)
-{
-    cJSON *root = cJSON_CreateObject();
-    cJSON *arr = cJSON_AddArrayToObject(root, "networks");
-    for (int i = 0; i < s_saved_n; i++) {
-        cJSON *o = cJSON_CreateObject();
-        cJSON_AddStringToObject(o, "ssid", s_saved[i].ssid);
-        cJSON_AddStringToObject(o, "pass", s_saved[i].pass);
-        cJSON_AddItemToArray(arr, o);
-    }
-    cJSON_AddStringToObject(root, "last", s_last_ssid);
-    char *s = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    return s;
-}
-
-bool wifi_mgr_import_json(const char *json)
-{
-    cJSON *root = cJSON_Parse(json);
-    if (!root) return false;
-    cJSON *arr = cJSON_GetObjectItem(root, "networks");
-    if (cJSON_IsArray(arr)) {
-        s_saved_n = 0;
-        cJSON *o;
-        cJSON_ArrayForEach(o, arr) {
-            const char *ssid = cJSON_GetStringValue(cJSON_GetObjectItem(o, "ssid"));
-            const char *pass = cJSON_GetStringValue(cJSON_GetObjectItem(o, "pass"));
-            if (ssid && s_saved_n < WIFI_MAX_SAVED) {
-                strlcpy(s_saved[s_saved_n].ssid, ssid, 33);
-                strlcpy(s_saved[s_saved_n].pass, pass ? pass : "", 65);
-                s_saved_n++;
-            }
-        }
-    }
-    const char *last = cJSON_GetStringValue(cJSON_GetObjectItem(root, "last"));
-    if (last) strlcpy(s_last_ssid, last, sizeof(s_last_ssid));
-    saved_store();
-    cJSON_Delete(root);
-    return true;
-}
-
 /* ---- Plan 3 Task 3: the static address ---- */
 
 
