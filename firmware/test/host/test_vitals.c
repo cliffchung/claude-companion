@@ -273,12 +273,17 @@ static void test_src_battery_needs_consecutive_samples(void)
     TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&st, 7800, 25));
 }
 
-static void test_src_pin_low_on_battery_is_battery(void)
+static void test_src_boundaries(void)
 {
-    /* the old rule read CHG_STAT low as charging, so the device read USB forever (PT23) */
-    vitals_src_t st = { 0 };
-    TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, feed(&st, VITALS_BATT_SAMPLES - 1, 7600, 300));
-    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&st, 7600, 300));
+    /* chgfix M5: each threshold from both sides (PT23) */
+    TEST_ASSERT_EQUAL_INT(PWR_USB_CHARGING, vitals_power_src(7600, -6, PWR_UNKNOWN));
+    TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, vitals_power_src(7600, -5, PWR_UNKNOWN));    /* -5 holds */
+    TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, vitals_power_src(7600, 19, PWR_UNKNOWN));    /* 19 holds */
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(7600, 20, PWR_UNKNOWN));    /* 20 is a candidate */
+    TEST_ASSERT_EQUAL_INT(PWR_USB_STANDBY, vitals_power_src(8250, 40, PWR_UNKNOWN));
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(8249, 40, PWR_UNKNOWN));
+    TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, vitals_power_src(5499, 40, PWR_BATTERY));    /* no pack, whatever before */
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_power_src(5500, 40, PWR_UNKNOWN));
 }
 
 int main(void)
@@ -302,7 +307,7 @@ int main(void)
     RUN_TEST(test_usb_with_pack_supplementing);
     RUN_TEST(test_src_battery_sustained);
     RUN_TEST(test_src_battery_needs_consecutive_samples);
-    RUN_TEST(test_src_pin_low_on_battery_is_battery);
+    RUN_TEST(test_src_boundaries);
     RUN_TEST(test_full_pack_on_usb_under_load_is_not_battery);
     RUN_TEST(test_boot_on_battery_is_unknown_until_decided);
     RUN_TEST(test_settings_clamps);
