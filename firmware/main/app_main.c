@@ -17,7 +17,6 @@
 #include "ui/ui_boot.h"
 #include "sys/sysinfo.h"
 #include "net/wifi_mgr.h"
-#include "storage/sd.h"
 #include "input/keyboard.h"
 #include "servers/server_store.h"
 #include "crypto/secure_store.h"
@@ -172,8 +171,9 @@ void app_main(void)
     secure_store_init();
     sysinfo_init();
     imu_suspend();   /* nothing uses the BMI270 (PT15); it keeps whatever an earlier firmware left running */
-    sd_mount();
-    server_store_init();   /* may live on the card, so only after it is mounted */
+    /* No sd_mount here (spec §7.1, P4-7): the card is mounted on demand (Load from SD, a key file on the card) */
+    server_store_init();   /* NVS only */
+    settings_post_load_migrate();   /* CFG 23: the hosts an older build kept on the card, once */
 
     bsp_display_lock(0);
     fonts_init();

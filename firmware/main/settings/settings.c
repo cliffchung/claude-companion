@@ -12,6 +12,8 @@
 #include "sys/power_rules.h"
 #include "sys/power.h"
 #include "bsp/m5stack_tab5.h"
+#include "storage/sd.h"
+#include "servers/server_store.h"
 
 static const char *TAG = "settings";
 #define NS "app"
@@ -19,6 +21,7 @@ static const char *TAG = "settings";
 /* CFG_VERSION, CFG_MAGIC and the blob layout are in settings_migrate.h. */
 
 app_settings_t g_settings;
+static uint32_t s_loaded_version;   /* the blob version settings_init found; 0 = none */
 
 static void power_defaults(app_settings_t *s)
 {
@@ -112,16 +115,12 @@ void settings_init(void)
     void *blob = NULL; size_t len = 0;
     if (nvs_get_blob_alloc(NS, KEY, &blob, &len)) {
         uint32_t old_version = settings_blob_load(&g_settings, blob, len);
+        s_loaded_version = old_version;
         if (old_version && old_version != CFG_VERSION) {
-            /* older layout: settings_blob_load copied what fits and turned Tailscale off once (v21) */
-            /* Previous releases left existing compact values unchanged unless
-             * they were exactly 26. Give all old compact settings breathing room;
-             * preserve larger spacing and allow subsequent manual adjustments. */
-            if (old_version <= 11 && g_settings.term_line_height <= 30)
-                g_settings.term_line_height = 32;
-            /* v12 and older set the amber terminal palette here; Plan 4 dropped it (amber means NEEDS YOU only) */
-            if (old_version <= 13 && (g_settings.term_line_height == 34 || g_settings.term_line_height < 28))
-                g_settings.term_line_height = 32;
+            /* other layout: settings_blob_load copied what fits and ran the pure steps (v21 Tailscale off once;
+               v23 the token terminal values, rotation 1, no amber keyboard light). The old line-height fixes
+               for v11 and v13 are gone: below 23 the height is 32. */
+            ESP_LOGW(TAG, "settings v%u -> v%d", (unsigned)old_version, CFG_VERSION);
             if (old_version <= 14) g_settings.ss_classic = 0;
             if (old_version <= 15) g_settings.kbd_layout = KBD_LAYOUT_STOCK;
             /* v17 added companion_server and claude_path at the end: defaults stand. */
@@ -162,6 +161,22 @@ void settings_init(void)
     if (g_settings.pw_checkin_min < 1) g_settings.pw_checkin_min = 1;
     if (g_settings.pw_checkin_min > 60) g_settings.pw_checkin_min = 60;
     if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
+}
+
+void settings_post_load_migrate(void)
+{
+    /* CFG 23 step 3 (spec §10): the hosts an older build kept on the TF card come into NVS once. The card is
+       mounted only for this (never at boot otherwise), and its file is left as it is. */
+    if (!s_loaded_version || s_loaded_version >= 23 || g_settings.creds_on_sd != 1) return;
+    if (!sd_mount()) {
+        ESP_LOGW(TAG, "hosts on SD not imported: no card");
+    } else {
+        int n = server_store_import_sd_once();
+        if (n >= 0) ESP_LOGI(TAG, "hosts on SD imported: %d", n);
+        else ESP_LOGW(TAG, "hosts on SD not imported: the file can't be read");
+    }
+    g_settings.creds_on_sd = 0;   /* reserved from here on (Plan 4) */
+    settings_save();
 }
 
 void settings_save(void)

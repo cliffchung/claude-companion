@@ -1,5 +1,7 @@
 #include "settings_migrate.h"
 #include <string.h>
+#include "ui/ui_tokens.h"
+#include "sys/power_rules.h"
 
 uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len)
 {
@@ -21,6 +23,24 @@ uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len)
             s->ts_enable = 0;
             memset(s->mac_lan_ip, 0, sizeof(s->mac_lan_ip));
             memset(s->mac_ts_ip, 0, sizeof(s->mac_ts_ip));
+        }
+        if (version < 23) {
+            /* v23 (Plan 4, spec §10): the terminal slots hold the token values (nothing edits them, and the
+               terminal draws the tokens), a steady block cursor (B1), the fixed landscape rotation, and the
+               keyboard light's amber-like colour back to blue (settings_init does that on every load too).
+               Step 3, the TF-card hosts, needs ESP-IDF: settings_post_load_migrate (settings.c) runs it. */
+            s->term_fg = UI_TK_TERM_FG;
+            s->term_bg = UI_TK_TERM_BG;
+            s->term_cursor = UI_TK_TERM_CURSOR;
+            memcpy(s->term_ansi, ui_tk_term_ansi, sizeof(s->term_ansi));
+            s->term_cursor_style = 0;
+            s->term_cursor_blink = 0;
+            s->term_line_height = UI_TK_TERM_LINE_H;
+            s->rotation = 1;
+            if (pr_rgb_amber_like(((uint32_t)s->kbd_led_rgb[0] << 16) | ((uint32_t)s->kbd_led_rgb[1] << 8) |
+                                  s->kbd_led_rgb[2])) {
+                s->kbd_led_rgb[0] = 0x00; s->kbd_led_rgb[1] = 0x80; s->kbd_led_rgb[2] = 0xFF;
+            }
         }
     }
     s->mac_lan_ip[sizeof(s->mac_lan_ip) - 1] = 0;

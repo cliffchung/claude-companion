@@ -6,10 +6,10 @@
 extern "C" {
 #endif
 #define SD_MOUNT "/sdcard"
+/* On demand (never at boot): true when the card is mounted, now or already. Safe from any task; a failed try
+   can be repeated (a card put in later mounts). */
 bool sd_mount(void);
 void sd_unmount(void);
-void sd_unmount_keep_card(void);   /* detach FATFS but keep the SDMMC card initialised */
-void sd_remount_after_msc(void);
 bool sd_is_mounted(void);
 bool sd_space(const char *path, uint64_t *total, uint64_t *free_bytes);
 bool sd_card_info(char *buf, size_t len);   /* name/type/size */

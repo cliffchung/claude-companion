@@ -777,3 +777,76 @@ was sent while Sessions showed (P4C-9); the take-over was opened with `companion
 - Device boot: after this flash the P4 stayed silent until an esptool RTS reset again (2 of 4 flashes in Task 10).
   Final state as found: LAN Host link, `ts off`, `power set defaults`, DHCP, brightness 80, keyboard light
   `0 0 0080ff 1 5`; test session stopped.
+
+## Task 11: CFG 23 migration, the TF-card hosts and SD on demand
+
+**Shape.** `CFG_VERSION` 21 → 23. `settings_blob_load` gains the pure step `version < 23`: `term_fg/bg/cursor` and
+`term_ansi` take the token values, `term_cursor_style` 0, `term_cursor_blink` 0, `term_line_height` 32, `rotation` 1,
+and an amber-like `kbd_led_rgb` goes to 0x0080FF (`pr_rgb_amber_like`, as settings_init does on every load). Step 3
+(the TF-card hosts) is `settings_post_load_migrate()` in settings.c. `server_store` reads and writes NVS only: no
+`server_store_set_on_sd`, `server_store_reload` or SD path; `server_store_import_sd_once()` is the migration's import.
+No `sd_mount()` at boot.
+
+**Device gate (Tab5, LAN Host link, Tailscale off; test sessions `companion-test-t11`, `-t11b` only).** Two flashes.
+
+| Check | Result | |
+|---|---|---|
+| Before the flash (Task 10 build, CFG 21) | `companion status` connected on the LAN path, Tailscale off, host-key fingerprint hash 00000000; `ts` off, auth key set; brightness 80; `key light` mode=0 bright=0 rgb=0080ff needs=1 dark=5; `power settings` all defaults; `key layout` stock; boot log "1 servers loaded" (the Host entry only: 0 Terminal hosts), "host keys: 1 known for the Host", `sd: mount failed: ESP_ERR_TIMEOUT` (no card) | baseline |
+| First boot after the flash | `settings: settings v21 -> v23`; no `sd:` line (no mount); "1 servers loaded"; "host keys: 1 known for the Host"; link connected | pass |
+| Second boot (`reboot`) | no `settings v` line; the same counts | pass |
+| After vs before | `companion status` (path, fallback, pin source, Tailscale), `ts`, brightness, `key light`, `power settings`, `key layout`: identical (diff empty, `watch:`/`heap:` lines excepted); Terminal hosts 0 → 0 | pass |
+| Step 3 on the device | not exercised: `creds_on_sd` was 0 on this device (the old boot loaded the list from NVS) and no card is in the slot | PENDING (host tests) |
+| SD on demand | Settings › Network › Auth key › Load from SD card, twice (no card): each try reached card init (`send_op_cond` 0x107, `sd: mount failed: ESP_ERR_TIMEOUT`), toast "No SD card", key unchanged, Wi-Fi and the link unaffected. The second try shows the LDO fix (T11-4) | pass |
+| `ui heapmin` over 45 s idle on Sessions | min 135,651 B, largest 63,488 B, now 144,579 B | recorded |
+| `ts` heap | internal free 142,279 B before (Task 10 build, long uptime) → 147,339 / 144,983 / 147,291 B after; min 29,592 → 29,388 / 28,028 B | about the same |
+| Boot time | `boot complete in` 2879 ms before → 2878, 2875, 2877 ms. "servers loaded" lands ~30 ms earlier (3675 → 3644/3647/3639 ms: the failed mount took ~28 ms), but the 1 s boot-logo minimum absorbs it | no change |
+| Boot after flashing | flash 1 and flash 2 each booted unaided: the boot log arrived within the 25 s capture opened right after idf.py's RTS reset, no extra reset | note |
+| `idf.py size` | image 7,254,275 B; DIRAM 189,960 B (Task 10's noted 7,251,555 / 189,944 was before its fix round) | |
+
+Final state as found: LAN Host link connected, `ts off`, `power set defaults`, DHCP, brightness 80, keyboard light
+`0 0 0080ff 1 5`; both test sessions stopped. No navigation key was sent while Sessions showed; the Settings taps were
+`power sim touch` on the Network panel and its Auth key sheet only.
+
+**Rulings and deviations:**
+- T11-1: CFG numbering (controller ruling): CFG 23 is this plan's, the next number in the chain from Plan 3's 21. 22
+  stays reserved for Plan 2's Task 10; if that task still needs a bump later it takes CFG 24 and adds its own
+  `old_version < 24` step. `settings_migrate.h` says so.
+- T11-2: step 3 runs from `settings_post_load_migrate()`, called in app_main after `secure_store_init` and
+  `server_store_init`, not inside `settings_init`: the card file is encrypted with the device key, which
+  `secure_store_init` loads after `settings_init`. It keys on the version `settings_init` loaded (< 23) and
+  `creds_on_sd == 1`, then sets `creds_on_sd` 0 and saves in both outcomes.
+- T11-3: the import adds, it doesn't replace: the card's entries go after the NVS list, skipping one whose (non-empty)
+  name is already there or whose user, host (any case) and port match an entry; it stops at `SERVER_MAX`. It returns
+  the count added (0 when all were there), or -1 when the card isn't mounted, the file is missing, it doesn't decrypt
+  with this device's key, it isn't a host list, or the save fails; the NVS list is unchanged on -1. The decrypted
+  JSON and the parsed copy are wiped before they're freed (they hold passwords in the clear).
+- T11-4 (deviation, one more log line): no card logs the brief's "hosts on SD not imported: no card"; a card whose
+  file can't be read logs "hosts on SD not imported: the file can't be read" ("no card" would be false there).
+- T11-5: `sd_mount()` is safe from any task and can be retried. It takes a mutex (made once under a spinlock), so the
+  Load from SD worker, `ssh_task` (B6) and the migration can't bring the card up twice. A failed mount now calls
+  `bsp_sdcard_unmount()`: the BSP takes the SD LDO channel (channel 4, adjustable) before mounting and keeps it when
+  the mount fails, and an adjustable channel can be held once (`esp_ldo_acquire_channel`), so without the release
+  every later try failed until a reboot. That mattered less with a boot mount; with on-demand mounts a try with no
+  card followed by a card put in is the normal case. Reasoned from the IDF and BSP sources; the old failure was not
+  reproduced on the device (the second try on the new build reached card init).
+- T11-6 (Task 2 ledger carry): `server_store_export_json(bool plain)`'s `plain` was for the removed backup.c (it
+  wrote passwords in the clear): dead. Export and import are now `static` in server_store.c (export always encrypts)
+  and leave the header. `wifi_mgr` has no `export_json`/`plain` leftover (grep).
+- T11-7: `server_store_init` no longer re-saves the list on every boot (the old `import_json` ended in `save()`): one
+  NVS write fewer per boot, and an entry whose password didn't decrypt is no longer rewritten with an empty one.
+- T11-8: `sd_unmount_keep_card` and `sd_remount_after_msc` (USB MSC, removed in Task 1; no callers) are deleted.
+  `ota_download` and `ota_package_ready` call `sd_mount()` instead of testing `sd_is_mounted()` (no callers today;
+  Plan 7's OTA would otherwise always see "TF card not mounted").
+- T11-9: settings.c's v11 and v13 line-height fixes are gone (the v23 step sets 32 for every older blob). Every
+  migration now logs `settings vN -> v23`; the v21 "Tailscale switched off (once)" line stays for v20 and older.
+- T11-10: settings.h comments: `theme_*` and `status_items` already said "reserved (Plan 4)"; `creds_on_sd`,
+  `ssh_bell`, `pw_light_sleep` and `term_font` now do; the `term_*` block says the values are fixed tokens;
+  `volume`, `kbd_layout` and `ota_url` say live, no UI. `pw_light_sleep` is still printed by `power settings` and
+  reset by Reset settings (a read for display; nothing acts on it).
+- T11-11: the fork's `tools/ui_preview/server_store_test.c` (never built; it tested the SD store) is replaced by the
+  host test `test_server_store` (8 cases over server_store.c itself, simulated NVS and card, a no-op
+  `test/host/stubs/esp_log.h`): NVS round trip, init never reads the card or writes, failed writes roll back, the
+  import (adds once, card file untouched, duplicates skipped, every -1 case keeps the list, a failed save, a full
+  list).
+- T11-12: the tests restate `test_settings_v21_keeps_tailscale_choice` as `..._v23_...` (a v21 blob now migrates) and
+  the v20 test compares every byte outside the v23 step's fields.

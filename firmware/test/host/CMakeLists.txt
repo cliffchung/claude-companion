@@ -74,6 +74,13 @@ foreach(t test_kh_carry test_settings_migrate test_ts_host test_fast_rules test_
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
 
+# server_store.c itself over simulated NVS and card (stubs/ holds an esp_log.h that prints nothing)
+add_executable(test_server_store test_server_store.c ${MAIN}/servers/server_store.c)
+target_include_directories(test_server_store PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/stubs ${MAIN})
+target_link_libraries(test_server_store cjson unity)
+target_compile_options(test_server_store PRIVATE -Wall -Wextra)
+add_test(NAME test_server_store COMMAND test_server_store)
+
 # The UI lint (Plan 4): amber only through ui_comp, Host command lines only from cc_cmd.
 add_test(NAME ui_lint COMMAND python3 ${MAIN}/../tools/ui_lint.py ${MAIN})
 

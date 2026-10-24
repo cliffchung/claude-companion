@@ -8,7 +8,9 @@ extern "C" {
 #endif
 
 #define CFG_MAGIC   0x54414235u
-#define CFG_VERSION 21
+/* 21 is Plan 3's. 22 is reserved for Plan 2's Task 10; if it lands later it takes 24. Each step is keyed
+   "old version < N", so the order the plans land in doesn't matter. */
+#define CFG_VERSION 23
 
 typedef struct {
     uint32_t magic;
@@ -18,7 +20,10 @@ typedef struct {
 
 /* Loads an NVS blob over s, which holds the defaults. A current blob is taken as it is; an older (or
    other) version copies what fits and applies the pure migrations: from 20 or older, ts_enable = 0
-   and the v21 addresses cleared (the old tail padding may have landed on them). Returns the blob's
+   and the v21 addresses cleared (the old tail padding may have landed on them); below 23, the token
+   terminal values (term_fg, term_bg, term_cursor, term_ansi), a steady block cursor, line height 32,
+   rotation 1 and an amber-like kbd_led_rgb back to 0x0080FF. A newer blob (from a later build) only
+   copies what fits. Returns the blob's
    version, or 0 when the blob isn't ours (s keeps the defaults). The caller applies the migrations
    that need ESP-IDF for versions below CFG_VERSION, then saves. */
 uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len);

@@ -8,61 +8,67 @@
 #include <unistd.h>
 #include <errno.h>
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_vfs_fat.h"
 #include "bsp/m5stack_tab5.h"
 
 static const char *TAG = "sd";
-static bool s_mounted = false;
+static volatile bool s_mounted = false;
+
+/* Mounted on demand, never at boot (spec §7.1, P4-7). Callers run on different tasks (the Tailscale key's
+   Load from SD worker, ssh_task for a key file on the card, the CFG 23 migration at boot), so the mount and
+   unmount hold one mutex: two first calls at once must not both bring the card up. */
+static SemaphoreHandle_t s_mx;
+static portMUX_TYPE s_mx_init = portMUX_INITIALIZER_UNLOCKED;
+
+static void sd_lock(void)
+{
+    if (!s_mx) {
+        SemaphoreHandle_t m = xSemaphoreCreateMutex();
+        taskENTER_CRITICAL(&s_mx_init);
+        if (!s_mx) { s_mx = m; m = NULL; }
+        taskEXIT_CRITICAL(&s_mx_init);
+        if (m) vSemaphoreDelete(m);   /* another task made it first */
+    }
+    if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY);   /* NULL only when out of memory: go on unlocked */
+}
+static void sd_unlock(void) { if (s_mx) xSemaphoreGive(s_mx); }
 
 bool sd_mount(void)
 {
     if (s_mounted) return true;
-    esp_err_t e = bsp_sdcard_mount();
-    if (e != ESP_OK) { ESP_LOGW(TAG, "mount failed: %s", esp_err_to_name(e)); return false; }
-    s_mounted = true;
-    sdmmc_card_t *card = bsp_sdcard_get_handle();
-    if (card) ESP_LOGI(TAG, "SD mounted: %s %lluMB", card->cid.name, ((uint64_t)card->csd.capacity * card->csd.sector_size) >> 20);
-    return true;
+    sd_lock();
+    bool ok = s_mounted;
+    if (!ok) {
+        esp_err_t e = bsp_sdcard_mount();
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "mount failed: %s", esp_err_to_name(e));
+            /* The BSP keeps the SD LDO channel it took when the mount fails, and the channel can be taken only
+               once, so without this every later mount fails too (a card put in after a try with none). */
+            bsp_sdcard_unmount();
+        } else {
+            s_mounted = ok = true;
+            sdmmc_card_t *card = bsp_sdcard_get_handle();
+            if (card) ESP_LOGI(TAG, "SD mounted: %s %lluMB", card->cid.name, ((uint64_t)card->csd.capacity * card->csd.sector_size) >> 20);
+        }
+    }
+    sd_unlock();
+    return ok;
 }
 
 void sd_unmount(void)
 {
     if (!s_mounted) return;
-    bsp_sdcard_unmount();
-    s_mounted = false;
+    sd_lock();
+    if (s_mounted) {
+        bsp_sdcard_unmount();
+        s_mounted = false;
+    }
+    sd_unlock();
 }
 
 bool sd_is_mounted(void) { return s_mounted; }
-
-/* TinyUSB MSC takes ownership of the card; FATFS must not touch it meanwhile.
- * The BSP mounts with esp_vfs_fat_sdmmc_mount, so a full unmount would also
- * deinit the card. We keep the card and only drop the VFS/FATFS binding. */
-#include "diskio_impl.h"
-#include "diskio_sdmmc.h"
-#include "ff.h"
-void sd_unmount_keep_card(void)
-{
-    if (!s_mounted) return;
-    /* f_mount(NULL) on our drive + unregister VFS; the card stays powered. */
-    sdmmc_card_t *card = bsp_sdcard_get_handle();
-    BYTE pdrv = ff_diskio_get_pdrv_card(card);
-    if (pdrv != 0xFF) {
-        char drv[3] = { (char)('0' + pdrv), ':', 0 };
-        f_mount(NULL, drv, 0);
-        esp_vfs_fat_unregister_path(SD_MOUNT);
-        ff_diskio_unregister(pdrv);
-    }
-    s_mounted = false;
-}
-void sd_remount_after_msc(void)
-{
-    /* TinyUSB re-registers the card under our mount path when handed back to
-     * the app; if that did not happen, fall back to a full BSP mount. */
-    if (fs_is_dir(SD_MOUNT) && sd_space(SD_MOUNT, NULL, NULL)) { s_mounted = true; return; }
-    bsp_sdcard_unmount();
-    s_mounted = false;
-    sd_mount();
-}
 
 bool sd_space(const char *path, uint64_t *total, uint64_t *free_bytes)
 {

@@ -3,6 +3,7 @@
 #include <string.h>
 #include "unity.h"
 #include "settings/settings_migrate.h"
+#include "ui/ui_tokens.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -40,6 +41,53 @@ static void defaults(app_settings_t *s)
     s->ts_enable = 0;
 }
 
+/* The fields the v23 step writes (spec §10 steps 1, 2 and 4) */
+static void assert_v23_step(const app_settings_t *out)
+{
+    TEST_ASSERT_EQUAL_HEX32(UI_TK_TERM_FG, out->term_fg);
+    TEST_ASSERT_EQUAL_HEX32(UI_TK_TERM_BG, out->term_bg);
+    TEST_ASSERT_EQUAL_HEX32(UI_TK_TERM_CURSOR, out->term_cursor);
+    TEST_ASSERT_EQUAL_HEX32_ARRAY(ui_tk_term_ansi, out->term_ansi, 16);
+    TEST_ASSERT_EQUAL_UINT8(0, out->term_cursor_style);
+    TEST_ASSERT_EQUAL_UINT8(0, out->term_cursor_blink);
+    TEST_ASSERT_EQUAL_UINT8(32, out->term_line_height);
+    TEST_ASSERT_EQUAL_UINT8(1, out->rotation);
+}
+
+/* Puts back what the v23 step may write, from src, so a byte compare covers every other field. */
+static void undo_v23_step(app_settings_t *out, const app_settings_t *src)
+{
+    out->term_fg = src->term_fg;
+    out->term_bg = src->term_bg;
+    out->term_cursor = src->term_cursor;
+    memcpy(out->term_ansi, src->term_ansi, sizeof(out->term_ansi));
+    out->term_cursor_style = src->term_cursor_style;
+    out->term_cursor_blink = src->term_cursor_blink;
+    out->term_line_height = src->term_line_height;
+    out->rotation = src->rotation;
+    memcpy(out->kbd_led_rgb, src->kbd_led_rgb, sizeof(out->kbd_led_rgb));
+}
+
+/* An old-style blob: the user's amber terminal, blinking, 26 px, portrait rotation. */
+static app_settings_t old_look(void)
+{
+    app_settings_t s = patterned();
+    s.term_fg = 0xFF9800;
+    s.term_bg = 0x000000;
+    s.term_cursor = 0xFF9800;
+    for (int i = 0; i < 16; i++) s.term_ansi[i] = 0x111111u * (uint32_t)i;
+    s.term_cursor_style = 2;
+    s.term_cursor_blink = 1;
+    s.term_line_height = 26;
+    s.rotation = 0;
+    s.kbd_led_rgb[0] = 0x10; s.kbd_led_rgb[1] = 0x20; s.kbd_led_rgb[2] = 0x30;   /* not amber: kept */
+    memset(s.mac_lan_ip, 0, sizeof(s.mac_lan_ip));
+    memset(s.mac_ts_ip, 0, sizeof(s.mac_ts_ip));
+    strcpy(s.mac_lan_ip, "192.168.1.50");
+    strcpy(s.mac_ts_ip, "100.101.102.103");
+    return s;
+}
+
 static void test_settings_migrate_v20_turns_tailscale_off(void)
 {
     app_settings_t src = patterned();
@@ -50,16 +98,17 @@ static void test_settings_migrate_v20_turns_tailscale_off(void)
     TEST_ASSERT_EQUAL_UINT8(0, out.ts_enable);
     TEST_ASSERT_EQUAL_STRING("", out.mac_lan_ip);
     TEST_ASSERT_EQUAL_STRING("", out.mac_ts_ip);
-    /* every other field of the v20 layout unchanged */
+    /* every other field of the v20 layout unchanged, once the v23 step's fields are put back */
+    undo_v23_step(&out, &src);
     size_t ts = offsetof(app_settings_t, ts_enable);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, ts);
     TEST_ASSERT_EQUAL_MEMORY((uint8_t *)&src + ts + 1, (uint8_t *)&out + ts + 1, V20_END - ts - 1);
     TEST_ASSERT_EQUAL_STRING("my-host", out.companion_server);
-    /* saved again it is a v21 blob */
+    /* saved again it is a v23 blob */
     cfg_blob_t saved = settings_blob_make(&out);
     TEST_ASSERT_EQUAL_UINT32(CFG_MAGIC, saved.magic);
-    TEST_ASSERT_EQUAL_UINT32(21, saved.version);
-    TEST_ASSERT_EQUAL_UINT32(21, CFG_VERSION);
+    TEST_ASSERT_EQUAL_UINT32(23, saved.version);
+    TEST_ASSERT_EQUAL_UINT32(23, CFG_VERSION);
 }
 
 /* Older blobs get the same one-time switch-off. */
@@ -74,28 +123,28 @@ static void test_settings_migrate_older_turns_tailscale_off(void)
     TEST_ASSERT_EQUAL_STRING("", out.mac_lan_ip);
 }
 
-/* Sticky: a v21 blob keeps the user's choice, on or off, and its addresses; the migration never runs again. */
-static void test_settings_v21_keeps_tailscale_choice(void)
+/* Sticky: a current blob keeps the user's choice, on or off, and its addresses; the migration never runs again. */
+static void test_settings_v23_keeps_tailscale_choice(void)
 {
     app_settings_t src = patterned();
     memset(src.mac_lan_ip, 0, sizeof(src.mac_lan_ip));
     memset(src.mac_ts_ip, 0, sizeof(src.mac_ts_ip));
     strcpy(src.mac_lan_ip, "192.168.1.50");
     strcpy(src.mac_ts_ip, "100.101.102.103");
-    size_t len = make_blob(21, &src, sizeof(src));
+    size_t len = make_blob(23, &src, sizeof(src));
     app_settings_t out;
     defaults(&out);
-    TEST_ASSERT_EQUAL_UINT32(21, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT32(23, settings_blob_load(&out, s_blob, len));
     TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);
     TEST_ASSERT_EQUAL_STRING("192.168.1.50", out.mac_lan_ip);
     TEST_ASSERT_EQUAL_STRING("100.101.102.103", out.mac_ts_ip);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 
     src.ts_enable = 0;
-    len = make_blob(21, &src, sizeof(src));
+    len = make_blob(23, &src, sizeof(src));
     defaults(&out);
     out.ts_enable = 1;   /* whatever the defaults say, the saved off stands */
-    TEST_ASSERT_EQUAL_UINT32(21, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT32(23, settings_blob_load(&out, s_blob, len));
     TEST_ASSERT_EQUAL_UINT8(0, out.ts_enable);
 }
 
@@ -103,7 +152,7 @@ static void test_settings_v21_keeps_tailscale_choice(void)
 static void test_settings_foreign_blob_keeps_defaults(void)
 {
     app_settings_t src = patterned();
-    size_t len = make_blob(21, &src, sizeof(src));
+    size_t len = make_blob(23, &src, sizeof(src));
     ((cfg_blob_t *)s_blob)->magic = 0x12345678;
     app_settings_t out, want;
     defaults(&out);
@@ -126,6 +175,97 @@ static void test_settings_addresses_terminated(void)
     settings_blob_load(&out, s_blob, len);
     TEST_ASSERT_EQUAL_CHAR(0, out.mac_lan_ip[sizeof(out.mac_lan_ip) - 1]);
     TEST_ASSERT_EQUAL_CHAR(0, out.mac_ts_ip[sizeof(out.mac_ts_ip) - 1]);
+}
+
+/* ---- CFG 23 (spec §10) ---- */
+static void test_migrate_v21_to_v23_terminal_and_rotation(void)
+{
+    app_settings_t src = old_look();
+    size_t len = make_blob(21, &src, sizeof(src));
+    app_settings_t out;
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(21, settings_blob_load(&out, s_blob, len));
+    assert_v23_step(&out);
+    TEST_ASSERT_EQUAL_STRING("my-host", out.companion_server);
+    TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);   /* the v21 step doesn't run again */
+    undo_v23_step(&out, &src);
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));   /* nothing else moved */
+}
+
+static void test_migrate_v20_and_v22_to_v23(void)
+{
+    app_settings_t src = old_look();
+    size_t len = make_blob(20, &src, V20_SIZE);
+    app_settings_t out;
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(20, settings_blob_load(&out, s_blob, len));
+    assert_v23_step(&out);
+    TEST_ASSERT_EQUAL_UINT8(0, out.ts_enable);   /* the v21 step still runs from v20 */
+    TEST_ASSERT_EQUAL_STRING("", out.mac_lan_ip);
+    TEST_ASSERT_EQUAL_STRING("my-host", out.companion_server);
+
+    len = make_blob(22, &src, sizeof(src));   /* Plan 2 Task 10's reserved number, same layout */
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(22, settings_blob_load(&out, s_blob, len));
+    assert_v23_step(&out);
+    TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);
+    TEST_ASSERT_EQUAL_STRING("my-host", out.companion_server);
+    undo_v23_step(&out, &src);
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
+}
+
+static void test_v23_blob_unchanged(void)
+{
+    app_settings_t src = old_look();
+    src.term_line_height = 30;
+    src.kbd_led_rgb[0] = 0xf4; src.kbd_led_rgb[1] = 0xb5; src.kbd_led_rgb[2] = 0x45;   /* settings.c's rule, not this one */
+    size_t len = make_blob(23, &src, sizeof(src));
+    app_settings_t out;
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(23, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT8(30, out.term_line_height);
+    TEST_ASSERT_EQUAL_UINT8(1, out.term_cursor_blink);
+    TEST_ASSERT_EQUAL_UINT8(0, out.rotation);
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
+}
+
+static void test_migrate_amber_kbd_to_blue(void)
+{
+    app_settings_t src = old_look();
+    src.kbd_led_rgb[0] = 0xf4; src.kbd_led_rgb[1] = 0xb5; src.kbd_led_rgb[2] = 0x45;
+    size_t len = make_blob(21, &src, sizeof(src));
+    app_settings_t out;
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(21, settings_blob_load(&out, s_blob, len));
+    const uint8_t blue[3] = { 0x00, 0x80, 0xff };
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(blue, out.kbd_led_rgb, 3);
+
+    /* a colour that isn't amber-like stays */
+    src.kbd_led_rgb[0] = 0x10; src.kbd_led_rgb[1] = 0x20; src.kbd_led_rgb[2] = 0x30;
+    len = make_blob(21, &src, sizeof(src));
+    defaults(&out);
+    settings_blob_load(&out, s_blob, len);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(src.kbd_led_rgb, out.kbd_led_rgb, 3);
+}
+
+/* A blob from a newer build (24): copy what fits and return 24; no older step runs (the downgrade path). */
+static void test_newer_blob_takes_newer_path(void)
+{
+    app_settings_t src = old_look();
+    size_t len = make_blob(24, &src, sizeof(src));
+    app_settings_t out;
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
+    TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);
+
+    /* a longer newer blob: only what fits is copied */
+    uint8_t big[sizeof(cfg_blob_t) + 16];
+    memset(big, 0x5a, sizeof(big));
+    memcpy(big, s_blob, len);
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, big, sizeof(big)));
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 }
 
 /* ---- Reset settings (spec §5.12, U3): power, keyboard light and display brightness; the rest stays ---- */
@@ -211,9 +351,14 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_settings_migrate_v20_turns_tailscale_off);
     RUN_TEST(test_settings_migrate_older_turns_tailscale_off);
-    RUN_TEST(test_settings_v21_keeps_tailscale_choice);
+    RUN_TEST(test_settings_v23_keeps_tailscale_choice);
     RUN_TEST(test_settings_foreign_blob_keeps_defaults);
     RUN_TEST(test_settings_addresses_terminated);
+    RUN_TEST(test_migrate_v21_to_v23_terminal_and_rotation);
+    RUN_TEST(test_migrate_v20_and_v22_to_v23);
+    RUN_TEST(test_v23_blob_unchanged);
+    RUN_TEST(test_migrate_amber_kbd_to_blue);
+    RUN_TEST(test_newer_blob_takes_newer_path);
     RUN_TEST(test_reset_scope_resets_power_light_brightness);
     RUN_TEST(test_reset_scope_keeps_identity_and_tz);
     return UNITY_END();

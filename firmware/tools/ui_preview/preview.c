@@ -166,8 +166,6 @@ bool keyboard_any_present(void) { return env_int("PREVIEW_KBD", 1) != 0; }   /* 
 void keyboard_inject(const key_event_t *ev) { (void)ev; }
 void esp_restart(void) {}
 void bsp_display_brightness_set(int v) {}
-bool server_store_set_on_sd(bool on) { return true; }
-void server_store_reload(void) {}
 /* The server store: the Host's entry (index 0, Settings › Host), a LAN host and a tailnet host (preview-host-a's
    address, online). PREVIEW_HOSTS=empty: the Host's entry only. PREVIEW_HOSTS=sd: the LAN host signs in with a key
    file on the SD card. The add / update / remove calls are recorded. */
