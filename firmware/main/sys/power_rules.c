@@ -53,19 +53,21 @@ int64_t pr_light_max_age_ms(bool radio_off, int checkin_min)
 
 power_state_t pr_next_state(const pr_in_t *in)
 {
-    if (in->held) return PS_ACTIVE;
-    if (!in->on_battery && !in->sleep_on_usb) return PS_ACTIVE;
     int64_t idle = in->now_ms - in->last_input_ms;
+    if (in->held) {
+        /* I1 (PT28): the 10% trigger overrides every hold but the bench's, once nobody has typed for off_s */
+        bool low = in->on_battery && in->hibernate_ok && pr_battery_low(true, in->battery_pct, in->charging);
+        return low && !in->bench_held && idle >= (int64_t)in->off_s * 1000 ? PS_HIBERNATE : PS_ACTIVE;
+    }
+    if (!in->on_battery && !in->sleep_on_usb) return PS_ACTIVE;
     if (idle < (int64_t)in->dim_s * 1000) return PS_ACTIVE;
     if (idle < (int64_t)in->off_s * 1000) return PS_DIM;
     if (!in->on_battery) return PS_OFF;   /* no Radio off, Deep idle or Hibernate without a battery */
     if (in->hibernate_ok) {
         bool hours = in->hibernate_h > 0 && idle >= (int64_t)in->hibernate_h * 3600000;
         bool low = pr_battery_low(true, in->battery_pct, in->charging);   /* on_battery checked above */
-        bool still = in->still_hibernate_ms > 0 && in->still_ms >= in->still_hibernate_ms &&
-                     idle >= in->still_hibernate_ms;
-        if (in->hib_checkin_hold) hours = still = false;   /* PT16: a needs-you check-in stays up */
-        if (hours || low || still) return PS_HIBERNATE;
+        if (in->hib_checkin_hold) hours = false;   /* PT16: a needs-you check-in stays up */
+        if (hours || low) return PS_HIBERNATE;
     }
     if (in->deep_idle_min > 0 && idle >= (int64_t)in->deep_idle_min * 60000) return PS_DEEP_IDLE;
     if ((in->state == PS_OFF || in->state == PS_RADIO_OFF) && in->radio_off_enabled &&
@@ -170,18 +172,47 @@ bool pr_battery_low(bool on_battery, int pct, bool charging)
 
 pr_hc_t pr_hib_checkin_decide(bool low_battery, bool poll_ok, bool needs_you, bool kbd_rail_survives)
 {
-    if (low_battery) return PR_HC_POWEROFF;
+    if (low_battery) return PR_HC_LOW;
     return pr_hib_checkin_next(poll_ok, needs_you, kbd_rail_survives);
 }
 
 pr_hg_t pr_hib_checkin_gate(pr_src_t src, int pct, bool charging)
 {
     if (src == PR_SRC_UNKNOWN) return PR_HG_GIVE_UP;
-    return pr_battery_low(src == PR_SRC_BATTERY, pct, charging) ? PR_HG_POWEROFF : PR_HG_GO;
+    if (src == PR_SRC_USB) return PR_HG_WAKE;
+    return pr_battery_low(src == PR_SRC_BATTERY, pct, charging) ? PR_HG_LOW : PR_HG_GO;
 }
 
 pr_ub_t pr_unknown_backstop(pr_src_t src, int64_t armed_at_ms, int64_t now_ms, int64_t last_input_ms)
 {
     if (src != PR_SRC_UNKNOWN || last_input_ms > armed_at_ms) return PR_UB_CANCEL;
     return now_ms - armed_at_ms >= PR_UNKNOWN_BACKSTOP_MS ? PR_UB_FIRE : PR_UB_WAIT;
+}
+
+bool pr_hib_allowed(bool blocked, int64_t blocked_at_ms, int64_t now_ms)
+{
+    return !blocked || now_ms - blocked_at_ms >= PR_HIB_RETRY_MS;
+}
+
+void pr_a164_pack(uint8_t out[8], uint8_t r, uint8_t g, uint8_t b)
+{
+    for (int i = 0; i < 2; i++) {
+        out[i * 4 + 0] = b;
+        out[i * 4 + 1] = g;
+        out[i * 4 + 2] = r;
+        out[i * 4 + 3] = 0;
+    }
+}
+
+void pr_a164_unpack(const uint8_t in[3], uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    *b = in[0];
+    *g = in[1];
+    *r = in[2];
+}
+
+int pr_dark_light_load(uint32_t old_version, int stored)
+{
+    if (old_version <= 19) return PR_DARK_LIGHT_DEFAULT;
+    return pr_dark_light_clamp(stored);
 }

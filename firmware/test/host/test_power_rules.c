@@ -164,7 +164,6 @@ static pr_in_t base(power_state_t st, int64_t idle_ms)
     in.off_since_ms = NOW;
     in.dim_s = 30; in.off_s = 120; in.radio_off_min = 20;
     in.deep_idle_min = 60; in.hibernate_h = 2;
-    in.still_ms = 0; in.still_hibernate_ms = 0;
     in.battery_pct = 50;
     in.held = false; in.on_battery = true; in.sleep_on_usb = true; in.radio_off_enabled = false;
     in.charging = false; in.hibernate_ok = true;
@@ -348,44 +347,70 @@ void test_long_idle_needs_battery(void)
 
 void test_long_idle_held(void)
 {
+    /* I1 (PT28): a hold keeps it Active at a healthy battery, never past the 10% trigger */
     pr_in_t in = base(PS_OFF, 10 * H_MS);
-    in.held = true; in.battery_pct = 5;
+    in.held = true; in.battery_pct = 50;
     next_is(PS_ACTIVE, &in);
     in.state = PS_DEEP_IDLE;
     next_is(PS_ACTIVE, &in);
+    in = base(PS_ACTIVE, 10 * H_MS);
+    in.held = true; in.battery_pct = 5;
+    next_is(PS_HIBERNATE, &in);
 }
 
-void test_still_brings_hibernate_sooner(void)
+void test_low_battery_beats_hold(void)
 {
-    pr_in_t in = base(PS_OFF, 30 * MIN_MS);
-    in.still_hibernate_ms = 30 * MIN_MS;
-    in.still_ms = 30 * MIN_MS;
+    pr_in_t in = base(PS_ACTIVE, 121000);   /* a take-over left open, idle past Off */
+    in.held = true; in.battery_pct = 10;
     next_is(PS_HIBERNATE, &in);
-    in.still_ms = 29 * MIN_MS;
-    next_is(PS_OFF, &in);
-    in = base(PS_OFF, 29 * MIN_MS);
-    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 45 * MIN_MS;
-    next_is(PS_OFF, &in);   /* an input 29 min ago */
-    in = base(PS_OFF, 30 * MIN_MS);
-    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 0;
-    next_is(PS_OFF, &in);   /* unknown */
-    in = base(PS_OFF, 45 * MIN_MS);
-    in.still_hibernate_ms = 0; in.still_ms = 45 * MIN_MS;
-    next_is(PS_OFF, &in);   /* the trigger is off */
-    in = base(PS_OFF, 30 * MIN_MS);
-    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 30 * MIN_MS; in.hibernate_h = 0;
-    next_is(PS_HIBERNATE, &in);
-    in = base(PS_DEEP_IDLE, 70 * MIN_MS);
-    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 40 * MIN_MS;
-    next_is(PS_HIBERNATE, &in);
-    in = base(PS_OFF, 45 * MIN_MS);
-    in.still_hibernate_ms = 30 * MIN_MS; in.still_ms = 45 * MIN_MS;
-    in.on_battery = false; in.sleep_on_usb = true;
-    next_is(PS_OFF, &in);
-    in.on_battery = true; in.hibernate_ok = false;
-    next_is(PS_OFF, &in);
-    in.hibernate_ok = true; in.held = true;
+    in.last_input_ms = NOW - 119000;        /* typing: never cut off before the Off time */
     next_is(PS_ACTIVE, &in);
+    in = base(PS_ACTIVE, 10 * H_MS);
+    in.held = true; in.bench_held = true; in.battery_pct = 5;   /* an active bench keeps its step */
+    next_is(PS_ACTIVE, &in);
+    in.bench_held = false; in.charging = true;                  /* charging is never low */
+    next_is(PS_ACTIVE, &in);
+    in.charging = false; in.on_battery = false;                 /* USB */
+    next_is(PS_ACTIVE, &in);
+    in.on_battery = true; in.hibernate_ok = false;              /* blocked: the hold stands */
+    next_is(PS_ACTIVE, &in);
+}
+
+void test_hib_retry(void)
+{
+    /* M5: a failed hibernate blocks the next try for PR_HIB_RETRY_MS, not until a wake */
+    const int64_t at = 1000000;
+    TEST_ASSERT_TRUE(pr_hib_allowed(false, at, at));
+    TEST_ASSERT_FALSE(pr_hib_allowed(true, at, at + PR_HIB_RETRY_MS - 1));
+    TEST_ASSERT_TRUE(pr_hib_allowed(true, at, at + PR_HIB_RETRY_MS));
+    TEST_ASSERT_EQUAL_INT64(5 * 60 * 1000LL, PR_HIB_RETRY_MS);
+}
+
+void test_a164_pack(void)
+{
+    /* PT24 / 9c M1: the A164 takes each LED as B, G, R, unused (confirmed by eye: the default blue showed blue) */
+    uint8_t w[8];
+    pr_a164_pack(w, 0xf4, 0xb5, 0x45);
+    const uint8_t want[8] = { 0x45, 0xb5, 0xf4, 0, 0x45, 0xb5, 0xf4, 0 };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(want, w, 8);
+    uint8_t r, g, b;
+    pr_a164_unpack(w, &r, &g, &b);
+    TEST_ASSERT_EQUAL_HEX8(0xf4, r);
+    TEST_ASSERT_EQUAL_HEX8(0xb5, g);
+    TEST_ASSERT_EQUAL_HEX8(0x45, b);
+    pr_a164_pack(w, 0x00, 0x80, 0xff);   /* the default blue */
+    TEST_ASSERT_EQUAL_HEX8(0xff, w[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, w[2]);
+}
+
+void test_dark_light_migration(void)
+{
+    /* 9c M2: v19 and older stored kbd_off_cap (default 100 = no cap) in this byte */
+    TEST_ASSERT_EQUAL_INT(PR_DARK_LIGHT_DEFAULT, pr_dark_light_load(19, 100));
+    TEST_ASSERT_EQUAL_INT(PR_DARK_LIGHT_DEFAULT, pr_dark_light_load(12, 0));
+    TEST_ASSERT_EQUAL_INT(15, pr_dark_light_load(20, 15));
+    TEST_ASSERT_EQUAL_INT(2, pr_dark_light_load(20, 0));     /* a bad byte clamps */
+    TEST_ASSERT_EQUAL_INT(100, pr_dark_light_load(21, 200));
 }
 
 void test_cards_view_after_hibernate(void)
@@ -491,9 +516,9 @@ void test_battery_low(void)
 void test_hib_checkin_low_battery(void)
 {
     /* C1: a check-in boot at <= 10% powers off with no check-in armed, whatever the poll found */
-    TEST_ASSERT_EQUAL_INT(PR_HC_POWEROFF, pr_hib_checkin_decide(true, true, true, true));
-    TEST_ASSERT_EQUAL_INT(PR_HC_POWEROFF, pr_hib_checkin_decide(true, false, false, false));
-    TEST_ASSERT_EQUAL_INT(PR_HC_POWEROFF, pr_hib_checkin_decide(true, true, true, false));
+    TEST_ASSERT_EQUAL_INT(PR_HC_LOW, pr_hib_checkin_decide(true, true, true, true));
+    TEST_ASSERT_EQUAL_INT(PR_HC_LOW, pr_hib_checkin_decide(true, false, false, false));
+    TEST_ASSERT_EQUAL_INT(PR_HC_LOW, pr_hib_checkin_decide(true, true, true, false));
     /* otherwise exactly pr_hib_checkin_next */
     for (int m = 0; m < 8; m++) {
         bool ok = m & 1, needs = m & 2, kbd = m & 4;
@@ -512,12 +537,14 @@ void test_hib_checkin_gate(void)
     /* N1: the check-in boot's early decision, on a settled source reading only */
     TEST_ASSERT_EQUAL_INT(PR_HG_GIVE_UP, pr_hib_checkin_gate(PR_SRC_UNKNOWN, 5, false));   /* never re-arm blind */
     TEST_ASSERT_EQUAL_INT(PR_HG_GIVE_UP, pr_hib_checkin_gate(PR_SRC_UNKNOWN, -1, false));
-    TEST_ASSERT_EQUAL_INT(PR_HG_POWEROFF, pr_hib_checkin_gate(PR_SRC_BATTERY, 10, false));
-    TEST_ASSERT_EQUAL_INT(PR_HG_POWEROFF, pr_hib_checkin_gate(PR_SRC_BATTERY, 0, false));
+    TEST_ASSERT_EQUAL_INT(PR_HG_LOW, pr_hib_checkin_gate(PR_SRC_BATTERY, 10, false));
+    TEST_ASSERT_EQUAL_INT(PR_HG_LOW, pr_hib_checkin_gate(PR_SRC_BATTERY, 0, false));
     TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_BATTERY, 11, false));
     TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_BATTERY, -1, false));   /* % unknown, source known */
-    TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_USB, 5, false));
-    TEST_ASSERT_EQUAL_INT(PR_HG_GO, pr_hib_checkin_gate(PR_SRC_USB, 5, true));
+    /* I2 (PT28): a check-in that finds USB boots fully under the normal ladder, never polls and re-sleeps */
+    TEST_ASSERT_EQUAL_INT(PR_HG_WAKE, pr_hib_checkin_gate(PR_SRC_USB, 5, false));
+    TEST_ASSERT_EQUAL_INT(PR_HG_WAKE, pr_hib_checkin_gate(PR_SRC_USB, 5, true));
+    TEST_ASSERT_EQUAL_INT(PR_HG_WAKE, pr_hib_checkin_gate(PR_SRC_USB, 80, false));
 }
 
 void test_unknown_source_backstop(void)
@@ -558,7 +585,10 @@ int main(void)
     RUN_TEST(test_hibernate_low_battery);
     RUN_TEST(test_long_idle_needs_battery);
     RUN_TEST(test_long_idle_held);
-    RUN_TEST(test_still_brings_hibernate_sooner);
+    RUN_TEST(test_low_battery_beats_hold);
+    RUN_TEST(test_hib_retry);
+    RUN_TEST(test_a164_pack);
+    RUN_TEST(test_dark_light_migration);
     RUN_TEST(test_cards_view_after_hibernate);
     RUN_TEST(test_backoff);
     RUN_TEST(test_radio_off_rule);

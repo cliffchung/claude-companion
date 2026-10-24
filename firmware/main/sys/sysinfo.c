@@ -10,6 +10,8 @@
 #include "esp_app_desc.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/i2c_master.h"
 #include "bsp/m5stack_tab5.h"
 #include "settings/settings.h"
@@ -99,6 +101,39 @@ bool sysinfo_ina226_raw(uint16_t *config, uint16_t *bus, int16_t *shunt)
     i2c_master_bus_rm_device(d);
     return ok;
 }
+
+bool sysinfo_ina226_oneshot(int *mv, int *ma)
+{
+    i2c_master_bus_handle_t b = bsp_i2c_get_handle();
+    if (!b) return false;
+    i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = INA226_ADDR, .scl_speed_hz = 400000 };
+    i2c_master_dev_handle_t d = NULL;
+    if (i2c_master_bus_add_device(b, &cfg, &d) != ESP_OK) return false;
+    /* AVG 4 (001), VBUSCT and VSHCT 1.1 ms (100), mode 011: shunt and bus, triggered */
+    const uint8_t trig[3] = { 0x00, 0x43, 0x23 };
+    bool ok = i2c_wr_rd(d, trig, 3, NULL, 0);
+    uint8_t r[2], reg;
+    bool ready = false;
+    for (int i = 0; ok && i < 10 && !ready; i++) {   /* CVRF (Mask/Enable bit 3): up to 20 ms */
+        vTaskDelay(pdMS_TO_TICKS(2));
+        reg = 0x06;
+        ready = i2c_wr_rd(d, &reg, 1, r, 2) && (r[1] & 0x08);
+    }
+    int16_t shunt = 0;
+    uint16_t bus = 0;
+    if (ready) {
+        reg = 0x01; ok = i2c_wr_rd(d, &reg, 1, r, 2); shunt = (int16_t)(r[0] << 8 | r[1]);
+        reg = 0x02; ok = ok && i2c_wr_rd(d, &reg, 1, r, 2); bus = (uint16_t)(r[0] << 8 | r[1]);
+    }
+    const uint8_t down[3] = { 0x00, 0x45, 0x20 };   /* power-down, as hibernate left it */
+    i2c_wr_rd(d, down, 3, NULL, 0);
+    i2c_master_bus_rm_device(d);
+    if (!ok || !ready) return false;
+    *mv = (int)bus * 5 / 4;          /* 1.25 mV */
+    *ma = (int)shunt / 2;            /* 2.5 uV / 5 mR = 0.5 mA */
+    return true;
+}
+
 bool sysinfo_rtc_present(void) { return s_rtc != NULL; }
 
 int sysinfo_charge_pin(void)

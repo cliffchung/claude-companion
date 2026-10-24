@@ -34,10 +34,15 @@ static const char *TAG = "hib";
  * the BMI270's INT1 (via Q8) and a USB plug-in edge pull the same line. The side button S1 is SW_PWR
  * on PA4. The factory firmware (M5Tab5-UserDemo bsp_generate_poweroff_signal) powers off with three
  * 100 ms pulses on P4 and wakes from an RX8130 alarm. */
-#define HIB_MODE_BUILT HIB_MODE_POWEROFF
+/* PT26: Hibernate is a deep sleep. The side button wakes it (proved 2026-10-23: a press 76 s into a 900 s
+   `power hib test timer`, arriving as hw reason 7, PT27), and CHG_EN stays driven high through it, so a
+   sleeping Tab5 charges; a PWROFF_PULSE power-off drops the expander and with it CHG_EN (P115, PT22). The
+   power-off stays for `power hib test off` only. */
+#define HIB_MODE_BUILT HIB_MODE_DEEPSLEEP
 /* Step 7 on USB: deep sleep wakes on the timer (proved); the PWROFF_PULSE power-off took (the board went
    dark with USB in); the RX8130 timer never switched it back on, so RTC is not a source; the side button
-   did (S1 on the PMS150's SW_PWR; the user's press, 2026-10-23, 2 h 9 min after the power-off). P60, P114. */
+   did (S1 on the PMS150's SW_PWR; the user's press, 2026-10-23, 2 h 9 min after the power-off), and wakes
+   deep sleep too (PT27). P60, P114. */
 #define HIB_SOURCES (HIB_SRC_TIMER | HIB_SRC_BUTTON)
 /* Step 4c: the keyboard (J9: SOC_3.3V or SYS_VIN, no expander switch) kept its A164 registers, amber at
    30%, through 60 s of deep sleep. Deep sleep only: a power-off drops SOC_3.3V. Ruling P61. */
@@ -47,7 +52,6 @@ static const char *TAG = "hib";
 #define EXP1 0x44
 #define PWROFF_PIN 4                      /* 0x44 P4 */
 #define RX8130_ADDR 0x32
-#define FALLBACK_BACKSTOP_S 3600          /* a power-off that didn't take: deep sleep, back after 60 min (I1) */
 
 static const hib_rail_t k_rails[] = {
     { "rf-antenna", EXP0, 0, false },     /* RF_PTH_L_INT_H_EXT: the antenna switch, not a supply */
@@ -88,7 +92,7 @@ typedef struct {
     uint8_t debug;         /* HIB_DBG_* for the next boot (Task 8) */
     uint8_t led_ok;        /* led[] holds the light last written before the sleep */
     uint8_t led[5];        /* mode, bright, r, g, b */
-    uint8_t pad;
+    uint8_t fails;         /* I3: consecutive failed check-ins (was padding, always 0) */
 } hib_rec_t;
 #define HIB_VER 3
 
@@ -100,6 +104,9 @@ static uint32_t s_to_live;              /* the last hibernate wake's boot-to-liv
 static uint32_t s_test_wake_s;          /* `power hib test-wake`: RAM only */
 static bool s_early;                    /* going down from hibernate_boot_early: nothing else has started */
 static uint8_t s_dbg_next, s_dbg_boot;  /* HIB_DBG_*: for the next boot, and this boot's */
+static uint8_t s_fails_next, s_fails_boot;   /* I3: for the next check-in boot, and this boot's */
+static portMUX_TYPE s_down_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_going_down;               /* M6: the first go_down wins */
 
 /* the persistent backstop: RTC memory, valid only with its magic and check word */
 typedef struct { uint32_t magic, s, n, check; } backstop_t;
@@ -114,6 +121,23 @@ void hibernate_backstop_set(uint32_t s, uint32_t n)
 {
     s_backstop = (backstop_t){ BACKSTOP_MAGIC, s, n, s ^ n ^ BACKSTOP_MAGIC };
 }
+/* PT26 test: the power probe's period and forced sleep-agains, RTC memory (survives deep sleep) */
+typedef struct { uint32_t magic, s, n, slept, last_ms, check; } probe_test_t;
+#define PROBE_MAGIC 0x50524231u
+static RTC_NOINIT_ATTR probe_test_t s_ptest;
+static uint32_t ptest_check(const probe_test_t *p) { return p->s ^ p->n ^ p->slept ^ p->last_ms ^ PROBE_MAGIC; }
+static bool ptest_valid(void) { return s_ptest.magic == PROBE_MAGIC && s_ptest.check == ptest_check(&s_ptest); }
+static void ptest_seal(void) { s_ptest.magic = PROBE_MAGIC; s_ptest.check = ptest_check(&s_ptest); }
+static uint32_t probe_s(void) { return ptest_valid() ? s_ptest.s : 0; }
+void hibernate_probe_test_set(uint32_t s, uint32_t n)
+{
+    if (!ptest_valid()) memset(&s_ptest, 0, sizeof(s_ptest));
+    s_ptest.s = s;
+    s_ptest.n = s ? n : 0;
+    ptest_seal();
+}
+int hibernate_boot_checkin_fails(void) { return s_fails_boot; }
+
 uint32_t hibernate_checkin_s(void) { return (uint32_t)pr_hib_checkin_clamp_min(power_cfg(PCFG_HIB_CHECKIN)) * 60u; }
 static bool s_led_ok;
 static pr_led_t s_led_boot;
@@ -216,6 +240,35 @@ static bool rec_get(hib_rec_t *r)
     return ok && r->ver == HIB_VER;
 }
 
+/* the system clock, or the RX8130's after a reset that lost it */
+static time_t epoch_now(void)
+{
+    time_t now = time(NULL);
+    if (now < 1600000000) sysinfo_rtc_epoch_raw(&now);
+    return now;
+}
+
+static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode);
+
+/* PT26: a power probe wake reads the source only (no Wi-Fi, no display, no rail). USB boots, anything else
+   sleeps again at once with the same timer. */
+static void power_probe_boot(const hib_rec_t *r)
+{
+    int mv = 0, ma = 0;
+    bool have = sysinfo_ina226_oneshot(&mv, &ma);
+    hib_pp_t v = hib_power_probe(have, mv, ma);
+    bool forced = false;
+    if (ptest_valid() && s_ptest.n > 0) { s_ptest.n--; ptest_seal(); forced = true; v = HIB_PP_SLEEP; }
+    ESP_LOGI(TAG, "power probe: %d mV %d mA%s: %s%s (app %u ms)", mv, ma, have ? "" : " (no reading)",
+             v == HIB_PP_BOOT ? "boot" : "sleep again", forced ? " (test)" : "", (unsigned)(esp_timer_get_time() / 1000));
+    if (v == HIB_PP_BOOT) { s_kind = POWER_BOOT_HIB_WAKE; return; }
+    s_fails_next = r->fails;
+    s_early = true;
+    go_down(r->wake_after_s, POWER_BOOT_HIB_POWER_PROBE, HIB_MODE_DEEPSLEEP);
+    s_early = false;
+    s_kind = POWER_BOOT_HIB_WAKE;   /* the sleep failed: boot on */
+}
+
 void hibernate_boot_early(void)
 {
     esp_err_t e = nvs_flash_init();
@@ -231,6 +284,7 @@ void hibernate_boot_early(void)
     s_kind = (power_boot_t)r.next;
     s_fell_back = r.fell_back;
     s_dbg_boot = r.debug;
+    s_fails_boot = r.fails;
     s_led_ok = r.led_ok;
     s_led_boot = (pr_led_t){ r.led[0], r.led[1], r.led[2], r.led[3], r.led[4] };
     esp_sleep_wakeup_cause_t c = esp_sleep_get_wakeup_cause();
@@ -238,17 +292,19 @@ void hibernate_boot_early(void)
     /* On this P4 (rev < 3) the timer wake from deep sleep goes through an HP watchdog reset (hw reason 7)
        on the way up, which clears the wakeup cause: so the time asleep against the timer decides it (the
        RTC keeps the time across deep sleep; after a power-off the clock starts again from 0). */
-    time_t now = time(NULL);
-    if (now < 1600000000) sysinfo_rtc_epoch_raw(&now);   /* after a power-off the system clock starts at 0 */
+    time_t now = epoch_now();   /* after a power-off the system clock starts at 0 */
     long asleep = (long)(now - (time_t)r.epoch);
     hib_wake_in_t in = { .wakeup_timer = c == ESP_SLEEP_WAKEUP_TIMER, .rtc_flags = rtc_flags,
                          .reset_poweron = rr == ESP_RST_POWERON,
                          .was_poweroff = r.mode == HIB_MODE_POWEROFF && !r.fell_back,
                          .reset_deepsleep_or_wdt = rr == ESP_RST_DEEPSLEEP || rr == ESP_RST_WDT,
+                         .was_deepsleep = r.mode == HIB_MODE_DEEPSLEEP || r.fell_back,
+                         .reset_crash = rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT ||
+                                        rr == ESP_RST_BROWNOUT,
                          .wake_after_s = r.wake_after_s, .asleep_s = asleep };
     static const struct { uint32_t src; const char *name; } k_cause[] = {
         [HIB_CAUSE_NONE] = { 0, "-" }, [HIB_CAUSE_TIMER] = { HIB_SRC_TIMER, "timer" }, [HIB_CAUSE_RTC] = { HIB_SRC_RTC, "rtc" },
-        [HIB_CAUSE_BUTTON] = { HIB_SRC_BUTTON, "button-or-usb" }, [HIB_CAUSE_RESET] = { HIB_SRC_RESET, "reset" },
+        [HIB_CAUSE_BUTTON] = { HIB_SRC_BUTTON, "button" }, [HIB_CAUSE_RESET] = { HIB_SRC_RESET, "reset" },
     };
     hib_cause_t hc = hib_cause(&in);
     s_src = k_cause[hc].src;
@@ -256,11 +312,12 @@ void hibernate_boot_early(void)
     if ((rtc_flags & 0x18) && hc != HIB_CAUSE_RTC)
         ESP_LOGW(TAG, "the RX8130 fired earlier without switching the board on (flags 0x%02x)", rtc_flags);
     /* M4: a reset on the way down or mid-probe is not a hibernate wake: no Waking banner, no probe sample
-       (the probe row then reads "interrupted") */
-    if (hc == HIB_CAUSE_RESET) s_kind = POWER_BOOT_NORMAL;
+       (the probe row then reads "interrupted"). M9: a button press never boots dark (a check-in) */
+    s_kind = hib_boot_kind((power_boot_t)r.next, hc);
     ESP_LOGI(TAG, "boot after hibernate: kind=%d cause=%s (wakeup %d, reset %d, hw reset 0x%x, rtc flags 0x%02x%s, asleep %lds)",
              (int)s_kind, s_cause, (int)c, (int)rr, (unsigned)esp_rom_get_reset_reason(0), rtc_flags,
              r.fell_back ? ", power-off fell back to deep sleep" : "", asleep);
+    if (s_kind == POWER_BOOT_HIB_POWER_PROBE) { power_probe_boot(&r); return; }
     if (s_kind != POWER_BOOT_HIB_PROBE) return;
     /* a bench probe: one INA226 sample, taken before any rail comes up, then sleep again or finish */
     uint16_t cfg = 0, bus = 0;
@@ -343,12 +400,24 @@ static void power_off_pulses(void)
 
 static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
 {
+    /* M6: the hold's low-battery hibernate and JOB_DOWN can both get here; the first one goes down */
+    taskENTER_CRITICAL(&s_down_mux);
+    bool second = s_going_down;
+    s_going_down = true;
+    taskEXIT_CRITICAL(&s_down_mux);
+    if (second) {
+        ESP_LOGW(TAG, "hibernate: already going down (task %s waits)", pcTaskGetName(NULL));
+        for (;;) vTaskDelay(portMAX_DELAY);
+    }
     bool probe = next == POWER_BOOT_HIB_PROBE;
-    if (s_test_wake_s && !wake_after_s) wake_after_s = s_test_wake_s;
+    bool pprobe = s_early && next == POWER_BOOT_HIB_POWER_PROBE;   /* PT26: a power probe sleeping again */
+    bool bs = backstop_armed();
+    /* M4: every deep sleep has a timer (Task 8's backstop only shortens it, so tests can't strand it) */
+    hib_plan_t plan = hib_sleep_plan(wake_after_s, next, s_test_wake_s, bs ? s_backstop.s : 0);
+    wake_after_s = plan.timer_s;
+    next = plan.next;
     s_test_wake_s = 0;
-    if (backstop_armed()) {
-        /* Task 8: tests spanning cold boots can't strand the device */
-        if (!wake_after_s || s_backstop.s < wake_after_s) wake_after_s = s_backstop.s;
+    if (bs) {
         hibernate_backstop_set(s_backstop.s, s_backstop.n - 1);
         ESP_LOGW(TAG, "backstop: wake after %u s (%u more hibernates)", (unsigned)wake_after_s, (unsigned)s_backstop.n);
     }
@@ -361,9 +430,11 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
         wifi_mgr_disconnect();
         vTaskDelay(pdMS_TO_TICKS(200));
     }
-    hib_rec_t r = { .ver = HIB_VER, .mode = (uint8_t)mode, .next = (uint8_t)next, .epoch = (uint32_t)time(NULL),
-                    .wake_after_s = wake_after_s, .debug = s_dbg_next };
+    hib_rec_t r = { .ver = HIB_VER, .mode = (uint8_t)mode, .next = (uint8_t)next, .epoch = (uint32_t)epoch_now(),
+                    .wake_after_s = wake_after_s, .debug = s_dbg_next,
+                    .fails = next == POWER_BOOT_HIB_CHECKIN || next == POWER_BOOT_HIB_POWER_PROBE ? s_fails_next : 0 };
     s_dbg_next = 0;
+    s_fails_next = 0;
     if (!s_early) {   /* the light the keyboard holds through the sleep (I3); the LED lock is recursive */
         keyboard_led_lock();
         keyboard_get_last_led(&r.led[0], &r.led[1], &r.led[2], &r.led[3], &r.led[4]);
@@ -371,51 +442,59 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
         r.led_ok = 1;
     }
     nvs_set_blob_ns("power", "hib", &r, sizeof(r));
-    imu_suspend();
-    if (!probe) sysinfo_ina226_power_down();
-    if (wake_after_s) esp_sleep_enable_timer_wakeup((uint64_t)wake_after_s * 1000000ULL);
+    if (!pprobe) {   /* a power probe: the IMU is still suspended and the one-shot left the INA226 down */
+        imu_suspend();
+        if (!probe) sysinfo_ina226_power_down();
+    }
+    esp_sleep_enable_timer_wakeup((uint64_t)wake_after_s * 1000000ULL);
     if (mode == HIB_MODE_POWEROFF) {
         /* before the cuts: with WIFI_EN cut, esp_hosted's next SDIO write fails and it restarts the
            host, so the pulses go first and the cuts follow only if the board is still on */
+        /* `power hib test off` only (PT26) */
         if (!s_early) bsp_display_brightness_set(0);
-        if (wake_after_s && !rtc_timer_arm(wake_after_s)) ESP_LOGE(TAG, "rtc timer: not armed");
+        if (!rtc_timer_arm(wake_after_s)) ESP_LOGE(TAG, "rtc timer: not armed");
         power_off_pulses();
         vTaskDelay(pdMS_TO_TICKS(1000));
-        /* still running: something keeps the board on (or holds the trigger). Deep sleep, never without a
-           timer: in deep sleep the side button reaches the power controller of a board that is still on, so
-           nothing proved would wake it (I1). The ladder decides again after the backstop. */
-        if (!wake_after_s) {
-            wake_after_s = FALLBACK_BACKSTOP_S;
-            r.wake_after_s = wake_after_s;
-            esp_sleep_enable_timer_wakeup((uint64_t)wake_after_s * 1000000ULL);
-            ESP_LOGW(TAG, "power-off did not take, deep sleep with 60 min backstop");
-        } else {
-            ESP_LOGW(TAG, "power-off did not take, deep sleep with the %u s timer", (unsigned)wake_after_s);
-        }
+        /* still running: something keeps the board on (or holds the trigger). Deep sleep with the timer */
+        ESP_LOGW(TAG, "power-off did not take, deep sleep with the %u s timer", (unsigned)wake_after_s);
         r.fell_back = 1;
         nvs_set_blob_ns("power", "hib", &r, sizeof(r));
     }
     if (!s_early) cut_rails();   /* a probe boot: the rails are still as the last cycle left them */
-    ESP_LOGI(TAG, "down from task %s, stack free %u B", pcTaskGetName(NULL), (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    if (pprobe) {
+        if (!ptest_valid()) memset(&s_ptest, 0, sizeof(s_ptest));   /* stats only: a period of 0 is the default */
+        s_ptest.slept++;
+        s_ptest.last_ms = esp_log_timestamp();   /* awake this long since the reset (the log's clock, bootloader included) */
+        ptest_seal();
+    }
+    ESP_LOGI(TAG, "down from task %s at %lld ms, stack free %u B", pcTaskGetName(NULL), (long long)(esp_timer_get_time() / 1000),
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
     esp_deep_sleep_start();
 }
 
-/* A timed wake needs deep sleep: nothing proved switches a powered-off board on but the button. */
+/* PT26: always a deep sleep with a timer (go_down's plan). */
 void hibernate_now(uint32_t wake_after_s, power_boot_t next)
 {
-    bool timed = wake_after_s || s_test_wake_s || backstop_armed();
-    go_down(wake_after_s, next, timed ? HIB_MODE_DEEPSLEEP : hibernate_mode());
+    go_down(wake_after_s, next, HIB_MODE_DEEPSLEEP);
 }
 
-void hibernate_ladder(bool low_battery)
+void hibernate_ladder(bool low_battery, int checkin_fails)
 {
-    uint32_t s = hibernate_checkin_s();
-    if (low_battery || !s || s_test_wake_s) {
-        if (low_battery) ESP_LOGW(TAG, "battery low: hibernating with no check-in");
-        hibernate_now(0, POWER_BOOT_HIB_WAKE);
-    } else {
-        hibernate_now(s, POWER_BOOT_HIB_CHECKIN);
+    hib_plan_t p = hib_ladder_plan(low_battery, hibernate_checkin_s(), checkin_fails, s_test_wake_s, probe_s());
+    if (p.next == POWER_BOOT_HIB_POWER_PROBE) {
+        /* no check-in will judge a light again: off, so a stale amber can't sit through the sleep */
+        ESP_LOGW(TAG, "%s: deep sleep with the power probe every %u s", low_battery ? "battery low" : "check-in off",
+                 (unsigned)p.timer_s);
+        keyboard_led_lock();
+        keyboard_write_led(1, 0, 0, 0, 0);
+        go_down(p.timer_s, p.next, HIB_MODE_DEEPSLEEP);
+        keyboard_led_unlock();
+        return;
     }
+    if (p.next == POWER_BOOT_HIB_CHECKIN && checkin_fails > 0)
+        ESP_LOGW(TAG, "check-in backoff: %d failed, next in %u s", checkin_fails, (unsigned)p.timer_s);
+    s_fails_next = (uint8_t)(checkin_fails > 255 ? 255 : checkin_fails < 0 ? 0 : checkin_fails);
+    go_down(p.timer_s, p.next, HIB_MODE_DEEPSLEEP);
 }
 void hibernate_deep_sleep(uint32_t wake_after_s, power_boot_t next) { go_down(wake_after_s, next, HIB_MODE_DEEPSLEEP); }
 
@@ -427,6 +506,7 @@ static const char *kind_name(power_boot_t k)
     case POWER_BOOT_HIB_WAKE: return "hib-wake";
     case POWER_BOOT_HIB_CHECKIN: return "hib-checkin";
     case POWER_BOOT_HIB_PROBE: return "hib-probe";
+    case POWER_BOOT_HIB_POWER_PROBE: return "hib-power-probe";
     default: return "normal";
     }
 }
@@ -520,6 +600,10 @@ int hibernate_console(int argc, char **argv)
         printf("boot: reason=%d kind=%s cause=%s wakeup=%d to_live=%u%s%s\n", (int)esp_reset_reason(), kind_name(s_kind), s_cause,
                (int)esp_sleep_get_wakeup_cause(), (unsigned)s_to_live, s_fell_back ? " (power-off fell back to deep sleep)" : "",
                s_dbg_boot ? " (debug check-in)" : "");
+        if (s_fails_boot) printf("boot: %u failed check-ins before this one (I3 backoff)\n", s_fails_boot);
+        if (ptest_valid() && (s_ptest.slept || s_ptest.s))
+            printf("boot: power probe slept again %u times, the last after %u ms awake (test: every %u s, %u forced left)\n",
+                   (unsigned)s_ptest.slept, (unsigned)s_ptest.last_ms, (unsigned)s_ptest.s, (unsigned)s_ptest.n);
         if (s_led_ok)   /* the light the record says the keyboard held through the sleep (I3) */
             printf("boot: stored light %u %u %02x %02x %02x%s\n", s_led_boot.mode, s_led_boot.bright, s_led_boot.r,
                    s_led_boot.g, s_led_boot.b, s_src == HIB_SRC_TIMER ? "" : " (not a timer wake: not used)");
@@ -543,7 +627,18 @@ int hibernate_console(int argc, char **argv)
     if (argc == 2) {
         char b[48];
         sources_text(hibernate_wake_sources(), b, sizeof(b));
-        printf("hibernate: mode=%s sources=%s supported=%s\n", mode_name(hibernate_mode()), b, hibernate_supported() ? "yes" : "no");
+        uint32_t ck = hibernate_checkin_s();
+        printf("hibernate: mode=%s sources=%s supported=%s checkin=%us probe=%us (PT26: power-off only by `power hib test off`)\n",
+               mode_name(hibernate_mode()), b, hibernate_supported() ? "yes" : "no", (unsigned)ck,
+               (unsigned)(probe_s() ? probe_s() : HIB_POWER_PROBE_S));
+        return 0;
+    }
+    if (argc == 5 && strcmp(argv[2], "probe") == 0) {
+        uint32_t ps, pn;
+        if (!parse_u32(argv[3], &ps) || !parse_u32(argv[4], &pn)) return 1;
+        hibernate_probe_test_set(ps, pn);
+        if (ps) printf("hib probe: every %u s, the next %u probe wakes sleep again (RTC memory, test only)\n", (unsigned)ps, (unsigned)pn);
+        else printf("hib probe: every %u s (the default)\n", (unsigned)HIB_POWER_PROBE_S);
         return 0;
     }
     if (argc == 3 && strcmp(argv[2], "backstop") == 0) {

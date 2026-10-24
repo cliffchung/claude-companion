@@ -32,7 +32,6 @@ static const char *TAG = "power";
 #define LIGHT_EVERY_MS 1000         /* the light is re-chosen at least this often (the result ages) */
 #define OFF_FLOOR_S 15              /* watch interval in Off and deeper (PT11) */
 #define NOTICE_MS 3000              /* the pre-Hibernate notice */
-#define STILL_HIBERNATE_MS (30 * 60 * 1000LL)   /* Task 7 supplies still_ms and the setting */
 #define WAKES_KEPT 8
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
@@ -51,7 +50,7 @@ static uint32_t s_wake_gen;         /* cc_poll_generation() at the last wake */
 static power_state_t s_woke_from = PS_ACTIVE;
 static bool s_pinned;               /* power_go: the ladder leaves the state alone until a wake */
 static int s_go_req = -1;
-static volatile bool s_off_req;     /* power_hibernate_off: the low-battery power-off, asked for by checkin (B1) */
+static volatile bool s_off_req;     /* power_hibernate_off: the low-battery hibernate (the power probe), asked for by checkin (B1) */
 static uint32_t s_holds;            /* 1 << power_hold_t */
 static int s_sim_batt = -1;         /* power sim battery */
 typedef struct { int64_t at_ms; uint8_t why; uint16_t swallowed; } wake_rec_t;
@@ -68,7 +67,8 @@ static uint32_t s_ids_gen;
 
 /* power task only */
 static bool s_dark;                 /* panel off, LVGL paused, keyboard quiet */
-static bool s_hib_blocked;          /* hibernate_now() returned (it failed): don't retry until a wake */
+static bool s_hib_blocked;          /* hibernate_now() returned (it failed): retry after PR_HIB_RETRY_MS (M5) */
+static int64_t s_hib_blocked_ms;
 static pr_idset_t *s_armed;         /* needs-you ids already known when the screen went off */
 static pr_idset_t *s_poll_ids;      /* poll task scratch */
 static pr_idset_t *s_step_ids;      /* power task scratch */
@@ -108,7 +108,7 @@ const char *power_state_name(power_state_t s)
 
 const char *power_wake_name(power_wake_t w)
 {
-    static const char *n[] = { "key", "touch", "lift", "needs-you", "console", "rule" };
+    static const char *n[] = { "key", "touch", "needs-you", "console", "rule" };
     return (unsigned)w < sizeof(n) / sizeof(n[0]) ? n[w] : "?";
 }
 
@@ -221,6 +221,8 @@ void power_hold(power_hold_t h, bool on)
     notify();
 }
 
+static bool bench_held(void) { return (s_holds & (1u << POWER_HOLD_BENCH)) != 0; }
+
 static bool holds_active(void)
 {
     uint32_t h = s_holds;
@@ -269,13 +271,12 @@ static void fill_in(pr_in_t *in, int64_t now)
     in->radio_off_min = power_cfg(PCFG_RADIO_AFTER);
     in->deep_idle_min = g_settings.pw_deep_idle_min;
     in->hibernate_h = g_settings.pw_hibernate_h;
-    in->still_ms = 0;                         /* Task 7: the IMU */
-    in->still_hibernate_ms = STILL_HIBERNATE_MS;
     in->on_battery = on_battery_now(&in->battery_pct, &in->charging);
     in->held = holds_active();
+    in->bench_held = bench_held();
     in->sleep_on_usb = g_settings.pw_sleep_on_usb;
     in->radio_off_enabled = power_cfg(PCFG_RADIO_OFF);
-    in->hibernate_ok = hibernate_supported() && !s_hib_blocked;
+    in->hibernate_ok = hibernate_supported() && pr_hib_allowed(s_hib_blocked, s_hib_blocked_ms, now);
     in->hib_checkin_hold = checkin_hib_hold();
 }
 
@@ -713,15 +714,20 @@ static volatile bool s_force_off;   /* the running run_hibernate is that request
 static void hib_task(void *arg)
 {
     (void)arg;
-    hibernate_ladder(s_hib_low);   /* a check-in timer (PT16) unless it's Off or the battery is low; doesn't return when it works */
+    hibernate_ladder(s_hib_low, 0);   /* a check-in timer (PT16), or the power probe (PT26); doesn't return when it works */
     xSemaphoreGive(s_hib_done);
     vTaskDelete(NULL);
 }
 
 /* Shows the notice for 3 s, then hibernate_now(), which doesn't come back. Input or a hold during the
-   3 s cancels it; if hibernate_now() fails, the device goes back to Off and Hibernate waits for a wake. */
+   3 s cancels it, except that a low battery (or the unknown-source backstop) ignores every hold but the
+   bench's (I1, PT28); if hibernate_now() fails, the device goes back to Off and Hibernate waits for a wake
+   or PR_HIB_RETRY_MS (M5). */
 static void run_hibernate(power_state_t back_to)
 {
+    pr_in_t in;
+    fill_in(&in, now_ms());
+    s_hib_low = s_force_off || pr_battery_low(in.on_battery, in.battery_pct, in.charging);
     shield_and_state(PS_HIBERNATE);
     if (s_dark) leave_dark();
     bsp_display_brightness_set(pr_dim_brightness(g_settings.brightness));
@@ -732,16 +738,14 @@ static void run_hibernate(power_state_t back_to)
     bool cancel = false;
     for (int64_t end = now_ms() + NOTICE_MS; now_ms() < end && !cancel;) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
-        if (holds_active()) power_wake(PW_RULE);
+        if (s_hib_low ? bench_held() : holds_active()) power_wake(PW_RULE);
         cancel = s_wake_pending;
     }
     if (!cancel) {
-        apply_light(true);   /* the Deep-idle rule: off unless something needs you */
-        pr_in_t in;
-        fill_in(&in, now_ms());
-        s_hib_low = s_force_off || pr_battery_low(in.on_battery, in.battery_pct, in.charging);
+        apply_light(true);   /* the Deep-idle rule: off unless something needs you (the power probe: off) */
         if (!s_hib_done) s_hib_done = xSemaphoreCreateBinary();
-        if (s_hib_done && xTaskCreate(hib_task, "hib", 6144, NULL, 4, NULL) == pdPASS)
+        /* M7: 4 KB (it used about 2 KB of 6) */
+        if (s_hib_done && xTaskCreate(hib_task, "hib", 4096, NULL, 4, NULL) == pdPASS)
             xSemaphoreTake(s_hib_done, portMAX_DELAY);   /* back here only if it failed */
         ESP_LOGE(TAG, "hibernate failed: back to off");
         cancel = s_wake_pending;
@@ -751,6 +755,7 @@ static void run_hibernate(power_state_t back_to)
     bsp_display_unlock();
     if (cancel) { do_wake(); return; }
     s_hib_blocked = true;
+    s_hib_blocked_ms = now_ms();
     enter_dark(back_to >= PS_OFF && back_to != PS_HIBERNATE ? back_to : PS_OFF);
 }
 
@@ -973,9 +978,9 @@ void power_settings_defaults(void)
 void power_settings_text(char *buf, size_t cap)
 {
     snprintf(buf, cap,
-             "dim=%u off=%u sleep-usb=%u wake-lift=%u needs-wake=%u needs-light=%u dark-light=%u radio-off=%u "
+             "dim=%u off=%u sleep-usb=%u needs-wake=%u needs-light=%u dark-light=%u radio-off=%u "
              "radio-off-min=%u checkin=%u light-sleep=%u deep-idle=%u hibernate=%u hib-checkin=%u ssh-awake=%u",
-             g_settings.pw_dim_s, g_settings.pw_off_s, g_settings.pw_sleep_on_usb, g_settings.pw_wake_lift,
+             g_settings.pw_dim_s, g_settings.pw_off_s, g_settings.pw_sleep_on_usb,
              g_settings.pw_wake_needs_you, g_settings.kbd_needs_light, g_settings.kbd_dark_light, power_cfg(PCFG_RADIO_OFF),
              power_cfg(PCFG_RADIO_AFTER), power_cfg(PCFG_CHECKIN), g_settings.pw_light_sleep,
              g_settings.pw_deep_idle_min, g_settings.pw_hibernate_h, power_cfg(PCFG_HIB_CHECKIN),

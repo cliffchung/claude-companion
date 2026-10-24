@@ -28,7 +28,6 @@ void settings_power_defaults(void)
     g_settings.pw_dim_s = 30;
     g_settings.pw_off_s = 120;
     g_settings.pw_sleep_on_usb = 1;
-    g_settings.pw_wake_lift = 1;
     g_settings.pw_wake_needs_you = 1;
     g_settings.kbd_needs_light = 1;
     g_settings.kbd_dark_light = PR_DARK_LIGHT_DEFAULT;   /* PT24 */
@@ -124,7 +123,7 @@ void settings_init(void)
             if (old_version <= 18) g_settings.pw_hibernate_checkin_min = 15;
             /* v20 (PT24) reuses kbd_off_cap's byte (a battery Off cap, default 100 = none) as kbd_dark_light:
                the old value means something else, so an existing device gets the default */
-            if (old_version <= 19) g_settings.kbd_dark_light = PR_DARK_LIGHT_DEFAULT;
+            g_settings.kbd_dark_light = (uint8_t)pr_dark_light_load(old_version, g_settings.kbd_dark_light);
             settings_save();
         }
         free(blob);

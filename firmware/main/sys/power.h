@@ -19,7 +19,7 @@ uint32_t power_wake_seq(void);              /* bumped on every wake */
 uint32_t power_wake_gen(void);              /* cc_poll_generation() when the last wake happened */
 power_state_t power_woke_from(void);        /* the state the last wake left (the dashboard marks cards
                                                stale only after Off or deeper: Dim never slowed the link) */
-typedef enum { PW_KEY, PW_TOUCH, PW_LIFT, PW_NEEDS_YOU, PW_CONSOLE,
+typedef enum { PW_KEY, PW_TOUCH, PW_NEEDS_YOU, PW_CONSOLE,
                PW_RULE   /* the ladder moved up without input: a hold, USB without sleep, a longer timeout */
 } power_wake_t;
 power_wake_t power_wake_reason(void);
@@ -78,8 +78,9 @@ pr_src_t power_source(int *pct, bool *charging);
 /* Ends a pin (power_go) without a wake: the ladder decides again, its 10% trigger included. A check-in
    path that couldn't hibernate calls it, so nothing is left pinned awake with no ladder (I1). */
 void power_unpin(void);
-/* B1: the 3 s Hibernate notice, then a power-off with no check-in armed (the side button wakes it), whatever
-   the battery reads; input during the notice cancels it. Any task: the power task does it. */
+/* B1: the 3 s Hibernate notice, then the low-battery hibernate (deep sleep with the power probe, no check-in;
+   PT26), whatever the battery reads; input during the notice cancels it, a hold does not (I1). Any task: the
+   power task does it. */
 void power_hibernate_off(void);
 /* The four Task 8 settings as in force: a console test value (RAM only, P93) or the saved setting. */
 typedef enum { PCFG_RADIO_OFF, PCFG_RADIO_AFTER, PCFG_CHECKIN, PCFG_HIB_CHECKIN, PCFG_N } power_cfg_t;

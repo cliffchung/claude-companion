@@ -41,24 +41,24 @@ typedef struct {
     int64_t now_ms, last_input_ms, off_since_ms;   /* monotonic (esp_timer), never wall clock */
     int dim_s, off_s, radio_off_min;
     int deep_idle_min, hibernate_h;                /* 0 = never */
-    int64_t still_ms;                              /* how long the IMU has seen no motion; 0 = unknown or moving */
-    int64_t still_hibernate_ms;                    /* Hibernate when still this long; 0 = off */
     int battery_pct;                               /* -1 = unknown */
     bool held, on_battery, sleep_on_usb, radio_off_enabled;
-    bool charging, hibernate_ok;                   /* hibernate_ok = hibernate_supported() (false until Task 6) */
+    bool charging, hibernate_ok;                   /* hibernate_supported() and not blocked by a failed try (M5) */
+    bool bench_held;                               /* the bench's hold (part of held): never cut short (I1) */
     bool hib_checkin_hold;                         /* a Hibernate check-in found needs-you and stays awake (PT16) */
 } pr_in_t;
 #define PR_LOW_BATTERY_PCT 10
 /* In order:
-   held -> ACTIVE; on USB with !sleep_on_usb -> ACTIVE; idle < dim_s -> ACTIVE; idle < off_s -> DIM.
+   held -> ACTIVE, except (I1, PT28) on_battery && hibernate_ok && the battery <= 10% && !bench_held &&
+   idle >= off_s -> HIBERNATE (a take-over or SSH terminal left open never drains the pack flat; someone typing
+   is never cut off); on USB with !sleep_on_usb -> ACTIVE; idle < dim_s -> ACTIVE; idle < off_s -> DIM.
    From here idle >= off_s:
    on_battery && hibernate_ok && ((hibernate_h > 0 && idle >= hibernate_h h) ||
-       (battery_pct >= 0 && battery_pct <= PR_LOW_BATTERY_PCT && !charging) ||
-       (still_hibernate_ms > 0 && still_ms >= still_hibernate_ms && idle >= still_hibernate_ms)) -> HIBERNATE;
+       (battery_pct >= 0 && battery_pct <= PR_LOW_BATTERY_PCT && !charging)) -> HIBERNATE;
    on_battery && deep_idle_min > 0 && idle >= deep_idle_min min -> DEEP_IDLE;
    RADIO_OFF when already OFF/RADIO_OFF, on_battery, radio_off_enabled and now - off_since >= radio_off_min min;
    else OFF. Without on_battery, RADIO_OFF and DEEP_IDLE fall back to OFF and HIBERNATE is never chosen.
-   hib_checkin_hold drops the hours and still triggers (never the battery <= 10% one).
+   hib_checkin_hold drops the hours trigger (never the battery <= 10% one).
    HIBERNATE is terminal: the caller never feeds it back in (the device powers down). */
 power_state_t pr_next_state(const pr_in_t *in);
 
@@ -91,7 +91,7 @@ int  pr_checkin_period_min(power_state_t st, int checkin_min, int deep_checkins_
 
 /* PT16: what a Hibernate check-in does next */
 typedef enum { PR_HC_REHIBERNATE, PR_HC_REHIBERNATE_KEEP_RAIL, PR_HC_STAY_DEEP_IDLE,
-               PR_HC_POWEROFF   /* the battery <= 10% trigger: down with the light off and no check-in armed */
+               PR_HC_LOW   /* the battery <= 10% trigger: deep sleep with the light off and the power probe (PT26) */
 } pr_hc_t;
 /* !poll_ok -> REHIBERNATE (light off; recorded as hib-failed); !needs_you -> REHIBERNATE (PR_LED_OFF);
    needs_you && kbd_rail_survives -> REHIBERNATE_KEEP_RAIL (dim amber held through deep sleep, PT24);
@@ -99,22 +99,34 @@ typedef enum { PR_HC_REHIBERNATE, PR_HC_REHIBERNATE_KEEP_RAIL, PR_HC_STAY_DEEP_I
 pr_hc_t pr_hib_checkin_next(bool poll_ok, bool needs_you, bool kbd_rail_survives);
 /* on_battery && 0 <= pct <= PR_LOW_BATTERY_PCT && !charging (an unknown pct is never low) */
 bool pr_battery_low(bool on_battery, int pct, bool charging);
-/* The check-in boot's whole decision: low_battery -> POWEROFF, else pr_hib_checkin_next (C1) */
+/* The check-in boot's whole decision: low_battery -> LOW, else pr_hib_checkin_next (C1) */
 pr_hc_t pr_hib_checkin_decide(bool low_battery, bool poll_ok, bool needs_you, bool kbd_rail_survives);
 /* The check-in boot's early gate (N1), on the power source once it has left UNKNOWN (or timed out):
    UNKNOWN -> GIVE_UP (no blind re-arm: the ladder takes over, which treats unknown as not battery);
-   BATTERY with pr_battery_low -> POWEROFF; else GO. USB and charging read as USB at once. */
+   USB -> WAKE (I2, PT28: boot fully and stay up under the normal ladder; Hibernate is for battery only);
+   BATTERY with pr_battery_low -> LOW; else GO. USB and charging read as USB at once. */
 typedef enum { PR_SRC_UNKNOWN, PR_SRC_USB, PR_SRC_BATTERY } pr_src_t;
-typedef enum { PR_HG_GO, PR_HG_POWEROFF, PR_HG_GIVE_UP } pr_hg_t;
+typedef enum { PR_HG_GO, PR_HG_LOW, PR_HG_GIVE_UP, PR_HG_WAKE } pr_hg_t;
 pr_hg_t pr_hib_checkin_gate(pr_src_t src, int pct, bool charging);
 /* B1: after the gate gave up on UNKNOWN at armed_at_ms: CANCEL when the source settled or there was input
-   after arming (last_input_ms > armed_at_ms); FIRE (power off, side button wakes) once it has stayed
+   after arming (last_input_ms > armed_at_ms); FIRE (the low-battery hibernate: deep sleep with the power probe,
+   PT26) once it has stayed
    unknown for PR_UNKNOWN_BACKSTOP_MS; else WAIT. */
 #define PR_UNKNOWN_BACKSTOP_MS (30 * 60 * 1000LL)
 typedef enum { PR_UB_WAIT, PR_UB_FIRE, PR_UB_CANCEL } pr_ub_t;
 pr_ub_t pr_unknown_backstop(pr_src_t src, int64_t armed_at_ms, int64_t now_ms, int64_t last_input_ms);
 /* 0 (or less) -> 0 (Off); 1..14 -> 15; 721.. -> 720 */
 int  pr_hib_checkin_clamp_min(int min);
+
+/* M5: after a failed hibernate (blocked), the next try waits PR_HIB_RETRY_MS from blocked_at_ms */
+#define PR_HIB_RETRY_MS (5 * 60 * 1000LL)
+bool pr_hib_allowed(bool blocked, int64_t blocked_at_ms, int64_t now_ms);
+
+/* The A164's light registers 0x60..0x67: two LEDs, each B, G, R, unused (P121; seen right on the device). */
+void pr_a164_pack(uint8_t out[8], uint8_t r, uint8_t g, uint8_t b);
+void pr_a164_unpack(const uint8_t in[3], uint8_t *r, uint8_t *g, uint8_t *b);
+/* P123: the settings byte read from a blob of old_version: <= 19 held kbd_off_cap -> the default; else clamped */
+int  pr_dark_light_load(uint32_t old_version, int stored);
 
 #ifdef __cplusplus
 }

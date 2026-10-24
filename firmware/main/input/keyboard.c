@@ -435,7 +435,8 @@ static bool write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_
     bool ok = kb_write(REG_BRIGHTNESS, s_last_led[1]);
     ok = kb_write(REG_RGB_MODE, raw_mode ? mode : s_last_led[0]) && ok;
     if (mode) {
-        uint8_t w[9] = { REG_RGB_BASE, b, g, r, 0, b, g, r, 0 };   /* PT24: B, G, R per LED (was 0, R, G, B) */
+        uint8_t w[9] = { REG_RGB_BASE };
+        pr_a164_pack(&w[1], r, g, b);   /* PT24: B, G, R, unused per LED (was 0, R, G, B); host-tested */
         ok = s_dev && i2c_master_transmit(s_dev, w, 9, 50) == ESP_OK && ok;
     }
     keyboard_led_unlock();
@@ -454,12 +455,14 @@ bool keyboard_write_led_raw(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, 
 
 bool keyboard_read_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b)
 {
-    if (!s_present || !s_dev) return false;
+    /* 9c M3: outputs zeroed first, and the same guard as write_led */
+    *mode = 0; *bright = 0; *r = 0; *g = 0; *b = 0;
+    if (!s_present && !s_dev) return false;   /* kb_read checks s_dev itself */
     uint8_t rgb[4] = { 0 };
     keyboard_led_lock();
     bool ok = kb_read(REG_BRIGHTNESS, bright, 1) && kb_read(REG_RGB_MODE, mode, 1) && kb_read(REG_RGB_BASE, rgb, 4);
     keyboard_led_unlock();
-    *b = rgb[0]; *g = rgb[1]; *r = rgb[2];
+    if (ok) pr_a164_unpack(rgb, r, g, b);
     return ok;
 }
 

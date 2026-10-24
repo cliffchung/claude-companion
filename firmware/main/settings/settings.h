@@ -73,7 +73,7 @@ typedef struct {
     uint16_t pw_dim_s;           /* 30 */
     uint16_t pw_off_s;           /* 120 */
     uint8_t  pw_sleep_on_usb;    /* 1: dim and screen off also on USB */
-    uint8_t  pw_wake_lift;       /* 1 */
+    uint8_t  pw_wake_lift;       /* reserved: lift-to-wake was dropped with Task 7 (PT15) */
     uint8_t  pw_wake_needs_you;  /* 1 */
     uint8_t  kbd_needs_light;    /* 1: keyboard light shows needs-you */
     uint8_t  kbd_dark_light;     /* v20 (PT24): needs-you amber % with the screen dark, 2..100, default 5; was kbd_off_cap */

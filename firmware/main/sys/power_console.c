@@ -37,7 +37,7 @@ static int usage(void)
            "power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate|radio-off|radio-after|checkin|hib-checkin <n> | "
            "power checkin [rebind] | power checkin hibernate [keep|nokeep] | power checkins | "
            "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch | "
-           "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s> | backstop [<s> <n>]] | power boot | "
+           "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s> | backstop [<s> <n>] | probe <s> <n>] | power boot | "
            "power rails | power rail speaker|camera|usb|ext5v on|off | power imu [suspend]\n");
     return 1;
 }
@@ -60,11 +60,8 @@ static int cmd_go(const char *name)
     };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
         if (strcmp(name, k[i].n)) continue;
-        if (k[i].s == PS_HIBERNATE && !hibernate_test_wake_s()) {
-            /* without a timed wake it is a power-off that only the side button undoes: nobody at the Mac can */
-            printf("hibernate: run `power hib test-wake <s>` first (else only the side button wakes it)\n");
-            return 1;
-        }
+        /* PT26: every hibernate is a deep sleep with a timer (a check-in, or the power probe, which boots on
+           USB), so the console needs no test-wake first */
         power_go(k[i].s);
         printf("power: go %s\n", k[i].n);
         return 0;

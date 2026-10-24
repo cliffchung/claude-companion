@@ -41,9 +41,10 @@ static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
 /* ---- records: `power checkins`, NVS ns "power" key "chk" ------------------ */
 
-typedef enum { P_HANDSHAKE, P_REBIND, P_FAILED, P_HIB_HANDSHAKE, P_HIB_REBIND, P_HIB_FAILED, P_HIB_LOW } ck_path_t;
-static const char *const k_path[] = { "handshake", "rebind", "failed", "hib-handshake", "hib-rebind", "hib-failed", "hib-low" };
-#define K_PATH_N 7
+typedef enum { P_HANDSHAKE, P_REBIND, P_FAILED, P_HIB_HANDSHAKE, P_HIB_REBIND, P_HIB_FAILED, P_HIB_LOW, P_HIB_USB } ck_path_t;
+static const char *const k_path[] = { "handshake", "rebind", "failed", "hib-handshake", "hib-rebind", "hib-failed", "hib-low",
+                                      "hib-usb" };
+#define K_PATH_N 8
 typedef struct { uint32_t epoch, ms, mwh_x1000; uint8_t path, tag, needs, pad; } ck_rec_t;
 typedef struct { uint8_t ver, n, head, pad; ck_rec_t r[CHK_N]; } ck_log_t;
 #define CHK_VER 1
@@ -84,6 +85,7 @@ static volatile uint32_t s_job_hwm; /* the last job's stack free (B), for `power
 static volatile int64_t s_unk_at_ms;   /* B1: the gate gave up on an UNKNOWN source at this time, 0 = not armed */
 static bool s_hold_down;            /* the hold is over: JOB_DOWN until it starts */
 static int s_down_tries; /* the check-in boot reached a state that isn't "going down" (hold, debug, gave up) */
+static bool s_hib_watch;            /* M3: the watch loop was wanted before a check-in boot paused it */
 
 /* the job's arguments */
 static bool s_arg_rebind;
@@ -307,32 +309,53 @@ static void job_park(void)
 /* Nothing may be left pinned awake with no ladder (I1): the normal ladder takes over, its 10% trigger
    included. The idle clock already counts from before the sleep (checkin_init), so on battery it hibernates
    again by the hours rule; on USB it stays in Off. */
+/* M3: a check-in boot that stays up gets its watch loop back (paused in checkin_init) */
+static void hib_watch_back(void)
+{
+    if (!s_hib_watch) return;
+    s_hib_watch = false;
+    cc_link_watch_resume(true);
+}
+
 static void give_up(const char *why)
 {
     ESP_LOGE(TAG, "hibernate check-in: %s: back to the normal ladder", why);
     s_hib_settled = true;
     s_hold = false;
     s_quiet = false;
+    hib_watch_back();
     power_unpin();
+}
+
+/* I2 (PT28): a check-in boot that finds USB boots fully: screen on, fresh idle clock, the normal ladder
+   (on USB it never hibernates, and a needs-you wakes the screen again) */
+static void wake_fully(const char *why)
+{
+    ESP_LOGI(TAG, "hibernate check-in: %s: waking fully", why);
+    s_hib_settled = true;
+    s_hold = false;
+    s_quiet = false;
+    hib_watch_back();
+    power_wake(PW_RULE);   /* do_wake: leaves the dark screen, idle from now, unpinned */
 }
 
 /* Down for the next Hibernate check-in. The light is the power task's own choice (the Deep-idle rule under
    checkin_hib_quiet: amber at the dark brightness (PT24) only for needs-you with "Keyboard light shows needs-you" on, else off; I2),
-   or off; held under the LED lock so the power task can't change it, then deep sleep with the check-in timer.
-   A battery at or under 10% powers off instead, light off and no check-in armed (C1). Returns only if the
-   hibernate failed, and then hands the device back to the ladder. */
-static void down_with_light(bool amber)
+   or off; held under the LED lock so the power task can't change it, then deep sleep by hibernate_ladder:
+   the check-in timer backed off by fails (I3), or, at or under 10% or with the check-in Off, the power probe
+   with the light off (PT26). Returns only if the hibernate failed, and then hands the device back to the
+   ladder. */
+static void down_with_light(bool amber, int fails)
 {
     bool low = power_battery_low();
     pr_led_t l = PR_LED_OFF;
-    if (amber && !low) power_kbd_light_get(&l);
-    uint32_t s = low ? 0 : hibernate_checkin_s();
+    if (amber && !low && hibernate_checkin_s()) power_kbd_light_get(&l);
     s_hib_settled = true;   /* N5: going down now, so the watchdog never starts behind it */
     keyboard_led_lock();
     keyboard_write_led(l.mode, l.bright, l.r, l.g, l.b);
     ESP_LOGI(TAG, "hibernate again: light %u %u %02x%02x%02x, %s", l.mode, l.bright, l.r, l.g, l.b,
-             low ? "battery low: power-off, no check-in" : s ? "next check-in armed" : "check-in off");
-    hibernate_now(s, s ? POWER_BOOT_HIB_CHECKIN : POWER_BOOT_HIB_WAKE);
+             low ? "battery low: power probe, no check-in" : hibernate_checkin_s() ? "next check-in armed" : "check-in off");
+    hibernate_ladder(low, fails);
     keyboard_led_unlock();
     give_up("the hibernate failed");
 }
@@ -352,6 +375,7 @@ static void job_hib(void)
     int64_t end = t0 + HIB_BUDGET_MS;
     sums_reset(0x85);
     uint8_t dbg = hibernate_boot_debug();
+    int fails = hibernate_boot_checkin_fails();   /* I3: before this one */
     /* C1/N1: decide on a settled source. After a cold boot vitals reports UNKNOWN until about 10 battery-like
        samples (USB and charging are known at once), so wait for it at 1 Hz, up to SRC_SETTLE_S. A nearly flat
        pack then gets no Wi-Fi, no tunnel, no poll; a source that never settles gets no blind re-arm. */
@@ -364,15 +388,20 @@ static void job_hib(void)
     pr_hg_t gate = pr_hib_checkin_gate(src, pct, chg);
     ESP_LOGI(TAG, "hibernate check-in: source %s, %d%% at %lld ms: %s",
              src == PR_SRC_BATTERY ? "battery" : src == PR_SRC_USB ? "usb" : "unknown", pct, (long long)now_ms(),
-             gate == PR_HG_GO ? "go" : gate == PR_HG_POWEROFF ? "power off" : "give up");
-    if (gate == PR_HG_POWEROFF) {
+             gate == PR_HG_GO ? "go" : gate == PR_HG_LOW ? "battery low" : gate == PR_HG_WAKE ? "wake" : "give up");
+    if (gate == PR_HG_WAKE) {
+        record(P_HIB_USB, (uint32_t)now_ms(), false);
+        wake_fully("on USB");
+        return;
+    }
+    if (gate == PR_HG_LOW) {
         record(P_HIB_LOW, (uint32_t)now_ms(), false);
-        down_with_light(false);   /* settled now, so it sees the low battery: power-off, no check-in */
+        down_with_light(false, 0);   /* settled now, so it sees the low battery: the power probe, no check-in */
         return;
     }
     if (gate == PR_HG_GIVE_UP) {
         record(P_HIB_FAILED, (uint32_t)now_ms(), false);
-        s_unk_at_ms = now_ms();   /* B1: still unknown in 30 min with no input: power off */
+        s_unk_at_ms = now_ms();   /* B1: still unknown in 30 min with no input: the probe sleep (PT26) */
         give_up("the power source never settled");
         return;
     }
@@ -401,12 +430,16 @@ static void job_hib(void)
     if (dbg & HIB_DBG_FORCE_KEEP) kbd = true;
     if (dbg & HIB_DBG_FORCE_NOKEEP) kbd = false;
     pr_hc_t next = pr_hib_checkin_decide(power_battery_low(), poll_ok, needs, kbd);
+    int fails_next = hib_checkin_fails_next(fails, poll_ok);   /* I3: a live poll resets the backoff */
     static const char *const names[] = { "rehibernate", "rehibernate, light kept", "stay in deep idle",
-                                         "power off (battery low)" };
+                                         "power probe (battery low)" };
     ESP_LOGI(TAG, "hibernate check-in: %s%s", names[next], late ? " (out of time)" : "");
     if (hib_abandoned()) return;
     if (next == PR_HC_STAY_DEEP_IDLE) {
+        /* M2: unreachable in production (KBD_SURVIVES is true, so needs-you goes KEEP_RAIL); reached only with
+           `power checkin hibernate 2` (HIB_DBG_FORCE_NOKEEP) */
         s_hib_settled = true;
+        hib_watch_back();
         s_hold = true;
         s_hold_gen = cc_poll_generation();
         s_hold_gen_ms = now_ms();
@@ -417,16 +450,17 @@ static void job_hib(void)
         /* debug (`power checkin hibernate`): the console comes back; the light shows what it would hold */
         ESP_LOGW(TAG, "debug: would %s; staying awake", names[next]);
         s_hib_settled = true;
+        hib_watch_back();
         power_unpin();   /* the ladder runs again (I1); the Deep-idle light rule stays until a wake */
         return;
     }
-    down_with_light(next == PR_HC_REHIBERNATE_KEEP_RAIL);   /* POWEROFF: down_with_light sees the low battery */
+    down_with_light(next == PR_HC_REHIBERNATE_KEEP_RAIL, fails_next);   /* LOW: down_with_light sees the low battery */
 }
 
 static void job_down(void)
 {
     s_hold = false;
-    down_with_light(false);
+    down_with_light(false, 0);   /* the hold followed a live poll */
 }
 
 static void job_task(void *arg)
@@ -482,7 +516,7 @@ static void hib_watchdog_task(void *arg)
     ESP_LOGE(TAG, "hibernate check-in: over %d s, hibernating anyway", HIB_WATCHDOG_MS / 1000);
     if (!s_tag) sums_reset(0x85);
     record(P_HIB_FAILED, (uint32_t)now_ms(), false);   /* M3: the stuck case shows in `power checkins` */
-    down_with_light(false);
+    down_with_light(false, hib_checkin_fails_next(hibernate_boot_checkin_fails(), false));
     vTaskDelete(NULL);
 }
 
@@ -496,6 +530,7 @@ void checkin_step(power_state_t st, int64_t now)
             s_next_ms = 0;
             s_force = false;   /* a forced check-in that never ran doesn't wait for the next park */
             if (s_quiet || s_hold) ESP_LOGI(TAG, "hibernate check-in: woken, back to normal");
+            if (s_quiet || s_hold) hib_watch_back();
             s_quiet = false;
             s_hold = false;
             s_hold_down = false;
@@ -514,11 +549,11 @@ void checkin_step(power_state_t st, int64_t now)
         else if (++s_watchdog_tries >= JOB_RETRIES) { s_watchdog_fired = true; give_up("no memory for the watchdog"); }
     }
     /* B1: a source that never settled (an INA226 lost after the wake, say) must not keep the device awake on
-       an unknown battery until it is empty: after 30 min still unknown and untouched, power off */
+       an unknown battery until it is empty: after 30 min still unknown and untouched, the low-battery hibernate (PT26) */
     if (s_unk_at_ms) {
         pr_ub_t ub = pr_unknown_backstop(power_source(NULL, NULL), s_unk_at_ms, now, now - power_idle_ms());
         if (ub == PR_UB_FIRE) {
-            ESP_LOGW("hib", "hib: power source unknown 30 min, powering off");
+            ESP_LOGW("hib", "hib: power source unknown 30 min, hibernating with the power probe");
             s_unk_at_ms = 0;
             power_hibernate_off();
         } else if (ub == PR_UB_CANCEL) {
@@ -604,6 +639,9 @@ void checkin_init(void)
     if (hibernate_boot_kind() == POWER_BOOT_HIB_CHECKIN) {
         s_quiet = true;        /* the Deep-idle light rule and no screen wake from the very first result */
         s_hib_pending = true;
+        /* M3: one plain poll, no watch loop on the Mac for a boot that goes back to sleep (as job_checkin) */
+        s_hib_watch = cc_link_watch_wanted();
+        if (s_hib_watch) cc_link_watch_resume(false);
         power_go(PS_OFF);      /* dark from the start, pinned */
         /* the device has been idle since before the sleep: if a fallback unpins it, the ladder sees that
            (on battery it hibernates again by the hours rule, on USB it stays in Off), never a fresh input */

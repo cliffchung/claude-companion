@@ -167,7 +167,9 @@ uint8_t power_bench_tag(void) { return s_running && s_step >= 0 ? (uint8_t)(0x10
 static bool usb_now(void)
 {
     power_info_t p = sysinfo_power();
-    return sysinfo_charging() || p.src == PWR_USB || p.src == PWR_USB_CHARGING || p.src == PWR_USB_STANDBY;
+    /* chgfix M7: a pack neither charging nor full on USB reads unknown with a valid reading: USB too */
+    return sysinfo_charging() || p.src == PWR_USB || p.src == PWR_USB_CHARGING || p.src == PWR_USB_STANDBY ||
+           (p.valid && p.src == PWR_UNKNOWN);
 }
 
 /* Sleeps up to secs seconds in 1 s slices, or until done() (may be NULL); false if aborted. */

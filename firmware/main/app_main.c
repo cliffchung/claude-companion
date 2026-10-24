@@ -142,14 +142,15 @@ void app_main(void)
     bsp_io_expander_init();
     {   /* PT22: CHG_EN (0x44 P7, IP2326 EN via R59) high: the charger is off at the expander's pull-down. Polarity
            from M5Tab5-UserDemo bsp_set_charge_en(true) and M5Unified Power_Class::setBatteryCharge (P7 high =
-           charge); measured -462 mA into the pack on USB (brownout-report.md). Level before direction, so the
-           pin never glitches; hibernate and power-off leave it alone (hibernate.c k_rails). */
+           charge); measured -462 mA into the pack on USB (brownout-report.md). The driver's reset in
+           bsp_io_expander1_init() has already made every pin an output (hi-Z, latch 0), so the level goes into
+           the latch first and push-pull then drives it: no glitch, and set_dir is a no-op (chgfix M3).
+           Hibernate leaves it alone (hibernate.c k_rails) and, a deep sleep (PT26), never drops it. */
         esp_io_expander_handle_t ex1 = bsp_io_expander1_init();
-        if (ex1) {
-            esp_io_expander_set_level(ex1, 1u << 7, 1);
-            esp_io_expander_set_output_mode(ex1, 1u << 7, IO_EXPANDER_OUTPUT_MODE_PUSH_PULL);
-            esp_io_expander_set_dir(ex1, 1u << 7, IO_EXPANDER_OUTPUT);
-        }
+        bool ok = ex1 && esp_io_expander_set_level(ex1, 1u << 7, 1) == ESP_OK;
+        ok = ok && esp_io_expander_set_output_mode(ex1, 1u << 7, IO_EXPANDER_OUTPUT_MODE_PUSH_PULL) == ESP_OK;
+        ok = ok && esp_io_expander_set_dir(ex1, 1u << 7, IO_EXPANDER_OUTPUT) == ESP_OK;
+        if (!ok) ESP_LOGW(TAG, "CHG_EN (0x44 P7): not driven high, the charger may be off");
     }
     bsp_feature_enable(BSP_FEATURE_LCD, true);
     vTaskDelay(pdMS_TO_TICKS(50));   /* stagger the rails: four at once is a current spike on battery */
