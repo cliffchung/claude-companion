@@ -1,49 +1,88 @@
 # Claude Companion firmware (source)
 
-Source tree of Claude Companion, firmware for the M5Stack Tab5 (ESP32-P4) that controls
-Claude Code sessions on a Mac over SSH + Tailscale. It is forked from Clientre 5 (MIT) and
-built on ESP-IDF v5.5 + LVGL 9. This document covers the build and the implementation
-details; see the [top-level README](../README_en.md) for an overview.
+Source tree of Claude Companion: firmware for the M5Stack Tab5 (ESP32-P4) that shows and controls
+the Claude Code sessions on a computer (the Host) over SSH, by default on the home LAN, with
+Tailscale as an optional switch. It is forked from Clientre 5 (MIT) and built on ESP-IDF v5.5
+(tested with v5.5.6) and LVGL 9. This document covers the internals. Setup, daily use and the
+console commands are in the [top-level README](../README.md).
 
-> Status: verified on a physical Tab5 (board v3): display, touch, keyboard, WiFi, SSH over a
-> Tailscale tailnet, and USB disk mode. Audio playback and the OTA path are
-> still unverified.
+> Status: verified on a physical Tab5 that the board support package reports as board version 2
+> (upstream Clientre 5 was tested on v3): display, touch, keyboard, Wi-Fi, the Host link over the
+> LAN, take-over, Tailscale on and off, and Hibernate check-ins on USB power. Not yet verified on
+> this build: a Terminal SSH session to a real machine, the microSD paths, a USB keyboard, battery
+> measurements on the pack, and the OTA path (dormant, see below).
 
 ## Layout
 
 ```
 firmware/
 ├── main/
-│   ├── app_main.c            boot: BSP, display, SD, WiFi, USB, UI
-│   ├── i18n/                 English string table
-│   ├── fonts/                generated LVGL fonts (MaruMinya, Noto/DejaVu fallback)
-│   ├── input/                Tab5 I2C keyboard (0x6D, HID mode) + USB HID keyboard, key routing
-│   ├── term/                 VT100/xterm-256color emulator (wide chars, scrollback), LVGL renderer
-│   ├── ssh/                  libssh client task (password / key / keyboard-interactive, host keys in NVS)
-│   ├── ui/                   screens: home, servers, terminal, files, image, text, music, camera,
-│   │                         wifi, settings, OTA, device info, USB, backup, screensaver
-│   ├── media/                JPEG loader (HW decoder + scaled SW), EXIF, audio player (MP3/FLAC/WAV), camera
-│   ├── net/                  WiFi manager over esp_wifi_remote (ESP32-C6 via SDIO)
-│   ├── storage/              SD/FAT helpers, encrypted/plain backup
-│   ├── ota/                  manifest check, download to SD, install via updater
-│   ├── sys/                  INA226 power, RX8130 RTC, NTP, screenshot, USB host/device manager
-│   ├── crypto/               AES-256-GCM secure store, PBKDF2 backups
-│   └── servers/              SSH server list (passwords encrypted at rest)
-├── components/libssh/        libssh 0.11 (LGPL-2.1) from ewpa/LibSSH-ESP32, no Arduino dependency
-├── components/microlink/     MicroLink v2 (MIT) unofficial Tailscale client + components/wireguard_lwip
-├── updater/                  tab5_factory_updater: flashes main_app from /sdcard/update
-├── tools/                    font / icon generators, release script, host UI preview
-├── partitions.csv            Launcher-compatible layout (main_app @0x20000, factory @0xF80000)
+│   ├── app_main.c        boot: BSP, display, boot splash, settings, secure store, servers, input, Wi-Fi, UI
+│   ├── companion/        the Host link (cc_link: one libssh session, exec channels, host-key pin carry-over),
+│   │                     command builders (cc_cmd), the session list parser (cc_sessions), the long-poll
+│   │                     watch parser (cc_watch), the debug console verbs (cc_console)
+│   ├── crypto/           AES-256-GCM secure store (device-local key in NVS) for saved passwords
+│   ├── fonts/            generated LVGL fonts: MaruMinya pixel faces, the Noto/DejaVu fallback, 16 px icons
+│   ├── i18n/             the one English string table (tr())
+│   ├── input/            Tab5 I2C keyboard (0x6D) + USB HID keyboard, key routing, the `key`/`ui` console verbs
+│   ├── net/              Wi-Fi manager over esp_wifi_remote (ESP32-C6 via SDIO), the Tailscale switch and
+│   │                     MicroLink wrapper (tailscale.c), tailnet host rules, fast check-in rules
+│   ├── ota/              manifest check, download to SD, install via the updater (no callers today)
+│   ├── servers/          the saved SSH hosts (NVS) and the host form's rules
+│   ├── settings/         the settings blob, its migrations, keyboard light colours
+│   ├── ssh/              libssh client task for the Terminal (device key, password, keyboard-interactive),
+│   │                     host-key pins in NVS, the device's ed25519 key (`sshkey`)
+│   ├── storage/          microSD mount on demand (reference-counted; never at boot)
+│   ├── sys/              power ladder, Hibernate, check-ins, vitals, INA226 power monitor, RX8130 RTC, SNTP,
+│   │                     screenshot, USB host manager, the debug console, the close-SSH-before-link-down guard
+│   ├── term/             VT100/xterm-256color emulator (wide characters, scrollback) and its LVGL view
+│   └── ui/               Sessions, take-over / SSH session, Terminal host list, host form, Settings,
+│                         shared components and design tokens, soft keyboard, boot splash
+├── components/libssh/    libssh 0.11 (LGPL-2.1) from ewpa/LibSSH-ESP32, no Arduino dependency
+├── components/microlink/ MicroLink (MIT), an unofficial Tailscale client
+├── components/wireguard_lwip/  WireGuard for lwIP (BSD-3-Clause), used by MicroLink
+├── updater/              tab5_factory_updater: flashes main_app from /sdcard/update (for the dormant OTA path)
+├── test/host/            Unity host tests for the pure modules (CMake/CTest)
+├── tools/                font and icon generators, ui_lint.py, screenshot.py, power_report.py,
+│                         authorize_device_key.sh, merge_flash.sh, the host UI preview (ui_preview/)
+├── partitions.csv        Launcher-compatible layout (main_app @0x20000, factory @0xF80000)
 └── sdkconfig.defaults
 ```
 
 ## Build
 
-Requirements: ESP-IDF **v5.5** with the esp32p4 toolchain, network access for the component registry.
+Requirements: ESP-IDF **v5.5** with the esp32p4 toolchain, and network access for the component
+registry.
 
 ```sh
 cd firmware
 idf.py set-target esp32p4
+idf.py build
+idf.py -p PORT flash monitor
+```
+
+`idf.py flash` writes the bootloader (`0x2000`), the partition table (`0x8000`), the OTA data and
+the app (`0x20000`). That is all a working device needs.
+
+Board-specific settings in `sdkconfig.defaults` that matter:
+
+- `CONFIG_ESP32P4_TAB5_C6_BOARD=y` together with `espressif/esp_hosted` pinned to `==3.0.10`
+  (`main/idf_component.yml`). Without them esp_hosted defaults to the P4 Function-EV board's SDIO
+  pins and Wi-Fi fails at boot. The C6 reports firmware `0.0.0`; scanning and joining work, and
+  the C6 is never reflashed.
+- `CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y`: lwIP's own mDNS query support, so the Host's `.local`
+  name resolves without the full mDNS component.
+- `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`: the debug console on the USB-C port.
+- `CONFIG_FATFS_LFN_HEAP=y`: long file names on the microSD card (key files such as `id_ed25519`).
+- `espressif/esp_lvgl_port` is pinned to `==2.8.0~1`, because `sys/display_ctl.c` mirrors its
+  private driver-data layout.
+
+### Release images
+
+To build the full image set, build the updater too and merge:
+
+```sh
+cd firmware
 idf.py build
 cd updater && idf.py set-target esp32p4 && idf.py build && cd ..
 sh tools/merge_flash.sh            # -> firmware/release/{partitions,full,update.json}
@@ -65,61 +104,84 @@ Or flash the parts individually:
 | `0x20000` | `partitions/claude_companion.bin` |
 | `0xF80000` | `partitions/tab5_factory_updater.bin` |
 
-During development `idf.py -p PORT flash monitor` flashes the bootloader, partition table
-and app; flash `tab5_factory_updater.bin` at `0xF80000` once so that in-app OTA can install.
-
 ## Product identity
 
-The product name is **Claude Companion** in the UI, the boot logo, USB descriptor,
-backup metadata and startup logs. The ESP-IDF project (and so the app descriptor
-checked by OTA) is `claude_companion`, and the default Tailscale node name for new
-configurations is `claude-companion`. The UI is English only.
+The product name is **Claude Companion** in the UI, the boot splash and the startup logs. The
+ESP-IDF project (and so the app descriptor) is `claude_companion`. The default Tailscale node name
+is `claude-companion`, and the device key's comment is `claude-companion@<device name>`. The UI is
+English only, and calls the machine running Claude Code "Host" everywhere (`tools/ui_lint.py`
+enforces it).
 
-## Boot logo
+## How the Host link works
 
-A static pixel terminal mark and `Claude Companion / STARTING` appear as soon
-as LCD/touch setup and display rotation are ready, before secure storage, RTC,
-SD, server data and input/network/media initialization. The logo uses the saved
-palette and backlight brightness. It cannot cover the bootloader or the LCD
-hardware initialization that happens before a framebuffer is available.
+`companion/cc_link.c` owns one libssh session to the Host and signs in with the device key only.
+Every command line comes from a `cc_cmd_*` builder (`companion/cc_cmd.c`), and only validated parts
+go into one: the Claude path and session ids. The link never opens a shell.
 
-The splash needs no SD asset, image decoder, animation timer or minimum display
-time: a 32-byte monochrome mark and existing flash fonts are drawn once. The
-main screen replaces it as soon as service
-initialization returns; it does not wait for WiFi or Tailscale to connect. Input
-navigation and the screensaver are enabled only at that handoff.
+- **The session list.** A long-poll exec channel runs a fixed `/bin/sh` loop on the Host
+  (`cc_cmd_watch`). It runs `<claude> agents --json --all` every few seconds (3 s with the screen
+  on, 15 s with it off), prints the output only when it changes, sends a heartbeat when quiet, and
+  exits on stdin EOF, after 60 s without the Tab5's keepalive, or after 30 minutes. If the loop
+  can't start, the link falls back to plain polls. The poll buffer is 256 KB.
+- **Previews.** `claude logs <id> | tail -n 40`.
+- **Quick answers.** A pty exec channel runs `claude attach <id>`. The text goes in as a bracketed
+  paste (`cc_paste_build` drops ESC, DEL and the other control bytes), then Enter, then Ctrl+Z
+  detaches. The device types only when the last `❯` line on screen is an empty input line
+  (`cc_screen_input_ready`); a permission dialog (`cc_screen_is_permission_prompt`) or anything
+  else is refused.
+- **Take-over.** A pty exec channel runs `claude attach <id>` and the terminal view draws it.
+- **Resolving the Host.** A literal IPv4 address as is; MagicDNS while Tailscale is connected;
+  `getaddrinfo` (lwIP sends an mDNS query for `*.local`, DNS for the rest); and only if all of
+  that fails, the fallback LAN address. The last good address is cached for fast check-ins.
+- **Host keys.** Pins are per resolved address, in NVS. The first contact on a tailnet address,
+  or the first connection after the user's Forget, pins the key it meets. On a LAN address with no
+  pin, a key equal to the same entry's earlier tailnet pin is carried over silently; any other
+  unknown key is refused until the user forgets (`companion/kh_carry.c`, host-tested). A changed
+  key is always refused.
+- **Never on the Host as a shell.** The Terminal client refuses a server whose host key is in a
+  deny-list of every key ever pinned for the link (NVS, up to 8), checked after key exchange and
+  before authentication, besides hiding the Host's entry from the list.
+- **Closing before going down.** Every path that takes the link down (Wi-Fi off, sleep, restart)
+  closes SSH first (`sys/link_guard.c`, `sys/link_down.c`).
 
-The extra work is screen creation and one framebuffer draw, not a deliberate
-boot delay. Serial logs report `boot logo submitted in ... ms` and
-`boot complete in ... ms` for measurement on the board. Actual added latency
-has not been measured on hardware.
+## Boot splash
 
-![Boot logo (host render)](../docs/ui/boot-logo.png)
+A static pixel terminal mark, "Claude Companion" and "Starting…" are drawn as soon as LCD and
+touch setup are done, before settings, secure storage, the RTC, server data, input and the
+network start. It is a 32-byte monochrome mark drawn once with flash fonts: no SD asset, image
+decoder or animation timer. The splash stays up for at least 1 s, then Sessions replaces it
+without waiting for Wi-Fi. The serial log reports `boot logo submitted in ... ms` and
+`boot complete in ... ms`.
 
 ## Tailscale (tailnet SSH)
 
-The **Tailscale** tile joins the device to your tailnet using the vendored, unofficial
-[MicroLink](https://github.com/Csontikka/microlink) client (`components/microlink`, MIT):
-ts2021 control protocol, WireGuard, DERP relay, DISCO/STUN. The WireGuard netif owns
-`100.64.0.0/10` in lwIP, so libssh connects to peers with ordinary sockets.
+The Tailscale support uses the vendored, unofficial [MicroLink](https://github.com/Csontikka/microlink)
+client (`components/microlink`, MIT): ts2021 control protocol, WireGuard, DERP relay, DISCO/STUN.
+The WireGuard netif owns `100.64.0.0/10` in lwIP, so libssh connects to peers with ordinary
+sockets. Server hosts may be tailnet names (`nas`, `nas.tailxxxx.ts.net`); they are resolved from
+the peer list at connect time.
 
-1. Create an auth key at `login.tailscale.com/admin/settings/keys` (reusable + pre-authorized is easiest).
-2. Enter it on the Tailscale screen, or put it in `/tailscale/authkey.txt` on the TF card and tap *Load key from SD*.
-3. Turn on *Join tailnet*. Once connected, the peer list shows every node; tap one to add it as an SSH server.
-   Server hosts may be tailnet names (`nas`, `nas.tailxxxx.ts.net`); they are resolved from the peer list at connect time.
-4. Headscale/Ionscale: set *Control server* to your server URL.
+**The switch.** `net/tailscale.c` is the only owner of MicroLink. `tailscale_set_enabled()` saves
+`ts_enable` to NVS first, then starts or stops MicroLink, and `tailscale_start` refuses while the
+switch is off, so no path (boot, Wi-Fi event, check-in, reconnect) can start it while it's off.
+Switching off stops and frees the instance, which returns its internal RAM. MicroLink's node keys
+stay in NVS, so switching on again reuses the registered node without a new auth key. *Forget this
+device on the tailnet* wipes the node keys but keeps the auth key. With the switch off, a
+connection to a tailnet address or `*.ts.net` name fails at once (`net/ts_host.c`). Settings for
+this are under Settings › Network; the auth key can also be read once from
+`/tailscale/authkey.txt` on the microSD card.
 
-Node keys persist in NVS, so the auth key is only needed once. *Forget this node* wipes them.
+**Relay-only by default.** MicroLink's direct-path (DISCO) upgrade can black-hole traffic behind a
+strict NAT (pings answered, WireGuard data not), so the firmware keeps every peer on DERP unless
+*Connection* is set to *Try direct*. Expect about 50–150 ms of extra latency. Before opening an SSH
+socket the firmware moves its DERP connection to the peer's home region, wakes the WireGuard
+session and waits for it; the first connection to a peer can take 5–30 s, and a cold connect after
+boot about a minute.
 
-**Relay-only by default.** MicroLink's direct-path (DISCO) upgrade can black-hole traffic behind
-strict NAT (ping answered, WireGuard data not), so the firmware keeps every peer on DERP unless
-*Direct connections (experimental)* is switched on. Expect ~50–150 ms extra latency. Before opening
-the SSH socket the firmware moves its DERP connection to the peer's home region, wakes the
-WireGuard session and waits for it; first connection to a peer can take 5–30 s.
-
-**Tailscale SSH targets** (`SSH-2.0-Tailscale` banner) authenticate by tailnet identity: leave the
-password empty. Their default ACL rule is `"action": "check"`, which needs a browser confirmation
-the Tab5 cannot do. Tag the device and add an `accept` rule, e.g.:
+**Tailscale SSH targets** (`SSH-2.0-Tailscale` banner) authenticate by tailnet identity: the
+client's `none` authentication succeeds before any key or password is tried. Their default ACL
+rule is `"action": "check"`, which needs a browser confirmation the Tab5 can't do. Tag the device
+and add an `accept` rule, e.g.:
 
 ```jsonc
 "tagOwners": { "tag:tab5": ["autogroup:admin"], "tag:server": ["autogroup:admin"] },
@@ -128,8 +190,29 @@ the Tab5 cannot do. Tag the device and add an `accept` rule, e.g.:
   { "action": "check",  "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot", "root"] }
 ]
 ```
-then apply `tag:tab5` to the Tab5 and `tag:server` to the target in the Machines page (SSH rules
-cannot use `autogroup:member` or a user as `dst` when the source is a tag).
+then apply `tag:tab5` to the Tab5 and `tag:server` to the target on the Machines page (SSH rules
+can't use `autogroup:member` or a user as `dst` when the source is a tag).
+
+## Saved hosts and the microSD card
+
+The saved SSH hosts live in NVS (`servers/server_store.c`), with passwords encrypted by the
+secure store. The microSD card is never mounted at boot; `storage/sd.c` mounts it on demand and
+unmounts after the last user. It is used for:
+
+- *Load from SD card* (the Tailscale auth key, `/tailscale/authkey.txt`);
+- Terminal hosts whose key file is under `/sdcard/`;
+- a one-time import of the host list an older build kept on the card (`/sdcard/.tab5/servers.enc`,
+  encrypted with this device's key), on devices that had that option on. The import adds entries,
+  skips duplicates and invalid ones, and leaves the card file unchanged;
+- the dormant OTA path.
+
+## OTA (dormant)
+
+The OTA code (`ota/`, `updater/`) is still in the tree, but no screen calls it; "Check for
+update" is planned for the release plan. `ota url [<url>|none]` on the console still sets the
+manifest URL. `tools/merge_flash.sh` writes a matching `update.json` whose binary URLs start with
+`REPO_RAW`. Installation writes `/sdcard/update/request.json`, switches the boot partition to the
+factory updater and reboots; the updater verifies the SHA-256 and flashes `main_app`.
 
 ## Regenerating fonts
 
@@ -142,126 +225,39 @@ author, hicc), or accepts a TTF path. `gen_fonts.sh` needs `NotoSansMonoCJKjp-Re
 npm i lv_font_conv                                  # once
 pip3 install fonttools                              # once
 sh tools/gen_pixel_fonts.sh              # the UI and terminal faces
-sh tools/gen_fonts.sh       <font dir>   # the CJK/symbol fallback
+sh tools/gen_fonts.sh       <font dir>   # the CJK/symbol fallback (font_cjk)
+python3 tools/gen_ui_icons.py            # the 16 px pictogram font (font_icons16)
 ```
+
+The UI and the terminal use **x12y12pxMaruMinya** by hicc, rendered on its 12 px grid at exact
+integer scales: 24 px for body, label text and the terminal (12 px cells), and 36 px for titles,
+at 1 bpp. The C names `font_px20`, `font_px24` and `font_px36b` are kept from the fork. Missing
+glyphs fall back to `font_cjk`, then to the icons.
 
 `cjk_ranges.py` intersects the wanted blocks with the font's cmap and routes whatever Noto Sans
 CJK lacks to DejaVu Sans Mono, which `mono_match.py` rescales so a fallback glyph still advances
 exactly one terminal cell. The title face is a subset taken from `i18n_chars.py`, which walks
-all of `main/` and (with `--font`) drops the characters the face does not have -- run
-`gen_pixel_fonts.sh` again after adding translated strings. LVGL draws a hollow rectangle for any
-character missing from the whole fallback chain, so a box on screen means a gap in these ranges.
+all of `main/` and (with `--font`) drops the characters the face does not have: run
+`gen_pixel_fonts.sh` again after adding strings. LVGL draws a hollow rectangle for any character
+missing from the whole fallback chain, so a box on screen means a gap in these ranges.
+`gen_ui_icons.py` builds the pictograms from bit masks in the script, with no external font.
 
-## Appearance, gestures and credential storage
+## UI structure
 
-The retro themes use **x12y12pxMaruMinya** by hicc. Its 12px grid is
-rendered at exact integer scales: 24px for body, secondary text and the terminal,
-and 36px for titles, at 1 bpp. Terminal ASCII advances 12px and Japanese 24px;
-the default 32px row height adds 4px of space above and below the 24px font box.
-Legacy generated C names (`font_px20`, `font_px24`, `font_px36b`) are retained.
+One visual system: fixed design tokens (`ui/ui_tokens.c`) and shared components (`ui/ui_comp.c`),
+with no runtime themes. Amber is reserved for NEEDS YOU; `tools/ui_lint.py` and the preview's amber
+check enforce it. Six screens: Sessions (home), Take-over, Terminal (host list), SSH session, the
+host form, and Settings with six sections. Only the visible Settings section is built.
 
-MaruMinya does not cover simplified or traditional Chinese, so Chinese selects the
-anti-aliased Noto CJK face for the entire UI and terminal instead of mixing faces in
-one sentence. Dark, Light, Nord, Solarized, Gruvbox and Classic also select smooth
-fonts: Montserrat for English UI and Noto CJK for Japanese/Chinese, with Noto Mono CJK
-in the terminal. `⏵` has a dedicated single-cell glyph.
-The LVGL icon glyphs use
-original 8x8 pixel pictograms (16 px for controls, 32 px for home tiles). Smooth
-icon glyphs remain available in the non-pixel themes.
+Gestures are taken from the input device rather than from the widget tree: LVGL only walks up from
+the touched object while every object in between has `LV_OBJ_FLAG_GESTURE_BUBBLE`, which does not
+survive cards, lists and buttons. `ui_core.c` installs one handler on the pointer indev and
+dispatches by active screen. The default is swipe right to go back; screens that need their own
+handling (Sessions, the terminal) install one with `ui_screen_set_gesture()`. A swipe that wakes
+the screen does nothing else.
 
-*Settings > Display > Appearance* treats a theme as a whole look rather than a palette:
-the eight colours, corner rounding, padding density, accent-tinted home tiles, the luminous edges
-of cards and the CRT scan lines, plus the terminal's foreground, background, cursor and
-16-colour ANSI palette. **Orange EL** is the default -- black glass, amber text, square
-corners, a thin accent halo and a 1-in-4-pixel scan line drawn after the children of every
-screen. **Retro CRT** is the green-phosphor equivalent and **Pixel** a squared-off 8-bit
-palette; Dark, Light, Nord, Solarized Dark and Gruvbox stay for a plain look.
-**Classic** uses blue-grey panels, blue actions and rounded controls.
-Saved preset indexes and user colour settings are retained across updates. The `UI_*`
-colour macros resolve through `ui_theme_color()`, so widgets follow a theme change without
-touching their call sites, and the hardcoded radius and padding values go through
-`ui_theme_radius()` / `ui_theme_pad()`.
-
-EL/pixel navigation keeps the new screen stationary and passes a faint excitation
-band over it for 360 ms, with a broad fading tail. Only the band's old/new bounds
-are redrawn at a nominal 30 Hz; late frames skip ahead using elapsed time. The
-scan-line texture itself stays static. Disabling **Glow** also disables the sweep.
-Classic and the other smooth themes use the standard screen transitions. The glow
-uses narrow outlines instead of blurred shadow masks; button feedback uses a
-40 ms excitation and 120 ms colour decay without growing or shrinking glyphs.
-Settings categories switch existing panels and retain each panel's scroll
-position, without rebuilding the whole screen. Status text is updated only when
-its content changes.
-
-Settings uses a left category menu and a right content panel. Home
-tiles adapt to landscape/portrait and spacing preferences, with numbered pixel
-icons. Shared LVGL styles cover buttons, inputs, switches, sliders, checkboxes and
-scrollbars; the keyboard, IME, media controls, terminal toolbar and notifications
-use the active palette. Photographs, QR codes, user-selected colours and terminal
-colour overrides retain their content colours. A home long press now runs only
-its shortcut, without also opening the tile.
-
-Choose **Settings → Display → Appearance → Theme → Orange EL / Classic**.
-Existing installations keep their saved theme. Restore appearance defaults or
-select Orange EL to adopt the amber look.
-
-![Orange EL home](../docs/ui/orange-home.png)
-![Orange EL settings](../docs/ui/orange-settings.png)
-![Classic settings](../docs/ui/classic-settings.png)
-
-These are host renders of the firmware UI with simulated hardware status, not
-photographs of the device. See [UI preview](tools/ui_preview/README.md) for the
-reproducible renderer and theme/navigation checks. `tools/gen_ui_icons.py`
-regenerates the committed pictogram fonts without external font downloads.
-
-Gestures are taken from the input device rather than from the widget tree: LVGL only walks
-up from the touched object while every object in between has `LV_OBJ_FLAG_GESTURE_BUBBLE`,
-which does not survive cards, lists and buttons. `ui_core.c` installs one handler on the
-pointer indev and dispatches by active screen. The default is swipe right to go back;
-screens that need the horizontal axis (image viewer, music, terminal) install their own with
-`ui_screen_set_gesture()`. Long-pressing a home tile runs a shortcut, and the terminal has a
-long-press menu.
-
-*Settings > Security > Keep SSH servers on the TF card* encrypts the whole server list --
-hosts, user names, key paths and passwords -- with the device key and writes it to
-`/sdcard/.tab5/servers.enc`, erasing the NVS copy. The key stays in NVS, so neither the card
-nor the device on its own can read the list back. Without the card the list starts empty and
-returns when the card does. WiFi credentials and the Tailscale auth key still live in NVS.
-
-## USB disk mode
-
-The USB screen hands the TF card to the PC as a USB drive. Two ESP32-P4 details shape how this
-works:
-
-* The host library always takes the high-speed OTG controller (`usb_host.c` hardcodes the UTMI
-  PHY on this target), which is the USB-A receptacle. The device stack therefore runs on the
-  full-speed controller, so **USB host mode keeps working** -- a USB keyboard stays live while
-  the card is exposed.
-* `LP_SYS.usb_ctrl` decides which of the two internal full-speed PHYs each controller gets.
-  By default the USB-Serial-JTAG owns PHY 0, which is where the Tab5's USB-C data lines are;
-  OTG 1.1 gets PHY 1, which is not wired to anything. `usb_mgr.c` swaps the two for the duration
-  of disk mode, so **the serial console and flashing are unavailable until disk mode is stopped**
-  (press Stop on screen, or power-cycle).
-
-`CONFIG_TINYUSB_MSC_BUFSIZE` must stay at or below 8128 bytes. The MSC class hands its whole
-buffer to a single dwc2 transfer and `dcd_dwc2.c` writes the packet count into DIEPTSIZ/DOEPTSIZ
-without clamping it to what the core implements; OTG 1.1 has a 7-bit packet count, so 64-byte
-full-speed bulk packets cap a transfer at 127 packets. A 32 KB buffer asks for 512 packets, which
-truncates to exactly 0 -- control transfers keep working, enumeration succeeds, and every bulk
-transfer silently never completes until the host gives up 30 s later and resets the port.
-
-The TinyUSB task runs at priority 10: at its default of 5 it loses the CPU to MicroLink's
-`ml_wg_mgr` (priority 7 on the same core) and the host answers late transfers with a port reset.
-
-## OTA manifest
-
-The Firmware screen fetches the JSON at *Settings → Update URL*. The URL is empty by
-default and the Firmware tile is hidden until one is set. `tools/merge_flash.sh` writes a
-matching `update.json` whose binary URLs point at the latest GitHub release assets
-(set `REPO_RAW=...`); commit the manifest and attach `claude_companion.bin` and
-`tab5_factory_updater.bin` to the release.
-Installation writes `/sdcard/update/request.json`, switches the boot partition to the factory
-updater and reboots; the updater verifies the SHA-256 and flashes `main_app`.
+The [UI preview](tools/ui_preview/README.md) renders the real screens on macOS with stub data and
+checks them (amber, touch targets, fit, idle redraws, timers).
 
 ## Licenses
 
