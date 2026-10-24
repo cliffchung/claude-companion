@@ -43,7 +43,7 @@ static void wifi_global_cb(wifi_ev_t ev, void *user)
         /* a Radio-off check-in (fast resume): no rebind (it handshakes first) and no SNTP restart every
            few minutes (the RTC keeps the time across a park) */
         bool fast = tailscale_fast_resume();
-        tailscale_on_wifi(true);
+        if (tailscale_enabled()) tailscale_on_wifi(true);   /* the switch is off: MicroLink never starts */
         if (!fast) sysinfo_start_sntp();
         cc_link_on_wifi(true);
     } else if (ev == WIFI_EV_DISCONNECTED) {

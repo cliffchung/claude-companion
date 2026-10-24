@@ -60,12 +60,12 @@ static void ts_ev(void *user) { (void)user; if (s_scr) ui_async(ev_async, NULL);
 static void enable_cb(lv_event_t *e)
 {
     bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
-    g_settings.ts_enable = on; settings_save();
+    tailscale_set_enabled(on);   /* saved at once: sticky across boots and wakes */
     if (on) {
         if (!wifi_mgr_is_connected()) { ui_toast(tr(STR_WIFI_NOT_CONNECTED)); return; }
         if (!g_settings.ts_auth_key[0]) ui_alert(tr(STR_TAILSCALE), tr(STR_TS_KEY_MISSING));
-        if (!tailscale_start()) ui_alert(tr(STR_ERROR), tailscale_last_error());
-    } else tailscale_stop();
+        if (tailscale_state() == TS_ERROR) ui_alert(tr(STR_ERROR), tailscale_last_error());
+    }
     fill();
 }
 static void key_prompt_cb(const char *v, void *ud) { (void)ud; strlcpy(g_settings.ts_auth_key, v, sizeof(g_settings.ts_auth_key)); settings_save(); ui_nav_refresh(); }

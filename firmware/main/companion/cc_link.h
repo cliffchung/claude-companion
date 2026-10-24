@@ -23,7 +23,9 @@ bool cc_link_connected(void);
    "connected <host>; session list not updating (N polls failed)" |
    "connecting to <host>" (attempt running) | "connecting to <host> (retry in Ns)" |
    "<failure> (retry in Ns)" | "<failure> (retrying now)" | "no Mac set up", where <failure>
-   is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting", "no server named '<name>' in Servers" or "<name> refused the device key". */
+   is "host key changed for <ip>; not connecting", "can't read the host key pin for <ip>; not connecting",
+   "new host key for <ip>; Forget Mac host key to trust it" (a LAN address with no pin to carry over),
+   "no server named '<name>' in Servers", "<name> refused the device key" or CC_LINK_TS_OFF_TEXT. */
 const char *cc_link_status_text(char *buf, size_t cap);
 /* Why the link is down when it isn't reachability (the status text has the words). */
 typedef enum {
@@ -31,7 +33,9 @@ typedef enum {
     CC_LINK_FAIL_NO_ENTRY,    /* no server with the configured name */
     CC_LINK_FAIL_HOSTKEY,     /* the Mac's host key doesn't match its pin, or the pin is unreadable */
     CC_LINK_FAIL_AUTH,        /* the Mac refused the device key */
+    CC_LINK_FAIL_TS_OFF,      /* the Mac entry is a tailnet host and the Tailscale switch is off */
 } cc_link_fail_t;
+#define CC_LINK_TS_OFF_TEXT "the Mac is a tailnet host and Tailscale is off (Settings \xe2\x86\x92 Network)"
 cc_link_fail_t cc_link_failure(void);
 /* Forgets the Mac's host key: erases the link's pin (the address it connects to) and the
    terminal's (the server entry's host string, and its MagicDNS address), then has the link task
@@ -142,7 +146,24 @@ const char *cc_link_reconnect_log(char *buf, size_t cap);
    else the server entry's host. False when no Mac is set up. */
 bool cc_link_mac_address(char *out, size_t cap);
 
-/* Registers companion, sessions, reply, logs and wifi console commands. */
+/* ---- Plan 3 Task 1: the local link ---- */
+/* Which path the link uses now: "lan <ip>" or "tailnet <ip>" while connected (true), else "none". */
+bool cc_link_mac_path(char *out, size_t cap);
+/* Debug (`companion resolve <host>`): resolves host the way the link resolves the Mac's (L2). Blocks. */
+bool cc_link_resolve_test(const char *host, char *out, size_t cap, const char **how);
+/* `companion server-host <host> [fallback-ip]`: sets the Mac entry's host (fallback NULL keeps the
+   fallback address, "none" clears it), first remembering the entry's tailnet address so its pin
+   carries over to the LAN; then reconnects. ESP_ERR_INVALID_ARG for a bad host or fallback,
+   ESP_ERR_INVALID_STATE with no Mac entry, ESP_FAIL when the server list didn't save. */
+esp_err_t cc_link_set_server_host(const char *host, const char *fallback);
+/* The Mac's fallback LAN address, used when its name doesn't resolve: "" clears it. False unless
+   "" or a private IPv4 address. Retries the link at once. */
+bool cc_link_set_lan_fallback(const char *ip);
+const char *cc_link_lan_fallback(char *out, size_t cap);
+/* The Mac entry's remembered tailnet address, whose pin carries over to the LAN ("" = none). */
+const char *cc_link_tailnet_pin_source(char *out, size_t cap);
+
+/* Registers companion, sessions, reply, logs, wifi and ts console commands. */
 void cc_console_init(void);
 #ifdef __cplusplus
 }

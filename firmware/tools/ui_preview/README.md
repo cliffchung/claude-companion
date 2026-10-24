@@ -15,7 +15,7 @@ cd /tmp/tab5-ui-preview
 ./preview home 0 1280 720
 sips -s format png screen.ppm --out home.png
 ./preview settings 0 1280 720 1
-sips -s format png screen.ppm --out settings.png
+sips -s format png screen.ppm --out settings.png   # Network; PREVIEW_TS=0 for the switch off
 ./preview settings 8 1280 720 1
 sips -s format png screen.ppm --out classic.png
 ./preview home 0 720 1280
@@ -24,11 +24,11 @@ sips -s format png screen.ppm --out classic.png
 ```
 
 Arguments: screen (`home`, `settings`, `appearance`), preset index (0 = Orange EL,
-8 = Classic), width, height, settings category (0–6). Output: `screen.ppm` in the
+8 = Classic), width, height, settings category (0–8: System, Network, Display, Power, Status bar, Input, Security, Backup, About). Output: `screen.ppm` in the
 working directory; Japanese labels and simulated status values are used.
 
 Before each capture, the renderer cycles all presets through live theme rebuilds.
-Settings sends real LVGL click events through all seven categories and asserts
+Settings sends real LVGL click events through all nine categories and asserts
 that exactly the selected panel remains visible. Home checks all ten tiles fit
 within the display. The normal firmware build remains the compile/link check for
 all other screens and the ESP32-P4 target.

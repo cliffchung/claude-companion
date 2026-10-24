@@ -12,8 +12,17 @@ uint16_t tailscale_home_derp(void);
 typedef void (*ts_event_cb_t)(void *user);
 
 void tailscale_init(void);                 /* reads settings; starts if enabled and WiFi is up */
-bool tailscale_start(void);               /* needs auth key (first time) and WiFi */
+/* Starts MicroLink: a no-op (false, "Tailscale is off") while the switch is off. Needs the auth key
+   the first time, and Wi-Fi. */
+bool tailscale_start(void);
 void tailscale_stop(void);
+/* ---- Plan 3 Task 1: the Tailscale switch ---- */
+/* The sticky switch (g_settings.ts_enable): saves it to NVS at once, then starts MicroLink (Wi-Fi
+   up) or stops it and frees it. While off nothing calls microlink_init, _start or _rebind. */
+void tailscale_set_enabled(bool on);
+bool tailscale_enabled(void);
+/* The SSH terminal's message for a tailnet host while the switch is off. */
+#define TS_OFF_MESSAGE "Tailscale is off. Turn it on in Settings → Network."
 void tailscale_on_wifi(bool connected);   /* called from the WiFi manager hook */
 ts_state_t tailscale_state(void);
 const char *tailscale_state_text(void);

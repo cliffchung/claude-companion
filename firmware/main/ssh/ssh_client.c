@@ -17,6 +17,7 @@
 #include "settings/settings.h"
 #include "nvs.h"
 #include "net/tailscale.h"
+#include "net/ts_host.h"
 #include "ssh/device_key.h"
 
 static const char *TAG = "ssh";
@@ -228,6 +229,12 @@ static void ssh_task(void *arg)
     set_state(c, SSH_ST_CONNECTING, NULL);
     c->session = ssh_new();
     if (!c->session) { set_state(c, SSH_ST_ERROR, "Failed to create SSH session"); goto done; }
+    if (!tailscale_enabled() && ts_host_needs_tailscale(c->p.host)) {
+        /* the switch is off: fail at once, never start Tailscale on our own (spec Goal 5) */
+        ESP_LOGW(TAG, "%s needs Tailscale, which is off", c->p.host);
+        set_state(c, SSH_ST_ERROR, TS_OFF_MESSAGE);
+        goto done;
+    }
     {
         /* MagicDNS: resolve tailnet peer names from the MicroLink peer list. */
         char ip[16];

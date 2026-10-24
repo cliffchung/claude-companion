@@ -10,6 +10,7 @@
 #include "settings/settings.h"
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
+#include "net/ts_host.h"
 #include "companion/cc_link.h"
 #include "input/keyboard.h"
 #include "sys/sysinfo.h"
@@ -218,12 +219,34 @@ static bool judged(void) { return power_state() < PS_OFF || power_results_judged
 
 /* Steps 4-5: SSH, then one plain poll. A handshake path counts only once SSH works: a stale keypair can
    report the peer up, so a failed connect after a handshake escalates to a rebind. */
+/* Plan 3: a check-in brings the tunnel up only with the switch on and a Mac host that may be on the
+   tailnet. A LAN address or a .local name goes straight to the link and the poll: no connect wait, no
+   handshake, no rebind. */
+static bool needs_tunnel(const char *mac)
+{
+    return tailscale_enabled() && ts_host_maybe_tailnet(mac);
+}
+
+static ts_checkin_t tunnel(const char *mac, bool rebind)
+{
+    if (!tailscale_enabled() && ts_host_needs_tailscale(mac)) {
+        /* the Mac entry is still a tailnet host: no link can come up, so don't wait for one */
+        ESP_LOGW(TAG, "tunnel: the Mac (%s) needs Tailscale, which is off", mac);
+        return TS_CHECKIN_FAILED;
+    }
+    if (!needs_tunnel(mac)) {
+        ESP_LOGI(TAG, "tunnel: skipped (%s)", tailscale_enabled() ? "the Mac is on the LAN" : "Tailscale is off");
+        return TS_CHECKIN_HANDSHAKE;
+    }
+    return tailscale_checkin(mac, rebind, NULL);
+}
+
 static ts_checkin_t link_and_poll(const char *mac, ts_checkin_t ts, int link_ms, bool *poll_ok)
 {
     *poll_ok = false;
     cc_link_park(false);
     bool up = wait_for(link_up, link_ms);
-    if (!up && ts == TS_CHECKIN_HANDSHAKE) {
+    if (!up && ts == TS_CHECKIN_HANDSHAKE && needs_tunnel(mac)) {
         ESP_LOGW(TAG, "handshake but no SSH in %d ms: rebinding", link_ms);
         ts = tailscale_checkin(mac, true, NULL);
         if (ts != TS_CHECKIN_FAILED) {
@@ -258,7 +281,7 @@ static ts_checkin_t bring_up(bool rebind, bool *poll_ok, int64_t t0)
         return TS_CHECKIN_FAILED;
     }
     if (!cc_link_mac_address(mac, sizeof(mac))) return TS_CHECKIN_FAILED;
-    ts_checkin_t ts = tailscale_checkin(mac, rebind, NULL);
+    ts_checkin_t ts = tunnel(mac, rebind);
     ESP_LOGI(TAG, "tunnel: %s at %lld ms", tailscale_checkin_name(ts), (long long)(now_ms() - t0));
     if (ts == TS_CHECKIN_FAILED) return ts;
     return link_and_poll(mac, ts, LINK_WAIT_MS, poll_ok);
@@ -411,7 +434,7 @@ static void job_hib(void)
     int64_t left = end - now_ms();
     if (wait_for(wifi_up, left < HIB_WIFI_WAIT_MS ? (int)left : HIB_WIFI_WAIT_MS) && !hib_abandoned() &&
         cc_link_mac_address(mac, sizeof(mac))) {
-        ts = tailscale_checkin(mac, false, NULL);
+        ts = tunnel(mac, false);
         left = end - now_ms();
         if (ts != TS_CHECKIN_FAILED && !hib_abandoned() && left > 0)
             ts = link_and_poll(mac, ts, left < HIB_LINK_WAIT_MS ? (int)left : HIB_LINK_WAIT_MS, &poll_ok);

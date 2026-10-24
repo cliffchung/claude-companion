@@ -21,6 +21,10 @@
 #include "net/wifi_mgr.h"
 #include "ssh/ssh_client.h"
 #include "ssh/device_key.h"
+#include "net/ts_host.h"
+#include "companion/kh_carry.h"
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
 
 /* Threading: s_task is the only task that calls libssh on s_sess. cc_link_exec and
  * cc_link_paste queue a request and block on a semaphore until the task answers, so
@@ -225,6 +229,8 @@ bool cc_link_is_companion_server(int idx)
 void cc_link_set_server(const char *name)
 {
     lock();
+    if (strcmp(g_settings.companion_server, name ? name : "") != 0)
+        g_settings.mac_ts_ip[0] = 0;   /* another Mac: the old one's tailnet pin must not carry over (L3) */
     strlcpy(g_settings.companion_server, name ? name : "", sizeof(g_settings.companion_server));
     s_pin_host[0] = 0;   /* the old Mac's address: a forget must not erase its pin */
     unlock();
@@ -358,6 +364,40 @@ static void set_fail(cc_link_fail_t f, const char *text)
     unlock();
 }
 
+/* The Mac's address (L2): a literal IPv4 as it is; a tailnet name through MagicDNS (Tailscale up);
+   any other name through getaddrinfo, which asks mDNS for a .local name
+   (CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES) and DNS for the rest; failing that, the fallback LAN
+   address from the settings. *how gets "ip", "magicdns", "mdns", "dns" or "fallback". */
+static bool mac_resolve(const char *host, char *out, size_t cap, const char **how)
+{
+    *how = "ip";
+    if (ts_host_is_ipv4(host)) { strlcpy(out, host, cap); return true; }
+    *how = "magicdns";
+    if (tailscale_resolve(host, out, cap)) return true;
+    if (!ts_host_needs_tailscale(host)) {
+        struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+        struct addrinfo *res = NULL;
+        if (getaddrinfo(host, NULL, &hints, &res) == 0 && res) {
+            const struct sockaddr_in *sa = (const struct sockaddr_in *)res->ai_addr;
+            char b[16];
+            bool ok = inet_ntop(AF_INET, &sa->sin_addr, b, sizeof(b)) != NULL;
+            freeaddrinfo(res);
+            if (ok) {
+                strlcpy(out, b, cap);
+                *how = ts_host_is_mdns(host) ? "mdns" : "dns";
+                return true;
+            }
+        } else if (res) freeaddrinfo(res);
+    }
+    char fb[sizeof(g_settings.mac_lan_ip)];
+    lock();
+    strlcpy(fb, g_settings.mac_lan_ip, sizeof(fb));
+    unlock();
+    *how = "fallback";
+    if (fb[0] && ts_host_is_ipv4(fb)) { strlcpy(out, fb, cap); return true; }
+    return false;
+}
+
 static bool connect_once(const char *name)
 {
     char why[sizeof(s_fail_text)];
@@ -378,8 +418,26 @@ static bool connect_once(const char *name)
         set_fail(CC_LINK_FAIL_NONE, NULL);
         return false;
     }
+    if (!tailscale_enabled() && ts_host_needs_tailscale(host)) {
+        /* the switch is off: the link never starts Tailscale on its own (spec Goal 5) */
+        ESP_LOGW(TAG, "%s is a tailnet host and Tailscale is off; not connecting", host);
+        set_fail(CC_LINK_FAIL_TS_OFF, CC_LINK_TS_OFF_TEXT);
+        return false;
+    }
     char ip[16];
-    if (tailscale_resolve(host, ip, sizeof(ip))) strlcpy(host, ip, sizeof(host));
+    const char *how;
+    if (!mac_resolve(host, ip, sizeof(ip), &how)) {
+        ESP_LOGW(TAG, "mac: %s doesn't resolve and there is no fallback address", host);
+        set_fail(CC_LINK_FAIL_NONE, NULL);   /* retried as unreachable */
+        return false;
+    }
+    if (strcmp(how, "ip") != 0) ESP_LOGI(TAG, "mac: %s -> %s (%s)", host, ip, how);
+    strlcpy(host, ip, sizeof(host));
+    if (tailscale_is_tailnet_ip(host) && !tailscale_enabled()) {
+        ESP_LOGW(TAG, "%s is a tailnet address and Tailscale is off; not connecting", host);
+        set_fail(CC_LINK_FAIL_TS_OFF, CC_LINK_TS_OFF_TEXT);
+        return false;
+    }
     if (tailscale_is_tailnet_ip(host) && !tailscale_prepare_peer(host, 20000))
         ESP_LOGW(TAG, "tunnel to %s not confirmed, trying anyway", host);
 
@@ -413,8 +471,46 @@ static bool connect_once(const char *name)
     }
     char fp[80];
     kh_result_t kh = ssh_known_host_check(s, host, port, fp, sizeof(fp));
+    bool unknown_lan = false;   /* a LAN address with no pin and nothing to carry: refused (L4) */
+    if (kh == KH_UNKNOWN && !tailscale_is_tailnet_ip(host)) {
+        char tsip[sizeof(g_settings.mac_ts_ip)];
+        lock();
+        strlcpy(tsip, g_settings.mac_ts_ip, sizeof(tsip));
+        /* the user's Forget Mac host key: the next connect pins the key it meets as new */
+        bool forget_pending = s_forget_done != s_forget_req && s_forget_ack == s_forget_req;
+        unlock();
+        if (!forget_pending) {
+            /* The pin carry-over (spec Goal 4): never trust on first use over the LAN */
+            kh_result_t t = tsip[0] && strcmp(tsip, host) != 0 ? ssh_known_host_check(s, tsip, port, NULL, 0) : KH_UNKNOWN;
+            if (t == KH_PIN_ERROR || t == KH_ERROR) kh = t;
+            else switch (kh_carry_decide(false, t == KH_OK || t == KH_CHANGED, t == KH_OK)) {
+            case KHC_PIN_SILENT:
+                if (ssh_known_host_trust(s, host, port)) {
+                    ESP_LOGW(TAG, "kh: carried tailnet pin to %s (from %s) %s", host, tsip, fp);
+                    kh = KH_OK;
+                } else kh = KH_ERROR;
+                break;
+            case KHC_REFUSE:
+                ESP_LOGE(TAG, "kh: %s's key %s differs from the tailnet pin of %s", host, fp, tsip);
+                kh = KH_CHANGED;
+                break;
+            default:
+                unknown_lan = true;
+                break;
+            }
+        }
+    }
+    if (unknown_lan) {
+        ESP_LOGE(TAG, "kh: new host key for %s:%d %s, and no tailnet pin to carry; not connecting", host, port, fp);
+        snprintf(why, sizeof(why), "new host key for %s; Forget Mac host key to trust it", host);
+        set_fail(CC_LINK_FAIL_HOSTKEY, why);
+        ssh_disconnect(s);
+        ssh_free(s);
+        return false;
+    }
     if (kh == KH_UNKNOWN) {
-        /* First contact with no screen to ask on: pin it, like the terminal's default. */
+        /* First contact over the tailnet, or after the user's forget, with no screen to ask on:
+           pin it, like the terminal's default. */
         ESP_LOGW(TAG, "pinning new host key for %s:%d %s", host, port, fp);
         if (!ssh_known_host_trust(s, host, port)) kh = KH_ERROR;
         else kh = KH_OK;
@@ -464,7 +560,11 @@ static bool connect_once(const char *name)
     }
     s_poll_fails = 0;
     s_poll_too_big = false;
+    /* remember the entry's tailnet address: its pin carries over when the entry moves to the LAN */
+    bool ts_new = tailscale_is_tailnet_ip(host) && strcmp(g_settings.mac_ts_ip, host) != 0;
+    if (ts_new) strlcpy(g_settings.mac_ts_ip, host, sizeof(g_settings.mac_ts_ip));
     unlock();
+    if (ts_new) settings_save();
     if (forget_done) ESP_LOGW(TAG, "forget host key: new Mac key pinned: %s", fp);
     s_w_fallback_until_us = 0;   /* a fallback is retried on the next connect */
     memset(s_w_ends, 0, sizeof(s_w_ends));
@@ -1397,10 +1497,12 @@ int cc_poll_snapshot(cc_session_t *out, int cap)
     return n;
 }
 
-/* The host:port pins the link and the terminal use for the companion's Mac: the address the
-   link last tried, the server entry's host after a MagicDNS lookup, and the entry's
-   host string itself. Returns how many it filled (0: no Mac set up). */
-static int pin_targets(char hosts[3][128], int ports[3])
+/* The host:port pins the link and the terminal use for the companion's Mac: the entry's host
+   string itself, the entry's host after a MagicDNS lookup, the entry's remembered tailnet address
+   (the carry-over's source) and, last, the address the link last tried. Returns how many it
+   filled (0: no Mac set up). */
+#define PIN_TARGETS 4
+static int pin_targets(char hosts[PIN_TARGETS][128], int ports[PIN_TARGETS])
 {
     char name[sizeof(g_settings.companion_server)];
     lock();
@@ -1416,6 +1518,10 @@ static int pin_targets(char hosts[3][128], int ports[3])
         if (tailscale_resolve(sv->host, ip, sizeof(ip))) { strlcpy(hosts[n], ip, sizeof(hosts[n])); ports[n++] = port; }
     }
     lock();
+    if (sv && g_settings.mac_ts_ip[0] && strcmp(g_settings.mac_ts_ip, s_pin_host) != 0) {
+        strlcpy(hosts[n], g_settings.mac_ts_ip, sizeof(hosts[n]));
+        ports[n++] = sv->port > 0 ? sv->port : 22;
+    }
     if (s_pin_host[0]) { strlcpy(hosts[n], s_pin_host, sizeof(hosts[n])); ports[n++] = s_pin_port; }
     unlock();
     return n;
@@ -1425,7 +1531,7 @@ esp_err_t cc_link_forget_host_key(char *fp_out, size_t fp_cap, int timeout_ms)
 {
     if (fp_out && fp_cap) fp_out[0] = 0;
     if (!s_task || xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
-    char hosts[3][128]; int ports[3];
+    char hosts[PIN_TARGETS][128]; int ports[PIN_TARGETS];
     int n = pin_targets(hosts, ports);
     if (n == 0) return ESP_ERR_INVALID_STATE;
     for (int i = 0; i < n; i++) ssh_known_host_forget(hosts[i], ports[i]);
@@ -1462,7 +1568,7 @@ uint32_t cc_link_forget_done(char *fp_out, size_t fp_cap)
 bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap)
 {
     if (fp_out && fp_cap) fp_out[0] = 0;
-    char hosts[3][128]; int ports[3];
+    char hosts[PIN_TARGETS][128]; int ports[PIN_TARGETS];
     int n = pin_targets(hosts, ports);
     for (int i = n - 1; i >= 0; i--)   /* the link's own address first */
         if (ssh_known_host_fingerprint(hosts[i], ports[i], fp_out, fp_cap)) return true;
@@ -1472,7 +1578,7 @@ bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap)
 esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)
 {
     if (host_out && host_cap) host_out[0] = 0;
-    char hosts[3][128]; int ports[3];
+    char hosts[PIN_TARGETS][128]; int ports[PIN_TARGETS];
     int n = pin_targets(hosts, ports);
     if (n == 0) return ESP_ERR_INVALID_STATE;
     /* the last target is the link's own pin when it has connected, else the resolved entry */
@@ -1549,6 +1655,96 @@ bool cc_link_mac_address(char *out, size_t cap)
     if (!sv) return false;
     strlcpy(out, sv->host, cap);
     return out[0] != 0;
+}
+
+bool cc_link_resolve_test(const char *host, char *out, size_t cap, const char **how)
+{
+    if (!host || !out || !cap || !how) return false;
+    int64_t t0 = now_us();
+    bool ok = mac_resolve(host, out, cap, how);
+    ESP_LOGI(TAG, "resolve %s: %s in %lld ms", host, ok ? *how : "failed", (long long)((now_us() - t0) / 1000));
+    return ok;
+}
+
+bool cc_link_mac_path(char *out, size_t cap)
+{
+    if (!out || !cap) return false;
+    lock();
+    bool up = s_state == LS_CONNECTED && s_pin_host[0];
+    if (up) snprintf(out, cap, "%s %s", tailscale_is_tailnet_ip(s_pin_host) ? "tailnet" : "lan", s_pin_host);
+    unlock();
+    if (!up) strlcpy(out, "none", cap);
+    return up;
+}
+
+/* A host the entry may hold: 1 to 127 printable characters, no spaces. */
+static bool host_ok(const char *h)
+{
+    size_t n = h ? strlen(h) : 0;
+    if (n == 0 || n >= sizeof(((server_t *)0)->host)) return false;
+    for (size_t i = 0; i < n; i++)
+        if ((unsigned char)h[i] <= ' ' || (unsigned char)h[i] >= 0x7f) return false;
+    return true;
+}
+
+esp_err_t cc_link_set_server_host(const char *host, const char *fallback)
+{
+    if (!host_ok(host)) return ESP_ERR_INVALID_ARG;
+    const char *fb = fallback && strcmp(fallback, "none") == 0 ? "" : fallback;
+    if (fb && !ts_host_lan_fallback_valid(fb)) return ESP_ERR_INVALID_ARG;
+    int idx = cc_settings_server();
+    const server_t *sv = idx >= 0 ? server_store_get(idx) : NULL;
+    if (!sv) return ESP_ERR_INVALID_STATE;
+    server_t e = *sv;
+    /* the address whose pin carries over: the link's last tailnet address, else the old entry's */
+    char tsip[sizeof(g_settings.mac_ts_ip)] = "";
+    lock();
+    if (tailscale_is_tailnet_ip(s_pin_host)) strlcpy(tsip, s_pin_host, sizeof(tsip));
+    unlock();
+    if (!tsip[0] && tailscale_is_tailnet_ip(e.host)) strlcpy(tsip, e.host, sizeof(tsip));
+    if (!tsip[0]) tailscale_resolve(e.host, tsip, sizeof(tsip));
+    strlcpy(e.host, host, sizeof(e.host));
+    if (!server_store_update(idx, &e)) return ESP_FAIL;
+    lock();
+    if (tsip[0] && tailscale_is_tailnet_ip(tsip)) strlcpy(g_settings.mac_ts_ip, tsip, sizeof(g_settings.mac_ts_ip));
+    if (fb) strlcpy(g_settings.mac_lan_ip, fb, sizeof(g_settings.mac_lan_ip));
+    unlock();
+    settings_save();
+    ESP_LOGI(TAG, "Mac entry host -> %s, fallback %s, tailnet pin source %s", host,
+             g_settings.mac_lan_ip[0] ? g_settings.mac_lan_ip : "none", g_settings.mac_ts_ip[0] ? g_settings.mac_ts_ip : "none");
+    s_reconfig = true;
+    kick();
+    return ESP_OK;
+}
+
+bool cc_link_set_lan_fallback(const char *ip)
+{
+    if (!ts_host_lan_fallback_valid(ip)) return false;
+    lock();
+    strlcpy(g_settings.mac_lan_ip, ip, sizeof(g_settings.mac_lan_ip));
+    unlock();
+    settings_save();
+    s_reset_backoff = true;   /* try it now */
+    kick();
+    return true;
+}
+
+const char *cc_link_tailnet_pin_source(char *out, size_t cap)
+{
+    if (!out || !cap) return "";
+    lock();
+    strlcpy(out, g_settings.mac_ts_ip, cap);
+    unlock();
+    return out;
+}
+
+const char *cc_link_lan_fallback(char *out, size_t cap)
+{
+    if (!out || !cap) return "";
+    lock();
+    strlcpy(out, g_settings.mac_lan_ip, cap);
+    unlock();
+    return out;
 }
 
 void cc_link_on_wifi(bool connected)

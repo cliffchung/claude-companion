@@ -10,6 +10,7 @@
 #include "net/wifi_mgr.h"
 #include "storage/sd.h"
 #include "companion/cc_link.h"
+#include "net/tailscale.h"
 #include "ui_dashboard.h"
 #include "bsp/m5stack_tab5.h"
 #include "esp_system.h"
@@ -284,6 +285,28 @@ static void companion_forget_cb(lv_event_t *e)
                companion_forget_yes, NULL);
 }
 
+static void ts_switch_cb(lv_event_t *e)
+{
+    bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    tailscale_set_enabled(on);   /* saved at once: sticky across boots and wakes */
+    ui_toast(on ? (wifi_mgr_is_connected() ? "Tailscale on: connecting" : "Tailscale on: starts with Wi-Fi") : "Tailscale off");
+    ui_nav_refresh();
+}
+static void ts_details_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_tailscale_create, NULL); }
+static void mac_fallback_prompt_cb(const char *v, void *ud)
+{
+    (void)ud;
+    if (!v) return;
+    if (!cc_link_set_lan_fallback(v)) { ui_toast("Use a home network address like 192.168.1.50, or leave it empty"); return; }
+    ui_nav_refresh();
+}
+static void mac_fallback_cb(lv_event_t *e)
+{
+    (void)e;
+    char cur[16];
+    ui_prompt("Mac fallback address", "192.168.1.50", cc_link_lan_fallback(cur, sizeof(cur)), false, mac_fallback_prompt_cb, NULL);
+}
+
 static lv_obj_t *slider_row(lv_obj_t *parent, const char *label, int min, int max, int val, lv_event_cb_t cb)
 {
     lv_obj_t *card = ui_card(parent);
@@ -310,7 +333,7 @@ static void sb_bit_cb(lv_event_t *e)
  * has its own scroll area beside the category menu. */
 static unsigned s_category;
 static const str_id_t s_categories[] = {
-    STR_SET_SYSTEM, STR_SET_DISPLAY, STR_SET_POWER, STR_SET_STATUSBAR, STR_SET_INPUT,
+    STR_SET_SYSTEM, STR_SET_NETWORK, STR_SET_DISPLAY, STR_SET_POWER, STR_SET_STATUSBAR, STR_SET_INPUT,
     STR_SET_SECURITY, STR_SET_BACKUP, STR_ABOUT
 };
 /* Only the visible category is built: LVGL's small objects land in internal RAM, which TLS and
@@ -339,6 +362,22 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         break;
     }
     case 1: {
+        /* Plan 3 Task 1: the sticky Tailscale switch, and the Mac link's LAN fallback */
+        ui_switch_row(c, "Tailscale", tailscale_enabled(), ts_switch_cb, NULL);
+        snprintf(buf, sizeof(buf), "%s%s%s", tailscale_state_text(), tailscale_vpn_ip()[0] ? " " : "", tailscale_vpn_ip());
+        ui_label(c, tailscale_enabled() ? buf : "Off: MicroLink doesn't run, and check-ins don't wait on a tunnel.", FONT_SMALL, UI_MUTED);
+        ui_setting_row(c, "Tailscale details", "Auth key, device name, control host", ts_details_cb, NULL);
+        char fb[16], path[40];
+        cc_link_lan_fallback(fb, sizeof(fb));
+        ui_setting_row(c, "Mac fallback address", fb[0] ? fb : "None", mac_fallback_cb, NULL);
+        cc_link_mac_path(path, sizeof(path));
+        snprintf(buf, sizeof(buf), "Mac link: %s", path);
+        ui_label(c, buf, FONT_SMALL, UI_MUTED);
+        ui_label(c, "The Mac link uses your home network. The fallback address is used when the Mac's name "
+                    "doesn't resolve. Devices reachable only over Tailscale need the switch on.", FONT_SMALL, UI_MUTED);
+        break;
+    }
+    case 2: {
         slider_row(c, tr(STR_SET_BRIGHTNESS), 5, 100, g_settings.brightness, bright_cb);
         snprintf(buf, sizeof(buf), "%d°", g_settings.rotation * 90);
         ui_setting_row(c, tr(STR_SET_ROTATION), buf, rot_cb, NULL);
@@ -346,7 +385,7 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         ui_label(c, tr(STR_SET_SCREENSHOT_NOTE), FONT_SMALL, UI_MUTED);
         break;
     }
-    case 2: {
+    case 3: {
         pw_row(c, &k_pw_dim, g_settings.pw_dim_s, NULL);
         pw_row(c, &k_pw_off, g_settings.pw_off_s, NULL);
         ui_switch_row(c, "Sleep on USB power", g_settings.pw_sleep_on_usb, pw_switch_cb, (void *)"sleep-usb");
@@ -367,7 +406,7 @@ static void panel_fill(lv_obj_t *c, unsigned category)
                     "Any key or touch wakes the screen; the key or touch that wakes it is not passed on.", FONT_SMALL, UI_MUTED);
         break;
     }
-    case 3: {
+    case 4: {
         static const struct { str_id_t id; unsigned bit; } sb_items[] = {
             { STR_SB_WIFI, STATUS_WIFI }, { STR_SB_TAILSCALE, STATUS_TAILSCALE },
             { STR_SB_IP, STATUS_IP },     { STR_SB_BATTERY, STATUS_BATTERY },
@@ -380,7 +419,7 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         ui_label(c, tr(STR_SB_NOTE), FONT_SMALL, UI_MUTED);
         break;
     }
-    case 4: {
+    case 5: {
         ui_label(c, tr(STR_GESTURE_NOTE), FONT_SMALL, UI_MUTED);
         snprintf(buf, sizeof(buf), tr(STR_SET_KBD_STATUS), keyboard_present() ? tr(STR_PRESENT) : (keyboard_usb_present() ? "USB" : tr(STR_ABSENT)));
         ui_label(c, buf, FONT_SMALL, UI_MUTED);
@@ -395,17 +434,17 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         lv_obj_set_style_text_color(lv_obj_get_user_data(lc), UI_TEXT, 0);
         break;
     }
-    case 5: {
+    case 6: {
         ui_switch_row(c, tr(STR_CREDS_ON_SD), g_settings.creds_on_sd, creds_sd_cb, NULL);
         ui_label(c, tr(STR_CREDS_NOTE), FONT_SMALL, UI_MUTED);
         if (g_settings.creds_on_sd) ui_setting_row(c, tr(STR_CREDS_RELOAD), "", creds_reload_cb, NULL);
         break;
     }
-    case 6: {
+    case 7: {
         ui_setting_row(c, tr(STR_SET_BACKUP), "", backup_cb, NULL);
         break;
     }
-    case 7: {
+    case 8: {
         snprintf(buf, sizeof(buf), "v%s", sysinfo_app_version());
         ui_setting_row(c, tr(STR_ABOUT), buf, about_cb, NULL);
         ui_button_colored(c, tr(STR_REBOOT), UI_DANGER, reboot_cb, NULL);
