@@ -17,6 +17,7 @@
 #include "sys/sysinfo.h"
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
+#include "net/ts_host.h"
 #include "settings/settings.h"
 #include "sys/power.h"
 #include "sys/checkin.h"
@@ -788,6 +789,23 @@ static void keys_ov_clicked(lv_event_t *e)
     ui_dashboard_keys_overlay(false);
 }
 
+int ui_dashboard_open_test_session(const char *id)
+{
+    /* the same gate as HK_D_OPEN plus the screen: with the dashboard gone, nothing collects the
+       open check's result (Task 2 review I1) */
+    if (!s_scr || s_scr != lv_screen_active() || !s_shown_live || !cc_link_connected()) return UI_DASH_TEST_NOT_SHOWING;
+    for (int i = 0; i < s_n; i++) {
+        const cc_session_t *s = &s_items[i];
+        if (strcmp(s->id, id) != 0) continue;
+        if (strncmp(s->name, "companion-test-", 15) != 0) return UI_DASH_TEST_NO_CARD;   /* only the agent's own test sessions */
+        select_index(i);
+        ESP_LOGI(TAG, "debug: take-over of %s requested", id);
+        open_selected();
+        return UI_DASH_TEST_OK;
+    }
+    return UI_DASH_TEST_NO_CARD;
+}
+
 bool ui_dashboard_keys_overlay_shown(void)
 {
     return s_keys_ov != NULL && s_scr != NULL && lv_obj_get_screen(s_keys_ov) == s_scr;
@@ -997,7 +1015,10 @@ static void update_status(void)
         /* The clock starts once the network could reach the Mac: Tailscale takes about a
            minute to register after boot, and that isn't the Mac's fault. */
         bool wifi = wifi_mgr_is_connected();
-        bool net = wifi && (!g_settings.ts_enable || tailscale_state() == TS_CONNECTED);
+        /* a LAN Mac needs Wi-Fi only, whatever the Tailscale switch says (M9) */
+        char mac[128];
+        bool lan_mac = cc_link_mac_address(mac, sizeof(mac)) && !ts_host_maybe_tailnet(mac);
+        bool net = wifi && (!g_settings.ts_enable || lan_mac || tailscale_state() == TS_CONNECTED);
         if (!net) s_down_since_ms = 0;
         else if (!s_down_since_ms) s_down_since_ms = now;
         if (reconnecting) {

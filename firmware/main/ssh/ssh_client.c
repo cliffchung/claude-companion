@@ -17,7 +17,9 @@
 #include "settings/settings.h"
 #include "nvs.h"
 #include "net/tailscale.h"
+#include "net/ts_host.h"
 #include "ssh/device_key.h"
+#include "sys/link_guard.h"
 
 static const char *TAG = "ssh";
 int libssh_esp32_init(void);
@@ -34,7 +36,30 @@ struct ssh_client {
     char err[160];
     TaskHandle_t task;
     bool ext_stack;     /* created WithCaps (stack in PSRAM) */
+    volatile bool kill;     /* C1: the link is going down: close now (the owner still holds c) */
+    volatile bool closed;   /* the session is disconnected and freed (the object may still live) */
 };
+
+/* C1: the live clients, so a path that takes the link down can close them first (the SSH Terminal and the
+   dashboard's take-over). A client is listed from its start until its task frees it. */
+#define LIVE_MAX 8
+static ssh_client_t *s_live[LIVE_MAX];
+static portMUX_TYPE s_live_mux = portMUX_INITIALIZER_UNLOCKED;
+static void live_add(ssh_client_t *c)
+{
+    bool ok = false;
+    taskENTER_CRITICAL(&s_live_mux);
+    for (int i = 0; i < LIVE_MAX && !ok; i++) if (!s_live[i]) { s_live[i] = c; ok = true; }
+    taskEXIT_CRITICAL(&s_live_mux);
+    if (!ok) ESP_LOGE(TAG, "more than %d SSH clients: this one isn't closed before a link-down", LIVE_MAX);
+}
+static void live_del(ssh_client_t *c)
+{
+    taskENTER_CRITICAL(&s_live_mux);
+    for (int i = 0; i < LIVE_MAX; i++) if (s_live[i] == c) s_live[i] = NULL;
+    taskEXIT_CRITICAL(&s_live_mux);
+}
+#define GONE(c) ((c)->stop || (c)->kill)
 
 static void set_state(ssh_client_t *c, ssh_state_t st, const char *msg)
 {
@@ -118,6 +143,33 @@ bool ssh_known_host_fingerprint(const char *host, int port, char *fp_out, size_t
     return true;
 }
 
+bool ssh_server_key_hash(ssh_session session, uint8_t out[32])
+{
+    ssh_key srv_key = NULL;
+    if (ssh_get_server_publickey(session, &srv_key) != SSH_OK) return false;
+    unsigned char *hash = NULL; size_t hlen = 0;
+    int rc = ssh_get_publickey_hash(srv_key, SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
+    ssh_key_free(srv_key);
+    bool ok = rc == 0 && hlen == 32;
+    if (ok) memcpy(out, hash, 32);
+    ssh_clean_pubkey_hash(&hash);
+    return ok;
+}
+
+kh_pin_t ssh_known_host_hash(const char *host, int port, uint8_t out[32])
+{
+    if (!host || !host[0]) return KH_PIN_NONE;
+    char key[16]; kh_key(host, port, key);
+    void *stored = NULL; size_t slen = 0;
+    kh_pin_t r = kh_read(key, &stored, &slen);
+    if (r == KH_PIN_FOUND) {
+        if (slen == 32) memcpy(out, stored, 32);
+        else r = KH_PIN_READ_FAILED;
+    }
+    free(stored);
+    return r;
+}
+
 bool ssh_known_host_trust(ssh_session session, const char *host, int port)
 {
     ssh_key srv_key = NULL;
@@ -166,15 +218,15 @@ static int verify_host(ssh_client_t *c)
     set_state(c, SSH_ST_HOSTKEY, fp);
     /* read once: ssh_client_stop clears it, and no callback means nobody to ask (reject) */
     ssh_hostkey_cb_t cb = c->hostkey_cb;
-    bool answer = cb && !c->stop && cb(c->p.host, c->p.port, fp, r == KH_CHANGED, c->user);
-    if (kh_accept(r, cb != NULL, answer) && !c->stop && ssh_known_host_trust(c->session, c->p.host, c->p.port)) return 0;
+    bool answer = cb && !GONE(c) && cb(c->p.host, c->p.port, fp, r == KH_CHANGED, c->user);
+    if (kh_accept(r, cb != NULL, answer) && !GONE(c) && ssh_known_host_trust(c->session, c->p.host, c->p.port)) return 0;
     return -1;
 }
 
 /* libssh returns SSH_AUTH_AGAIN while a call is pending (slow relayed links);
  * the *same* call must be repeated until it completes, otherwise the next API
  * fails with "Wrong state during pending SSH call". */
-#define AUTH_RETRY(expr) ({ int _rc; int _n = 0; do { _rc = (expr); if (_rc == SSH_AUTH_AGAIN) vTaskDelay(pdMS_TO_TICKS(100)); } while (_rc == SSH_AUTH_AGAIN && ++_n < 600 && !c->stop); _rc; })
+#define AUTH_RETRY(expr) ({ int _rc; int _n = 0; do { _rc = (expr); if (_rc == SSH_AUTH_AGAIN) vTaskDelay(pdMS_TO_TICKS(100)); } while (_rc == SSH_AUTH_AGAIN && ++_n < 600 && !GONE(c)); _rc; })
 
 static int authenticate(ssh_client_t *c)
 {
@@ -228,6 +280,13 @@ static void ssh_task(void *arg)
     set_state(c, SSH_ST_CONNECTING, NULL);
     c->session = ssh_new();
     if (!c->session) { set_state(c, SSH_ST_ERROR, "Failed to create SSH session"); goto done; }
+    const char *refused = ts_host_term_refusal(c->p.host, tailscale_enabled());
+    if (refused) {
+        /* the switch is off: fail at once, never start Tailscale on our own (spec Goal 5) */
+        ESP_LOGW(TAG, "%s needs Tailscale, which is off", c->p.host);
+        set_state(c, SSH_ST_ERROR, refused);
+        goto done;
+    }
     {
         /* MagicDNS: resolve tailnet peer names from the MicroLink peer list. */
         char ip[16];
@@ -254,15 +313,17 @@ static void ssh_task(void *arg)
         char m[160]; snprintf(m, sizeof(m), "Connect failed: %s", ssh_get_error(c->session));
         set_state(c, SSH_ST_ERROR, m); goto done;
     }
-    if (c->stop) goto done;
+    if (GONE(c)) goto done;
     ESP_LOGI(TAG, "connected; checking host key");
     int hv = verify_host(c);
     if (hv != 0) { set_state(c, SSH_ST_ERROR, hv == -2 ? "Can't read the saved host key; not connecting" : "Host key rejected"); goto done; }
+    if (GONE(c)) goto done;
     set_state(c, SSH_ST_AUTH, NULL);
     if (authenticate(c) != 0) {
         char m[160]; snprintf(m, sizeof(m), "Authentication failed: %s", ssh_get_error(c->session));
         set_state(c, SSH_ST_ERROR, m); goto done;
     }
+    if (GONE(c)) goto done;   /* C1: closed while the auth ran */
     c->channel = ssh_channel_new(c->session);
     if (!c->channel || ssh_channel_open_session(c->channel) != SSH_OK) { set_state(c, SSH_ST_ERROR, "Failed to create SSH channel"); goto done; }
     ssh_channel_request_pty_size(c->channel, "xterm-256color", c->p.cols, c->p.rows);
@@ -274,14 +335,14 @@ static void ssh_task(void *arg)
     ssh_set_blocking(c->session, 0);
 
     uint8_t *buf = malloc(4096);
-    while (!c->stop && ssh_channel_is_open(c->channel) && !ssh_channel_is_eof(c->channel)) {
+    while (!GONE(c) && ssh_channel_is_open(c->channel) && !ssh_channel_is_eof(c->channel)) {
         bool did = false;
         /* outgoing */
         size_t n = 0;
         uint8_t *item = xRingbufferReceiveUpTo(c->tx, &n, 0, 1024);
         if (item) {
             size_t off = 0;
-            while (off < n && !c->stop) {
+            while (off < n && !GONE(c)) {
                 int w = ssh_channel_write(c->channel, item + off, n - off);
                 if (w == SSH_ERROR) break;
                 if (w > 0) off += w; else vTaskDelay(1);
@@ -305,7 +366,7 @@ static void ssh_task(void *arg)
         }
     }
     free(buf);
-    if (c->p.cmd[0] && !c->stop) {
+    if (c->p.cmd[0] && !GONE(c)) {
         /* the exit-status message can trail the EOF a little */
         /* bounded: if the exit-status never comes (link lost at EOF), don't sit on the
            40 s session timeout before returning to the dashboard */
@@ -316,12 +377,18 @@ static void ssh_task(void *arg)
         if (ssh_channel_get_exit_state(c->channel, &code, &sig, &core) == SSH_OK) c->exit_status = (int)code;
         ssh_string_free_char(sig);
     }
-    set_state(c, SSH_ST_CLOSED, c->stop || c->p.cmd[0] ? NULL : "Server closed this connection");
+    if (c->kill && !c->stop) { c->exit_status = -1; set_state(c, SSH_ST_ERROR, "the network is going down"); }
+    else set_state(c, SSH_ST_CLOSED, c->stop || c->p.cmd[0] ? NULL : "Server closed this connection");
 done:
+    if (c->kill && !c->stop && c->state != SSH_ST_ERROR && c->state != SSH_ST_CLOSED)
+        set_state(c, SSH_ST_ERROR, "the network is going down");
     if (c->channel) { ssh_channel_send_eof(c->channel); ssh_channel_close(c->channel); ssh_channel_free(c->channel); }
     if (c->session) { ssh_disconnect(c->session); ssh_free(c->session); }
+    c->closed = true;   /* C1: the Host has seen the close (or there was no session) */
+    if (c->kill) ESP_LOGI(TAG, "closed %s:%d before the link went down", c->p.host, c->p.port);
     /* wait for owner to release */
     while (!c->stop) vTaskDelay(pdMS_TO_TICKS(50));
+    live_del(c);
     vRingbufferDelete(c->tx);
     bool ext = c->ext_stack;
     free(c);
@@ -342,6 +409,7 @@ ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh
     c->tx = xRingbufferCreate(8192, RINGBUF_TYPE_BYTEBUF);
     c->state = SSH_ST_IDLE;
     c->exit_status = -1;
+    live_add(c);
     /* Internal RAM is tight with the companion link's own SSH task running, and it is
        fragmented: fall back to a PSRAM stack (allowed by SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY).
        A task on a PSRAM stack must never run with the cache disabled. Flash reads (NVS host
@@ -356,6 +424,7 @@ ssh_client_t *ssh_client_start(const ssh_params_t *p, ssh_data_cb_t data_cb, ssh
         if (xTaskCreatePinnedToCoreWithCaps(ssh_task, "ssh", 24576, c, 5, &c->task, 1,
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
             ESP_LOGE(TAG, "no memory for the SSH task");
+            live_del(c);
             vRingbufferDelete(c->tx); free(c); return NULL;
         }
         ESP_LOGI(TAG, "SSH task stack in PSRAM");
@@ -386,3 +455,48 @@ void ssh_client_stop(ssh_client_t *c)
 ssh_state_t ssh_client_state(ssh_client_t *c) { return c ? c->state : SSH_ST_IDLE; }
 const char *ssh_client_error(ssh_client_t *c) { return c ? c->err : ""; }
 int ssh_client_exit_status(ssh_client_t *c) { return c ? c->exit_status : -1; }
+
+/* ---- C1: close before the link goes down ---- */
+
+static bool on_tailnet(const ssh_client_t *c)
+{
+    return tailscale_is_tailnet_ip(c->p.host) || ts_host_needs_tailscale(c->p.host);
+}
+
+/* Asks every live client (tailnet_only: those to a tailnet host) to close. Their tasks disconnect within
+   one 20 ms select; a connect or a host-key prompt in progress closes once it returns. */
+static bool lg_term_close(bool tailnet_only, void *ctx)
+{
+    (void)ctx;
+    int n = 0;
+    taskENTER_CRITICAL(&s_live_mux);
+    for (int i = 0; i < LIVE_MAX; i++) {
+        ssh_client_t *c = s_live[i];
+        if (c && !c->closed && (!tailnet_only || on_tailnet(c))) { c->kill = true; n++; }
+    }
+    taskEXIT_CRITICAL(&s_live_mux);
+    if (n) ESP_LOGI(TAG, "closing %d SSH terminal session%s before the link goes down", n, n == 1 ? "" : "s");
+    return false;   /* nothing to reopen: a closed terminal stays closed */
+}
+
+static bool lg_term_idle(bool tailnet_only, void *ctx)
+{
+    (void)ctx; (void)tailnet_only;
+    bool idle = true;
+    taskENTER_CRITICAL(&s_live_mux);
+    for (int i = 0; i < LIVE_MAX && idle; i++) {
+        ssh_client_t *c = s_live[i];
+        if (c && c->kill && !c->closed) idle = false;   /* asked to close and not yet disconnected */
+    }
+    taskEXIT_CRITICAL(&s_live_mux);
+    return idle;
+}
+
+void ssh_client_guard_init(void)
+{
+    static bool done;
+    if (done) return;
+    done = true;
+    static const lg_closer_t closer = { "ssh_terminal", lg_term_close, lg_term_idle, NULL, NULL };
+    lg_register(&closer);
+}

@@ -61,6 +61,7 @@ void hibernate_probe_test_set(uint32_t s, uint32_t n);
 #define HIB_DBG_STAY_AWAKE   1   /* a re-hibernate result stays awake, so the console comes back */
 #define HIB_DBG_FORCE_KEEP   2   /* the keyboard-rail-survives branch, whatever Task 6 found */
 #define HIB_DBG_FORCE_NOKEEP 4   /* the stay-in-Deep-idle branch */
+#define HIB_DBG_AS_BATTERY   8   /* Plan 3 Task 2 timing: on USB, check in as on battery (no full wake) */
 void hibernate_set_debug_next(uint8_t flags);
 uint8_t hibernate_boot_debug(void);          /* this boot's flags */
 /* I3: the keyboard light last written before this boot's sleep (kept in the "hib" record), so a check-in

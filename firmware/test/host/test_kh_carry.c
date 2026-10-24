@@ -1,0 +1,93 @@
+#include "unity.h"
+#include "companion/kh_carry.h"
+
+void setUp(void) {}
+void tearDown(void) {}
+
+/* A LAN pin exists: the caller uses the normal check, whatever the tailnet pin says. */
+static void test_lan_pinned_uses_normal_check(void)
+{
+    TEST_ASSERT_EQUAL(KHC_NORMAL, kh_carry_decide(true, true, true));
+    TEST_ASSERT_EQUAL(KHC_NORMAL, kh_carry_decide(true, true, false));
+    TEST_ASSERT_EQUAL(KHC_NORMAL, kh_carry_decide(true, false, false));
+}
+
+/* No LAN pin, and the key equals the same entry's tailnet pin: pinned without asking. */
+static void test_tailnet_pin_equal_pins_silently(void)
+{
+    TEST_ASSERT_EQUAL(KHC_PIN_SILENT, kh_carry_decide(false, true, true));
+}
+
+/* No LAN pin, and the key differs from the tailnet pin: refused as a changed key. */
+static void test_tailnet_pin_differs_refuses(void)
+{
+    TEST_ASSERT_EQUAL(KHC_REFUSE, kh_carry_decide(false, true, false));
+}
+
+/* No pin anywhere: unknown, never trusted on first use by the link. */
+static void test_no_tailnet_pin_is_unknown(void)
+{
+    TEST_ASSERT_EQUAL(KHC_UNKNOWN, kh_carry_decide(false, false, false));
+    TEST_ASSERT_EQUAL(KHC_UNKNOWN, kh_carry_decide(false, false, true));   /* "equal" to nothing means nothing */
+}
+
+/* ---- kh_carry_action: the whole decision connect_once makes (M10) ---- */
+
+/* A LAN address that has its own pin: the normal check, whatever else is true. */
+static void test_action_lan_pin_found_is_normal(void)
+{
+    const kh_result_t r[] = { KH_OK, KH_CHANGED, KH_ERROR, KH_PIN_ERROR };
+    for (unsigned i = 0; i < 4; i++) {
+        TEST_ASSERT_EQUAL(KHA_NORMAL, kh_carry_action(r[i], false, false, KHS_EQUAL));
+        TEST_ASSERT_EQUAL(KHA_NORMAL, kh_carry_action(r[i], false, true, KHS_NONE));
+        TEST_ASSERT_EQUAL(KHA_NORMAL, kh_carry_action(r[i], true, false, KHS_DIFFERENT));
+    }
+}
+
+/* First contact on a tailnet address pins as in Plan 2; so does any address after the user's forget. */
+static void test_action_pin_new(void)
+{
+    TEST_ASSERT_EQUAL(KHA_PIN_NEW, kh_carry_action(KH_UNKNOWN, true, false, KHS_NONE));
+    TEST_ASSERT_EQUAL(KHA_PIN_NEW, kh_carry_action(KH_UNKNOWN, true, false, KHS_DIFFERENT));
+    TEST_ASSERT_EQUAL(KHA_PIN_NEW, kh_carry_action(KH_UNKNOWN, false, true, KHS_NONE));
+    TEST_ASSERT_EQUAL(KHA_PIN_NEW, kh_carry_action(KH_UNKNOWN, false, true, KHS_DIFFERENT));
+    TEST_ASSERT_EQUAL(KHA_PIN_NEW, kh_carry_action(KH_UNKNOWN, false, true, KHS_ERROR));
+}
+
+/* A LAN address with no pin and no forget: only an identical key carries over. */
+static void test_action_lan_unknown(void)
+{
+    TEST_ASSERT_EQUAL(KHA_PIN_SILENT, kh_carry_action(KH_UNKNOWN, false, false, KHS_EQUAL));
+    TEST_ASSERT_EQUAL(KHA_REFUSE_CHANGED, kh_carry_action(KH_UNKNOWN, false, false, KHS_DIFFERENT));
+    TEST_ASSERT_EQUAL(KHA_REFUSE_UNKNOWN, kh_carry_action(KH_UNKNOWN, false, false, KHS_NONE));
+    TEST_ASSERT_EQUAL(KHA_PIN_ERROR, kh_carry_action(KH_UNKNOWN, false, false, KHS_ERROR));
+}
+
+/* Nothing but PIN_NEW and PIN_SILENT ever pins, and PIN_SILENT needs an identical key. */
+static void test_action_never_trusts_more(void)
+{
+    const kh_result_t r[] = { KH_OK, KH_UNKNOWN, KH_CHANGED, KH_ERROR, KH_PIN_ERROR };
+    const khs_t c[] = { KHS_NONE, KHS_EQUAL, KHS_DIFFERENT, KHS_ERROR };
+    for (unsigned i = 0; i < 5; i++)
+        for (int t = 0; t < 2; t++)
+            for (int f = 0; f < 2; f++)
+                for (unsigned k = 0; k < 4; k++) {
+                    kha_t a = kh_carry_action(r[i], t, f, c[k]);
+                    if (a == KHA_PIN_SILENT) TEST_ASSERT_TRUE(r[i] == KH_UNKNOWN && !t && !f && c[k] == KHS_EQUAL);
+                    if (a == KHA_PIN_NEW) TEST_ASSERT_TRUE(r[i] == KH_UNKNOWN && (t || f));
+                }
+}
+
+int main(void)
+{
+    UNITY_BEGIN();
+    RUN_TEST(test_action_lan_pin_found_is_normal);
+    RUN_TEST(test_action_pin_new);
+    RUN_TEST(test_action_lan_unknown);
+    RUN_TEST(test_action_never_trusts_more);
+    RUN_TEST(test_lan_pinned_uses_normal_check);
+    RUN_TEST(test_tailnet_pin_equal_pins_silently);
+    RUN_TEST(test_tailnet_pin_differs_refuses);
+    RUN_TEST(test_no_tailnet_pin_is_unknown);
+    return UNITY_END();
+}

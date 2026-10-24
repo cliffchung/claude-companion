@@ -218,6 +218,25 @@ static void test_boot_on_battery_is_unknown_until_decided(void)
     TEST_ASSERT_EQUAL_INT(PWR_USB_STANDBY, vitals_src_step(&f, 7600, 300));
 }
 
+/* Plan 3 L43 (review I1): a Hibernate check-in boot starts with the source unknown, and USB with the pack
+   supplementing the boot load gives up to 9 battery-like samples in a row between charge pauses. The
+   check-in's settle must never call that battery: the full VITALS_BATT_SAMPLES rule holds from a cold start,
+   so the gate sees USB (wake fully, PT28 I2) and never GO or LOW on a plugged-in device. */
+static void test_checkin_boot_usb_supplementing_not_battery(void)
+{
+    vitals_src_t st = { 0 };   /* as after every cold boot, a check-in boot included */
+    for (int round = 0; round < 10; round++) {
+        for (int i = 0; i < VITALS_BATT_SAMPLES - 1; i++)
+            TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, vitals_src_step(&st, 7800, 150 + 30 * i));
+        TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, vitals_src_step(&st, 7800, -120));   /* a charge pause */
+    }
+    TEST_ASSERT_EQUAL_INT(PWR_USB_CHARGING, st.src);
+    /* the early burst alone (the first seconds: C6 boot and join) is still unknown, not battery */
+    vitals_src_t b = { 0 };
+    TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, feed(&b, 3, 7800, 400));
+    TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, feed(&b, VITALS_BATT_SAMPLES - 4, 7800, 400));
+}
+
 static void test_settings_clamps(void)
 {
     TEST_ASSERT_EQUAL_INT(0, vitals_clamp_or_zero(0, 15, 720));
@@ -310,6 +329,7 @@ int main(void)
     RUN_TEST(test_src_boundaries);
     RUN_TEST(test_full_pack_on_usb_under_load_is_not_battery);
     RUN_TEST(test_boot_on_battery_is_unknown_until_decided);
+    RUN_TEST(test_checkin_boot_usb_supplementing_not_battery);
     RUN_TEST(test_settings_clamps);
     return UNITY_END();
 }

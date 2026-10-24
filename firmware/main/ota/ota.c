@@ -1,3 +1,4 @@
+#include "sys/link_down.h"
 #include "ota.h"
 #include <stdio.h>
 #include <string.h>
@@ -168,7 +169,7 @@ bool ota_install_via_updater(const char *sha256, char *err, size_t err_cap)
     if (esp_ota_set_boot_partition(p) != ESP_OK) { snprintf(err, err_cap, "Switch updater failed"); return false; }
     ESP_LOGI(TAG, "rebooting into updater");
     sd_unmount();
-    esp_restart();
+    link_down_restart("into the updater");
     return true;
 }
 

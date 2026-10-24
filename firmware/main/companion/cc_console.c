@@ -8,8 +8,17 @@
 #include "esp_heap_caps.h"
 #include "sys/debug_console.h"
 #include "net/wifi_mgr.h"
+#include "net/tailscale.h"
+#include "ui/ui.h"
+#include "ui/ui_dashboard.h"
+#include "net/ts_host.h"
+#include "net/fast_rules.h"
+#include "esp_netif.h"
+#include "ssh/ssh_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-/* Console commands for the companion link: companion, sessions, reply, logs, wifi.
+/* Console commands for the companion link: companion, sessions, reply, logs, wifi, ts.
  * Everything that reaches the Mac goes through cc_link and a cc_cmd_* builder. */
 
 #define SNAP_CAP 128
@@ -41,6 +50,15 @@ static char *join_args(int argc, char **argv, int from)
     return s;
 }
 
+static char s_takeover_id[16];
+static void takeover_async(void *arg)
+{
+    (void)arg;
+    int r = ui_dashboard_open_test_session(s_takeover_id);
+    if (r == UI_DASH_TEST_NOT_SHOWING) printf("takeover: dashboard not showing\n");
+    else if (r != UI_DASH_TEST_OK) printf("takeover: no companion-test-* card %s on the dashboard\n", s_takeover_id);
+}
+
 static int cmd_companion(int argc, char **argv)
 {
     if (argc >= 3 && strcmp(argv[1], "host") == 0) {
@@ -69,6 +87,55 @@ static int cmd_companion(int argc, char **argv)
         printf("%s\n", cc_watch_status_text(st, sizeof(st)));
         char fp[80];
         printf("host key: %s\n", cc_link_pinned_fingerprint(fp, sizeof(fp)) ? fp : "none pinned");
+        char path[40], fb[16], ts[16];
+        cc_link_mac_path(path, sizeof(path));
+        cc_link_lan_fallback(fb, sizeof(fb));
+        cc_link_tailnet_pin_source(ts, sizeof(ts));
+        printf("path: %s (fallback %s; tailnet pin source %s; Tailscale %s)\n", path, fb[0] ? fb : "none",
+               ts[0] ? ts : "none", tailscale_enabled() ? "on" : "off");
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "takeover") == 0) {
+        /* debug: open a companion-test-* session's take-over the way Ctrl+O does, for the timing */
+        if (!cc_id_valid(argv[2])) { printf("takeover: bad id\n"); return 1; }
+        strlcpy(s_takeover_id, argv[2], sizeof(s_takeover_id));
+        ui_async(takeover_async, NULL);
+        printf("takeover: opening %s (companion-test-* only)\n", argv[2]);
+        return 0;
+    }
+    if (argc == 4 && strcmp(argv[1], "hostcache") == 0 && strcmp(argv[2], "set") == 0) {
+        printf("hostcache: %s\n", cc_link_host_cache_test_set(argv[3]) ? "set (RAM only; reconnect to use it)" : "refused");
+        return 0;
+    }
+    if ((argc == 2 || argc == 3) && strcmp(argv[1], "hostcache") == 0) {
+        if (argc == 3 && strcmp(argv[2], "on") == 0) cc_link_host_cache_enable(true);
+        else if (argc == 3 && strcmp(argv[2], "off") == 0) cc_link_host_cache_enable(false);
+        else if (argc == 3 && strcmp(argv[2], "clear") == 0) cc_link_host_cache_clear();
+        else if (argc == 3) return 1;
+        char t[200];
+        cc_link_host_cache_text(t, sizeof(t));
+        printf("%s\n", t);
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "resolve") == 0) {
+        /* how the link would resolve a Mac host: literal, MagicDNS, mDNS, DNS or the fallback */
+        char ip[16];
+        const char *how = "";
+        if (cc_link_resolve_test(argv[2], ip, sizeof(ip), &how)) printf("mac: %s -> %s (%s)\n", argv[2], ip, how);
+        else printf("mac: %s doesn't resolve (no fallback address)\n", argv[2]);
+        return 0;
+    }
+    if ((argc == 3 || argc == 4) && strcmp(argv[1], "server-host") == 0) {
+        esp_err_t e = cc_link_set_server_host(argv[2], argc == 4 ? argv[3] : NULL);
+        if (e == ESP_ERR_INVALID_ARG) {
+            printf("companion: rejected: the host has no spaces; the fallback is a private IPv4 address or none\n");
+            return 1;
+        }
+        if (e == ESP_ERR_INVALID_STATE) { printf("No Host set up\n"); return 1; }
+        if (e != ESP_OK) { printf("companion: the server list didn't save\n"); return 1; }
+        char fb[16];
+        cc_link_lan_fallback(fb, sizeof(fb));
+        printf("companion: Host entry host %s, fallback %s; reconnecting\n", argv[2], fb[0] ? fb : "none");
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "watch") == 0) {
@@ -91,13 +158,13 @@ static int cmd_companion(int argc, char **argv)
         esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
         if (e == ESP_OK) printf("New Mac key pinned: %s\n", fp);
         else if (e == ESP_ERR_TIMEOUT) printf("Old key forgotten; reconnecting...\n");
-        else printf("No Mac set up\n");
+        else printf("No Host set up\n");
         return e == ESP_OK || e == ESP_ERR_TIMEOUT ? 0 : 1;
     }
     if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "corrupt") == 0) {
         /* debug: shows the changed-key path without touching the Mac */
         char hp[160];
-        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No Mac set up\n"); return 1; }
+        if (cc_link_debug_corrupt_host_key(hp, sizeof(hp)) != ESP_OK) { printf("No Host set up\n"); return 1; }
         printf("debug: host key pin for %s overwritten; reconnecting\n", hp);
         return 0;
     }
@@ -114,6 +181,7 @@ static int cmd_companion(int argc, char **argv)
         return 0;
     }
     printf("usage: companion host <server name> | companion claude-path <path> | companion status |\n"
+           "       companion server-host <host> [fallback-ip|none] | companion resolve <host> |\n"
            "       companion watch on|off|status|test-fallback | companion hostkey forget|corrupt |\n"
            "       companion kick on|off | companion reconnect-log\n");
     return 1;
@@ -243,23 +311,88 @@ static int cmd_wifi(int argc, char **argv)
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "status") == 0) {
-        char rc[96];
+        char rc[96], ip[20];
         wifi_mgr_reconnect_text(rc, sizeof(rc));
-        printf("wifi: %s %s; %s\n", wifi_mgr_is_connected() ? "connected" : "not connected", wifi_mgr_ssid(), rc);
+        wifi_mgr_get_ip4(ip, sizeof(ip));
+        wifi_static_ip_t sip;
+        bool st = wifi_mgr_static_ip_get(&sip);
+        printf("wifi: %s %s %s (ch %d, rssi %d); %s; address %s\n", wifi_mgr_is_connected() ? "connected" : "not connected",
+               wifi_mgr_ssid(), ip, wifi_mgr_channel(), wifi_mgr_rssi(), rc, st ? "static" : "dhcp");
         return 0;
     }
-    printf("usage: wifi leave | wifi join [ssid] | wifi status | wifi test drop   (join uses the saved password)\n");
+    if (argc == 2 && strcmp(argv[1], "static") == 0) {
+        wifi_static_ip_t cur;
+        bool on = wifi_mgr_static_ip_get(&cur);
+        esp_ip4_addr_t a = { cur.ip }, m = { cur.mask }, g = { cur.gw }, d = { cur.dns };
+        printf("wifi static: %s " IPSTR " / " IPSTR " gw " IPSTR " dns " IPSTR " (one address for every network)\n",
+               on ? "on" : "off", IP2STR(&a), IP2STR(&m), IP2STR(&g), IP2STR(&d));
+        return 0;
+    }
+    if ((argc == 4 || argc == 5) && strcmp(argv[1], "static") == 0) {
+        /* wifi static <ip/prefix> <gateway> [dns]: the Settings row's rules (sip_parse), review m3 */
+        char line[80];
+        snprintf(line, sizeof(line), "%s %s%s%s", argv[2], argv[3], argc == 5 ? " " : "", argc == 5 ? argv[4] : "");
+        sip_t p;
+        if (!sip_parse(line, &p)) {
+            printf("wifi static: use <address/prefix> <gateway> [dns], like 192.168.1.50/24 192.168.1.1\n");
+            return 1;
+        }
+        wifi_static_ip_t st = { .on = 1, .ip = p.ip, .mask = p.mask, .gw = p.gw, .dns = p.dns };
+        printf("wifi static: %s\n", wifi_mgr_static_ip_set(&st) ? "on (from the next join)" : "not saved");
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "static") == 0 && strcmp(argv[2], "off") == 0) {
+        /* review N2: a failed save leaves the static address on: say so */
+        bool ok = wifi_mgr_static_ip_set(NULL);
+        printf("wifi static: %s\n", ok ? "off (from the next join)" : "not saved (still on)");
+        return ok ? 0 : 1;
+    }
+    printf("usage: wifi leave | wifi join [ssid] | wifi status | wifi test drop | "
+           "wifi static [off | <ip/prefix> <gw> [dns]]   (join uses the saved password)\n");
     return 1;
+}
+
+/* `ts term-test <tailnet host>`: prints the SSH terminal's refusal for a tailnet host with the switch off.
+   Ruling L48 (final review M2): it runs only the client's pure first check (ts_host_term_refusal, the same
+   call ssh_task makes before any socket) and starts no client, so no command line reaches any host. */
+static int ts_term_test(const char *host)
+{
+    const char *refused = ts_host_term_refusal(host, tailscale_enabled());
+    if (!refused) {
+        printf("ts term-test: only for a tailnet host with the switch off\n");
+        return 1;
+    }
+    printf("ts term-test %s: error: %s\n", host, refused);
+    return 0;
+}
+
+/* The Tailscale switch: saved at once, sticky across every boot and wake. */
+static int cmd_ts(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "term-test") == 0) return ts_term_test(argv[2]);
+    if (argc == 2 && (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "off") == 0)) {
+        tailscale_set_enabled(strcmp(argv[1], "on") == 0);
+    } else if (argc != 1 && !(argc == 2 && strcmp(argv[1], "status") == 0)) {
+        printf("usage: ts on | ts off | ts [status] | ts term-test <tailnet host> (switch off only)\n");
+        return 1;
+    }
+    const char *ip = tailscale_vpn_ip();
+    printf("ts: %s (%s%s%s)\n", tailscale_enabled() ? "on" : "off", tailscale_state_text(), ip[0] ? " " : "", ip);
+    /* what MicroLink costs: compare with the switch off and on */
+    printf("heap: internal free %u B, min %u B, largest %u B\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    return 0;
 }
 
 void cc_console_init(void)
 {
     const esp_console_cmd_t cmds[] = {
-        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug) | kick on|off | reconnect-log", .func = cmd_companion },
+        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | server-host <host> [fallback-ip|none] | resolve <host> | hostcache [on|off|clear|set <ip>] | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug) | kick on|off | reconnect-log", .func = cmd_companion },
         { .command = "sessions", .help = "List Claude sessions from the last poll: <STATE> <id> <repo> <name>", .func = cmd_sessions },
         { .command = "reply", .help = "reply <id> <text...>: type a quick answer into a running background session", .func = cmd_reply },
         { .command = "logs", .help = "logs <id>: recent output of a session, ANSI stripped", .func = cmd_logs },
         { .command = "wifi", .help = "wifi leave | wifi join [ssid] | wifi status | wifi test drop (debug)", .func = cmd_wifi },
+        { .command = "ts", .help = "ts on | ts off | ts [status] | ts term-test <host>: the Tailscale switch (saved; sticky across boots and wakes)", .func = cmd_ts },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) debug_console_register(&cmds[i]);
 }

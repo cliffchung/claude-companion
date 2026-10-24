@@ -11,6 +11,7 @@
 #include "settings/settings.h"
 #include "companion/cc_cmd.h"
 #include "companion/cc_link.h"
+#include "net/ts_host.h"
 #include "sys/power.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -477,6 +478,19 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
         lv_async_call(back_async, NULL);
         return ui_screen_base();
     }
+    /* Plan 3 (L25): a take-over of the companion's host connects to the address the link resolved and pinned
+       (mDNS, DNS or the fallback), so it meets the link's pin and never asks about a key the link already
+       trusts (pins are per address, P76). Review M6: only an address whose key the link checked and
+       authenticated on; none yet (a reconnect in progress, a refusal) refuses the take-over. */
+    char verified[128] = "";
+    if (cmd && cc_link_is_companion_server(idx) &&
+        !(cc_link_verified_address(verified, sizeof(verified)) && ts_host_is_ipv4(verified))) {
+        ESP_LOGW(TAG, "take-over refused: the link hasn't verified the Host's address yet");
+        ui_toast("The Host link isn't verified yet; try again in a moment");
+        if (cmd->on_close) cmd->on_close(cmd->ctx);
+        lv_async_call(back_async, NULL);
+        return ui_screen_base();
+    }
     term_ctx_t *c = calloc(1, sizeof(*c));
     s_ctx = c;
     c->server_idx = idx;
@@ -530,6 +544,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
 
     ssh_params_t p = { 0 };
     strlcpy(p.host, s->host, sizeof(p.host)); p.port = s->port;
+    if (verified[0]) strlcpy(p.host, verified, sizeof(p.host));   /* the take-over: see above (L25, M6) */
     strlcpy(p.user, s->user, sizeof(p.user)); strlcpy(p.pass, s->pass, sizeof(p.pass));
     strlcpy(p.keypath, s->keypath, sizeof(p.keypath)); p.use_key = s->use_key;
     p.cols = cols; p.rows = rows;

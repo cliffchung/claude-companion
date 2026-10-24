@@ -10,11 +10,14 @@
 #include "settings/settings.h"
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
+#include "net/ts_host.h"
 #include "companion/cc_link.h"
 #include "input/keyboard.h"
 #include "sys/sysinfo.h"
 #include "sys/power.h"
 #include "sys/hibernate.h"
+#include "sys/boot_phase.h"
+#include "sys/link_guard.h"
 
 static const char *TAG = "checkin";
 
@@ -41,10 +44,12 @@ static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
 /* ---- records: `power checkins`, NVS ns "power" key "chk" ------------------ */
 
-typedef enum { P_HANDSHAKE, P_REBIND, P_FAILED, P_HIB_HANDSHAKE, P_HIB_REBIND, P_HIB_FAILED, P_HIB_LOW, P_HIB_USB } ck_path_t;
+/* P_LAN, P_HIB_LAN (Plan 3): no tunnel; appended so saved records keep their meaning */
+typedef enum { P_HANDSHAKE, P_REBIND, P_FAILED, P_HIB_HANDSHAKE, P_HIB_REBIND, P_HIB_FAILED, P_HIB_LOW, P_HIB_USB,
+               P_LAN, P_HIB_LAN } ck_path_t;
 static const char *const k_path[] = { "handshake", "rebind", "failed", "hib-handshake", "hib-rebind", "hib-failed", "hib-low",
-                                      "hib-usb" };
-#define K_PATH_N 8
+                                      "hib-usb", "lan", "hib-lan" };
+#define K_PATH_N 10
 typedef struct { uint32_t epoch, ms, mwh_x1000; uint8_t path, tag, needs, pad; } ck_rec_t;
 typedef struct { uint8_t ver, n, head, pad; ck_rec_t r[CHK_N]; } ck_log_t;
 #define CHK_VER 1
@@ -204,26 +209,49 @@ static bool want_parked(power_state_t st)
     return false;
 }
 
+/* Task 3: 20 ms steps (each step past the event is awake time on a check-in boot) */
 static bool wait_for(bool (*cond)(void), int ms)
 {
-    for (int64_t end = now_ms() + ms; !cond(); vTaskDelay(pdMS_TO_TICKS(200)))
+    int step = (boot_phase_exp() & BPX_SLOW_WAITS) ? 200 : 20;
+    for (int64_t end = now_ms() + ms; !cond(); vTaskDelay(pdMS_TO_TICKS(step)))
         if (now_ms() >= end) return false;
     return true;
 }
 
 static bool wifi_up(void) { return wifi_mgr_is_connected(); }
 static bool link_up(void) { return cc_link_connected(); }
-static bool link_down(void) { return !cc_link_connected(); }
 static bool judged(void) { return power_state() < PS_OFF || power_results_judged(); }
 
 /* Steps 4-5: SSH, then one plain poll. A handshake path counts only once SSH works: a stale keypair can
    report the peer up, so a failed connect after a handshake escalates to a rebind. */
+/* Plan 3: a check-in brings the tunnel up only with the switch on and a Mac host that may be on the
+   tailnet. A LAN address or a .local name goes straight to the link and the poll: no connect wait, no
+   handshake, no rebind. */
+static bool needs_tunnel(const char *mac)
+{
+    return tailscale_enabled() && ts_host_maybe_tailnet(mac);
+}
+
+static ts_checkin_t tunnel(const char *mac, bool rebind)
+{
+    if (!tailscale_enabled() && ts_host_needs_tailscale(mac)) {
+        /* the Mac entry is still a tailnet host: no link can come up, so don't wait for one */
+        ESP_LOGW(TAG, "tunnel: the Host (%s) needs Tailscale, which is off", mac);
+        return TS_CHECKIN_FAILED;
+    }
+    if (!needs_tunnel(mac)) {
+        ESP_LOGI(TAG, "tunnel: skipped (%s)", tailscale_enabled() ? "the Host is on the LAN" : "Tailscale is off");
+        return TS_CHECKIN_SKIPPED;
+    }
+    return tailscale_checkin(mac, rebind, NULL);
+}
+
 static ts_checkin_t link_and_poll(const char *mac, ts_checkin_t ts, int link_ms, bool *poll_ok)
 {
     *poll_ok = false;
     cc_link_park(false);
     bool up = wait_for(link_up, link_ms);
-    if (!up && ts == TS_CHECKIN_HANDSHAKE) {
+    if (!up && ts == TS_CHECKIN_HANDSHAKE && needs_tunnel(mac)) {
         ESP_LOGW(TAG, "handshake but no SSH in %d ms: rebinding", link_ms);
         ts = tailscale_checkin(mac, true, NULL);
         if (ts != TS_CHECKIN_FAILED) {
@@ -233,14 +261,18 @@ static ts_checkin_t link_and_poll(const char *mac, ts_checkin_t ts, int link_ms,
     }
     if (!up) return TS_CHECKIN_FAILED;
     *poll_ok = cc_link_poll_now(POLL_MS) == ESP_OK;
+    boot_phase_mark(BP_POLL);
     return ts;
 }
 
 static void park_now(void)
 {
     cc_link_park(true);
-    wait_for(link_down, 2000);   /* the SSH close goes out before the radio stops */
+    /* the SSH close goes out before the radio stops (final review C1/I1: the link and any terminal, and a
+       connect in flight too); the radio park keeps the link parked after the guard's reopen */
+    lg_token_t lt = lg_close(false, LG_CLOSE_MS);
     bool ok = wifi_mgr_park();
+    lg_reopen(lt);
     s_parked = true;
     ESP_LOGI(TAG, "radio parked: park mode %s%s", wifi_mgr_park_mode(), ok ? "" : " (the park failed: radio may be on)");
 }
@@ -258,7 +290,7 @@ static ts_checkin_t bring_up(bool rebind, bool *poll_ok, int64_t t0)
         return TS_CHECKIN_FAILED;
     }
     if (!cc_link_mac_address(mac, sizeof(mac))) return TS_CHECKIN_FAILED;
-    ts_checkin_t ts = tailscale_checkin(mac, rebind, NULL);
+    ts_checkin_t ts = tunnel(mac, rebind);
     ESP_LOGI(TAG, "tunnel: %s at %lld ms", tailscale_checkin_name(ts), (long long)(now_ms() - t0));
     if (ts == TS_CHECKIN_FAILED) return ts;
     return link_and_poll(mac, ts, LINK_WAIT_MS, poll_ok);
@@ -276,7 +308,7 @@ static void job_checkin(void)
     bool poll_ok;
     ts_checkin_t ts = bring_up(s_arg_rebind, &poll_ok, t0);
     if (poll_ok) wait_for(judged, JUDGED_WAIT_MS);
-    ck_path_t path = !poll_ok ? P_FAILED : ts == TS_CHECKIN_REBIND ? P_REBIND : P_HANDSHAKE;
+    ck_path_t path = !poll_ok ? P_FAILED : ts == TS_CHECKIN_REBIND ? P_REBIND : ts == TS_CHECKIN_SKIPPED ? P_LAN : P_HANDSHAKE;
     bool needs = poll_ok && power_needs_you();
     record(path, (uint32_t)(now_ms() - t0), needs);
     if (want_parked(power_state())) {
@@ -317,8 +349,12 @@ static void hib_watch_back(void)
     cc_link_watch_resume(true);
 }
 
+/* Task 3: the check-in boot's radio without modem sleep (checkin_init) ends here unless it goes down */
+static void ps_release(void) { wifi_mgr_ps_hold_none(false); }
+
 static void give_up(const char *why)
 {
+    ps_release();
     ESP_LOGE(TAG, "hibernate check-in: %s: back to the normal ladder", why);
     s_hib_settled = true;
     s_hold = false;
@@ -331,6 +367,7 @@ static void give_up(const char *why)
    (on USB it never hibernates, and a needs-you wakes the screen again) */
 static void wake_fully(const char *why)
 {
+    ps_release();
     ESP_LOGI(TAG, "hibernate check-in: %s: waking fully", why);
     s_hib_settled = true;
     s_hold = false;
@@ -389,6 +426,10 @@ static void job_hib(void)
     ESP_LOGI(TAG, "hibernate check-in: source %s, %d%% at %lld ms: %s",
              src == PR_SRC_BATTERY ? "battery" : src == PR_SRC_USB ? "usb" : "unknown", pct, (long long)now_ms(),
              gate == PR_HG_GO ? "go" : gate == PR_HG_LOW ? "battery low" : gate == PR_HG_WAKE ? "wake" : "give up");
+    if (gate == PR_HG_WAKE && (dbg & HIB_DBG_AS_BATTERY)) {
+        ESP_LOGW(TAG, "debug: on USB, checking in as on battery (timing)");
+        gate = PR_HG_GO;
+    }
     if (gate == PR_HG_WAKE) {
         record(P_HIB_USB, (uint32_t)now_ms(), false);
         wake_fully("on USB");
@@ -411,7 +452,7 @@ static void job_hib(void)
     int64_t left = end - now_ms();
     if (wait_for(wifi_up, left < HIB_WIFI_WAIT_MS ? (int)left : HIB_WIFI_WAIT_MS) && !hib_abandoned() &&
         cc_link_mac_address(mac, sizeof(mac))) {
-        ts = tailscale_checkin(mac, false, NULL);
+        ts = tunnel(mac, false);
         left = end - now_ms();
         if (ts != TS_CHECKIN_FAILED && !hib_abandoned() && left > 0)
             ts = link_and_poll(mac, ts, left < HIB_LINK_WAIT_MS ? (int)left : HIB_LINK_WAIT_MS, &poll_ok);
@@ -419,11 +460,12 @@ static void job_hib(void)
     if (hib_abandoned()) { s_hib_settled = true; return; }
     if (poll_ok) {
         wait_for(judged, JUDGED_WAIT_MS);
+        boot_phase_mark(BP_JUDGED);
         needs = power_needs_you();
     }
     bool late = now_ms() > end;
     if (late) poll_ok = false;   /* out of time: hibernate anyway, recorded as failed */
-    ck_path_t path = !poll_ok ? P_HIB_FAILED : ts == TS_CHECKIN_REBIND ? P_HIB_REBIND : P_HIB_HANDSHAKE;
+    ck_path_t path = !poll_ok ? P_HIB_FAILED : ts == TS_CHECKIN_REBIND ? P_HIB_REBIND : ts == TS_CHECKIN_SKIPPED ? P_HIB_LAN : P_HIB_HANDSHAKE;
     if (power_battery_low()) path = P_HIB_LOW;
     record(path, (uint32_t)now_ms(), poll_ok && needs);
     bool kbd = hibernate_kbd_rail_survives();
@@ -440,15 +482,27 @@ static void job_hib(void)
            `power checkin hibernate 2` (HIB_DBG_FORCE_NOKEEP) */
         s_hib_settled = true;
         hib_watch_back();
+        ps_release();
         s_hold = true;
         s_hold_gen = cc_poll_generation();
         s_hold_gen_ms = now_ms();
         power_go(PS_DEEP_IDLE);   /* pinned: the ladder keeps only its low-battery trigger (checkin_hib_hold) */
         return;
     }
+    if ((dbg & HIB_DBG_STAY_AWAKE) && boot_phase_chain_take()) {
+        /* debug chain (`... chain <n>`, Task 3 timing): down again with the test timer, same flags */
+        ESP_LOGW(TAG, "debug: would %s; chain: down again with a %d s wake", names[next], HIB_TEST_WAKE_S);
+        hibernate_set_debug_next(dbg);
+        hibernate_now(HIB_TEST_WAKE_S, POWER_BOOT_HIB_CHECKIN);
+        give_up("the hibernate failed");
+        return;
+    }
     if (dbg & HIB_DBG_STAY_AWAKE) {
+        boot_phase_mark(BP_SLEEP);   /* where it would go down */
+        boot_phase_save((uint8_t)hibernate_boot_kind());
         /* debug (`power checkin hibernate`): the console comes back; the light shows what it would hold */
         ESP_LOGW(TAG, "debug: would %s; staying awake", names[next]);
+        ps_release();
         s_hib_settled = true;
         hib_watch_back();
         power_unpin();   /* the ladder runs again (I1); the Deep-idle light rule stays until a wake */
@@ -530,6 +584,7 @@ void checkin_step(power_state_t st, int64_t now)
             s_next_ms = 0;
             s_force = false;   /* a forced check-in that never ran doesn't wait for the next park */
             if (s_quiet || s_hold) ESP_LOGI(TAG, "hibernate check-in: woken, back to normal");
+            ps_release();
             if (s_quiet || s_hold) hib_watch_back();
             s_quiet = false;
             s_hold = false;
@@ -622,10 +677,14 @@ void checkin_force(bool rebind)
 
 void checkin_hibernate_test(int force_kbd)
 {
-    uint8_t dbg = HIB_DBG_STAY_AWAKE | (force_kbd == 1 ? HIB_DBG_FORCE_KEEP : force_kbd == 2 ? HIB_DBG_FORCE_NOKEEP : 0);
+    bool as_bat = force_kbd & 0x10;   /* Plan 3 Task 2: `... usb` checks in on USB as on battery */
+    force_kbd &= 0x0f;
+    uint8_t dbg = HIB_DBG_STAY_AWAKE | (force_kbd == 1 ? HIB_DBG_FORCE_KEEP : force_kbd == 2 ? HIB_DBG_FORCE_NOKEEP : 0) |
+                  (as_bat ? HIB_DBG_AS_BATTERY : 0);
     hibernate_set_debug_next(dbg);
-    printf("checkin: hibernating with a %d s wake (debug: a re-hibernate result stays awake%s)\n", HIB_TEST_WAKE_S,
-           force_kbd == 1 ? ", keyboard rail forced kept" : force_kbd == 2 ? ", keyboard rail forced not kept" : "");
+    printf("checkin: hibernating with a %d s wake (debug: a re-hibernate result stays awake%s%s)\n", HIB_TEST_WAKE_S,
+           force_kbd == 1 ? ", keyboard rail forced kept" : force_kbd == 2 ? ", keyboard rail forced not kept" : "",
+           as_bat ? ", as battery: the USB wake gate is bypassed" : "");
     fflush(stdout);
     vTaskDelay(pdMS_TO_TICKS(100));
     hibernate_now(HIB_TEST_WAKE_S, POWER_BOOT_HIB_CHECKIN);
@@ -639,6 +698,12 @@ void checkin_init(void)
     if (hibernate_boot_kind() == POWER_BOOT_HIB_CHECKIN) {
         s_quiet = true;        /* the Deep-idle light rule and no screen wake from the very first result */
         s_hib_pending = true;
+        /* Task 3: no modem sleep for the few seconds of the check-in (released if it doesn't go down) */
+        if (!(boot_phase_exp() & BPX_PS_KEEP_MAX)) wifi_mgr_ps_hold_none(true);
+        /* L43: the source settles by Plan 2's full 10-sample rule (P110), as on every boot; a shorter settle
+           could read USB with the pack supplementing the boot load as battery (PT28 I2) */
+        if (boot_phase_exp()) ESP_LOGW(TAG, "debug: Task 3 experiment mask 0x%02x is set (power checkin hibernate ... exp 0)",
+                                       (unsigned)boot_phase_exp());   /* review m9 */
         /* M3: one plain poll, no watch loop on the Mac for a boot that goes back to sleep (as job_checkin) */
         s_hib_watch = cc_link_watch_wanted();
         if (s_hib_watch) cc_link_watch_resume(false);

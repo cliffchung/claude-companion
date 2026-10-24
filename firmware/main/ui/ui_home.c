@@ -33,10 +33,9 @@ static void quick_wifi(void)
 }
 static void quick_tailscale(void)
 {
-    g_settings.ts_enable = !g_settings.ts_enable;
-    settings_save();
-    if (g_settings.ts_enable) { tailscale_start(); ui_toast(tr(STR_ON)); }
-    else { tailscale_stop(); ui_toast(tr(STR_OFF)); }
+    tailscale_set_enabled(!tailscale_enabled());
+    if (!tailscale_enabled() && tailscale_stopping()) ui_toast("Turning Tailscale off\xe2\x80\xa6");
+    else ui_toast(tr(tailscale_enabled() ? STR_ON : STR_OFF));
 }
 static void quick_appearance(void) { ui_nav_push(ui_appearance_create, NULL); }
 

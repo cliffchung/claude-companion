@@ -1379,7 +1379,7 @@ This is the only task that needs the user. Tasks 1–9b are done and flashed, an
 - Create: `docs/superpowers/notes/2026-10-23-power-measurements.md`
 - Modify: `firmware/tools/power_report.py`, `firmware/tools/test_power_report.py` (`ladder_mwh` and `--ladder`)
 - Modify: `firmware/main/sys/sysinfo.c` (only if Step 4 shows the charge pin doesn't track)
-- Modify: `firmware/main/settings/settings.c`, `settings.h` (gated and long-idle defaults from the data, not `pw_hibernate_checkin_min`, which stays 15 (PT18); `CFG_VERSION 21`, since Task 8 took 19 and Task 9c took 20, with a migration that sets each changed default once)
+- Modify: `firmware/main/settings/settings.c`, `settings.h` (gated and long-idle defaults from the data, not `pw_hibernate_checkin_min`, which stays 15 (PT18); `CFG_VERSION 22`, since Task 8 took 19, Task 9c took 20 and Plan 3 Task 1 (the Tailscale switch) took 21, with a migration that sets each changed default once)
 - Modify: `firmware/main/ui/hotkeys.c`, `hotkeys.h`, `firmware/test/host/test_hotkeys.c` (only if Step 3 shows Ctrl+] isn't reported)
 - Modify: `docs/superpowers/specs/2026-10-22-claude-tab5-design.md` (Known issues: Mac sleep/wake reconnect, brownout counts; Roadmap row 2 done)
 
@@ -1492,7 +1492,7 @@ The reconnect time is link-up minus the Mac wake. If it is over 30 s, run the sl
     - otherwise keep 2 h.
   - **Deep idle after (`pw_deep_idle_min`):** stays 60. The Priority keeps the first hour responsive. Record the measured saving against the step it replaces (`radio-off` if Radio off ships on, else Off).
   - **Hibernate check-in (`pw_hibernate_checkin_min`, PT16):** E_day = E_chk(none) × (1440 / period) from Step 6b. Stays 15 min: the user chose it explicitly (PT18), so Task 10 does not lengthen it. Record E_day at 15 min (estimate: ~5.8 Wh/day, 96 check-ins of ~60 mWh, roughly 40% of a ~15 Wh pack) and the projected hours of Hibernate per charge, record both check-in energies and the time, and report them to the user.
-  - Bump `CFG_VERSION` to 21 (Task 8 took 19, Task 9c took 20; migrate with `old_version <= 20`) so the device picks up each changed default once.
+  - Bump `CFG_VERSION` to 22 (Task 8 took 19, Task 9c took 20, Plan 3 Task 1 took 21; migrate with `old_version <= 21`) so the device picks up each changed default once. Settings now live in `settings_migrate.c` (`CFG_VERSION`, `settings_blob_load`): add the bump there and a case to `test_settings_migrate`.
   - Build, flash and spot-check with `power settings`.
 
 - [ ] **Step 9: Write the notes**

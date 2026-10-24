@@ -44,7 +44,9 @@ uint32_t checkin_seq(void);
 void checkin_print(void);                       /* `power checkins`: the last 8 (path, ms, mWh), kept in NVS */
 /* `power checkin hibernate [keep|nokeep]`: hibernates now with a 60 s wake; the check-in boot then follows
    PT16, except that a re-hibernate result stays awake (debug). keep / nokeep force the light branch. */
-void checkin_hibernate_test(int force_kbd);     /* 0 = as built, 1 = keep, 2 = nokeep */
+/* force_kbd: low nibble 0 = as built, 1 = keep, 2 = nokeep; bit 0x10 (`power checkin hibernate ... usb`)
+   checks in on USB as on battery, bypassing the PT28 I2 USB wake gate (debug only, Plan 3 L26) */
+void checkin_hibernate_test(int force_kbd);
 
 #ifdef __cplusplus
 }
