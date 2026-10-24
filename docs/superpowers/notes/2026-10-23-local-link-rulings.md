@@ -75,3 +75,22 @@ Decisions made while executing Plan 3, each with what it costs if wrong. Overrul
   - **Strings:** the new user-visible texts say "Host": "Host not found at …", "Host not at … (fallback for …)", "Forget host key to trust it", and the log line "Host entry host -> …". The full-UI rename is out of scope.
 
   Cost if wrong: none.
+
+## Task 2 (cutover and measurement)
+
+- Ruling L25 (Task 2): **a take-over of the companion's host connects to the address the link resolved and pinned** (`cc_link_mac_address`: the mDNS, DNS or fallback address), not to the entry's name.
+  - **Why:** pins are per address (P76). With the entry on `my-host.local`, the terminal looked up the pin for the name, found none and asked to trust a key the link had already carried over. That breaks "no unknown-key prompt" for the dashboard's take-over.
+  - **Device:** after the fix, three take-overs opened with no prompt, connected in 0.62–0.68 s.
+  - **Scope:** a plain SSH Terminal session to other servers still pins by the entry's host string, as before.
+  - **Cost if wrong:** if the link hasn't resolved yet, the take-over falls back to the name, and asks.
+- Ruling L26 (Task 2): **two debug hooks for the measurements:**
+  - `power checkin hibernate [keep|nokeep] usb` runs a check-in boot on USB as if on battery. Without it, the PT28 I2 gate wakes fully on USB (`hib-usb`) and nothing is measured.
+  - `companion takeover <id>` selects that card and opens it as Ctrl+O does. It works only for a `companion-test-*` session, so the timing never risks the user's sessions.
+
+  Cost if wrong: two debug commands.
+- Ruling L27 (Task 2): **`power boot`'s `to_live` holds only the last hibernate wake** (`on_sessions` stores it only when the boot kind isn't normal). Normal-boot figures come from the `hib: boot to live: N ms (kind 0)` log line. Plan 2's notes read the same log, so their 45.6–67.8 s compares directly. Not changed. Cost if wrong: a misleading console value; the notes say how to read it.
+- Ruling L28 (Task 2, observation): **with Tailscale on, two SSH sessions over the tunnel starve internal RAM.** A take-over while the link was up drove the internal minimum free heap to 8116 B (largest block 31744 B). The link dropped, and MicroLink's WireGuard sends failed with `err=-2` (`ERR_BUF`).
+  - **Likely the same cause as Task 1's DNS outage:** that one had a 22.7 KB minimum, and both DNS and mDNS were dead.
+  - **On the LAN with Tailscale off,** internal free stays at about 129 KB (minimum 35.9 KB, largest 63488 B) with the link, the watch and take-overs.
+  - **Who it hits:** the user only while the switch is on. Worth a follow-up if the switch is used for long tailnet sessions.
+  - **Cost if wrong:** none; it is a measurement.

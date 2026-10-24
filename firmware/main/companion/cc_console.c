@@ -9,6 +9,8 @@
 #include "sys/debug_console.h"
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
+#include "ui/ui.h"
+#include "ui/ui_dashboard.h"
 #include "net/ts_host.h"
 #include "ssh/ssh_client.h"
 #include "freertos/FreeRTOS.h"
@@ -46,6 +48,13 @@ static char *join_args(int argc, char **argv, int from)
     return s;
 }
 
+static char s_takeover_id[16];
+static void takeover_async(void *arg)
+{
+    (void)arg;
+    if (!ui_dashboard_open_test_session(s_takeover_id)) printf("takeover: no companion-test-* card %s on the dashboard\n", s_takeover_id);
+}
+
 static int cmd_companion(int argc, char **argv)
 {
     if (argc >= 3 && strcmp(argv[1], "host") == 0) {
@@ -80,6 +89,14 @@ static int cmd_companion(int argc, char **argv)
         cc_link_tailnet_pin_source(ts, sizeof(ts));
         printf("path: %s (fallback %s; tailnet pin source %s; Tailscale %s)\n", path, fb[0] ? fb : "none",
                ts[0] ? ts : "none", tailscale_enabled() ? "on" : "off");
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "takeover") == 0) {
+        /* debug: open a companion-test-* session's take-over the way Ctrl+O does, for the timing */
+        if (!cc_id_valid(argv[2])) { printf("takeover: bad id\n"); return 1; }
+        strlcpy(s_takeover_id, argv[2], sizeof(s_takeover_id));
+        ui_async(takeover_async, NULL);
+        printf("takeover: opening %s (companion-test-* only)\n", argv[2]);
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "resolve") == 0) {

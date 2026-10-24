@@ -11,6 +11,7 @@
 #include "settings/settings.h"
 #include "companion/cc_cmd.h"
 #include "companion/cc_link.h"
+#include "net/ts_host.h"
 #include "sys/power.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -530,6 +531,13 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
 
     ssh_params_t p = { 0 };
     strlcpy(p.host, s->host, sizeof(p.host)); p.port = s->port;
+    if (cmd && cc_link_is_companion_server(idx)) {
+        /* Plan 3 (L25): the companion's host by the address the link resolved and pinned (mDNS, DNS or the
+           fallback), so a take-over meets the link's pin and never asks about a key the link already
+           trusts; pins are per address (P76) */
+        char a[128];
+        if (cc_link_mac_address(a, sizeof(a)) && ts_host_is_ipv4(a)) strlcpy(p.host, a, sizeof(p.host));
+    }
     strlcpy(p.user, s->user, sizeof(p.user)); strlcpy(p.pass, s->pass, sizeof(p.pass));
     strlcpy(p.keypath, s->keypath, sizeof(p.keypath)); p.use_key = s->use_key;
     p.cols = cols; p.rows = rows;

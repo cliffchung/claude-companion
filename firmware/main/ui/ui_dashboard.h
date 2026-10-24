@@ -15,6 +15,9 @@ bool ui_dashboard_selected_center(int32_t *x, int32_t *y);
    the LVGL task; false if the worker can't take it now. */
 bool ui_dashboard_forget_host_key(void);
 #define FORGET_TOAST_MS 6000   /* long enough to read the fingerprint */
+/* Debug (`companion takeover <id>`, Plan 3 Task 2 timing): selects the card with this id and opens it as
+   Ctrl+O does, only for a session named companion-test-*. LVGL task; false if there is no such card. */
+bool ui_dashboard_open_test_session(const char *id);
 
 #ifdef __cplusplus
 }

@@ -35,7 +35,7 @@ static int usage(void)
            "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe | raw <mode> <bright> <r> <g> <b>] | "
            "power go active|dim|off|radio-off|deep-idle|hibernate | "
            "power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate|radio-off|radio-after|checkin|hib-checkin <n> | "
-           "power checkin [rebind] | power checkin hibernate [keep|nokeep] | power checkins | "
+           "power checkin [rebind] | power checkin hibernate [keep|nokeep] [usb] | power checkins | "
            "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch | "
            "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s> | backstop [<s> <n>] | probe <s> <n>] | power boot | "
            "power rails | power rail speaker|camera|usb|ext5v on|off | power imu [suspend]\n");
@@ -86,13 +86,15 @@ static int cmd_checkin(int argc, char **argv)
 {
     if (argc == 2) { checkin_force(false); printf("checkin: one check-in now\n"); }
     else if (argc == 3 && strcmp(argv[2], "rebind") == 0) { checkin_force(true); printf("checkin: one check-in now, rebind forced\n"); }
-    else if (argc >= 3 && argc <= 4 && strcmp(argv[2], "hibernate") == 0) {
+    else if (argc >= 3 && argc <= 5 && strcmp(argv[2], "hibernate") == 0) {
         int force = 0;
-        if (argc == 4) {
-            if (strcmp(argv[3], "keep") == 0) force = 1;
-            else if (strcmp(argv[3], "nokeep") == 0) force = 2;
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "keep") == 0) force |= 1;
+            else if (strcmp(argv[i], "nokeep") == 0) force |= 2;
+            else if (strcmp(argv[i], "usb") == 0) force |= 0x10;   /* on USB, check in as on battery (timing) */
             else return usage();
         }
+        if ((force & 3) == 3) return usage();
         checkin_hibernate_test(force);
         return 1;   /* only if the hibernate failed */
     } else return usage();

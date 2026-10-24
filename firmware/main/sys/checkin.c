@@ -414,6 +414,10 @@ static void job_hib(void)
     ESP_LOGI(TAG, "hibernate check-in: source %s, %d%% at %lld ms: %s",
              src == PR_SRC_BATTERY ? "battery" : src == PR_SRC_USB ? "usb" : "unknown", pct, (long long)now_ms(),
              gate == PR_HG_GO ? "go" : gate == PR_HG_LOW ? "battery low" : gate == PR_HG_WAKE ? "wake" : "give up");
+    if (gate == PR_HG_WAKE && (dbg & HIB_DBG_AS_BATTERY)) {
+        ESP_LOGW(TAG, "debug: on USB, checking in as on battery (timing)");
+        gate = PR_HG_GO;
+    }
     if (gate == PR_HG_WAKE) {
         record(P_HIB_USB, (uint32_t)now_ms(), false);
         wake_fully("on USB");
@@ -647,7 +651,10 @@ void checkin_force(bool rebind)
 
 void checkin_hibernate_test(int force_kbd)
 {
-    uint8_t dbg = HIB_DBG_STAY_AWAKE | (force_kbd == 1 ? HIB_DBG_FORCE_KEEP : force_kbd == 2 ? HIB_DBG_FORCE_NOKEEP : 0);
+    bool as_bat = force_kbd & 0x10;   /* Plan 3 Task 2: `... usb` checks in on USB as on battery */
+    force_kbd &= 0x0f;
+    uint8_t dbg = HIB_DBG_STAY_AWAKE | (force_kbd == 1 ? HIB_DBG_FORCE_KEEP : force_kbd == 2 ? HIB_DBG_FORCE_NOKEEP : 0) |
+                  (as_bat ? HIB_DBG_AS_BATTERY : 0);
     hibernate_set_debug_next(dbg);
     printf("checkin: hibernating with a %d s wake (debug: a re-hibernate result stays awake%s)\n", HIB_TEST_WAKE_S,
            force_kbd == 1 ? ", keyboard rail forced kept" : force_kbd == 2 ? ", keyboard rail forced not kept" : "");

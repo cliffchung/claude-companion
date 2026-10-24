@@ -789,6 +789,20 @@ static void keys_ov_clicked(lv_event_t *e)
     ui_dashboard_keys_overlay(false);
 }
 
+bool ui_dashboard_open_test_session(const char *id)
+{
+    for (int i = 0; i < s_n; i++) {
+        const cc_session_t *s = &s_items[i];
+        if (strcmp(s->id, id) != 0) continue;
+        if (strncmp(s->name, "companion-test-", 15) != 0) return false;   /* only the agent's own test sessions */
+        select_index(i);
+        ESP_LOGI(TAG, "debug: take-over of %s requested", id);
+        open_selected();
+        return true;
+    }
+    return false;
+}
+
 bool ui_dashboard_keys_overlay_shown(void)
 {
     return s_keys_ov != NULL && s_scr != NULL && lv_obj_get_screen(s_keys_ov) == s_scr;
