@@ -129,6 +129,42 @@ static void path_cb(lv_event_t *e)
               path_prompt_cb, NULL);
 }
 
+/* Whisper path and model on the Host (Plan 5, spec 6.5): the same rule and copy as the Claude path */
+static void whisper_path_prompt_cb(const char *v, void *ud)
+{
+    (void)ud;
+    if (!v) return;
+    if (!cc_link_set_whisper_path(v)) { ui_toast(tr(STR_SET_CLAUDE_PATH_BAD)); return; }
+    refill();
+}
+static void whisper_path_cb(lv_event_t *e)
+{
+    (void)e;
+    char cur[64];
+    ui_prompt(tr(STR_SET_WHISPER_PATH), tr(STR_SET_WHISPER_PATH_PH), cc_settings_whisper_path(cur, sizeof(cur)), false,
+              whisper_path_prompt_cb, NULL);
+}
+static void whisper_model_prompt_cb(const char *v, void *ud)
+{
+    (void)ud;
+    if (!v) return;
+    if (!cc_link_set_whisper_model(v)) { ui_toast(tr(STR_SET_CLAUDE_PATH_BAD)); return; }
+    refill();
+}
+static void whisper_model_cb(lv_event_t *e)
+{
+    (void)e;
+    char cur[64];
+    ui_prompt(tr(STR_SET_WHISPER_MODEL), tr(STR_SET_WHISPER_MODEL_PH), cc_settings_whisper_model(cur, sizeof(cur)), false,
+              whisper_model_prompt_cb, NULL);
+}
+/* Voice input · Check (P5-5): the check runs on the Sessions worker, which toasts its result */
+static void voice_check_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!ui_sessions_voice_check()) ui_toast(tr(STR_SET_BUSY));
+}
+
 static void forget_yes(bool yes, void *ud)
 {
     (void)ud;
@@ -209,6 +245,10 @@ static void fill_host(lv_obj_t *p)
     cc_link_lan_fallback(fb, sizeof(fb));
     ui_srow(p, UI_ROW_VALUE, tr(STR_SET_FALLBACK), fb[0] ? fb : tr(STR_NONE), fallback_cb, NULL);
     ui_srow(p, UI_ROW_VALUE, tr(STR_SET_CLAUDE_PATH), cc_settings_claude_path(v, sizeof(v)), path_cb, NULL);
+    ui_srow(p, UI_ROW_VALUE, tr(STR_SET_WHISPER_PATH), cc_settings_whisper_path(v, sizeof(v)), whisper_path_cb, NULL);
+    ui_srow(p, UI_ROW_VALUE, tr(STR_SET_WHISPER_MODEL), cc_settings_whisper_model(v, sizeof(v)), whisper_model_cb, NULL);
+    lv_obj_t *vr = ui_srow(p, UI_ROW_ACTION, tr(STR_SET_VOICE), NULL, voice_check_cb, NULL);
+    ui_srow_chip(vr, tr(STR_SET_VOICE_CHECK), false);
 
     ui_section_header(p, tr(STR_SET_HOST_KEY));
     char fp[80];

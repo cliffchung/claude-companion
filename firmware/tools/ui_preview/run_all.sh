@@ -34,6 +34,9 @@ for i in 0 1 2 3 4 5; do run settings "$i"; done
 runv() { PV_ENV="$1"; shift; run "$@"; PV_ENV=; }
 runv "PREVIEW_CLICK=Public key" settings 0
 runv "PREVIEW_CLICK=Forget" settings 0
+runv "PREVIEW_CLICK=Voice input" settings 0
+PV_ENV="PREVIEW_VOICE_RC=121"; PV_ENV2="PREVIEW_CLICK=Voice input"; run settings 0; PV_ENV=; PV_ENV2=
+runv "PREVIEW_CLICK=Whisper model on Host" settings 0
 runv "PREVIEW_CLICK=Reset settings" settings 5
 runv "PREVIEW_CLICK=Diagnostics" settings 5
 runv "PREVIEW_CLICK=Reboot" settings 5

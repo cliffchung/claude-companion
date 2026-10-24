@@ -61,6 +61,13 @@ X(SET_FALLBACK_BAD, "Use a home network address like 192.168.1.50, or leave it e
 X(SET_CLAUDE_PATH, "Claude path on Host") \
 X(SET_CLAUDE_PATH_PH, "~/.local/bin/claude") \
 X(SET_CLAUDE_PATH_BAD, "Use only letters, digits and _ . / ~ - (1 to 63 characters)") \
+X(SET_WHISPER_PATH, "Whisper path on Host") \
+X(SET_WHISPER_PATH_PH, "/opt/homebrew/bin/whisper-cli") \
+X(SET_WHISPER_MODEL, "Whisper model on Host") \
+X(SET_WHISPER_MODEL_PH, "~/.local/share/whisper/ggml-base.en.bin") \
+X(SET_VOICE, "Voice input") \
+X(SET_VOICE_CHECK, "Check") \
+X(SET_VOICE_READY, "Voice input is ready on the Host") \
 X(SET_HOST_KEY, "Host key") \
 X(SET_NO_PIN, "No key pinned yet") \
 X(SET_FORGET, "Forget") \
@@ -73,7 +80,7 @@ X(SET_SHOW, "Show") \
 X(SET_HIDE, "Hide") \
 X(SET_KEY_UNREADABLE, "The device key can't be read") \
 X(SET_DEVICE_KEY_NOTE, "Add this line to ~/.ssh/authorized_keys on each host this Tab5 signs in to.") \
-X(SET_HOST_NOTE, "The Host is one of your SSH hosts. The Tab5 lists its Claude Code sessions and runs claude from this path.") \
+X(SET_HOST_NOTE, "The Host is one of your SSH hosts. The Tab5 lists its Claude Code sessions, runs claude from this path, and runs whisper-cli for voice input.") \
 X(SET_PW_SCREEN, "Screen") \
 X(SET_PW_DIM, "Dim after") \
 X(SET_PW_OFF, "Screen off after") \

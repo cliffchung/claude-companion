@@ -392,6 +392,20 @@ int cc_settings_server(void) { return pv_host() ? 0 : -1; }
 static int s_set_server_calls; static char s_set_server_name[48];
 void cc_link_set_server(const char *n) { s_set_server_calls++; snprintf(s_set_server_name, sizeof(s_set_server_name), "%s", n ? n : ""); }
 bool cc_link_set_claude_path(const char *p) { (void)p; return true; }
+/* Plan 5 Task 3: the whisper settings (validated as the device does) and the check (PREVIEW_VOICE_RC; -1: not connected) */
+static char s_pv_whisper_path[64] = CC_WHISPER_DEFAULT, s_pv_whisper_model[64] = CC_WHISPER_MODEL_DEFAULT;
+static int s_voice_check_calls;
+const char *cc_settings_whisper_path(char *o, size_t cap) { snprintf(o, cap, "%s", s_pv_whisper_path); return o; }
+const char *cc_settings_whisper_model(char *o, size_t cap) { snprintf(o, cap, "%s", s_pv_whisper_model); return o; }
+bool cc_link_set_whisper_path(const char *p) { if (!cc_path_valid(p)) return false; snprintf(s_pv_whisper_path, sizeof(s_pv_whisper_path), "%s", p); return true; }
+bool cc_link_set_whisper_model(const char *p) { if (!cc_path_valid(p)) return false; snprintf(s_pv_whisper_model, sizeof(s_pv_whisper_model), "%s", p); return true; }
+esp_err_t cc_link_voice_check(int *rc) {
+    s_voice_check_calls++;
+    int v = env_int("PREVIEW_VOICE_RC", 0);
+    if (v < 0) return ESP_ERR_INVALID_STATE;
+    *rc = v;
+    return ESP_OK;
+}
 /* PREVIEW_LOG=long: a 300-character line with no spaces, CJK and a numbered list (Review Focus 3). */
 static int s_paste_calls;
 esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, char *err, size_t ecap, int ms) {
@@ -1671,6 +1685,7 @@ static int settings_case(lv_display_t *d, int section) {
     else snprintf(name, sizeof(name), "settings-%d", section);
     if (env_int("PREVIEW_TS", 2) != 2) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-ts%d", env_int("PREVIEW_TS", 2));
     if (!env_int("PREVIEW_KEY", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-nokey");
+    if (env_int("PREVIEW_VOICE_RC", 0)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-rc%d", env_int("PREVIEW_VOICE_RC", 0));
     preview_sessions_load();
     ui_nav_home(); step(d,200);
     ui_nav_push(ui_settings_create, NULL); step(d,200);
@@ -1786,8 +1801,44 @@ static int settings_case(lv_display_t *d, int section) {
                    lv_label_get_text(find_label_has(panel, "Mac", 0) ? find_label_has(panel, "Mac", 0) : find_label_has(panel, "retry in", 0)));
             return 1;
         }
+    } else if (section == UI_SET_HOST && !strcmp(click, "Voice input")) {
+        /* P5-5: the check runs once on the worker and toasts its result (PREVIEW_VOICE_RC picks it) */
+        step(d, 100);
+        const char *want = env_int("PREVIEW_VOICE_RC", 0) == 121 ? tr(STR_VOICE_NO_MODEL) : tr(STR_SET_VOICE_READY);
+        if (s_voice_check_calls != 1) { printf("check %s: FAIL voice check called %d times\n", name, s_voice_check_calls); return 1; }
+        if (!find_label(top, want, false)) { printf("check %s: FAIL no toast \"%s\"\n", name, want); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);   /* the long error toast wraps inside the screen */
+        lv_obj_clean(top);
+        return r;
+    } else if (section == UI_SET_HOST && !strcmp(click, "Whisper model on Host")) {
+        /* the prompt shows the default; a path with a space is refused with the path copy and not saved */
+        lv_obj_t *ta = find_shown(top, &lv_textarea_class);
+        assert(ta && !strcmp(lv_textarea_get_text(ta), CC_WHISPER_MODEL_DEFAULT));
+        prompt_answer(d, "~/my models/base.bin");
+        assert(find_label(top, tr(STR_SET_CLAUDE_PATH_BAD), false));
+        assert(!strcmp(s_pv_whisper_model, CC_WHISPER_MODEL_DEFAULT));
+        lv_obj_clean(top); step(d, 200);
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Whisper model on Host"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        prompt_answer(d, "~/models/ggml-small.en.bin");
+        assert(!strcmp(s_pv_whisper_model, "~/models/ggml-small.en.bin"));
+        assert(find_label(settings_panel(s), "~/models/ggml-small.en.bin", false));
+        snprintf(s_pv_whisper_model, sizeof(s_pv_whisper_model), "%s", CC_WHISPER_MODEL_DEFAULT);
+        panel = settings_panel(s);
     } else if (section == UI_SET_HOST && !click[0]) {
         assert(!find_label(s, "(macOS)", true));
+        /* Plan 5 (spec 6.5): Whisper path, Whisper model and Voice input follow Claude path, with the defaults */
+        static const char *const order[] = { "Claude path on Host", "Whisper path on Host", "Whisper model on Host", "Voice input" };
+        int32_t prev = -1;
+        for (unsigned i = 0; i < 4; i++) {
+            int32_t y = label_y(panel, order[i]);
+            if (y <= prev) { printf("check %s: FAIL \"%s\" at y %d, not below the row before it\n", name, order[i], (int)y); return 1; }
+            prev = y;
+        }
+        lv_obj_t *wp = row_labeled(panel, "Whisper path on Host"), *wm = row_labeled(panel, "Whisper model on Host");
+        assert(wp && wm && row_labeled(panel, "Voice input"));
+        assert(find_label(wp, CC_WHISPER_DEFAULT, false) && find_label(wm, CC_WHISPER_MODEL_DEFAULT, false));
+        assert(find_label(row_labeled(panel, "Voice input"), "Check", false));
+        assert(find_label(panel, tr(STR_SET_HOST_NOTE), false));
         assert(find_label(panel, "\xe2\x97\x8f connected over home Wi-Fi", false));
         assert(find_label(panel, "ssh-ed25519 \xe2\x80\xa6 claude-companion \xc2\xb7 Show", false));
         for (lv_obj_t *o = rail_row(s, 0); o; o = NULL) assert(lv_obj_get_height(o) == UI_TK_RAIL_ROW_H);

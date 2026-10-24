@@ -18,6 +18,10 @@ bool ui_sessions_selected_center(int32_t *x, int32_t *y);
    finished later by a reconnect is toasted by the Sessions tick (P4-3). LVGL task; false if the
    worker can't take it now. */
 bool ui_sessions_forget_host_key(void);
+/* Settings › Host › Voice input · Check (P5-5): runs cc_link_voice_check on the Sessions worker and toasts
+   "Voice input is ready on the Host" or the matching error through ui_async. LVGL task; false when a check is
+   already pending or the worker can't take it now. */
+bool ui_sessions_voice_check(void);
 /* Why the Host link is down, in Host words with no "(retry in Ns)": "No Host set up", "Can't reach <name>. Is it
    awake?" or cc_link's failure up to its parenthetical. The Sessions banner and Settings › Host › Link use it. */
 void ui_sessions_link_down_text(char *out, size_t cap);

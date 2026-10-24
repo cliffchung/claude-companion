@@ -18,6 +18,7 @@
 #include "ui_softkbd.h"
 #include "ui/sessions_model.h"
 #include "ui/hotkeys.h"
+#include "voice/voice_rules.h"
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "companion/cc_cmd.h"
@@ -76,7 +77,7 @@ typedef struct {
     int64_t at_ms;
 } note_t;
 
-typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY } job_type_t;
+typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_VOICE_CHECK } job_type_t;
 typedef struct {
     job_type_t type;
     unsigned token;        /* which request this is (actions only) */
@@ -284,10 +285,31 @@ static void run_forget(void)
     ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? FORGET_TIMED_OUT : FORGET_NO_HOST));
 }
 
+/* Settings › Host › Voice input · Check (P5-5). The worker passes the string id to the LVGL task. */
+static volatile bool s_voice_check_pending;
+
+static void voice_check_toast_cb(void *arg) { ui_toast_ms(tr((str_id_t)(intptr_t)arg), 5000); }
+
+static void run_voice_check(void)
+{
+    int rc = -1;
+    esp_err_t e = cc_link_voice_check(&rc);
+    ESP_LOGI(TAG, "voice check: %s rc %d", esp_err_to_name(e), rc);
+    str_id_t id;
+    if (e == ESP_ERR_INVALID_STATE) id = STR_SES_NOT_CONNECTED;
+    else if (e == ESP_ERR_TIMEOUT) id = STR_VOICE_TIMEOUT;
+    else if (e != ESP_OK) id = vr_out_text(VR_OUT_FAILED);
+    else if (rc == 0) id = STR_SET_VOICE_READY;
+    else id = vr_out_text(vr_host_result(rc));
+    s_voice_check_pending = false;
+    ui_async(voice_check_toast_cb, (void *)(intptr_t)id);
+}
+
 static void run_job(const job_t *j)
 {
     char claude[64], cmd[192], msg[160] = "";
     if (j->type == JOB_FORGET_KEY) { run_forget(); return; }
+    if (j->type == JOB_VOICE_CHECK) { run_voice_check(); return; }
     cc_settings_claude_path(claude, sizeof(claude));
     if (j->type == JOB_LOGS) {
         bool ok = false;
@@ -423,6 +445,19 @@ bool ui_sessions_forget_host_key(void)
     job_t *j = job_new(JOB_FORGET_KEY);
     if (!j) return false;
     bool ok = job_post(j);
+    heap_caps_free(j);
+    return ok;
+}
+
+bool ui_sessions_voice_check(void)
+{
+    init_once();
+    if (s_voice_check_pending) return false;
+    job_t *j = job_new(JOB_VOICE_CHECK);
+    if (!j) return false;
+    s_voice_check_pending = true;
+    bool ok = job_post(j);
+    if (!ok) s_voice_check_pending = false;
     heap_caps_free(j);
     return ok;
 }
