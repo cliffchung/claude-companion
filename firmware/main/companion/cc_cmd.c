@@ -97,6 +97,33 @@ bool cc_cmd_logs(const char *claude, const char *id, char *out, size_t cap)
     return put(out, cap, &n, "%s logs %s | tail -n 40", claude, id);
 }
 
+/* Voice (spec §7.1, §7.2). Paths pass cc_path_valid, so the unquoted W=/M= assignments are safe;
+   the pre-checks drain stdin so the Tab5's upload never hits a closed pipe. */
+bool cc_cmd_transcribe(const char *whisper, const char *model, char *out, size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = 0;
+    if (!cc_path_valid(whisper) || !cc_path_valid(model)) return false;
+    int r = snprintf(out, cap,
+        "exec /bin/sh -c 'W=%s; M=%s; [ -x \"$W\" ] || { cat >/dev/null; exit 120; }; "
+        "[ -r \"$M\" ] || { cat >/dev/null; exit 121; }; "
+        "exec \"$W\" -m \"$M\" -l en -nt -np -otxt -of - -f -'", whisper, model);
+    if (r < 0 || (size_t)r >= cap) { out[0] = 0; return false; }
+    return true;
+}
+
+bool cc_cmd_voice_check(const char *whisper, const char *model, char *out, size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = 0;
+    if (!cc_path_valid(whisper) || !cc_path_valid(model)) return false;
+    int r = snprintf(out, cap,
+        "exec /bin/sh -c 'W=%s; M=%s; [ -x \"$W\" ] || exit 120; [ -r \"$M\" ] || exit 121; exit 0'",
+        whisper, model);
+    if (r < 0 || (size_t)r >= cap) { out[0] = 0; return false; }
+    return true;
+}
+
 bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap)
 {
     size_t n;

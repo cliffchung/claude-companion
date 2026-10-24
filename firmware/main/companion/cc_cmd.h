@@ -54,3 +54,13 @@ bool cc_same_host(const char *a, const char *b);
    with host is the companion server, by index (comp_idx >= 0) or by cc_same_host(host,
    comp_host). comp_host may be NULL or "" when the companion entry is missing. */
 bool cc_is_companion_server(int idx, const char *host, int comp_idx, const char *comp_host);
+
+/* Voice input (spec §7.1, §7.2). Both run on a plain exec channel, never a pty. */
+#define CC_WHISPER_DEFAULT        "/opt/homebrew/bin/whisper-cli"
+#define CC_WHISPER_MODEL_DEFAULT  "~/.local/share/whisper/ggml-base.en.bin"
+#define CC_VOICE_RC_NO_WHISPER 120   /* the whisper path isn't an executable file */
+#define CC_VOICE_RC_NO_MODEL   121   /* the model path isn't a readable file */
+/* spec §7.1: stdin is a 16 kHz mono 16-bit WAV, stdout the transcript. false for an invalid path or a small cap (out cleared). */
+bool cc_cmd_transcribe(const char *whisper, const char *model, char *out, size_t cap);
+/* spec §7.2: exit 0, 120 or 121; no output. */
+bool cc_cmd_voice_check(const char *whisper, const char *model, char *out, size_t cap);
