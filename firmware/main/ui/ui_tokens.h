@@ -40,6 +40,9 @@ extern "C" {
 #define UI_TK_LIST_W         440     /* the Sessions list */
 #define UI_TK_RAIL_W         320     /* the Settings rail */
 
+/* ---- glyphs (font_icons16, behind every UI face; tools/gen_ui_icons.py EXTRA_CPS) ---- */
+#define UI_GLYPH_LOCK      "\xef\x80\xa3"   /* U+F023: a secured Wi-Fi network */
+
 /* ---- the terminal ---- */
 #define UI_TK_TERM_FG      UI_TK_FG
 #define UI_TK_TERM_BG      UI_TK_BG

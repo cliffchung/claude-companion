@@ -21,8 +21,8 @@ extern "C" {
 #define UI_WARN        UI_ACCENT2
 #define UI_TEXT        lv_color_hex(UI_TK_FG)
 #define UI_MUTED       lv_color_hex(UI_TK_MUTED)
-/* Shims for the deleted theme engine (ruling C5), used by ui_wifi.c and ui_tailscale.c until Task 8
- * and ui_terminal.c until Task 10; Task 12 removes them. A zero radius (bars) stays square. */
+/* Shims for the deleted theme engine (ruling C5), used by ui_terminal.c until Task 10 (ui_wifi.c and
+ * ui_tailscale.c went in Task 8); Task 12 removes them. A zero radius (bars) stays square. */
 #define ui_theme_pad(design)     (design)
 #define ui_theme_radius(design)  ((design) ? UI_TK_RADIUS : 0)
 #define ui_theme_pixel()         true
@@ -112,9 +112,7 @@ void ui_terminal_open_command(int server_idx, const char *cmd, void (*on_close)(
 bool ui_terminal_is_top(void);                   /* either terminal is the current screen */
 lv_obj_t *ui_sessions_create(void *arg);         /* home: the Host's Claude Code sessions (ui_sessions.h) */
 bool ui_sessions_keys_overlay_shown(void);       /* the Sessions Ctrl+K overlay is up */
-lv_obj_t *ui_wifi_create(void *arg);
 lv_obj_t *ui_settings_create(void *arg);
-lv_obj_t *ui_tailscale_create(void *arg);
 /* The pre-Hibernate notice: a full-screen bg object on lv_layer_top with the centred fg text
    "Sleeping to save battery. Press the side button to wake." (power lights the panel first). */
 void ui_sleep_notice(bool show);

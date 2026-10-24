@@ -353,10 +353,19 @@ lv_obj_t *ui_list_item(lv_obj_t *parent, const char *icon, const char *title, co
 /* ------------------------------------------------------------- toast */
 static lv_obj_t *s_toast = NULL;
 static lv_timer_t *s_toast_timer = NULL;   /* one timer: an older toast's must not cut a newer one short */
+/* A toast deleted by anything else (a cleaned layer) leaves no dangling pointer or timer behind. */
+static void toast_deleted_cb(lv_event_t *e)
+{
+    if (lv_event_get_target_obj(e) != s_toast) return;
+    s_toast = NULL;
+    if (s_toast_timer) { lv_timer_delete(s_toast_timer); s_toast_timer = NULL; }
+}
 static void toast_del_cb(lv_timer_t *t)
 {
-    if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
     if (s_toast_timer == t) s_toast_timer = NULL;
+    lv_obj_t *o = s_toast;
+    s_toast = NULL;   /* before the delete, so toast_deleted_cb leaves this timer alone */
+    if (o) lv_obj_delete(o);
     lv_timer_delete(t);
 }
 /* ---------------------------------------------------- sleep notice */
@@ -404,6 +413,7 @@ void ui_toast_ms(const char *text, uint32_t ms)
     if (s_toast_timer) { lv_timer_delete(s_toast_timer); s_toast_timer = NULL; }
     if (s_toast) { lv_obj_delete(s_toast); s_toast = NULL; }
     s_toast = lv_obj_create(lv_layer_top());
+    lv_obj_add_event_cb(s_toast, toast_deleted_cb, LV_EVENT_DELETE, NULL);   /* whoever deletes it */
     lv_obj_remove_style_all(s_toast);
     ui_comp_sheet(s_toast);
     lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -599,8 +609,10 @@ static void menu_ov_cb(lv_event_t *e)
     }
 }
 
-/* A sheet of 64 px radio rows; the current one has an fg dot, the others a line ring. */
-lv_obj_t *ui_picker(const char *title, const char *const *items, int count, int current, ui_menu_cb_t cb, void *ud)
+/* A sheet of 64 px rows: radio rows (the current one has an fg dot, the others a line ring), or plain action
+ * rows whose label is red where `red` has the item's bit. */
+static lv_obj_t *sheet_rows(const char *title, const char *const *items, int count, int current, bool radio,
+                            uint32_t red, ui_menu_cb_t cb, void *ud)
 {
     lv_obj_t *ov = modal_overlay();
     lv_obj_t *box = modal_box(ov, title);
@@ -617,7 +629,8 @@ lv_obj_t *ui_picker(const char *title, const char *const *items, int count, int 
     for (int i = 0; i < count; i++) {
         lv_obj_t *r = ui_srow(box, UI_ROW_ACTION, items[i], NULL, menu_item_cb, c);
         lv_obj_set_user_data(r, (void *)(intptr_t)i);
-        lv_obj_move_to_index(ui_comp_radio_dot(r, i == current), 0);
+        if (radio) lv_obj_move_to_index(ui_comp_radio_dot(r, i == current), 0);
+        else if (i < 32 && (red >> i) & 1u) ui_text_tone(lv_obj_get_child(r, 0), UI_TONE_RED);
         if (i == current) cur = r;
     }
     if (cur) {
@@ -625,6 +638,17 @@ lv_obj_t *ui_picker(const char *title, const char *const *items, int count, int 
         lv_obj_scroll_to_view(cur, LV_ANIM_OFF);
     }
     return box;
+}
+
+lv_obj_t *ui_picker(const char *title, const char *const *items, int count, int current, ui_menu_cb_t cb, void *ud)
+{
+    return sheet_rows(title, items, count, current, true, 0, cb, ud);
+}
+
+lv_obj_t *ui_action_sheet(const char *title, const char *const *items, int count, uint32_t destructive,
+                          ui_menu_cb_t cb, void *ud)
+{
+    return sheet_rows(title, items, count, -1, false, destructive, cb, ud);
 }
 
 void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_t cb, void *user_data)

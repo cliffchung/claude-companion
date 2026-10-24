@@ -379,3 +379,67 @@ stopped, `ts off`, `power set defaults`, DHCP, Host link connected on the LAN.
   host-tested). `settings_reset_user` writes NVS once, and the extra `notify()` is gone (`power_kbd_light_refresh`
   already wakes the task). Preview Diagnostics covers Esc while expanded. The reset test covers the reserved pw
   fields. `key light` and `ui brightness` parse strictly.
+
+## Task 8: Settings › Network
+
+**Shape.** `ui_settings_net.c` owns the Network panel (`ui_settings_fill_network`) and the three pushed sub-pages
+(`ui_settings_sub_create`, arg a `ui_net_sub_t`; header "← Settings", Back lands on Settings › Network). One column of
+64 px rows: Wi-Fi (the current network, Networks, Advanced), then Tailscale in U10's order (switch, Status, Auth key,
+Device name, Control server, Connection, Peers, Forget), every row shown with the switch off. `ui_wifi.c`,
+`ui_tailscale.c` and the P4-9 bridge row are gone; the SD auth-key boot fallback is gone (`load_auth_key` reads
+`g_settings.ts_auth_key` only). No timer: scan results come by `WIFI_EV_SCAN_DONE`, peer changes by
+`tailscale_set_event_cb`, both through `ui_async`, both slots cleared on delete.
+
+**Device gate (Tab5, LAN Host link).**
+
+| Check | Result | |
+|---|---|---|
+| Tailscale off: `ui heapmin` over `ui settings network` (from Sessions) | internal min **144,007 B** (gate 66,560) | pass |
+| Tailscale off: over `ui net networks` / `advanced` / `peers` | **165,531 / 163,907 / 164,535 B**; `ui timers` the same 5 as Settings (30 s vitals, 10 ms key drain, 3 paused) | pass |
+| `ts on`, connected: over `ui settings network` | internal min **71,123 B** (gate 20,480) | pass |
+| `ts on`: over `ui net peers`; the page | **100,287 B**; 6 peers listed (4 online, 2 offline), the same counts as `ts` | pass |
+| Status row with `ts on` | "connected · <ip> · DERP <code> · 4 peers online" (screenshot, scratch only) | pass |
+| `ts off` | `ts: off`; link back on the LAN path | pass |
+| Rejoin from Networks › Saved (`wifi leave`, then Enter on the saved row) | the scan filled by event; rejoined; Host link connected again | pass |
+| The same with no Host set (`companion host none`) | not run on the device (T8-9); preview `PREVIEW_HOST=0 settings-sub networks` | PENDING |
+| Forget this device on the tailnet | not run (no re-registration agreed); preview: forget once, auth key kept | PENDING |
+| `ts` after the gates | `auth key: set` | |
+| `idf.py size` (Task 7 fix round → Task 8) | image 7,240,043 B; DIRAM 187,616 B (−736 B vs Task 7's 188,352) | |
+
+**Rulings and deviations:**
+- T8-1: the Network panel reads its values when built; a row that changes one rebuilds the panel in place keeping
+  its scroll (`ui_settings_refill`, new in ui_settings.c). Only the current-network row follows Wi-Fi events (it
+  holds `wifi_mgr_set_cb` while shown). Status does not follow Tailscale events: the Tailscale slot is Peers' (the
+  brief's deleted-event case requires it NULL after Back to Network), so Status refreshes on re-entry or any row change.
+- T8-2: the current-network row with Wi-Fi down opens Networks (there is nothing to disconnect); connected, it opens
+  an action sheet: Disconnect (confirmed, RAM only) and Forget (destructive, confirmed; only when the network is saved).
+- T8-3: new `ui_action_sheet(title, items, n, destructive_mask, cb, ud)` (ui_core; `ui_picker` shares its body): the
+  rows have no radio dots, and destructive ones read red. Used by the Wi-Fi, Auth key and peer sheets.
+- T8-4: Saved rows are a 64 px row (tap: join with the saved password) and a sibling 64×64 trash button 8 px to its
+  right (destructive style, `LV_SYMBOL_TRASH`), in a line with `ui_comp_pass_hits` so both keep 80 px of hit. Not a
+  drawn chip (T7-2): a drawn chip can't be a second target on a row. Tapping the network it is already on doesn't
+  rejoin (that would drop the Host link): it toasts "Connected to …".
+- T8-5: the lock glyph is a new 8×8 pictogram at U+F023 in `font_icons16/32` (`gen_ui_icons.py` `EXTRA_CPS`,
+  `UI_GLYPH_LOCK`); the face had none. Available hides hidden SSIDs and a second access point of a listed network.
+  A header "Scan" chip restarts the scan (the mockup's "Scan").
+- T8-6: Auth key sheet: Enter key (masked prompt that starts empty, trimmed, empty refused), Load from SD card
+  (`sd_mount()` on demand, first line trimmed; "No SD card" / "No key file"; the card stays mounted afterwards), Clear
+  key (destructive, confirmed; shown only while a key is set, so the sheet has 3 actions with a key, 2 without).
+- T8-7: Forget keeps the auth key (U5): the old `forget_task` without the key wipe. The confirm adds "You'll need a
+  new auth key." only when none is saved. In the preview the work runs inline (no tasks).
+- T8-8: C15: `TS_HOST_OFF_MESSAGE` stays the connect refusal, reworded to "Tailscale is off. Turn it on in Settings
+  › Network › Tailscale." (§9 rule 5 path); the Terminal banner text is `STR_TS_OFF_BANNER` / `STR_TS_TURN_ON` for
+  Task 9. `tailscale_home_derp_code()` (new) gives "DERP sea" (the preview stub) from the DERP map's RegionCode, the number if none.
+- T8-9: the no-Host rejoin leg was not run on the device: `companion host none` calls `cc_link_set_server`, which for
+  another name clears the pin carry-over (`carry_store(NULL)`, "tailnet pin source"), and `companion host Mac` can't
+  bring it back (only a tailnet connect captures it). That breaks the "restore it exactly" rule and would leave the
+  Host link refusing a new LAN address with an unknown key. The rejoin ran with the Host set; the no-Host leg is the
+  preview's `PREVIEW_HOST=0 settings-sub networks`. PENDING for the visit, with the user's agreement to lose the carry.
+- T8-10: `ts` prints "auth key: set|not set; peers: N, M online" (never the key). Console `ui settings network` and
+  `ui net networks|advanced|peers` drive the gates.
+- T8-11: shared fixes found by the new cases: an INFO row's value has a set 60 % width (a content-width label with a
+  max width was clipped to one line), and a toast deleted by anything else (a cleaned layer) clears its pointer and
+  timer (it was a dangling pointer).
+- T8-12: C5: with ui_wifi.c and ui_tailscale.c gone, `ui_terminal.c` is the only `ui_theme_*` shim user. C11: the
+  preview builds `ui_settings_net.c` (the two deleted files were never in it). C14 ends: `settings 1` and
+  `keyboard-settings` run every check.

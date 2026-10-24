@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ui/ui.h"
+#include "ui/ui_settings.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "settings/settings.h"
@@ -170,6 +171,9 @@ static int cmd_key(int argc, char **argv)
 static void ui_refresh_async(void *arg) { (void)arg; ui_nav_refresh(); }
 static void ui_home_async(void *arg) { (void)arg; ui_nav_home(); }
 static void ui_settings_async(void *arg) { (void)arg; ui_nav_push(ui_settings_create, NULL); }
+static void ui_settings_net_async(void *arg) { (void)arg; ui_settings_open(UI_SET_NETWORK); }
+/* `ui net networks|advanced|peers`: Settings › Network, then that sub-page on top (the device gates) */
+static void ui_net_sub_async(void *arg) { ui_settings_open_net_sub((ui_net_sub_t)(intptr_t)arg); }
 /* `ui heapmin start|stop`: the internal-RAM low-water mark over an action (the B2 RAM gate).
  * Reads heap counters only, so it takes no LVGL lock. */
 static int ui_heapmin(const char *arg)
@@ -221,6 +225,19 @@ static int cmd_ui(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "refresh") == 0) { ui_async(ui_refresh_async, NULL); printf("ui: refresh\n"); return 0; }
     if (argc == 2 && strcmp(argv[1], "home") == 0) { ui_async(ui_home_async, NULL); printf("ui: home\n"); return 0; }
     if (argc == 2 && strcmp(argv[1], "settings") == 0) { ui_async(ui_settings_async, NULL); printf("ui: settings\n"); return 0; }
+    if (argc == 3 && strcmp(argv[1], "settings") == 0 && strcmp(argv[2], "network") == 0) {
+        ui_async(ui_settings_net_async, NULL);
+        printf("ui: settings network\n");
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "net") == 0) {
+        int sub = !strcmp(argv[2], "networks") ? UI_NET_SUB_NETWORKS : !strcmp(argv[2], "advanced") ? UI_NET_SUB_ADVANCED
+                : !strcmp(argv[2], "peers") ? UI_NET_SUB_PEERS : -1;
+        if (sub < 0) { printf("usage: ui net networks|advanced|peers\n"); return 1; }
+        ui_async(ui_net_sub_async, (void *)(intptr_t)sub);
+        printf("ui: net %s\n", argv[2]);
+        return 0;
+    }
     if (argc >= 2 && argc <= 3 && strcmp(argv[1], "brightness") == 0) {
         if (argc == 3) {
             long v;
@@ -232,7 +249,7 @@ static int cmd_ui(int argc, char **argv)
         printf("ui brightness: %u\n", g_settings.brightness);
         return 0;
     }
-    printf("usage: ui refresh | ui home | ui settings | ui heapmin start|stop | ui timers | ui brightness [5..100]\n");
+    printf("usage: ui refresh | ui home | ui settings [network] | ui net networks|advanced|peers | ui heapmin start|stop | ui timers | ui brightness [5..100]\n");
     return 1;
 }
 
@@ -240,7 +257,7 @@ void key_console_init(void)
 {
     const esp_console_cmd_t ui_cmd = {
         .command = "ui",
-        .help = "ui refresh: rebuild the current screen; ui home: go to Sessions; ui settings: open Settings; ui heapmin start|stop: internal RAM low over an action; ui timers: list LVGL timers; ui brightness [n]: the saved display brightness",
+        .help = "ui refresh: rebuild the current screen; ui home: go to Sessions; ui settings [network]: open Settings (on Network); ui net networks|advanced|peers: a Network sub-page; ui heapmin start|stop: internal RAM low over an action; ui timers: list LVGL timers; ui brightness [n]: the saved display brightness",
         .hint = NULL,
         .func = cmd_ui,
     };

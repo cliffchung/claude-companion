@@ -16,7 +16,6 @@
 #include <errno.h>
 #include "settings/settings.h"
 #include "net/wifi_mgr.h"
-#include "storage/sd.h"
 #include "net/ts_host.h"
 
 static const char *TAG = "tailscale";
@@ -182,20 +181,13 @@ static void on_state(microlink_t *ml, microlink_state_t st, void *user)
 }
 static void on_peer(microlink_t *ml, const microlink_peer_info_t *p, void *user) { (void)p; (void)user; if (ml == s_ml) notify(); }
 
-/* Auth key: settings first, then /sdcard/tailscale/authkey.txt (first line). */
+/* Auth key: the saved setting only (spec U6: nothing reads the SD card at start any more; Settings ›
+   Network › Auth key › Load from SD card copies the file once, on request). Never logged. */
 static bool load_auth_key(char *out, size_t cap)
 {
-    if (g_settings.ts_auth_key[0]) { strlcpy(out, g_settings.ts_auth_key, cap); return true; }
-    char *txt = NULL; size_t len = 0;
-    if (fs_read_all(SD_MOUNT "/tailscale/authkey.txt", &txt, &len, 4096)) {
-        char *nl = strpbrk(txt, "\r\n"); if (nl) *nl = 0;
-        strlcpy(out, txt, cap); free(txt);
-        if (strncmp(out, "tskey-", 6) == 0) {
-            strlcpy(g_settings.ts_auth_key, out, sizeof(g_settings.ts_auth_key)); settings_save();
-            return true;
-        }
-    }
-    return false;
+    if (!g_settings.ts_auth_key[0]) return false;
+    strlcpy(out, g_settings.ts_auth_key, cap);
+    return true;
 }
 
 static char s_key[160], s_name[40], s_ctrl[96];
@@ -549,6 +541,21 @@ bool tailscale_forget_node(void)
     return ok;
 }
 const char *tailscale_last_error(void) { return s_err; }
+bool tailscale_home_derp_code(char *out, size_t cap)
+{
+    if (!out || !cap) return false;
+    out[0] = 0;
+    microlink_t *ml = ml_get();
+    uint16_t id = ml ? ml->derp_home_region : 0;
+    for (int i = 0; ml && id && i < ml->derp_region_count; i++)
+        if (ml->derp_regions[i].region_id == id && ml->derp_regions[i].code[0]) {
+            strlcpy(out, ml->derp_regions[i].code, cap);
+            break;
+        }
+    ml_put(ml);
+    if (!out[0] && id) snprintf(out, cap, "%u", (unsigned)id);
+    return out[0] != 0;
+}
 uint16_t tailscale_home_derp(void)
 {
     microlink_t *ml = ml_get();

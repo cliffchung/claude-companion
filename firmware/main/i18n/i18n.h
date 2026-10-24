@@ -361,7 +361,118 @@ X(RST_DEEPSLEEP, "deep sleep") \
 X(RST_BROWNOUT, "brownout") \
 X(RST_USB, "USB") \
 X(RST_OTHER, "other") \
-X(LINK_CANT_REACH, "Can't reach %s. Is it awake?")
+X(LINK_CANT_REACH, "Can't reach %s. Is it awake?") \
+X(NET_WIFI, "Wi-Fi") \
+X(NET_CONNECTED, "\xe2\x97\x8f connected \xc2\xb7 %s") \
+X(NET_SIG_STRONG, "strong") \
+X(NET_SIG_GOOD, "good") \
+X(NET_SIG_FAIR, "fair") \
+X(NET_SIG_WEAK, "weak") \
+X(NET_NOT_CONNECTED, "Not connected") \
+X(NET_NETWORKS, "Networks") \
+X(NET_SAVED_N, "%d saved") \
+X(NET_ADVANCED, "Advanced") \
+X(NET_DISCONNECT, "Disconnect") \
+X(NET_DISCONNECT_Q, "Disconnect from %s?") \
+X(NET_DISCONNECT_BODY, "The Tab5 stays off Wi-Fi until the next boot, or until you join a network.") \
+X(NET_FORGET, "Forget") \
+X(NET_FORGET_Q, "Forget %s?") \
+X(NET_FORGET_BODY, "The Tab5 won't join it again until you enter its password.") \
+X(NET_FORGOTTEN, "Forgot %s") \
+X(NET_SAVED, "Saved") \
+X(NET_AVAILABLE, "Available") \
+X(NET_SCANNING, "Scanning\xe2\x80\xa6") \
+X(NET_SCAN, "Scan") \
+X(NET_SCAN_NONE, "No networks found") \
+X(NET_SCAN_FAILED, "The scan didn't start. Tap Scan to try again.") \
+X(NET_NO_SAVED, "No saved networks") \
+X(NET_JOIN_OTHER, "Join other\xe2\x80\xa6") \
+X(NET_SSID, "Network name") \
+X(NET_PASSWORD_FOR, "Password for %s") \
+X(NET_PASSWORD_HINT, "Empty for an open network") \
+X(NET_JOINING, "Joining %s\xe2\x80\xa6") \
+X(NET_JOINED, "Connected to %s") \
+X(NET_JOIN_FAILED, "Couldn't join. Check the password.") \
+X(NET_STATIC, "Static address") \
+X(NET_STATIC_OFF, "Off (DHCP)") \
+X(NET_STATIC_VALUE, "%s/%d \xc2\xb7 gw %s") \
+X(NET_STATIC_PROMPT, "Static address (empty turns it off)") \
+X(NET_STATIC_NOTE, "Applies from the next join. Use an address your router won't hand to another device: it is used on every Wi-Fi network.") \
+X(NET_STATIC_BAD, "Use address/prefix gateway [dns], like 192.168.1.50/24 192.168.1.1") \
+X(NET_STATIC_ON, "Static address on from the next join") \
+X(NET_STATIC_OFF_DONE, "Static address off: DHCP from the next join") \
+X(NET_STATIC_NOT_SAVED, "Static address not changed (not saved)") \
+X(NET_STATIC_REFUSED, "Static address refused") \
+X(NET_TS, "Tailscale") \
+X(NET_TS_OFF_SAVED, "off \xc2\xb7 saved") \
+X(NET_TS_ON, "on") \
+X(NET_TS_TOAST_CONNECTING, "Tailscale on: connecting") \
+X(NET_TS_TOAST_WITH_WIFI, "Tailscale on: starts with Wi-Fi") \
+X(NET_TS_TOAST_AFTER_STOP, "Tailscale on: starts when it has finished turning off") \
+X(NET_TS_TOAST_TURNING_OFF, "Turning Tailscale off\xe2\x80\xa6") \
+X(NET_TS_TOAST_OFF, "Tailscale off: tailnet hosts are out of reach") \
+X(NET_TS_STATUS, "Status") \
+X(NET_TS_OFF_TEXT, "Off: doesn't run, and check-ins don't wait on it.") \
+X(NET_TS_ST_OFF, "off") \
+X(NET_TS_ST_WAIT_WIFI, "waiting for Wi-Fi") \
+X(NET_TS_ST_CONNECTING, "connecting") \
+X(NET_TS_ST_REGISTERING, "registering") \
+X(NET_TS_ST_CONNECTED, "connected") \
+X(NET_TS_ST_RECONNECTING, "reconnecting") \
+X(NET_TS_ST_ERROR, "error") \
+X(NET_TS_ST_STOPPING, "turning off") \
+X(NET_TS_DERP, "DERP %s") \
+X(NET_TS_PEERS_ONLINE, "%d peers online") \
+X(NET_TS_PEER_ONLINE, "1 peer online") \
+X(NET_TS_AUTH_KEY, "Auth key") \
+X(NET_TS_KEY_SET, "\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2 set") \
+X(NET_TS_KEY_NOT_SET, "Not set") \
+X(NET_TS_KEY_ENTER, "Enter key") \
+X(NET_TS_KEY_SD, "Load from SD card") \
+X(NET_TS_KEY_CLEAR, "Clear key") \
+X(NET_TS_KEY_PLACEHOLDER, "tskey-auth-\xe2\x80\xa6") \
+X(NET_TS_KEY_SAVED, "Auth key saved") \
+X(NET_TS_KEY_EMPTY, "Nothing saved: the key was empty") \
+X(NET_TS_KEY_LOADED, "Auth key loaded from the SD card") \
+X(NET_TS_NO_SD, "No SD card") \
+X(NET_TS_NO_KEY_FILE, "No key file") \
+X(NET_TS_KEY_CLEAR_Q, "Clear the auth key?") \
+X(NET_TS_KEY_CLEAR_BODY, "This device stays on the tailnet. To register it again you'll need a new key.") \
+X(NET_TS_KEY_CLEAR_ACTION, "Clear") \
+X(NET_TS_KEY_CLEARED, "Auth key cleared") \
+X(NET_TS_NAME, "Device name") \
+X(NET_TS_NAME_EMPTY, "A device name can't be empty") \
+X(NET_TS_APPLIES, "Applies the next time Tailscale starts") \
+X(NET_TS_CTRL, "Control server") \
+X(NET_TS_CTRL_DEFAULT, "Default (Tailscale)") \
+X(NET_TS_CTRL_PLACEHOLDER, "https://headscale.example") \
+X(NET_TS_CONN, "Connection") \
+X(NET_TS_RELAY, "Relay only") \
+X(NET_TS_DIRECT, "Try direct") \
+X(NET_TS_PEERS, "Peers") \
+X(NET_TS_N_ONLINE, "%d online") \
+X(NET_TS_FORGET, "Forget this device on the tailnet") \
+X(NET_TS_FORGET_Q, "Forget this device on the tailnet?") \
+X(NET_TS_FORGET_BODY, "Removes this device's tailnet identity. It registers again with the saved auth key the next time Tailscale starts.") \
+X(NET_TS_FORGET_BODY_NO_KEY, "Removes this device's tailnet identity. It registers again with the saved auth key the next time Tailscale starts. You'll need a new auth key.") \
+X(NET_TS_FORGET_ACTION, "Forget") \
+X(NET_TS_FORGETTING, "Forgetting this device\xe2\x80\xa6") \
+X(NET_TS_FORGOTTEN, "Forgotten: it registers again the next time Tailscale starts") \
+X(NET_TS_FORGET_FAILED, "Couldn't forget this device. Try again.") \
+X(NET_TS_FORGET_BUSY, "Already forgetting this device") \
+X(NET_PEERS_NONE, "No peers yet") \
+X(NET_PEERS_TS_OFF, "Tailscale is off. Turn it on to see your peers.") \
+X(NET_PEER_LINE, "%s \xc2\xb7 %s \xc2\xb7 %s") \
+X(NET_PEER_ONLINE, "online") \
+X(NET_PEER_OFFLINE, "offline") \
+X(NET_PEER_DIRECT, "direct") \
+X(NET_PEER_RELAY, "relay") \
+X(NET_REFRESH, "Refresh") \
+X(NET_ADD_SSH_HOST, "Add as SSH host") \
+X(NET_ADD_FROM_TERMINAL, "Add it from Terminal") \
+X(NET_BACK_SETTINGS, "Settings") \
+X(TS_OFF_BANNER, "Tailscale is off. These hosts are reachable only over your tailnet.") \
+X(TS_TURN_ON, "Turn on")
 
 typedef enum {
 #define X(id, en) STR_##id,

@@ -21,6 +21,7 @@ ICONS = {
  'KEYBOARD': '00 ff 81 d5 ab 81 bd ff',
  'LEFT': '00 08 10 20 10 08 00 00',
  'LIST': '00 df 00 df 00 df 00 00',
+ 'LOCK': '18 24 24 7e 7e 66 7e 7e',
  'MINUS': '00 00 00 7e 00 00 00 00',
  'NEW_LINE': '02 02 12 22 7e 20 10 00',
  'NEXT': '00 42 62 72 7a 72 62 42',
@@ -43,11 +44,14 @@ ICONS = {
  'WARNING': '18 24 24 5a 5a 42 99 ff',
  'WIFI': '00 7e 81 3c 42 18 00 18',
 }
+# Pictograms LVGL has no LV_SYMBOL_ name for: their Font Awesome code points (UI_GLYPH_* in ui_tokens.h).
+EXTRA_CPS = {'LOCK': 0xF023}
 root = Path(__file__).resolve().parents[1]
 def generate():
     symbols = (root/'managed_components/lvgl__lvgl/include/lvgl/font/lv_symbol_def.h').read_text()
     cps = {name: bytes.fromhex(raw.replace('\\x', '')).decode('utf8')
            for name, raw in re.findall(r'#define LV_SYMBOL_(\w+)\s+"([^"]+)"', symbols) if '\\x' in raw}
+    cps.update({k: chr(cp) for k, cp in EXTRA_CPS.items()})
     entries = sorted((ord(cps[k]), k, bytes.fromhex(v)) for k,v in ICONS.items())
     for scale in (2,4):
         side = 8*scale

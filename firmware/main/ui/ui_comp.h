@@ -101,6 +101,10 @@ lv_obj_t *ui_title(lv_obj_t *parent, const char *text);   /* the title role (a p
  * Esc or a tap outside closes it without a call. */
 lv_obj_t *ui_picker(const char *title, const char *const *items, int count, int current, ui_menu_cb_t cb, void *ud);
 /* (returns the sheet: its rows follow the title label in item order, so a caller can add a swatch to each) */
+/* A sheet of 64 px action rows (no radio dots): cb(index, ud) on a tap; an item whose bit is set in
+ * `destructive` reads red (its action still confirms). Esc or a tap outside closes it without a call. */
+lv_obj_t *ui_action_sheet(const char *title, const char *const *items, int count, uint32_t destructive,
+                          ui_menu_cb_t cb, void *ud);
 /* The title wraps. Cancel is secondary; the action (NULL: OK) is primary, or destructive in red. */
 void ui_confirm_ex(const char *title, const char *body, const char *action, bool destructive,
                    ui_confirm_cb_t cb, void *ud);

@@ -10,6 +10,9 @@ extern "C" {
 typedef enum { TS_OFF = 0, TS_WAIT_WIFI, TS_CONNECTING, TS_REGISTERING, TS_CONNECTED, TS_RECONNECTING, TS_ERROR } ts_state_t;
 typedef struct { char hostname[64]; char ip[16]; bool online, direct, exit_node; uint16_t derp_region; } ts_peer_t;
 uint16_t tailscale_home_derp(void);
+/* The home DERP region's code ("sea"), or its number when the map has no code; false (out "") with no
+   region yet (spec §9 copy rule 7: the one internal name the UI shows, as "DERP sea"). */
+bool tailscale_home_derp_code(char *out, size_t cap);
 typedef void (*ts_event_cb_t)(void *user);
 
 void tailscale_init(void);                 /* reads settings; starts if enabled and WiFi is up */
@@ -26,7 +29,8 @@ bool tailscale_enabled(void);
 bool tailscale_stopping(void);
 /* True while tailscale_forget_node runs; a second call meanwhile returns false at once (N4). */
 bool tailscale_forgetting(void);
-/* The SSH terminal's message for a tailnet host while the switch is off. */
+/* The SSH terminal's connect refusal for a tailnet host while the switch is off (ruling C15: the Terminal
+   banner has its own string, STR_TS_OFF_BANNER). */
 #define TS_OFF_MESSAGE TS_HOST_OFF_MESSAGE   /* net/ts_host.h: the pure precheck returns it */
 void tailscale_on_wifi(bool connected);   /* called from the WiFi manager hook */
 ts_state_t tailscale_state(void);

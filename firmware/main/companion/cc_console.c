@@ -9,6 +9,7 @@
 #include "sys/debug_console.h"
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
+#include "settings/settings.h"
 #include "ui/ui.h"
 #include "ui/ui_sessions.h"
 #include "net/ts_host.h"
@@ -378,6 +379,13 @@ static int cmd_ts(int argc, char **argv)
     }
     const char *ip = tailscale_vpn_ip();
     printf("ts: %s (%s%s%s)\n", tailscale_enabled() ? "on" : "off", tailscale_state_text(), ip[0] ? " " : "", ip);
+    /* set or not set only: the key itself is never printed (spec §3 rule 3) */
+    int peers = tailscale_peer_count(), online = 0;
+    for (int i = 0; i < peers; i++) {
+        ts_peer_t p;
+        if (tailscale_peer(i, &p) && p.online) online++;
+    }
+    printf("auth key: %s; peers: %d, %d online\n", g_settings.ts_auth_key[0] ? "set" : "not set", peers, online);
     /* what MicroLink costs: compare with the switch off and on */
     printf("heap: internal free %u B, min %u B, largest %u B\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));

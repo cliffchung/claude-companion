@@ -719,7 +719,8 @@ lv_obj_t *ui_srow(lv_obj_t *parent, ui_row_kind_t kind, const char *label, const
     } else if (kind != UI_ROW_ACTION || (value && *value)) {
         v = text(r, value, &s_muted, &s_label);
         if (kind == UI_ROW_INFO) {
-            lv_obj_set_style_max_width(v, LV_PCT(60), 0);
+            /* a set width, not a max: LVGL sizes a content-width label to one unwrapped line, then clips it */
+            lv_obj_set_width(v, LV_PCT(60));
             lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
             lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_WRAP);
             lv_obj_set_style_min_height(r, UI_TK_ROW_H, 0);

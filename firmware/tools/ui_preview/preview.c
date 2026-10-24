@@ -86,7 +86,7 @@ bool power_shield_up(void) { return false; }
 ts_state_t tailscale_state(void)
 {
     int m = env_int("PREVIEW_TS", 2);
-    return m == 0 ? TS_OFF : m == 1 ? TS_CONNECTING : TS_CONNECTED;
+    return m == 0 ? TS_OFF : m == 1 ? TS_CONNECTING : m == 3 ? TS_ERROR : TS_CONNECTED;
 }
 bool tailscale_start(void) { return true; }
 void tailscale_stop(void) {}
@@ -95,6 +95,58 @@ bool tailscale_stopping(void) { return false; }
 void tailscale_set_enabled(bool on) { g_settings.ts_enable = on; }
 const char *tailscale_state_text(void) { return tailscale_state() == TS_CONNECTED ? "Connected" : tailscale_state() == TS_OFF ? "Off" : "Connecting"; }
 const char *tailscale_vpn_ip(void) { return tailscale_state() == TS_CONNECTED ? "100.101.102.103" : ""; }
+/* ---- Settings › Network (Task 8): stubs that record what the screens did ----
+   PREVIEW_TS=3: TS_ERROR. PREVIEW_SD=0: no card; PREVIEW_SD=nofile: a card without the key file. */
+#define PREVIEW_TS_KEY "tskey-auth-preview-NOTAREALKEY-0123456789"
+static ts_event_cb_t s_ts_cb; static void *s_ts_cb_user; static int s_ts_cb_sets;
+void tailscale_set_event_cb(ts_event_cb_t cb, void *user) { s_ts_cb = cb; s_ts_cb_user = user; s_ts_cb_sets++; }
+const char *tailscale_last_error(void) { return env_int("PREVIEW_TS", 2) == 3 ? "Auth key expired: enter a new one" : ""; }
+bool tailscale_home_derp_code(char *out, size_t cap) { snprintf(out, cap, "%s", tailscale_state() == TS_CONNECTED ? "sea" : ""); return out[0] != 0; }
+static int s_ts_forget_calls;
+bool tailscale_forget_node(void) { s_ts_forget_calls++; return true; }
+bool tailscale_forgetting(void) { return false; }
+static const ts_peer_t k_preview_peers[] = {
+    { "preview-host-a", "100.64.0.11", true, false, false, 10 },
+    { "preview-host-b", "100.64.0.12", false, false, false, 10 },
+    { "preview-host-c", "100.64.0.13", true, true, false, 10 },
+};
+static int s_peer_reads;
+int tailscale_peer_count(void) { s_peer_reads++; return tailscale_state() == TS_CONNECTED ? 3 : 0; }
+bool tailscale_peer(int i, ts_peer_t *out) { if (tailscale_state() != TS_CONNECTED || i < 0 || i >= 3) return false; *out = k_preview_peers[i]; return true; }
+static wifi_saved_t s_preview_saved[4] = { { "Clientre Wi-Fi", "preview-pass-1" }, { "Cabin", "preview-pass-2" } };
+static int s_preview_saved_n = 2;
+static int s_wifi_forget_calls, s_wifi_connect_calls, s_scan_starts;
+static char s_wifi_connect_ssid[33];
+int wifi_mgr_saved_count(void) { return s_preview_saved_n; }
+const wifi_saved_t *wifi_mgr_saved(int i) { return i >= 0 && i < s_preview_saved_n ? &s_preview_saved[i] : NULL; }
+void wifi_mgr_forget(int i) {
+    s_wifi_forget_calls++;
+    if (i < 0 || i >= s_preview_saved_n) return;
+    memmove(&s_preview_saved[i], &s_preview_saved[i + 1], sizeof(s_preview_saved[0]) * (size_t)(s_preview_saved_n - i - 1));
+    s_preview_saved_n--;
+}
+void wifi_mgr_connect(const char *ssid, const char *pass, bool save) { (void)pass; (void)save; s_wifi_connect_calls++; snprintf(s_wifi_connect_ssid, sizeof(s_wifi_connect_ssid), "%s", ssid); }
+static wifi_ev_cb_t s_wifi_cb; static void *s_wifi_cb_user;
+void wifi_mgr_set_cb(wifi_ev_cb_t cb, void *user) { s_wifi_cb = cb; s_wifi_cb_user = user; }
+bool wifi_mgr_scan_start(void) { s_scan_starts++; return true; }
+static const wifi_scan_item_t k_preview_scan[] = {
+    { "Clientre Wi-Fi", -52, 3, 6 }, { "Neighbour 5G", -71, 3, 36 }, { "Library guest", -80, 0, 11 },
+    { "", -60, 3, 1 }, { "Neighbour 5G", -77, 3, 40 },
+};
+int wifi_mgr_scan_results(wifi_scan_item_t *out, int max) {
+    int n = (int)(sizeof(k_preview_scan) / sizeof(k_preview_scan[0]));
+    if (n > max) n = max;
+    memcpy(out, k_preview_scan, sizeof(k_preview_scan[0]) * (size_t)n);
+    return n;
+}
+bool sd_mount(void) { return strcmp(env_str("PREVIEW_SD", "1"), "0") != 0; }
+bool fs_read_all(const char *path, char **out, size_t *len, size_t max) {
+    (void)max;
+    if (strcmp(path, "/sdcard/tailscale/authkey.txt") || !strcmp(env_str("PREVIEW_SD", "1"), "nofile")) return false;
+    *out = strdup("tskey-auth-fromsd-NOTAREALKEY\nsecond line\n");
+    *len = strlen(*out);
+    return true;
+}
 bool keyboard_any_present(void) { return true; }
 void keyboard_inject(const key_event_t *ev) { (void)ev; }
 void esp_restart(void) {}
@@ -228,7 +280,6 @@ bool cc_link_pinned_fingerprint(char *fp, size_t cap) { snprintf(fp, cap, "SHA25
 esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
 #define SCREEN(name) lv_obj_t *name(void *p) { return ui_screen_base(); }
 SCREEN(ui_hosts_create)
-SCREEN(ui_wifi_create) SCREEN(ui_tailscale_create)
 SCREEN(ui_server_form_create)
 static int snapshot(lv_obj_t *s, const char *path) {
     int w=lv_obj_get_width(s), h=lv_obj_get_height(s);
@@ -1000,6 +1051,305 @@ static void slug(char *out, size_t cap, const char *t) {
     out[n] = 0;
 }
 
+/* ------------------------------------------------------------ Settings › Network (Task 8) */
+static const char *const k_ts_rows[] = { "Tailscale", "Status", "Auth key", "Device name", "Control server", "Connection",
+                                        "Peers", "Forget this device on the tailnet" };
+/* The panel row (a direct child) whose label reads t. */
+static lv_obj_t *row_labeled(lv_obj_t *panel, const char *t) {
+    for (uint32_t k = 0; k < lv_obj_get_child_count(panel); k++) {
+        lv_obj_t *c = lv_obj_get_child(panel, k);
+        lv_obj_t *l = lv_obj_get_child_count(c) ? lv_obj_get_child(c, 0) : NULL;
+        if (l && lv_obj_check_type(l, &lv_label_class) && !strcmp(lv_label_get_text(l), t) && lv_obj_get_height(c) >= 48) return c;
+    }
+    return NULL;
+}
+/* The y of the first shown label t under o (-1: none). */
+static int32_t label_y(lv_obj_t *o, const char *t) {
+    lv_obj_t *l = find_label(o, t, false);
+    if (!l) return -1;
+    lv_area_t a; lv_obj_get_coords(l, &a);
+    return a.y1;
+}
+/* A label anywhere on the screen or its dialogs that shows the stub auth key (it must never be shown). */
+static lv_obj_t *key_shown(lv_obj_t *s) {
+    lv_obj_t *l = find_label_has(s, "tskey-auth-", 0);
+    return l ? l : find_label_has(lv_layer_top(), "tskey-auth-", 0);
+}
+/* The number of action rows in the open sheet titled t. */
+static int sheet_rows(const char *t) {
+    lv_obj_t *l = find_label(lv_layer_top(), t, false);
+    return l ? (int)lv_obj_get_child_count(lv_obj_get_parent(l)) - 1 : -1;
+}
+static void click_label(lv_display_t *d, lv_obj_t *o, const char *t) {
+    lv_obj_t *c = find_clickable_shown(o, t);
+    assert(c);
+    lv_obj_send_event(c, LV_EVENT_CLICKED, NULL); step(d, 200);
+}
+/* Types text into the open prompt and presses OK. */
+static void prompt_answer(lv_display_t *d, const char *text) {
+    lv_obj_t *ta = find_shown(lv_layer_top(), &lv_textarea_class);
+    assert(ta);
+    lv_textarea_set_text(ta, text);
+    click_label(d, lv_layer_top(), "OK");
+}
+
+/* settings 1 (Network): returns true when it ran its own checks (r set). */
+static bool network_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *panel, const char *click, int scroll, const char *name, int *r) {
+    lv_obj_t *top = lv_layer_top();
+    if (key_shown(s)) { printf("check %s: FAIL the auth key is shown: \"%s\"\n", name, lv_label_get_text(key_shown(s))); *r = 1; return true; }
+    if (!click[0] && !scroll) {
+        /* U10's order, one column; every Tailscale row shows with the switch off too */
+        int32_t last = -1;
+        for (unsigned i = 0; i < sizeof(k_ts_rows) / sizeof(k_ts_rows[0]); i++) {
+            lv_obj_t *row = row_labeled(panel, k_ts_rows[i]);
+            if (!row) { printf("check %s: FAIL no row \"%s\"\n", name, k_ts_rows[i]); *r = 1; return true; }
+            lv_area_t a; lv_obj_get_coords(row, &a);
+            if (a.y1 <= last) { printf("check %s: FAIL \"%s\" is out of U10's order\n", name, k_ts_rows[i]); *r = 1; return true; }
+            last = a.y1;
+            if (lv_obj_get_height(row) < UI_TK_ROW_H) { printf("check %s: FAIL \"%s\" row is %d px\n", name, k_ts_rows[i], (int)lv_obj_get_height(row)); *r = 1; return true; }
+        }
+        assert(label_y(panel, "Wi-Fi") < label_y(panel, "Networks") && label_y(panel, "Networks") < label_y(panel, "Advanced"));
+        assert(label_y(panel, "Advanced") < label_y(panel, "Status"));
+        assert(find_label(panel, "\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2 set", false));
+        assert(find_label(panel, "Relay only", false) && find_label(panel, "Default (Tailscale)", false));
+        assert(find_label(panel, "Applies the next time Tailscale starts", false));
+        assert(find_label(panel, "\xe2\x97\x8f connected \xc2\xb7 good", false));   /* -60 dBm */
+        assert(!find_label_has(panel, "Mac", 0) && !find_label_has(panel, "Wi-Fi networks", 0));   /* P4-9's bridge is gone */
+        int ts = env_int("PREVIEW_TS", 2);
+        if (ts == 0) {
+            if (!find_label_has(panel, "Off: doesn't run", 0)) { printf("check %s: FAIL Status doesn't read off\n", name); *r = 1; return true; }
+            assert(find_label(panel, "off \xc2\xb7 saved", false));
+        } else if (ts == 3) {
+            lv_obj_t *e = find_label(panel, "Auth key expired: enter a new one", false);
+            assert(e && lv_color_eq(lv_obj_get_style_text_color(e, 0), lv_color_hex(UI_TK_RED)));
+        } else {
+            assert(find_label(panel, "on", false));
+            if (!find_label(panel, "connected \xc2\xb7 100.101.102.103 \xc2\xb7 DERP sea \xc2\xb7 2 peers online", false)) {
+                printf("check %s: FAIL the Status row\n", name); *r = 1; return true;
+            }
+            assert(find_label(panel, "2 online", false));
+        }
+        return false;
+    }
+    if (scroll && !click[0]) {
+        lv_area_t pa; lv_obj_get_coords(panel, &pa);
+        const char *want[] = { "Peers", "Forget this device on the tailnet" };
+        for (int i = 0; i < 2; i++) {
+            lv_obj_t *l = find_label(panel, want[i], false);
+            assert(l);
+            lv_area_t a; lv_obj_get_coords(lv_obj_get_parent(l), &a);
+            if (a.y1 < pa.y1 || a.y2 > pa.y2) { printf("check %s: FAIL \"%s\" at %d-%d, the panel %d-%d\n", name, want[i], (int)a.y1, (int)a.y2, (int)pa.y1, (int)pa.y2); *r = 1; return true; }
+        }
+        return false;
+    }
+    if (!strcmp(click, "Auth key")) {
+        int n = sheet_rows("Auth key");
+        if (n != 3) { printf("check %s: FAIL %d auth key actions\n", name, n); *r = 1; return true; }
+        assert(find_label(top, "Enter key", false) && find_label(top, "Load from SD card", false) && find_label(top, "Clear key", false));
+        lv_obj_t *clr = find_label(top, "Clear key", false);
+        assert(lv_color_eq(lv_obj_get_style_text_color(clr, 0), lv_color_hex(UI_TK_RED)));
+        *r |= pv_run_checks(d, s, name, false, 0);
+        /* Enter key: a masked field that starts empty, never the saved key */
+        click_label(d, top, "Enter key");
+        lv_obj_t *ta = find_shown(top, &lv_textarea_class);
+        assert(ta && lv_textarea_get_password_mode(ta) && !strcmp(lv_textarea_get_text(ta), ""));
+        lv_textarea_set_text(ta, "tskey-auth-typed-NOTAREALKEY");
+        step(d, 100);
+        if (key_shown(s)) { printf("check %s: FAIL the typed key shows: \"%s\"\n", name, lv_label_get_text(key_shown(s))); *r = 1; }
+        click_label(d, top, "OK");
+        assert(!strcmp(g_settings.ts_auth_key, "tskey-auth-typed-NOTAREALKEY"));
+        /* Load from SD card: no card, no file, then the file's first line */
+        setenv("PREVIEW_SD", "0", 1);
+        click_label(d, settings_panel(s), "Auth key"); click_label(d, top, "Load from SD card");
+        assert(find_label(top, "No SD card", false));
+        setenv("PREVIEW_SD", "nofile", 1);
+        click_label(d, settings_panel(s), "Auth key"); click_label(d, top, "Load from SD card");
+        assert(find_label(top, "No key file", false));
+        setenv("PREVIEW_SD", "1", 1);
+        click_label(d, settings_panel(s), "Auth key"); click_label(d, top, "Load from SD card");
+        assert(!strcmp(g_settings.ts_auth_key, "tskey-auth-fromsd-NOTAREALKEY"));
+        if (key_shown(s)) { printf("check %s: FAIL the loaded key shows\n", name); *r = 1; }
+        /* Clear key: confirmed, destructive; then the row reads Not set and the sheet has two actions */
+        click_label(d, settings_panel(s), "Auth key"); click_label(d, top, "Clear key");
+        assert(find_label(top, "Clear the auth key?", false));
+        click_label(d, top, "Clear");
+        assert(!g_settings.ts_auth_key[0] && find_label(settings_panel(s), "Not set", false));
+        click_label(d, settings_panel(s), "Auth key");
+        assert(sheet_rows("Auth key") == 2);
+        lv_obj_clean(top);
+        printf("%s: 3 actions, masked entry, SD: no card / no file / loaded, clear confirmed; the key never shown\n", name);
+        return true;
+    }
+    if (!strcmp(click, "Device name")) {
+        char before[sizeof(g_settings.ts_device_name)];
+        strcpy(before, g_settings.ts_device_name);
+        prompt_answer(d, "   ");
+        if (strcmp(before, g_settings.ts_device_name)) { printf("check %s: FAIL an empty name was saved\n", name); *r = 1; return true; }
+        if (!find_label(top, "A device name can't be empty", false)) { printf("check %s: FAIL no refusal toast\n", name); *r = 1; return true; }
+        *r |= pv_run_checks(d, s, name, false, 0);
+        lv_obj_clean(top);
+        click_label(d, settings_panel(s), "Device name");
+        prompt_answer(d, " tab5-desk ");
+        assert(!strcmp(g_settings.ts_device_name, "tab5-desk") && find_label(settings_panel(s), "tab5-desk", false));
+        lv_obj_clean(top);
+        return true;
+    }
+    if (!strcmp(click, "Forget this device on the tailnet")) {
+        bool had_key = g_settings.ts_auth_key[0] != 0;
+        assert(find_label(top, "Forget this device on the tailnet?", false));
+        bool extra = find_label_has(top, "You'll need a new auth key.", 0) != NULL;
+        if (extra == had_key) { printf("check %s: FAIL the no-key sentence %s\n", name, extra ? "shown with a key" : "missing"); *r = 1; return true; }
+        *r |= pv_run_checks(d, s, name, false, 0);
+        char key[sizeof(g_settings.ts_auth_key)];
+        strcpy(key, g_settings.ts_auth_key);
+        click_label(d, top, "Forget");
+        step(d, 100);
+        if (s_ts_forget_calls != 1) { printf("check %s: FAIL forget called %d times\n", name, s_ts_forget_calls); *r = 1; }
+        if (strcmp(key, g_settings.ts_auth_key)) { printf("check %s: FAIL the forget cleared the auth key\n", name); *r = 1; }   /* U5 */
+        assert(find_label_has(top, "Forgotten", 0));
+        lv_obj_clean(top);
+        printf("%s: forget ran once and kept the auth key (%s)\n", name, had_key ? "set" : "not set");
+        return true;
+    }
+    if (!strcmp(click, "Connection")) {
+        assert(sheet_rows("Connection") == 2 && find_label(top, "Try direct", false));
+        *r |= pv_run_checks(d, s, name, false, 0);
+        click_label(d, top, "Try direct");
+        assert(g_settings.ts_direct == 1 && find_label(settings_panel(s), "Try direct", false));
+        lv_obj_clean(top);
+        return true;
+    }
+    if (!strcmp(click, "Clientre Wi-Fi")) {
+        /* the current network: a sheet with Disconnect and Forget, both confirmed */
+        assert(sheet_rows("Clientre Wi-Fi") == 2 && find_label(top, "Disconnect", false));
+        *r |= pv_run_checks(d, s, name, false, 0);
+        click_label(d, top, "Forget");
+        assert(find_label(top, "Forget Clientre Wi-Fi?", false) && s_wifi_forget_calls == 0);
+        click_label(d, top, "Forget");
+        assert(s_wifi_forget_calls == 1 && s_preview_saved_n == 1);
+        lv_obj_clean(top);
+        return true;
+    }
+    printf("preview: no assertions for settings 1 with PREVIEW_CLICK=\"%s\"\n", click);
+    return false;
+}
+
+static int timer_count(void) { int n = 0; for (lv_timer_t *t = lv_timer_get_next(NULL); t; t = lv_timer_get_next(t)) n++; return n; }
+
+/* settings-sub networks|advanced|peers [deleted-event]: a pushed Network sub-page. */
+static int settings_sub_case(lv_display_t *d, const char *sub, const char *variant) {
+    ui_net_sub_t which = !strcmp(sub, "advanced") ? UI_NET_SUB_ADVANCED : !strcmp(sub, "peers") ? UI_NET_SUB_PEERS
+                       : UI_NET_SUB_NETWORKS;
+    char name[64];
+    snprintf(name, sizeof(name), "settings-sub-%s%s%s%s", sub, variant[0] ? "-" : "", variant, pv_host() ? "" : "-no-host");
+    preview_sessions_load();
+    ui_nav_home(); step(d, 200);
+    ui_settings_open(UI_SET_NETWORK); step(d, 200);
+    int timers = timer_count();
+    ui_nav_push(ui_settings_sub_create, (void *)(intptr_t)which); step(d, 200);
+    lv_obj_t *s = lv_screen_active(), *top = lv_layer_top();
+    assert(ui_nav_is_top(ui_settings_sub_create));
+    assert(find_clickable_shown(s, "\xe2\x86\x90 Settings"));
+    if (timer_count() > timers) { printf("check %s: FAIL %d timers added\n", name, timer_count() - timers); return 1; }
+    lv_obj_t *body = lv_obj_get_child(s, 1);
+    int r = 0;
+    if (which == UI_NET_SUB_NETWORKS) {
+        assert(s_scan_starts == 1 && s_wifi_cb);
+        assert(find_label(body, "Scanning\xe2\x80\xa6", false) && find_label(body, "Cabin", false));
+        assert(find_label(body, "\xe2\x97\x8f connected \xc2\xb7 good", false));
+        s_wifi_cb(WIFI_EV_SCAN_DONE, s_wifi_cb_user); step(d, 200);   /* the results, by event */
+        assert(!find_label(body, "Scanning\xe2\x80\xa6", false));
+        lv_obj_t *lib = find_label(body, "Library guest", false), *nb = find_label(body, "Neighbour 5G", false);
+        assert(lib && nb);
+        lv_obj_t *nbv = ui_srow_value(lv_obj_get_parent(nb)), *libv = ui_srow_value(lv_obj_get_parent(lib));
+        if (!strstr(lv_label_get_text(nbv), UI_GLYPH_LOCK) || strstr(lv_label_get_text(libv), UI_GLYPH_LOCK)) {
+            printf("check %s: FAIL the lock glyph (\"%s\", \"%s\")\n", name, lv_label_get_text(nbv), lv_label_get_text(libv)); return 1;
+        }
+        lv_font_glyph_dsc_t g;
+        assert(lv_font_get_glyph_dsc(FONT_SMALL, &g, 0xF023, 0) && !g.is_placeholder);   /* the font draws it */
+        int nbs = 0;
+        for (uint32_t i = 0; i < lv_obj_get_child_count(body); i++) nbs += find_label(lv_obj_get_child(body, i), "Neighbour 5G", false) != NULL;
+        assert(nbs == 1);   /* two access points, one row; the hidden network is left out */
+        r |= pv_run_checks(d, s, name, false, 0);
+        /* a secured network asks for its password, masked; an open one joins at once; a saved one uses its password */
+        click_label(d, body, "Neighbour 5G");
+        lv_obj_t *ta = find_shown(top, &lv_textarea_class);
+        assert(ta && lv_textarea_get_password_mode(ta) && find_label(top, "Password for Neighbour 5G", false));
+        prompt_answer(d, "preview-typed-pass");
+        assert(s_wifi_connect_calls == 1 && !strcmp(s_wifi_connect_ssid, "Neighbour 5G"));
+        click_label(d, body, "Library guest");
+        assert(s_wifi_connect_calls == 2 && !find_shown(top, &lv_textarea_class));
+        click_label(d, body, "Cabin");
+        assert(s_wifi_connect_calls == 3 && !strcmp(s_wifi_connect_ssid, "Cabin"));
+        click_label(d, body, "Clientre Wi-Fi");   /* the network it is on: no rejoin, so the Host link stays */
+        assert(s_wifi_connect_calls == 3 && find_label(top, "Connected to Clientre Wi-Fi", false));
+        lv_obj_clean(top);
+        /* the trash button forgets, after a confirm */
+        lv_obj_t *cab = find_label(body, "Cabin", false);
+        lv_obj_t *trash = lv_obj_get_child(lv_obj_get_parent(lv_obj_get_parent(cab)), 1);
+        lv_obj_send_event(trash, LV_EVENT_CLICKED, NULL); step(d, 200);
+        assert(find_label(top, "Forget Cabin?", false) && s_wifi_forget_calls == 0);
+        r |= pv_run_checks(d, s, "settings-sub-networks-forget", false, 0);
+        click_label(d, top, "Forget");
+        assert(s_wifi_forget_calls == 1 && !find_label(body, "Cabin", false));
+        lv_obj_clean(top);
+        /* Join other…: the name, then a masked password */
+        click_label(d, body, "Join other\xe2\x80\xa6");
+        prompt_answer(d, "Hidden lab");
+        ta = find_shown(top, &lv_textarea_class);
+        assert(ta && lv_textarea_get_password_mode(ta));
+        prompt_answer(d, "");
+        assert(s_wifi_connect_calls == 4 && !strcmp(s_wifi_connect_ssid, "Hidden lab"));
+        lv_obj_clean(top);
+        /* Back: the scan slot is cleared */
+        ui_nav_back(); step(d, 200);
+        assert(ui_nav_is_top(ui_settings_create));
+        assert(s_wifi_cb != NULL);   /* Settings › Network's current-network row follows Wi-Fi again */
+        lv_obj_send_event(rail_row(lv_screen_active(), UI_SET_HOST), LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (s_wifi_cb) { printf("check %s: FAIL the Wi-Fi slot is set after the Network panel went\n", name); r = 1; }
+        printf("%s: scan by event, lock on secured, masked password, forget confirmed, slot cleared\n", name);
+        return r;
+    }
+    if (which == UI_NET_SUB_ADVANCED) {
+        assert(find_label(body, "Static address", false) && find_label(body, "Off (DHCP)", false));
+        assert(find_label_has(body, "Applies from the next join.", 0));
+        return pv_run_checks(d, s, name, false, 0);
+    }
+    /* Peers */
+    assert(s_ts_cb != NULL && find_clickable_shown(s, "Refresh"));
+    lv_obj_t *a = find_label(body, "preview-host-a", false), *b = find_label(body, "preview-host-b", false);
+    assert(a && b && label_y(body, "preview-host-c") < label_y(body, "preview-host-b"));   /* online first */
+    assert(find_label(body, "100.64.0.12 \xc2\xb7 offline \xc2\xb7 relay", false));
+    assert(find_label(body, "100.64.0.13 \xc2\xb7 online \xc2\xb7 direct", false));
+    int reads = s_peer_reads;
+    click_label(d, s, "Refresh");
+    assert(s_peer_reads > reads);
+    reads = s_peer_reads;
+    s_ts_cb(s_ts_cb_user); s_ts_cb(s_ts_cb_user); step(d, 200);   /* two events: one re-read, on the LVGL task */
+    assert(s_peer_reads == reads + 1);
+    if (!strcmp(variant, "deleted-event")) {
+        ts_event_cb_t old = s_ts_cb; void *old_user = s_ts_cb_user;
+        ui_nav_back(); step(d, 200);
+        lv_obj_t *now = lv_screen_active();
+        if (s_ts_cb != NULL) { printf("check %s: FAIL the Tailscale slot is still set after Peers went\n", name); return 1; }
+        reads = s_peer_reads;
+        old(old_user); step(d, 200);   /* a late event from MicroLink's task: nothing happens */
+        if (lv_screen_active() != now || s_peer_reads != reads) { printf("check %s: FAIL a stale event acted\n", name); return 1; }
+        if (s_ts_cb) s_ts_cb(s_ts_cb_user);   /* the stub's saved callback: NULL, nothing to call */
+        assert(ui_nav_is_top(ui_settings_create));
+        printf("%s: slot NULL after back; a stale event did nothing\n", name);
+        return pv_run_checks(d, now, name, false, 0);
+    }
+    r |= pv_run_checks(d, s, name, false, 0);
+    click_label(d, body, "preview-host-a");
+    assert(sheet_rows("preview-host-a") == 1 && find_label(top, "Add as SSH host", false));
+    r |= pv_run_checks(d, s, "settings-sub-peers-sheet", false, 0);
+    click_label(d, top, "Add as SSH host");
+    assert(find_label(top, "Add it from Terminal", false));
+    lv_obj_clean(top);
+    return r;
+}
+
 static int settings_case(lv_display_t *d, int section) {
     assert(section >= 0 && section < UI_SET_COUNT);
     const char *click = env_str("PREVIEW_CLICK", "");
@@ -1011,6 +1361,8 @@ static int settings_case(lv_display_t *d, int section) {
     else if (pv_notfound()) snprintf(name, sizeof(name), "settings-%d-not-found", section);
     else if (scroll) snprintf(name, sizeof(name), "settings-%d-scroll-%d", section, scroll);
     else snprintf(name, sizeof(name), "settings-%d", section);
+    if (env_int("PREVIEW_TS", 2) != 2) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-ts%d", env_int("PREVIEW_TS", 2));
+    if (!env_int("PREVIEW_KEY", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-nokey");
     preview_sessions_load();
     ui_nav_home(); step(d,200);
     ui_nav_push(ui_settings_create, NULL); step(d,200);
@@ -1126,11 +1478,13 @@ static int settings_case(lv_display_t *d, int section) {
         for (lv_obj_t *o = rail_row(s, 0); o; o = NULL) assert(lv_obj_get_height(o) == UI_TK_RAIL_ROW_H);
         lv_obj_t *rail = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
         assert(lv_obj_get_width(rail) == UI_TK_RAIL_W);
+    } else if (section == UI_SET_NETWORK) {
+        if (network_case(d, s, panel, click, scroll, name, &r)) { lv_obj_clean(top); return r; }
     } else if (click[0] || scroll) {
         printf("preview: no assertions for settings %d with PREVIEW_CLICK=\"%s\" PREVIEW_SCROLL=%d\n", section, click, scroll);
     }
-    /* C14: Network keeps its Plan 3 rows (under 64 px) until Task 8 rebuilds it */
-    r |= pv_run_checks(d, s, name, false, section == UI_SET_NETWORK ? PV_SKIP_TARGETS : 0);
+    /* Task 8: Network is rebuilt, so every section runs every check (C14 ends) */
+    r |= pv_run_checks(d, s, name, false, 0);
     lv_obj_clean(top);
     return r;
 }
@@ -1154,7 +1508,7 @@ static int keyboard_settings_case(lv_display_t *d) {
     press_key(SK_ENTER, 0, false); step(d,100);
     assert(lv_screen_active() == s && !strcmp(lv_label_get_text(lv_obj_get_child(settings_panel(s), 0)), "Network"));
     assert(lv_obj_has_state(r1, LV_STATE_FOCUS_KEY));   /* the focus stays on the rail */
-    int r = pv_run_checks(d, s, "keyboard-settings", false, PV_SKIP_TARGETS);   /* Network: C14 */
+    int r = pv_run_checks(d, s, "keyboard-settings", false, 0);   /* Network, rebuilt in Task 8: no skips */
     press_key(SK_ESC, 0, false); step(d,200);
     if (!ui_nav_is_top(ui_sessions_create)) { printf("check keyboard-settings: FAIL Esc did not go back\n"); return 1; }
     /* Ctrl+P again lands on the last used section, Network */
@@ -1200,6 +1554,7 @@ int main(int argc,char **argv) {
     }
     fonts_init(); ui_init();
     g_settings.ts_enable = env_int("PREVIEW_TS", 2) != 0;
+    if (env_int("PREVIEW_KEY", 1)) strcpy(g_settings.ts_auth_key, PREVIEW_TS_KEY);
     if (!strcmp(name,"sleep")) {
         /* the pre-Hibernate notice: full screen, over whatever is shown */
         lv_obj_t *s=ui_screen_base(); lv_screen_load(s);
@@ -1240,6 +1595,7 @@ int main(int argc,char **argv) {
     if (!strcmp(name,"ctrlk")) return sessions_case(d, "ctrlk");
     if (!strcmp(name,"settings")) return settings_case(d, argc>2 ? atoi(argv[2]) : 0);
     if (!strcmp(name,"keyboard-settings")) return keyboard_settings_case(d);
+    if (!strcmp(name,"settings-sub")) return settings_sub_case(d, argc>2 ? argv[2] : "networks", argc>3 ? argv[3] : "");
     fprintf(stderr, "preview: unknown case %s\n", argc>1 ? argv[1] : "(none)");
     return 2;
 }

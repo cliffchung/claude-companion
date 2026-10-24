@@ -16,7 +16,6 @@
 #include "input/keyboard.h"
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
-#include "net/fast_rules.h"
 #include "net/tailscale.h"
 #include "companion/cc_link.h"
 #include "ssh/device_key.h"
@@ -217,84 +216,7 @@ static void fill_host(lv_obj_t *p)
     ui_footnote(p, tr(STR_SET_HOST_NOTE));
 }
 
-/* --------------------------------------------------------------- Network */
-/* Plan 3's rows, unchanged until Task 8 rebuilds them in ui_settings_net.c. */
-static void ts_switch_cb(lv_event_t *e)
-{
-    bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
-    tailscale_set_enabled(on);   /* saved at once: sticky across boots and wakes */
-    ui_toast(on ? (tailscale_stopping() ? "Tailscale on: starts when it has finished turning off"
-                  : wifi_mgr_is_connected() ? "Tailscale on: connecting" : "Tailscale on: starts with Wi-Fi")
-                : (tailscale_stopping() ? "Turning Tailscale off\xe2\x80\xa6" : "Tailscale off"));
-    refill();
-}
-static void ts_details_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_tailscale_create, NULL); }
-static void wifi_networks_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_wifi_create, NULL); }
-
-/* Plan 3 Task 3: the optional static address (off by default) */
-static void sip_text(char *out, size_t cap)
-{
-    wifi_static_ip_t s;
-    out[0] = 0;
-    if (!wifi_mgr_static_ip_get(&s)) return;
-    uint8_t a[4], m[4], g[4], d[4];
-    memcpy(a, &s.ip, 4); memcpy(m, &s.mask, 4); memcpy(g, &s.gw, 4); memcpy(d, &s.dns, 4);
-    int prefix = 0;
-    for (int i = 0; i < 4; i++) for (int b = 7; b >= 0; b--) prefix += (m[i] >> b) & 1;
-    snprintf(out, cap, "%u.%u.%u.%u/%d %u.%u.%u.%u %u.%u.%u.%u", a[0], a[1], a[2], a[3], prefix, g[0], g[1], g[2], g[3],
-             d[0], d[1], d[2], d[3]);
-}
-static void sip_prompt_cb(const char *v, void *ud)
-{
-    (void)ud;
-    if (!v) return;
-    while (*v == ' ') v++;
-    if (!*v) {
-        /* review N2: a failed save leaves the static address on: say so, and don't show it as off */
-        if (!wifi_mgr_static_ip_set(NULL)) { ui_toast("Static address not changed (not saved)"); return; }
-        ui_toast("Static address off: DHCP from the next join");
-        refill();
-        return;
-    }
-    sip_t p;
-    if (!sip_parse(v, &p)) { ui_toast("Use address/prefix gateway [dns], like 192.168.1.50/24 192.168.1.1"); return; }
-    wifi_static_ip_t s = { .on = 1, .ip = p.ip, .mask = p.mask, .gw = p.gw, .dns = p.dns };
-    ui_toast(wifi_mgr_static_ip_set(&s) ? "Static address on from the next join" : "Static address refused");
-    refill();
-}
-static void sip_cb(lv_event_t *e)
-{
-    (void)e;
-    char cur[64];
-    sip_text(cur, sizeof(cur));
-    ui_prompt("Static address (empty = DHCP)", "192.168.1.50/24 192.168.1.1", cur, false, sip_prompt_cb, NULL);
-}
-
-void ui_settings_fill_network(lv_obj_t *c)
-{
-    char buf[128];
-    ui_switch_row(c, "Tailscale", tailscale_enabled(), ts_switch_cb, NULL);
-    snprintf(buf, sizeof(buf), "%s%s%s", tailscale_state_text(), tailscale_vpn_ip()[0] ? " " : "", tailscale_vpn_ip());
-    ui_label(c, tailscale_enabled() ? buf : "Off: MicroLink doesn't run, and check-ins don't wait on a tunnel.", FONT_SMALL, UI_MUTED);
-    ui_setting_row(c, "Tailscale details", "Auth key, device name, control host", ts_details_cb, NULL);
-    char fb[16], path[40];
-    cc_link_lan_fallback(fb, sizeof(fb));
-    ui_setting_row(c, "Host fallback address", fb[0] ? fb : "None", fallback_cb, NULL);
-    cc_link_mac_path(path, sizeof(path));
-    snprintf(buf, sizeof(buf), "Host link: %s", path);
-    ui_label(c, buf, FONT_SMALL, UI_MUTED);
-    ui_label(c, "The Host link uses your home network. The fallback address is used when the Host's name "
-                "doesn't resolve. Devices reachable only over Tailscale need the switch on.", FONT_SMALL, UI_MUTED);
-    /* P4-9 bridge until Task 8 rebuilds Network: the old Wi-Fi screen lost its launcher tile */
-    ui_setting_row(c, "Wi-Fi networks", wifi_mgr_is_connected() ? wifi_mgr_ssid() : tr(STR_WIFI_NOT_CONNECTED),
-                   wifi_networks_cb, NULL);
-    ui_section_title(c, "Wi-Fi advanced");
-    char sip[64];
-    sip_text(sip, sizeof(sip));
-    ui_setting_row(c, "Static address", sip[0] ? sip : "Off (DHCP)", sip_cb, NULL);
-    ui_label(c, "Off by default. Set it only to an address your router won't hand to another device. It is used on "
-                "every Wi-Fi network, so turn it off before joining another one.", FONT_SMALL, UI_MUTED);
-}
+/* Network: ui_settings_net.c (Task 8). */
 
 /* ----------------------------------------------------------------- Power */
 /* Menus of presets; the values go through power_setting_set, so they get the console's clamps. */
@@ -684,6 +606,15 @@ static void panel_fill(void)
     }
 }
 
+void ui_settings_refill(void)
+{
+    if (!s_panel) return;
+    int32_t y = lv_obj_get_scroll_y(s_panel);
+    panel_fill();
+    lv_obj_update_layout(s_panel);
+    lv_obj_scroll_to_y(s_panel, y, LV_ANIM_OFF);
+}
+
 static void rail_cb(lv_event_t *e)
 {
     ui_set_section_t next = (ui_set_section_t)(uintptr_t)lv_event_get_user_data(e);
@@ -765,4 +696,10 @@ void ui_settings_open(ui_set_section_t s)
 {
     if (s < UI_SET_COUNT) s_section = s;
     ui_nav_push(ui_settings_create, NULL);
+}
+
+void ui_settings_open_net_sub(ui_net_sub_t sub)
+{
+    if (!ui_nav_is_top(ui_settings_create) || s_section != UI_SET_NETWORK) ui_settings_open(UI_SET_NETWORK);
+    ui_nav_push(ui_settings_sub_create, (void *)(intptr_t)sub);
 }
