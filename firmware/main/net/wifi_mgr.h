@@ -61,7 +61,8 @@ void wifi_mgr_reconnect_text(char *buf, size_t cap);
 
 /* ---- Plan 3 Task 3 ---- */
 /* The optional static IPv4 address (Settings > Network > Wi-Fi > Advanced), off by default. Addresses in
-   network byte order (lwIP's ip4_addr_t.addr). Applied from the next join (STA_START). */
+   network byte order (lwIP's ip4_addr_t.addr). Applied from the next join. One address for every network
+   (not per SSID): with it on, another network gets it too and no DHCP. Not in the backup JSON. */
 typedef struct { uint8_t on, pad[3]; uint32_t ip, mask, gw, dns; } wifi_static_ip_t;
 bool wifi_mgr_static_ip_get(wifi_static_ip_t *out);
 bool wifi_mgr_static_ip_set(const wifi_static_ip_t *in);   /* NULL or on = 0 turns it off; false if invalid */

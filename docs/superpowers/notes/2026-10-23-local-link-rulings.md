@@ -127,9 +127,11 @@ Numbers are medians over 5 check-in boots on USB (`power checkin hibernate keep 
   - `CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y` alone gave about 40 ms (assoc→IP 1053 ms against 1096). lwIP's DHCP ARP check (about 1 s) was the real cost.
   - `CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y` brings assoc→IP to 33–40 ms.
   - The router's DHCP server checks an address before it offers or ACKs it. The lease is written to NVS only when it changes.
+  - Fix round 1 (review m1): this applies to every boot, not only check-ins. It assumes the router doesn't ACK a restored lease that another device holds. Many routers do ACK one without checking, so a device set statically to that address would go unnoticed by both sides until the lease changes.
   - Cost if wrong: a duplicate address on the LAN isn't caught by the Tab5.
 - Ruling L33 (Step 3): **the static address is optional and off by default** (Settings › Network › Wi-Fi advanced, "address/prefix gateway [dns]", the pure `sip_parse`; console `wifi static`).
-  - It is stored in NVS `wifi`/`sip`, not the settings blob, so there is no CFG bump (CFG 22 stays Plan 2 Task 10's).
+  - It is stored in NVS `wifi`/`sip`, not the settings blob, so `CFG_VERSION` stays 21 (Plan 2 Task 10's tuning bump is to take 22).
+  - Fix round 1 (review m3, m4): the console's `wifi static <ip/prefix> <gw> [dns]` goes through `sip_parse`, as the Settings row does. A failed NVS write is reported and changes nothing. The address applies on every network (not per SSID); the help text and the row say so. It isn't in the backup JSON.
   - Against the restored lease without the ARP check it saved 58 ms (9742 against 9800 ms): under the 300 ms bar, so it stays off. With the ARP check still on it saved about 0.9 s.
   - Cost if wrong: none (off).
 - Ruling L34 (Step 4): **the Host address cache** (NVS `cc`/`hcache`: entry host and its last mDNS/DNS/fallback address, never a MagicDNS one).
@@ -165,9 +167,28 @@ Numbers are medians over 5 check-in boots on USB (`power checkin hibernate keep 
   - I ended those 42 orphaned sessions. Each was user-owned `sshd-session: you@notty` with peer 192.168.1.60 (the Tab5), and nothing ran under it. sshd answered again at once. After the fix, a 5-boot chain left 0 sessions.
   - This was pre-existing (Plan 2): at the 15-minute cadence a few idle sessions were always there.
   - Cost if wrong: up to 1 s more awake if the close hangs (measured: about 30 ms).
-- Ruling L42 (Step 5, battery settle): **a check-in boot calls battery after 3 battery-like samples, not 10** (`vitals_src_seed_battery`, host test `test_checkin_prior_battery`).
+- Ruling L42 (Step 5, battery settle), **superseded by L43, reverted**: **a check-in boot calls battery after 3 battery-like samples, not 10** (`vitals_src_seed_battery`, host test `test_checkin_prior_battery`).
   - A check-in boot only follows a sleep that began on battery: the ladder and the check-in's re-hibernate both need battery.
   - USB still wins at once, and a no-evidence sample needs the full count again.
   - Why: Plan 2 measured the settle at 10–12 s after the wake, and the gate waits for it. On battery that, not the network, decided the awake time. The USB `usb` hook can't show it, because USB is known at once.
   - **Estimated, not measured on battery:** about 15.4 s → about 9.8 s awake.
   - Cost if wrong: a USB plug-in during the sleep, under a load the USB supply can't carry, is read as battery for 3 s. That check-in then re-hibernates instead of waking fully. It still charges asleep, and the next check-in decides again.
+
+## Task 3 fix round 1 (review: a local review file (not kept))
+
+- Ruling L43 (controller, fixes I1): **the check-in battery settle is Plan 2's 10 samples again (P110); L42 is dropped.**
+  - `vitals_src_seed_battery` and its call are removed. Three samples can read a USB-plugged device as battery: Plan 2's `test_usb_with_pack_supplementing` has the pack supplying USB for 9 samples in a row. The check-in would then re-hibernate instead of waking fully, which defeats PT28 I2.
+  - Host test `test_checkin_boot_usb_supplementing_not_battery` pins it. From a cold start, which is every check-in boot, ten rounds of 9 battery-like samples and a charge pause never read battery, and an early 3-sample burst stays unknown.
+  - The settle's cost, about 5.6 s per battery check-in (estimated), is left as a future item. It would need a measurement on a real pack, and on USB with a partly charged pack at boot load.
+  - Cost if wrong: about 5.6 s more awake per battery check-in than L42 would have given (estimated).
+- Ruling L44 (controller, review m6): **the Host address cache lives in NVS only, not also in the hibernate record.** The hib record is itself NVS, and the read costs about 1 ms, so a second copy would save nothing. Cost if wrong: none.
+- Ruling L45 (review m2): **a cached address counts only with the key it was cached with.**
+  - `hc_cache_t` now holds the SHA256 of the server key met when the address was cached. `hc_cached_key` accepts the cached connect only when the pin check is KH_OK **and** the key equals that hash.
+  - Without it, a machine whose key the Tab5 had pinned under another entry could take over the Host's old address after a DHCP move, and be taken for the Host.
+  - The NVS blob grew from 144 to 180 B. An old blob has the wrong size, so it is ignored once and the next lookup rewrites it.
+  - Cost if wrong: none (one extra mDNS lookup after this update).
+- Ruling L46 (review m5, m8, m9): **small fixes.**
+  - The console's `hostcache set|clear|text` and the link task now touch `s_hc` only under `s_lock`. The link works on a copy.
+  - The boot-phase init hook says why priority 102 and warns at build time outside IDF 5.5.x.
+  - A check-in boot logs the experiment mask when it isn't 0, so a forgotten `exp` can't quietly slow production check-ins.
+  - Cost if wrong: none.

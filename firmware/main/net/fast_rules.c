@@ -8,25 +8,32 @@ bool hc_use(const hc_cache_t *c, const char *entry_host, bool ts_on, bool forget
     if (!c || !entry_host || !entry_host[0] || forget_pending) return false;
     if (ts_host_is_ipv4(entry_host)) return false;
     if (strncmp(c->entry, entry_host, sizeof(c->entry)) != 0) return false;
-    if (!ts_host_is_ipv4(c->ip)) return false;
+    if (!ts_host_is_ipv4(c->ip) || !c->has_key) return false;
     if (ts_host_tailnet_ip(c->ip) && !ts_on) return false;
     return true;
 }
 
-bool hc_on_resolved(hc_cache_t *c, const char *entry_host, const char *ip)
+bool hc_on_resolved(hc_cache_t *c, const char *entry_host, const char *ip, const uint8_t key_hash[32])
 {
+    if (!key_hash) return false;
     if (!c || !entry_host || !entry_host[0] || !ts_host_is_ipv4(ip) || ts_host_is_ipv4(entry_host)) return false;
     if (strlen(entry_host) >= sizeof(c->entry)) return false;
     hc_cache_t n;
     memset(&n, 0, sizeof(n));
     strncpy(n.entry, entry_host, sizeof(n.entry) - 1);
     strncpy(n.ip, ip, sizeof(n.ip) - 1);
+    n.has_key = 1;
+    memcpy(n.key, key_hash, sizeof(n.key));
     if (memcmp(&n, c, sizeof(n)) == 0) return false;
     *c = n;
     return true;
 }
 
-hc_key_t hc_cached_key(kh_result_t kh) { return kh == KH_OK ? HC_ACCEPT : HC_LOOKUP; }
+hc_key_t hc_cached_key(kh_result_t kh, const hc_cache_t *c, const uint8_t met_hash[32])
+{
+    if (kh != KH_OK || !c || !c->has_key || !met_hash) return HC_LOOKUP;
+    return memcmp(c->key, met_hash, sizeof(c->key)) == 0 ? HC_ACCEPT : HC_LOOKUP;
+}
 
 static bool ip_bytes(const char *s, size_t n, uint8_t b[4])
 {

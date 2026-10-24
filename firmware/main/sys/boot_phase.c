@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stddef.h>
 #include "esp_attr.h"
+#include "esp_idf_version.h"
 #include "esp_timer.h"
 #include "esp_private/esp_clk.h"
 #include "esp_private/startup_internal.h"
@@ -46,7 +47,14 @@ static void rtc_ensure(void)
 static uint32_t now_ms(void) { uint32_t t = (uint32_t)(esp_timer_get_time() / 1000); return t ? t : 1; }
 
 /* the app's first code that can run: the bootloader has loaded and handed over */
-ESP_SYSTEM_INIT_FN(boot_phase_first, CORE, BIT(0), 102)   /* right after esp_timer_init_nonos (101) */
+/* Review m8: ESP_SYSTEM_INIT_FN is a private IDF API (esp_private/startup_internal.h). 102 is right after
+   esp_timer_init_nonos (101 in IDF 5.5's system_init_fn.txt); before it esp_timer_get_time() is not usable
+   (a priority of 2 crashed). If an IDF update renumbers it, check system_init_fn.txt: this mark must stay
+   after esp_timer's init, and BP_BOOTLOADER reads 1 ms on a correct build. */
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 0) || ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#warning "boot_phase: check the ESP_SYSTEM_INIT_FN priority against esp_timer_init_nonos for this IDF"
+#endif
+ESP_SYSTEM_INIT_FN(boot_phase_first, CORE, BIT(0), 102)
 {
     s_mark[BP_BOOTLOADER] = now_ms();
     return ESP_OK;

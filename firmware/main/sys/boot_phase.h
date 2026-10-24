@@ -42,7 +42,6 @@ bool boot_phase_chain_take(void);
 #define BPX_SLOW_WAITS   0x08   /* the check-in's waits poll every 200 ms, as before */
 #define BPX_OLD_DOWN     0x10   /* the 300 + 200 ms waits on the way down, as before */
 #define BPX_PS_KEEP_MAX  0x20   /* max modem power save during the check-in, as before */
-#define BPX_FULL_SETTLE  0x40   /* the battery verdict needs the full 10 samples, as before */
 void boot_phase_exp_set(uint32_t mask);
 uint32_t boot_phase_exp(void);
 void boot_phase_print(void);         /* the ring, oldest first, then this boot */

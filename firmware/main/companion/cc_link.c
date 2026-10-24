@@ -376,7 +376,8 @@ static void set_fail(cc_link_fail_t f, const char *text)
     unlock();
 }
 
-/* Plan 3 Task 3 Step 4: the Host's last looked-up address, NVS "cc"/"hcache" (task only). The link connects
+/* Plan 3 Task 3 Step 4: the Host's last looked-up address and the key met there, NVS "cc"/"hcache" only (L44:
+   not also in the hib record; an NVS read is about 1 ms), under s_lock. The link connects
    to it first and looks the name up only when that connect fails or its pin doesn't match (fast_rules). */
 static hc_cache_t s_hc;
 static bool s_hc_off;   /* `companion hostcache off` (measurement), RAM only */
@@ -486,13 +487,15 @@ static bool connect_once(const char *name)
     const char *how;
     char entry_host[sizeof(host)];
     strlcpy(entry_host, host, sizeof(entry_host));
+    hc_cache_t hc;   /* review m5: a copy taken under the lock (the console's debug commands write it too) */
     lock();
     bool fpend = s_forget_done != s_forget_req;   /* a forget asked for or pending: always look the name up */
+    hc = s_hc;
     unlock();
-    bool from_cache = !s_hc_off && hc_use(&s_hc, entry_host, tailscale_enabled(), fpend);
+    bool from_cache = !s_hc_off && hc_use(&hc, entry_host, tailscale_enabled(), fpend);
     char dead[16] = "";   /* the cached address that didn't answer: a lookup that gives it again fails at once */
     if (from_cache) {
-        strlcpy(ip, s_hc.ip, sizeof(ip));
+        strlcpy(ip, hc.ip, sizeof(ip));
         how = "cache";
     }
 lookup:
@@ -573,9 +576,12 @@ lookup:
     boot_phase_mark(BP_KEX);
     char fp[80];
     kh_result_t kh = ssh_known_host_check(s, host, port, fp, sizeof(fp));
-    if (from_cache && hc_cached_key(kh) == HC_LOOKUP) {
-        /* the cached address has no matching pin: nothing is pinned or refused on it; the lookup and its
-           own check decide, exactly as without the cache (Step 4: the cache never weakens the pin) */
+    uint8_t met[32];
+    bool have_met = ssh_server_key_hash(s, met);
+    if (from_cache && hc_cached_key(kh, &hc, have_met ? met : NULL) == HC_LOOKUP) {
+        /* the cached address has no matching pin, or its key isn't the one cached with it (another pinned
+           machine on the Host's old address, review m2): nothing is pinned or refused on it; the lookup and
+           its own check decide, exactly as without the cache (Step 4: the cache never weakens the pin) */
         ESP_LOGW(TAG, "mac: cached %s for %s: key %s not its pin, looking it up", host, entry_host, fp);
         ssh_disconnect(s);
         ssh_free(s);
@@ -692,8 +698,12 @@ lookup:
         if (ssh_server_key_hash(s, nc.hash)) carry_store(&nc);
     }
     if (forget_done) ESP_LOGW(TAG, "forget host key: new Mac key pinned: %s", fp);
-    if (!from_cache && strcmp(how, "ip") != 0 && strcmp(how, "magicdns") != 0 && hc_on_resolved(&s_hc, entry_host, host)) {
-        nvs_set_blob_ns("cc", "hcache", &s_hc, sizeof(s_hc));
+    if (!from_cache && have_met && strcmp(how, "ip") != 0 && strcmp(how, "magicdns") != 0 &&
+        hc_on_resolved(&hc, entry_host, host, met)) {
+        lock();
+        s_hc = hc;
+        unlock();
+        nvs_set_blob_ns("cc", "hcache", &hc, sizeof(hc));
         ESP_LOGI(TAG, "mac: cached %s for %s", host, entry_host);
     }
     s_w_fallback_until_us = 0;   /* a fallback is retried on the next connect */
@@ -1963,23 +1973,28 @@ esp_err_t cc_link_start(void)
 
 void cc_link_host_cache_text(char *out, size_t cap)
 {
-    if (s_hc.entry[0]) snprintf(out, cap, "host cache: %s -> %s%s", s_hc.entry, s_hc.ip, s_hc_off ? " (off)" : "");
+    hc_cache_t c;
+    lock();
+    c = s_hc;
+    unlock();
+    if (c.entry[0]) snprintf(out, cap, "host cache: %s -> %s%s", c.entry, c.ip, s_hc_off ? " (off)" : "");
     else snprintf(out, cap, "host cache: none%s", s_hc_off ? " (off)" : "");
 }
 void cc_link_host_cache_enable(bool on) { s_hc_off = !on; }
 bool cc_link_host_cache_test_set(const char *ip)
 {
     /* debug: point the cache at another address (RAM only) to exercise the fallback to the lookup */
-    char entry[sizeof(s_hc.entry)];
+    if (!ts_host_is_ipv4(ip)) return false;
     lock();
-    strlcpy(entry, s_hc.entry, sizeof(entry));
+    bool ok = s_hc.entry[0] != 0;
+    if (ok) strlcpy(s_hc.ip, ip, sizeof(s_hc.ip));
     unlock();
-    if (!entry[0] || !ts_host_is_ipv4(ip)) return false;
-    strlcpy(s_hc.ip, ip, sizeof(s_hc.ip));
-    return true;
+    return ok;
 }
 void cc_link_host_cache_clear(void)
 {
+    lock();
     memset(&s_hc, 0, sizeof(s_hc));
+    unlock();
     nvs_erase_key_ns("cc", "hcache");
 }

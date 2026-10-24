@@ -588,8 +588,8 @@ bool wifi_mgr_static_ip_set(const wifi_static_ip_t *in)
         n = *in;
         n.on = 1;
     }
+    if (!nvs_set_blob_ns(NS, "sip", &n, sizeof(n))) return false;   /* review m4: not saved, nothing changes */
     s_sip = n;
-    nvs_set_blob_ns(NS, "sip", &s_sip, sizeof(s_sip));
     ESP_LOGI(TAG, "static address: %s (from the next join)", s_sip.on ? "on" : "off");
     return true;
 }

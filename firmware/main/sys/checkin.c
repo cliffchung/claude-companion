@@ -697,8 +697,10 @@ void checkin_init(void)
         s_hib_pending = true;
         /* Task 3: no modem sleep for the few seconds of the check-in (released if it doesn't go down) */
         if (!(boot_phase_exp() & BPX_PS_KEEP_MAX)) wifi_mgr_ps_hold_none(true);
-        /* Task 3: it slept on battery, so 3 battery-like samples settle the source, not 10 (USB still at once) */
-        if (!(boot_phase_exp() & BPX_FULL_SETTLE)) sysinfo_power_src_checkin_prior();
+        /* L43: the source settles by Plan 2's full 10-sample rule (P110), as on every boot; a shorter settle
+           could read USB with the pack supplementing the boot load as battery (PT28 I2) */
+        if (boot_phase_exp()) ESP_LOGW(TAG, "debug: Task 3 experiment mask 0x%02x is set (power checkin hibernate ... exp 0)",
+                                       (unsigned)boot_phase_exp());   /* review m9 */
         /* M3: one plain poll, no watch loop on the Mac for a boot that goes back to sleep (as job_checkin) */
         s_hib_watch = cc_link_watch_wanted();
         if (s_hib_watch) cc_link_watch_resume(false);

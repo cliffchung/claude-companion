@@ -7,11 +7,14 @@ void tearDown(void) {}
 
 /* ---- Step 4: the Host address cache ---- */
 
+static const uint8_t KEY_A[32] = { 0xa1, 0xa2, 0xa3 };
+static const uint8_t KEY_B[32] = { 0xb1, 0xb2, 0xb3 };
+
 static hc_cache_t hc(const char *entry, const char *ip)
 {
     hc_cache_t c;
     memset(&c, 0, sizeof(c));
-    TEST_ASSERT_TRUE(hc_on_resolved(&c, entry, ip));
+    TEST_ASSERT_TRUE(hc_on_resolved(&c, entry, ip, KEY_A));
     return c;
 }
 
@@ -30,7 +33,7 @@ static void test_hc_literal_entry(void)
 {
     hc_cache_t c;
     memset(&c, 0, sizeof(c));
-    TEST_ASSERT_FALSE(hc_on_resolved(&c, "192.168.1.50", "192.168.1.50"));
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "192.168.1.50", "192.168.1.50", KEY_A));
     TEST_ASSERT_FALSE(hc_use(&c, "192.168.1.50", false, false));
 }
 
@@ -53,31 +56,47 @@ static void test_hc_bad_values(void)
 {
     hc_cache_t c;
     memset(&c, 0, sizeof(c));
-    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "not-an-ip"));
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "not-an-ip", KEY_A));
     TEST_ASSERT_FALSE(hc_use(&c, "my-host.local", false, false));
-    TEST_ASSERT_FALSE(hc_on_resolved(&c, "", "192.168.1.50"));
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "", "192.168.1.50", KEY_A));
     c = hc("my-host.local", "192.168.1.50");
     strcpy(c.ip, "192.168.1");
+    TEST_ASSERT_FALSE(hc_use(&c, "my-host.local", false, false));
+}
+
+/* no key, no cache entry */
+static void test_hc_needs_a_key(void)
+{
+    hc_cache_t c;
+    memset(&c, 0, sizeof(c));
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "192.168.1.50", NULL));
     TEST_ASSERT_FALSE(hc_use(&c, "my-host.local", false, false));
 }
 
 static void test_hc_change_reported(void)
 {
     hc_cache_t c = hc("my-host.local", "192.168.1.50");
-    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "192.168.1.50"));
-    TEST_ASSERT_TRUE(hc_on_resolved(&c, "my-host.local", "192.168.1.51"));
-    TEST_ASSERT_TRUE(hc_on_resolved(&c, "mac.local", "192.168.1.51"));
+    TEST_ASSERT_FALSE(hc_on_resolved(&c, "my-host.local", "192.168.1.50", KEY_A));
+    TEST_ASSERT_TRUE(hc_on_resolved(&c, "my-host.local", "192.168.1.51", KEY_A));
+    TEST_ASSERT_TRUE(hc_on_resolved(&c, "mac.local", "192.168.1.51", KEY_A));
+    TEST_ASSERT_TRUE(hc_on_resolved(&c, "mac.local", "192.168.1.51", KEY_B));   /* a new key is a change */
 }
 
 /* The cached address only skips the lookup: it is kept only when its own pin matches (KH_OK). Every other
    result (unknown, changed, unreadable) is dropped without acting on it, and the normal lookup decides. */
 static void test_hc_only_a_matching_pin_counts(void)
 {
-    TEST_ASSERT_EQUAL(HC_ACCEPT, hc_cached_key(KH_OK));
-    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_UNKNOWN));
-    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_CHANGED));
-    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_ERROR));
-    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_PIN_ERROR));
+    hc_cache_t c = hc("my-host.local", "192.168.1.50");
+    TEST_ASSERT_EQUAL(HC_ACCEPT, hc_cached_key(KH_OK, &c, KEY_A));
+    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_UNKNOWN, &c, KEY_A));
+    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_CHANGED, &c, KEY_A));
+    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_ERROR, &c, KEY_A));
+    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_PIN_ERROR, &c, KEY_A));
+    /* review m2: a pinned machine that took over the Host's old address is not the Host: its key must be
+       the one met when the address was cached */
+    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_OK, &c, KEY_B));
+    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_OK, &c, NULL));
+    TEST_ASSERT_EQUAL(HC_LOOKUP, hc_cached_key(KH_OK, NULL, KEY_A));
 }
 
 /* ---- Step 3: the static address setting, "address/prefix gateway [dns]" ---- */
@@ -132,6 +151,7 @@ int main(void)
     RUN_TEST(test_hc_not_during_forget);
     RUN_TEST(test_hc_tailnet_needs_switch);
     RUN_TEST(test_hc_bad_values);
+    RUN_TEST(test_hc_needs_a_key);
     RUN_TEST(test_hc_change_reported);
     RUN_TEST(test_hc_only_a_matching_pin_counts);
     RUN_TEST(test_sip_parse);

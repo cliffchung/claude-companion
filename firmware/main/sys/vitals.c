@@ -112,14 +112,6 @@ power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma)
     return st->src;
 }
 
-void vitals_src_seed_battery(vitals_src_t *st, int n)
-{
-    if (!st || st->src != PWR_UNKNOWN) return;
-    if (n < 1) n = 1;
-    if (n > VITALS_BATT_SAMPLES) n = VITALS_BATT_SAMPLES;
-    st->batt_n = VITALS_BATT_SAMPLES - n;
-}
-
 int vitals_clamp_or_zero(int v, int lo, int hi)
 {
     if (v <= 0) return 0;

@@ -81,15 +81,15 @@ Notes on reading the table:
 - **Energy, estimated** at the brief's 0.7 mWh per awake second:
   - before: 8.7 mWh a check-in, × 96 = **0.84 Wh a day**;
   - after: 6.7 mWh a check-in, × 96 = **0.65 Wh a day**.
-- **On battery, estimated (not measured):** Plan 2's 10–12 s source settle used to decide the awake time, so a check-in was about 15.4 s (about 1.03 Wh a day). With L42 the settle lands at about 8 s from the wake, before the poll. A battery check-in should then match USB at about 9.8 s, about 0.66 Wh a day.
+- **On battery, estimated (not measured):** Plan 2's 10–12 s source settle still decides the awake time, so a battery check-in goes only from about 15.4 s to about 14.6 s: the poll, judge and way-down savings come after the settle (about 1.03 → 0.98 Wh a day). L42 would have cut it to about 9.8 s, but L43 reverted it: three samples can read USB with the pack supplementing the load as battery. Shortening the settle safely is a future item; it needs a measurement on a pack. Everything before the poll (DHCP, the Host cache, no modem sleep) finishes inside the settle on battery.
 
 | Change | Kept? | Measured effect (sleep median) |
 |---|---|---|
 | Wi-Fi join cache (BSSID/channel/fast scan) | dropped (L31) | the C6 associates in about 3.1 s either way; the 3 s fallback cost +1.4 s |
 | DHCP restore last IP | kept (L32) | about 40 ms alone |
-| No lwIP DHCP ARP probe | kept (L32) | about 1.0 s (10639 → 9800) |
+| No lwIP DHCP ARP probe (every boot; assumes the router won't ACK an address in use) | kept (L32) | about 1.0 s (10639 → 9800) |
 | Static address | setting, off (L33) | 58 ms over the restored lease (9742 against 9800) |
-| Host address cache | kept (L34) | resolve 142 → 0 ms; the median moved only 24 ms |
+| Host address cache (NVS only, L44; key-bound, L45) | kept (L34) | resolve 142 → 0 ms; the median moved only 24 ms |
 | WPA2/WPA3 | nothing to do (L35) | the router is WPA2-only |
 | No modem sleep during the check-in | kept (L36) | 0.70 s (10505 → 9800) |
 | CPU 360 MHz | already (L37) | — |
@@ -97,7 +97,7 @@ Notes on reading the table:
 | Skip validation after deep sleep | dropped (L39) | none: the wake is a WDT reset, and validation still costs 1.43 s |
 | 20 ms waits, fast way down | kept (L40) | 0.74 s (10539 → 9800) |
 | Close SSH before the sleep | kept (L41) | about 0; stops orphaned Host sessions |
-| Battery settle from 3 samples | kept (L42) | unmeasurable on USB; estimated about 5.6 s on battery |
+| Battery settle from 3 samples | **reverted** (L42 → L43) | unmeasurable on USB; it could misread USB as battery |
 
 **What is left.**
 - About 3.4 s before `app_main`: 0.67 s pre-reset, 1.43 s validation, 1.0 s XIP copy and 0.17 s PSRAM tuning.

@@ -175,7 +175,6 @@ void sysinfo_poll(void)
 }
 
 power_info_t sysinfo_power(void) { return s_pwr; }
-void sysinfo_power_src_checkin_prior(void) { vitals_src_seed_battery(&s_src, VITALS_CHECKIN_BATT_SAMPLES); }
 int sysinfo_rssi_cached(void)
 {
     static int s_rssi;

@@ -420,7 +420,8 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         char sip[64];
         sip_text(sip, sizeof(sip));
         ui_setting_row(c, "Static address", sip[0] ? sip : "Off (DHCP)", sip_cb, NULL);
-        ui_label(c, "Off by default. Set it only to an address your router won't hand to another device.", FONT_SMALL, UI_MUTED);
+        ui_label(c, "Off by default. Set it only to an address your router won't hand to another device. It is used on "
+                    "every Wi-Fi network, so turn it off before joining another one.", FONT_SMALL, UI_MUTED);
         break;
     }
     case 2: {

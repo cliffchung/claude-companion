@@ -12,6 +12,7 @@
 #include "ui/ui.h"
 #include "ui/ui_dashboard.h"
 #include "net/ts_host.h"
+#include "net/fast_rules.h"
 #include "esp_netif.h"
 #include "ssh/ssh_client.h"
 #include "freertos/FreeRTOS.h"
@@ -282,14 +283,6 @@ static int cmd_logs(int argc, char **argv)
 static char s_left_ssid[33];
 
 /* Test helpers for the reconnect check: leave and rejoin a saved network. */
-static bool wifi_static_parse(const char *s, uint32_t *out)
-{
-    esp_ip4_addr_t a;
-    if (!ts_host_is_ipv4(s) || esp_netif_str_to_ip4(s, &a) != ESP_OK) return false;
-    *out = a.addr;
-    return true;
-}
-
 static int cmd_wifi(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "leave") == 0) {
@@ -327,24 +320,25 @@ static int cmd_wifi(int argc, char **argv)
                wifi_mgr_ssid(), ip, wifi_mgr_channel(), wifi_mgr_rssi(), rc, st ? "static" : "dhcp");
         return 0;
     }
-    if ((argc == 2 || argc == 5 || argc == 6) && strcmp(argv[1], "static") == 0) {
-        /* wifi static off | wifi static <ip> <mask> <gateway> [dns] (from the next join) */
-        wifi_static_ip_t s = { 0 };
-        if (argc == 2) {
-            wifi_static_ip_t cur;
-            bool on = wifi_mgr_static_ip_get(&cur);
-            esp_ip4_addr_t a = { cur.ip }, m = { cur.mask }, g = { cur.gw }, d = { cur.dns };
-            printf("wifi static: %s " IPSTR " / " IPSTR " gw " IPSTR " dns " IPSTR "\n", on ? "on" : "off", IP2STR(&a), IP2STR(&m),
-                   IP2STR(&g), IP2STR(&d));
-            return 0;
-        }
-        if (!wifi_static_parse(argv[2], &s.ip) || !wifi_static_parse(argv[3], &s.mask) || !wifi_static_parse(argv[4], &s.gw) ||
-            (argc == 6 && !wifi_static_parse(argv[5], &s.dns))) {
-            printf("wifi static: bad address\n");
+    if (argc == 2 && strcmp(argv[1], "static") == 0) {
+        wifi_static_ip_t cur;
+        bool on = wifi_mgr_static_ip_get(&cur);
+        esp_ip4_addr_t a = { cur.ip }, m = { cur.mask }, g = { cur.gw }, d = { cur.dns };
+        printf("wifi static: %s " IPSTR " / " IPSTR " gw " IPSTR " dns " IPSTR " (one address for every network)\n",
+               on ? "on" : "off", IP2STR(&a), IP2STR(&m), IP2STR(&g), IP2STR(&d));
+        return 0;
+    }
+    if ((argc == 4 || argc == 5) && strcmp(argv[1], "static") == 0) {
+        /* wifi static <ip/prefix> <gateway> [dns]: the Settings row's rules (sip_parse), review m3 */
+        char line[80];
+        snprintf(line, sizeof(line), "%s %s%s%s", argv[2], argv[3], argc == 5 ? " " : "", argc == 5 ? argv[4] : "");
+        sip_t p;
+        if (!sip_parse(line, &p)) {
+            printf("wifi static: use <address/prefix> <gateway> [dns], like 192.168.1.50/24 192.168.1.1\n");
             return 1;
         }
-        s.on = 1;
-        printf("wifi static: %s\n", wifi_mgr_static_ip_set(&s) ? "on (from the next join)" : "refused");
+        wifi_static_ip_t st = { .on = 1, .ip = p.ip, .mask = p.mask, .gw = p.gw, .dns = p.dns };
+        printf("wifi static: %s\n", wifi_mgr_static_ip_set(&st) ? "on (from the next join)" : "not saved");
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "static") == 0 && strcmp(argv[2], "off") == 0) {
@@ -353,7 +347,7 @@ static int cmd_wifi(int argc, char **argv)
         return 0;
     }
     printf("usage: wifi leave | wifi join [ssid] | wifi status | wifi test drop | "
-           "wifi static [off | <ip> <mask> <gw> [dns]]   (join uses the saved password)\n");
+           "wifi static [off | <ip/prefix> <gw> [dns]]   (join uses the saved password)\n");
     return 1;
 }
 
