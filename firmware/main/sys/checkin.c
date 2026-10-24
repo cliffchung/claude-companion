@@ -16,6 +16,7 @@
 #include "sys/sysinfo.h"
 #include "sys/power.h"
 #include "sys/hibernate.h"
+#include "sys/boot_phase.h"
 
 static const char *TAG = "checkin";
 
@@ -207,9 +208,11 @@ static bool want_parked(power_state_t st)
     return false;
 }
 
+/* Task 3: 20 ms steps (each step past the event is awake time on a check-in boot) */
 static bool wait_for(bool (*cond)(void), int ms)
 {
-    for (int64_t end = now_ms() + ms; !cond(); vTaskDelay(pdMS_TO_TICKS(200)))
+    int step = (boot_phase_exp() & BPX_SLOW_WAITS) ? 200 : 20;
+    for (int64_t end = now_ms() + ms; !cond(); vTaskDelay(pdMS_TO_TICKS(step)))
         if (now_ms() >= end) return false;
     return true;
 }
@@ -258,6 +261,7 @@ static ts_checkin_t link_and_poll(const char *mac, ts_checkin_t ts, int link_ms,
     }
     if (!up) return TS_CHECKIN_FAILED;
     *poll_ok = cc_link_poll_now(POLL_MS) == ESP_OK;
+    boot_phase_mark(BP_POLL);
     return ts;
 }
 
@@ -342,8 +346,12 @@ static void hib_watch_back(void)
     cc_link_watch_resume(true);
 }
 
+/* Task 3: the check-in boot's radio without modem sleep (checkin_init) ends here unless it goes down */
+static void ps_release(void) { wifi_mgr_ps_hold_none(false); }
+
 static void give_up(const char *why)
 {
+    ps_release();
     ESP_LOGE(TAG, "hibernate check-in: %s: back to the normal ladder", why);
     s_hib_settled = true;
     s_hold = false;
@@ -356,6 +364,7 @@ static void give_up(const char *why)
    (on USB it never hibernates, and a needs-you wakes the screen again) */
 static void wake_fully(const char *why)
 {
+    ps_release();
     ESP_LOGI(TAG, "hibernate check-in: %s: waking fully", why);
     s_hib_settled = true;
     s_hold = false;
@@ -448,6 +457,7 @@ static void job_hib(void)
     if (hib_abandoned()) { s_hib_settled = true; return; }
     if (poll_ok) {
         wait_for(judged, JUDGED_WAIT_MS);
+        boot_phase_mark(BP_JUDGED);
         needs = power_needs_you();
     }
     bool late = now_ms() > end;
@@ -469,15 +479,27 @@ static void job_hib(void)
            `power checkin hibernate 2` (HIB_DBG_FORCE_NOKEEP) */
         s_hib_settled = true;
         hib_watch_back();
+        ps_release();
         s_hold = true;
         s_hold_gen = cc_poll_generation();
         s_hold_gen_ms = now_ms();
         power_go(PS_DEEP_IDLE);   /* pinned: the ladder keeps only its low-battery trigger (checkin_hib_hold) */
         return;
     }
+    if ((dbg & HIB_DBG_STAY_AWAKE) && boot_phase_chain_take()) {
+        /* debug chain (`... chain <n>`, Task 3 timing): down again with the test timer, same flags */
+        ESP_LOGW(TAG, "debug: would %s; chain: down again with a %d s wake", names[next], HIB_TEST_WAKE_S);
+        hibernate_set_debug_next(dbg);
+        hibernate_now(HIB_TEST_WAKE_S, POWER_BOOT_HIB_CHECKIN);
+        give_up("the hibernate failed");
+        return;
+    }
     if (dbg & HIB_DBG_STAY_AWAKE) {
+        boot_phase_mark(BP_SLEEP);   /* where it would go down */
+        boot_phase_save((uint8_t)hibernate_boot_kind());
         /* debug (`power checkin hibernate`): the console comes back; the light shows what it would hold */
         ESP_LOGW(TAG, "debug: would %s; staying awake", names[next]);
+        ps_release();
         s_hib_settled = true;
         hib_watch_back();
         power_unpin();   /* the ladder runs again (I1); the Deep-idle light rule stays until a wake */
@@ -559,6 +581,7 @@ void checkin_step(power_state_t st, int64_t now)
             s_next_ms = 0;
             s_force = false;   /* a forced check-in that never ran doesn't wait for the next park */
             if (s_quiet || s_hold) ESP_LOGI(TAG, "hibernate check-in: woken, back to normal");
+            ps_release();
             if (s_quiet || s_hold) hib_watch_back();
             s_quiet = false;
             s_hold = false;
@@ -672,6 +695,10 @@ void checkin_init(void)
     if (hibernate_boot_kind() == POWER_BOOT_HIB_CHECKIN) {
         s_quiet = true;        /* the Deep-idle light rule and no screen wake from the very first result */
         s_hib_pending = true;
+        /* Task 3: no modem sleep for the few seconds of the check-in (released if it doesn't go down) */
+        if (!(boot_phase_exp() & BPX_PS_KEEP_MAX)) wifi_mgr_ps_hold_none(true);
+        /* Task 3: it slept on battery, so 3 battery-like samples settle the source, not 10 (USB still at once) */
+        if (!(boot_phase_exp() & BPX_FULL_SETTLE)) sysinfo_power_src_checkin_prior();
         /* M3: one plain poll, no watch loop on the Mac for a boot that goes back to sleep (as job_checkin) */
         s_hib_watch = cc_link_watch_wanted();
         if (s_hib_watch) cc_link_watch_resume(false);

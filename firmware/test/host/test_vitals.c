@@ -218,6 +218,45 @@ static void test_boot_on_battery_is_unknown_until_decided(void)
     TEST_ASSERT_EQUAL_INT(PWR_USB_STANDBY, vitals_src_step(&f, 7600, 300));
 }
 
+/* Plan 3 Task 3: a check-in boot follows a sleep that began on battery, so it needs only
+   VITALS_CHECKIN_BATT_SAMPLES battery-like samples in a row; USB still wins at once, and a no-evidence
+   sample starts the count again. */
+static void test_checkin_prior_battery(void)
+{
+    vitals_src_t st = { 0 };
+    vitals_src_seed_battery(&st, VITALS_CHECKIN_BATT_SAMPLES);
+    TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, st.src);
+    for (int i = 0; i < VITALS_CHECKIN_BATT_SAMPLES - 1; i++) TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, vitals_src_step(&st, 7600, 300));
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&st, 7600, 300));
+    /* USB at once, whatever the prior */
+    vitals_src_t u = { 0 };
+    vitals_src_seed_battery(&u, VITALS_CHECKIN_BATT_SAMPLES);
+    TEST_ASSERT_EQUAL_INT(PWR_USB_CHARGING, vitals_src_step(&u, 7600, -50));
+    TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, feed(&u, VITALS_CHECKIN_BATT_SAMPLES - 1, 7600, 300));   /* the prior is gone */
+    vitals_src_t f = { 0 };
+    vitals_src_seed_battery(&f, VITALS_CHECKIN_BATT_SAMPLES);
+    TEST_ASSERT_EQUAL_INT(PWR_USB_STANDBY, vitals_src_step(&f, 8300, 300));
+    /* a no-evidence sample (no pack, or under 20 mA) resets the count to the full one */
+    vitals_src_t z = { 0 };
+    vitals_src_seed_battery(&z, VITALS_CHECKIN_BATT_SAMPLES);
+    vitals_src_step(&z, 7600, 300);
+    vitals_src_step(&z, 7600, 5);
+    TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, feed(&z, VITALS_CHECKIN_BATT_SAMPLES, 7600, 300));
+    /* never fewer than one sample, never more than the normal count */
+    vitals_src_t a = { 0 };
+    vitals_src_seed_battery(&a, 0);
+    TEST_ASSERT_EQUAL_INT(PWR_UNKNOWN, a.src);
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&a, 7600, 300));
+    vitals_src_t b = { 0 };
+    vitals_src_seed_battery(&b, 99);
+    TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, feed(&b, VITALS_BATT_SAMPLES - 1, 7600, 300));
+    TEST_ASSERT_EQUAL_INT(PWR_BATTERY, vitals_src_step(&b, 7600, 300));
+    /* a source already known is left alone */
+    vitals_src_t k = { .src = PWR_USB_STANDBY };
+    vitals_src_seed_battery(&k, VITALS_CHECKIN_BATT_SAMPLES);
+    TEST_ASSERT_NOT_EQUAL(PWR_BATTERY, feed(&k, VITALS_CHECKIN_BATT_SAMPLES, 7600, 300));
+}
+
 static void test_settings_clamps(void)
 {
     TEST_ASSERT_EQUAL_INT(0, vitals_clamp_or_zero(0, 15, 720));
@@ -310,6 +349,7 @@ int main(void)
     RUN_TEST(test_src_boundaries);
     RUN_TEST(test_full_pack_on_usb_under_load_is_not_battery);
     RUN_TEST(test_boot_on_battery_is_unknown_until_decided);
+    RUN_TEST(test_checkin_prior_battery);
     RUN_TEST(test_settings_clamps);
     return UNITY_END();
 }

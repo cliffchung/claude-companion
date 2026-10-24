@@ -1,4 +1,5 @@
 #include "hibernate.h"
+#include "sys/boot_phase.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -425,10 +426,17 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
              (unsigned)wake_after_s, (int)next);
     if (!s_early) {
         power_log_save();
+        /* Task 3: a check-in boot never starts the watch loop (M3), so there is nothing to wait for */
+        bool fast = s_kind == POWER_BOOT_HIB_CHECKIN && !cc_link_watch_wanted() && !(boot_phase_exp() & BPX_OLD_DOWN);
         cc_link_watch_enable(false);   /* the Mac's watch loop ends now, not after its quiet timeout */
-        vTaskDelay(pdMS_TO_TICKS(300));
+        vTaskDelay(pdMS_TO_TICKS(fast ? 0 : 300));
+        /* Task 3 (L37): close the SSH session while Wi-Fi is still up, so the Host's sshd sees the close.
+           Before, the link noticed only after the Wi-Fi went, and every check-in left an idle session on the
+           Host until its timeout (42 of them piled up in a fast test chain, and sshd then reset new connects). */
+        cc_link_park(true);
+        for (int i = 0; i < 100 && cc_link_connected(); i++) vTaskDelay(pdMS_TO_TICKS(10));
         wifi_mgr_disconnect();
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(fast ? 50 : 200));   /* the deauth goes out */
     }
     hib_rec_t r = { .ver = HIB_VER, .mode = (uint8_t)mode, .next = (uint8_t)next, .epoch = (uint32_t)epoch_now(),
                     .wake_after_s = wake_after_s, .debug = s_dbg_next,
@@ -469,6 +477,9 @@ static void go_down(uint32_t wake_after_s, power_boot_t next, hib_mode_t mode)
     }
     ESP_LOGI(TAG, "down from task %s at %lld ms, stack free %u B", pcTaskGetName(NULL), (long long)(esp_timer_get_time() / 1000),
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    boot_phase_mark(BP_SLEEP);
+    boot_phase_note_sleep(wake_after_s);
+    boot_phase_save((uint8_t)s_kind);
     esp_deep_sleep_start();
 }
 

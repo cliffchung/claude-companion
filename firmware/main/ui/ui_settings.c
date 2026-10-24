@@ -8,6 +8,7 @@
 #include "sys/vitals.h"
 #include "servers/server_store.h"
 #include "net/wifi_mgr.h"
+#include "net/fast_rules.h"
 #include "storage/sd.h"
 #include "companion/cc_link.h"
 #include "net/tailscale.h"
@@ -309,6 +310,44 @@ static void mac_fallback_cb(lv_event_t *e)
     ui_prompt("Mac fallback address", "192.168.1.50", cc_link_lan_fallback(cur, sizeof(cur)), false, mac_fallback_prompt_cb, NULL);
 }
 
+/* Plan 3 Task 3: Network > Wi-Fi advanced, the optional static address (off by default) */
+static void sip_text(char *out, size_t cap)
+{
+    wifi_static_ip_t s;
+    out[0] = 0;
+    if (!wifi_mgr_static_ip_get(&s)) return;
+    uint8_t a[4], m[4], g[4], d[4];
+    memcpy(a, &s.ip, 4); memcpy(m, &s.mask, 4); memcpy(g, &s.gw, 4); memcpy(d, &s.dns, 4);
+    int prefix = 0;
+    for (int i = 0; i < 4; i++) for (int b = 7; b >= 0; b--) prefix += (m[i] >> b) & 1;
+    snprintf(out, cap, "%u.%u.%u.%u/%d %u.%u.%u.%u %u.%u.%u.%u", a[0], a[1], a[2], a[3], prefix, g[0], g[1], g[2], g[3],
+             d[0], d[1], d[2], d[3]);
+}
+static void sip_prompt_cb(const char *v, void *ud)
+{
+    (void)ud;
+    if (!v) return;
+    while (*v == ' ') v++;
+    if (!*v) {
+        wifi_mgr_static_ip_set(NULL);
+        ui_toast("Static address off: DHCP from the next join");
+        ui_nav_refresh();
+        return;
+    }
+    sip_t p;
+    if (!sip_parse(v, &p)) { ui_toast("Use address/prefix gateway [dns], like 192.168.1.50/24 192.168.1.1"); return; }
+    wifi_static_ip_t s = { .on = 1, .ip = p.ip, .mask = p.mask, .gw = p.gw, .dns = p.dns };
+    ui_toast(wifi_mgr_static_ip_set(&s) ? "Static address on from the next join" : "Static address refused");
+    ui_nav_refresh();
+}
+static void sip_cb(lv_event_t *e)
+{
+    (void)e;
+    char cur[64];
+    sip_text(cur, sizeof(cur));
+    ui_prompt("Static address (empty = DHCP)", "192.168.1.50/24 192.168.1.1", cur, false, sip_prompt_cb, NULL);
+}
+
 static lv_obj_t *slider_row(lv_obj_t *parent, const char *label, int min, int max, int val, lv_event_cb_t cb)
 {
     lv_obj_t *card = ui_card(parent);
@@ -377,6 +416,11 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         ui_label(c, buf, FONT_SMALL, UI_MUTED);
         ui_label(c, "The Mac link uses your home network. The fallback address is used when the Mac's name "
                     "doesn't resolve. Devices reachable only over Tailscale need the switch on.", FONT_SMALL, UI_MUTED);
+        ui_section_title(c, "Wi-Fi advanced");
+        char sip[64];
+        sip_text(sip, sizeof(sip));
+        ui_setting_row(c, "Static address", sip[0] ? sip : "Off (DHCP)", sip_cb, NULL);
+        ui_label(c, "Off by default. Set it only to an address your router won't hand to another device.", FONT_SMALL, UI_MUTED);
         break;
     }
     case 2: {

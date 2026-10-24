@@ -52,3 +52,68 @@ Notes on reading the table:
 - Link connected over the LAN, watch on.
 - `power set defaults` run.
 - Carry source kept (100.64.0.18), in case the entry ever goes back to the tailnet.
+
+## Task 3: fast check-in (2026-10-23/24)
+
+**Method.** Each column is the median over 5 Hibernate check-in boots on USB, run with `power checkin hibernate keep usb chain 4 [exp <mask>]` (L30). Times are ms from the timer wake (RTC-derived), and every boot was timed.
+- **Before:** this build's instrumentation on Task 2's code (base).
+- **After:** everything kept (F1, the committed build).
+- **Raw rows:** in the scratchpad `t3/*-phases.txt`.
+
+| Phase (ms from the wake) | Before | After | Segment before → after |
+|---|---|---|---|
+| app_main (ROM + WDT reset + bootloader + XIP copy) | 3397 | 3397 | 3397 → 3397 |
+| esp_hosted/C6 ready | 5362 | 5362 | 1965 → 1965 |
+| Wi-Fi start | 5477 | 5477 | 115 → 115 |
+| join issued | 5509 | 5512 | 30 → 30 |
+| associated (scan + auth; scan not separable) | 8699 | 8674 | 3185 → 3162 |
+| got IP | 9795 | 8724 | 1096 → 33 |
+| Host resolved | 10045 | 8725 | 225 → 0 |
+| TCP connected | 10334 | 8809 | 192 → 98 |
+| SSH kex done | 11012 | 9140 | 684 → 335 |
+| auth done | 11540 | 9257 | 438 → 121 |
+| poll done | 11936 | 9519 | 463 → 270 |
+| judged | 12136 | 9538 | 200 → 20 |
+| sleep | **12474** | **9630** | 537 → 98 |
+
+**Awake per check-in: 12.5 s before, 9.6 s after (−2.84 s, −23%).**
+- **What Task 2 reported:** `power checkins` showed 8.0–8.4 s for these check-ins. It counts from the app start, so it misses the 3.4 s before it (L30).
+- **Energy, estimated** at the brief's 0.7 mWh per awake second:
+  - before: 8.7 mWh a check-in, × 96 = **0.84 Wh a day**;
+  - after: 6.7 mWh a check-in, × 96 = **0.65 Wh a day**.
+- **On battery, estimated (not measured):** Plan 2's 10–12 s source settle used to decide the awake time, so a check-in was about 15.4 s (about 1.03 Wh a day). With L42 the settle lands at about 8 s from the wake, before the poll. A battery check-in should then match USB at about 9.8 s, about 0.66 Wh a day.
+
+| Change | Kept? | Measured effect (sleep median) |
+|---|---|---|
+| Wi-Fi join cache (BSSID/channel/fast scan) | dropped (L31) | the C6 associates in about 3.1 s either way; the 3 s fallback cost +1.4 s |
+| DHCP restore last IP | kept (L32) | about 40 ms alone |
+| No lwIP DHCP ARP probe | kept (L32) | about 1.0 s (10639 → 9800) |
+| Static address | setting, off (L33) | 58 ms over the restored lease (9742 against 9800) |
+| Host address cache | kept (L34) | resolve 142 → 0 ms; the median moved only 24 ms |
+| WPA2/WPA3 | nothing to do (L35) | the router is WPA2-only |
+| No modem sleep during the check-in | kept (L36) | 0.70 s (10505 → 9800) |
+| CPU 360 MHz | already (L37) | — |
+| Wi-Fi before the display | dropped (L38) | none (9815 against 9800) |
+| Skip validation after deep sleep | dropped (L39) | none: the wake is a WDT reset, and validation still costs 1.43 s |
+| 20 ms waits, fast way down | kept (L40) | 0.74 s (10539 → 9800) |
+| Close SSH before the sleep | kept (L41) | about 0; stops orphaned Host sessions |
+| Battery settle from 3 samples | kept (L42) | unmeasurable on USB; estimated about 5.6 s on battery |
+
+**What is left.**
+- About 3.4 s before `app_main`: 0.67 s pre-reset, 1.43 s validation, 1.0 s XIP copy and 0.17 s PSRAM tuning.
+- About 2 s of C6 boot.
+- About 3.1 s of C6 association.
+- All three are outside what this task may change: the C6 can't be flashed, and skipping validation outright is ruled out by P125. Keeping the C6 powered and associated is Task 4's spike. Quad-I/O flash would roughly halve the validation and XIP copy, but it needs the flash part confirmed first (`spi_flash: detected chip: generic`).
+
+**Safety.**
+- No NVS erase and no C6 flash.
+- No secret was logged or stored: the join cache held no PSK, and the code is gone anyway.
+- Every deep sleep had a timer (the 60 s test timer).
+- Only the Tab5's own orphaned sshd sessions were ended (L41).
+- No `companion-test-*` session was needed.
+- Final state:
+  - Host entry `my-host.local`, fallback 192.168.1.50, `ts off`;
+  - `power set defaults`;
+  - static address off;
+  - experiment mask 0;
+  - link connected over the LAN, watch on.

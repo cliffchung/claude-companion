@@ -45,6 +45,11 @@ power_src_t vitals_power_src(int mv, int ma, power_src_t prev);
 #define VITALS_BATT_SAMPLES 10
 typedef struct { power_src_t src; int batt_n; } vitals_src_t;
 power_src_t vitals_src_step(vitals_src_t *st, int mv, int ma);
+/* Plan 3 Task 3: a Hibernate check-in boot follows a sleep that began on battery (the ladder and the
+   check-in re-hibernate only on battery), so battery needs only n samples in a row (1..VITALS_BATT_SAMPLES)
+   while the source is still unknown. USB still wins at once; a no-evidence sample needs the full count again. */
+#define VITALS_CHECKIN_BATT_SAMPLES 3
+void vitals_src_seed_battery(vitals_src_t *st, int n);
 
 /* Settings clamps: 0 stays 0 (never); a value in the gap goes to the nearest end of the range. */
 int  vitals_clamp_or_zero(int v, int lo, int hi);

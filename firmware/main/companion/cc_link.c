@@ -1,4 +1,6 @@
 #include "cc_link.h"
+#include "sys/boot_phase.h"
+#include "net/fast_rules.h"
 #include "cc_cmd.h"
 #include "cc_watch.h"
 #include <stdio.h>
@@ -374,6 +376,23 @@ static void set_fail(cc_link_fail_t f, const char *text)
     unlock();
 }
 
+/* Plan 3 Task 3 Step 4: the Host's last looked-up address, NVS "cc"/"hcache" (task only). The link connects
+   to it first and looks the name up only when that connect fails or its pin doesn't match (fast_rules). */
+static hc_cache_t s_hc;
+static bool s_hc_off;   /* `companion hostcache off` (measurement), RAM only */
+
+static void hc_load(void)
+{
+    void *b = NULL; size_t n = 0;
+    memset(&s_hc, 0, sizeof(s_hc));
+    if (nvs_get_blob_alloc("cc", "hcache", &b, &n)) {
+        if (n == sizeof(s_hc)) memcpy(&s_hc, b, n);
+        free(b);
+    }
+    s_hc.entry[sizeof(s_hc.entry) - 1] = 0;
+    s_hc.ip[sizeof(s_hc.ip) - 1] = 0;
+}
+
 static void carry_load(void)
 {
     void *b = NULL; size_t n = 0;
@@ -467,14 +486,33 @@ static bool connect_once(const char *name)
     const char *how;
     char entry_host[sizeof(host)];
     strlcpy(entry_host, host, sizeof(entry_host));
-    if (!mac_resolve(host, ip, sizeof(ip), &how)) {
-        ESP_LOGW(TAG, "mac: %s doesn't resolve and there is no fallback address", host);
-        snprintf(why, sizeof(why), "Host not found at %s (set its address in Settings \xe2\x86\x92 Network)", host);
+    lock();
+    bool fpend = s_forget_done != s_forget_req;   /* a forget asked for or pending: always look the name up */
+    unlock();
+    bool from_cache = !s_hc_off && hc_use(&s_hc, entry_host, tailscale_enabled(), fpend);
+    char dead[16] = "";   /* the cached address that didn't answer: a lookup that gives it again fails at once */
+    if (from_cache) {
+        strlcpy(ip, s_hc.ip, sizeof(ip));
+        how = "cache";
+    }
+lookup:
+    if (!from_cache && !mac_resolve(entry_host, ip, sizeof(ip), &how)) {
+        ESP_LOGW(TAG, "mac: %s doesn't resolve and there is no fallback address", entry_host);
+        snprintf(why, sizeof(why), "Host not found at %s (set its address in Settings \xe2\x86\x92 Network)", entry_host);
         set_fail(CC_LINK_FAIL_NOT_FOUND, why);   /* I2; retried with the backoff */
         return false;
     }
+    if (dead[0] && strcmp(ip, dead) == 0) {
+        ESP_LOGW(TAG, "mac: %s -> %s (%s) again, which didn't answer", entry_host, ip, how);
+        if (strcmp(how, "fallback") == 0) {
+            snprintf(why, sizeof(why), "Host not at %s (fallback for %s)", ip, entry_host);
+            set_fail(CC_LINK_FAIL_NOT_FOUND, why);
+        } else set_fail(CC_LINK_FAIL_NONE, NULL);   /* unreachable */
+        return false;
+    }
+    boot_phase_mark(BP_RESOLVED);
     bool via_fallback = strcmp(how, "fallback") == 0;
-    if (strcmp(how, "ip") != 0) ESP_LOGI(TAG, "mac: %s -> %s (%s)", host, ip, how);
+    if (strcmp(how, "ip") != 0) ESP_LOGI(TAG, "mac: %s -> %s (%s)", entry_host, ip, how);
     if (strcmp(how, "ip") != 0 && strcmp(how, "magicdns") != 0) {
         lock();
         strlcpy(s_lan_last, ip, sizeof(s_lan_last));
@@ -510,6 +548,17 @@ static bool connect_once(const char *name)
     ssh_options_set(s, SSH_OPTIONS_LOG_VERBOSITY, &verb);
     if (ssh_connect(s) != SSH_OK) {
         ESP_LOGW(TAG, "connect %s:%d failed: %s", host, port, ssh_get_error(s));
+        if (from_cache) {
+            /* the cached address doesn't answer: look the name up now (Step 4) */
+            ssh_free(s);
+            from_cache = false;
+            strlcpy(dead, host, sizeof(dead));
+            ESP_LOGW(TAG, "mac: cached %s for %s failed, looking it up", host, entry_host);
+            lock();
+            s_pin_host[0] = 0;
+            unlock();
+            goto lookup;
+        }
         if (via_fallback) {
             /* the name didn't resolve and the fallback address doesn't answer: likely stale (I2) */
             snprintf(why, sizeof(why), "Host not at %s (fallback for %s)", host, entry_host);
@@ -521,8 +570,21 @@ static bool connect_once(const char *name)
         if (s_kick && tailscale_is_tailnet_ip(host)) tailscale_kick_peer(host);
         return false;
     }
+    boot_phase_mark(BP_KEX);
     char fp[80];
     kh_result_t kh = ssh_known_host_check(s, host, port, fp, sizeof(fp));
+    if (from_cache && hc_cached_key(kh) == HC_LOOKUP) {
+        /* the cached address has no matching pin: nothing is pinned or refused on it; the lookup and its
+           own check decide, exactly as without the cache (Step 4: the cache never weakens the pin) */
+        ESP_LOGW(TAG, "mac: cached %s for %s: key %s not its pin, looking it up", host, entry_host, fp);
+        ssh_disconnect(s);
+        ssh_free(s);
+        from_cache = false;
+        lock();
+        s_pin_host[0] = 0;
+        unlock();
+        goto lookup;
+    }
     bool tnet = tailscale_is_tailnet_ip(host);
     carry_t c;
     lock();
@@ -589,6 +651,7 @@ static bool connect_once(const char *name)
         ssh_free(s);
         return false;
     }
+    boot_phase_mark(BP_HOSTKEY);
     ssh_key key = NULL;
     int rc = SSH_AUTH_ERROR;
     if (device_key_ensure() == ESP_OK && device_key_get(&key) == ESP_OK) {
@@ -607,6 +670,7 @@ static bool connect_once(const char *name)
         ssh_free(s);
         return false;
     }
+    boot_phase_mark(BP_AUTH);
     s_sess = s;
     s_drop = false;
     set_fail(CC_LINK_FAIL_NONE, NULL);
@@ -628,6 +692,10 @@ static bool connect_once(const char *name)
         if (ssh_server_key_hash(s, nc.hash)) carry_store(&nc);
     }
     if (forget_done) ESP_LOGW(TAG, "forget host key: new Mac key pinned: %s", fp);
+    if (!from_cache && strcmp(how, "ip") != 0 && strcmp(how, "magicdns") != 0 && hc_on_resolved(&s_hc, entry_host, host)) {
+        nvs_set_blob_ns("cc", "hcache", &s_hc, sizeof(s_hc));
+        ESP_LOGI(TAG, "mac: cached %s for %s", host, entry_host);
+    }
     s_w_fallback_until_us = 0;   /* a fallback is retried on the next connect */
     memset(s_w_ends, 0, sizeof(s_w_ends));
     ESP_LOGI(TAG, "connected to %s (%s:%d)", name, host, port);
@@ -1886,8 +1954,32 @@ esp_err_t cc_link_start(void)
     cJSON_Hooks hooks = { .malloc_fn = psram_malloc, .free_fn = heap_caps_free };
     cJSON_InitHooks(&hooks);
     carry_load();
+    hc_load();
     libssh_esp32_init();   /* once only */
     if (xTaskCreatePinnedToCore(link_task, "cc_link", 24576, NULL, 4, &s_task, 1) != pdPASS)
         return ESP_ERR_NO_MEM;
     return ESP_OK;
+}
+
+void cc_link_host_cache_text(char *out, size_t cap)
+{
+    if (s_hc.entry[0]) snprintf(out, cap, "host cache: %s -> %s%s", s_hc.entry, s_hc.ip, s_hc_off ? " (off)" : "");
+    else snprintf(out, cap, "host cache: none%s", s_hc_off ? " (off)" : "");
+}
+void cc_link_host_cache_enable(bool on) { s_hc_off = !on; }
+bool cc_link_host_cache_test_set(const char *ip)
+{
+    /* debug: point the cache at another address (RAM only) to exercise the fallback to the lookup */
+    char entry[sizeof(s_hc.entry)];
+    lock();
+    strlcpy(entry, s_hc.entry, sizeof(entry));
+    unlock();
+    if (!entry[0] || !ts_host_is_ipv4(ip)) return false;
+    strlcpy(s_hc.ip, ip, sizeof(s_hc.ip));
+    return true;
+}
+void cc_link_host_cache_clear(void)
+{
+    memset(&s_hc, 0, sizeof(s_hc));
+    nvs_erase_key_ns("cc", "hcache");
 }

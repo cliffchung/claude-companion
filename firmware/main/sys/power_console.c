@@ -14,6 +14,7 @@
 #include "sys/power.h"
 #include "sys/hibernate.h"
 #include "sys/checkin.h"
+#include "sys/boot_phase.h"
 #include "net/wifi_mgr.h"
 #include "input/keyboard.h"
 #include "settings/settings.h"
@@ -35,7 +36,7 @@ static int usage(void)
            "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe | raw <mode> <bright> <r> <g> <b>] | "
            "power go active|dim|off|radio-off|deep-idle|hibernate | "
            "power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate|radio-off|radio-after|checkin|hib-checkin <n> | "
-           "power checkin [rebind] | power checkin hibernate [keep|nokeep] [usb] | power checkins | "
+           "power checkin [rebind] | power checkin hibernate [keep|nokeep] [usb] [chain <n>] [exp <mask>] | power checkins | power phases [clear] | "
            "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch | "
            "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s> | backstop [<s> <n>] | probe <s> <n>] | power boot | "
            "power rails | power rail speaker|camera|usb|ext5v on|off | power imu [suspend]\n");
@@ -86,15 +87,23 @@ static int cmd_checkin(int argc, char **argv)
 {
     if (argc == 2) { checkin_force(false); printf("checkin: one check-in now\n"); }
     else if (argc == 3 && strcmp(argv[2], "rebind") == 0) { checkin_force(true); printf("checkin: one check-in now, rebind forced\n"); }
-    else if (argc >= 3 && argc <= 5 && strcmp(argv[2], "hibernate") == 0) {
+    else if (argc >= 3 && argc <= 9 && strcmp(argv[2], "hibernate") == 0) {
         int force = 0;
+        uint32_t chain = 0;
         for (int i = 3; i < argc; i++) {
-            if (strcmp(argv[i], "keep") == 0) force |= 1;
+            if (strcmp(argv[i], "exp") == 0 && i + 1 < argc) {
+                boot_phase_exp_set((uint32_t)strtoul(argv[++i], NULL, 0));   /* Task 3 A/B: BPX_* bits */
+            } else if (strcmp(argv[i], "chain") == 0 && i + 1 < argc) {
+                /* Task 3 timing: n more check-in boots go down again with the test timer */
+                chain = (uint32_t)atoi(argv[++i]);
+                if (chain > 8) return usage();
+            } else if (strcmp(argv[i], "keep") == 0) force |= 1;
             else if (strcmp(argv[i], "nokeep") == 0) force |= 2;
             else if (strcmp(argv[i], "usb") == 0) force |= 0x10;   /* on USB, check in as on battery (timing) */
             else return usage();
         }
         if ((force & 3) == 3) return usage();
+        boot_phase_chain_set(chain);
         checkin_hibernate_test(force);
         return 1;   /* only if the hibernate failed */
     } else return usage();
@@ -178,6 +187,10 @@ static int cmd_power(int argc, char **argv)
         }
     } else if (strcmp(argv[1], "checkin") == 0) {
         return cmd_checkin(argc, argv);
+    } else if (strcmp(argv[1], "phases") == 0 && argc <= 3) {
+        if (argc == 3 && strcmp(argv[2], "clear") == 0) { boot_phase_clear(); printf("phases: cleared\n"); }
+        else boot_phase_print();
+        return 0;
     } else if (strcmp(argv[1], "checkins") == 0 && argc == 2) {
         checkin_print();
         return 0;

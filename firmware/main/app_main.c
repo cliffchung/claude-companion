@@ -35,6 +35,7 @@
 #include "media/audio_player.h"
 #include "net/tailscale.h"
 #include "companion/cc_link.h"
+#include "sys/boot_phase.h"
 
 static void wifi_global_cb(wifi_ev_t ev, void *user)
 {
@@ -130,6 +131,7 @@ static void idle_task(void *arg)
 
 void app_main(void)
 {
+    boot_phase_init();
     int64_t boot_started = esp_timer_get_time();
     ESP_LOGI(TAG, "Claude Companion starting");
     esp_log_level_set("i2c.master", ESP_LOG_NONE);   /* keyboard/INA226 probes are expected to NACK when absent */
@@ -198,6 +200,7 @@ void app_main(void)
     device_key_console_init();
     cc_console_init();
     power_console_init();
+    if (s_dark_boot && (boot_phase_exp() & BPX_NO_HOSTCACHE)) cc_link_host_cache_enable(false);
     if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
     hibernate_init();        /* boot-to-live after a hibernate */
     power_bench_boot();      /* a probe run that just finished */

@@ -94,3 +94,80 @@ Decisions made while executing Plan 3, each with what it costs if wrong. Overrul
   - **On the LAN with Tailscale off,** internal free stays at about 129 KB (minimum 35.9 KB, largest 63488 B) with the link, the watch and take-overs.
   - **Who it hits:** the user only while the switch is on. Worth a follow-up if the switch is used for long tailnet sessions.
   - **Cost if wrong:** none; it is a measurement.
+
+## Task 3 (fast check-in)
+
+Numbers are medians over 5 check-in boots on USB (`power checkin hibernate keep usb chain 4`), in ms from the timer wake. The full tables are in the notes.
+
+- Ruling L29 (Task 2 review I1, M1, M2): **carried fixes.**
+  - `companion takeover` acts only with the dashboard on screen, its cards live and the link connected (`!s_scr || s_scr != lv_screen_active() || !s_shown_live || !cc_link_connected()`), and the console then prints `takeover: dashboard not showing`. The function returns an enum, so "no card" and "not showing" read differently.
+  - `s_pin_host` is cleared on every host-key refusal (changed, unreadable, unknown), so a take-over can never be handed a refused address.
+  - `cc_link_set_server_host` clears `s_pin_host` at once, under the lock, after the carry source has been read from it.
+  - Cost if wrong: none.
+- Ruling L30 (Step 1): **how the phases are timed.**
+  - `sys/boot_phase.c` marks 15 phases on esp_timer.
+  - esp_timer starts at about 0 ms when the app starts, not at the reset. The offset comes from the RTC timer: on the way down the RTC time of the armed wake is saved, and `app_main` reads the time since then.
+  - Reset to `app_main` is 3.40 s on every boot. The bootloader log shows where it goes: about 0.67 s before the bootloader (on this P4 rev 1.3 the wake goes through an HP watchdog reset), 1.43 s hashing segments 0 and 4 for validation, 0.17 s PSRAM tuning, and 1.0 s copying .rodata and .text to PSRAM (XIP).
+  - **`power checkins` undercounts:** its ms is esp_timer, so Task 2's "8.0–8.4 s" check-in was really about 12.4 s awake.
+  - The ring of 8 tables lives in RTC memory. `... chain <n>` re-hibernates n more check-in boots with the 60 s test timer, so every sleep has a timer. `... exp <mask>` turns single changes off for A/B runs.
+  - "scan done" can't be seen from the P4 (esp_hosted gives no event). It is folded into join→assoc.
+  - The TCP mark is a 3-line hook in the vendored libssh (`ssh_companion_tcp_connected_hook`).
+  - Cost if wrong: about 600 B of RTC memory and two debug console options.
+- Ruling L31 (Step 2): **the Wi-Fi join cache was built, measured and dropped.**
+  - The cache held BSSID, channel and auth mode, never the PSK. Joins used `WIFI_FAST_SCAN` with `bssid_set` and `channel`, and fell back to the full scan.
+  - The C6 associates in about 3.1 s either way:
+    - warm, cached: 3105 and 3131 ms; warm, full scan: 3158 and 3184 ms;
+    - cold check-in boots: 3.16–3.19 s both ways;
+    - the C6 reports its home-channel change about 2.7 s after the connect, even with the channel set.
+  - The C6 firmware (reports 0.0.0) seems to ignore the scan method and channel, and it can't be flashed (global constraint).
+  - The brief's 3 s fallback made things worse: it fired at 3.0 s, just before the 3.1 s association (chain A: 13.9 s against 12.5 s).
+  - The code and its host tests were removed. The test build left a 52-byte NVS key `wifi`/`jc` with no secret in it; it is harmless and was not erased (no NVS erase).
+  - Cost if wrong: none now; a future C6 image that honours the fields could save about 2.7 s.
+- Ruling L32 (Step 3): **DHCP: restore the lease and skip lwIP's own ARP probe.**
+  - `CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y` alone gave about 40 ms (assoc→IP 1053 ms against 1096). lwIP's DHCP ARP check (about 1 s) was the real cost.
+  - `CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y` brings assoc→IP to 33–40 ms.
+  - The router's DHCP server checks an address before it offers or ACKs it. The lease is written to NVS only when it changes.
+  - Cost if wrong: a duplicate address on the LAN isn't caught by the Tab5.
+- Ruling L33 (Step 3): **the static address is optional and off by default** (Settings › Network › Wi-Fi advanced, "address/prefix gateway [dns]", the pure `sip_parse`; console `wifi static`).
+  - It is stored in NVS `wifi`/`sip`, not the settings blob, so there is no CFG bump (CFG 22 stays Plan 2 Task 10's).
+  - Against the restored lease without the ARP check it saved 58 ms (9742 against 9800 ms): under the 300 ms bar, so it stays off. With the ARP check still on it saved about 0.9 s.
+  - Cost if wrong: none (off).
+- Ruling L34 (Step 4): **the Host address cache** (NVS `cc`/`hcache`: entry host and its last mDNS/DNS/fallback address, never a MagicDNS one).
+  - The pure `hc_use` allows it only for the same entry, a name rather than a literal, no pending forget, and a tailnet address only with the switch on.
+  - `hc_cached_key` keeps the cached address only when its own pin matches (KH_OK). Any other result is dropped without pinning or refusing, and the normal lookup and check decide, so a changed key still refuses as before.
+  - A cached address that doesn't answer leads to a lookup. A lookup that gives the same dead address fails at once instead of a second 10 s connect.
+  - Measured: resolve goes from 142 ms (mDNS) to 0. The first mDNS after a flash took 1.3 s. A moved Host costs one 10 s connect timeout once (tested with `companion hostcache set 192.168.1.250`: timeout, then `mdns`, connected, cache restored).
+  - The whole-check-in median moved only 24 ms (9800 against 9824), which is within the noise, but kept: it removes the mDNS step and its failure modes.
+  - Cost if wrong: one 10 s timeout after the Host's address changes.
+- Ruling L35 (Step 5, WPA2/WPA3): **nothing to do.** The router is WPA2 Personal only: the Mac reports "WPA2 Personal", and the Tab5 associates with auth 3 (WPA2_PSK). There is no SAE and no transition mode, so no "prefer WPA2" option, and no threshold was changed. Cost if wrong: none.
+- Ruling L36 (Step 5, Wi-Fi power): **no modem sleep during a check-in boot.**
+  - `wifi_mgr_ps_hold_none` holds `WIFI_PS_NONE` from `checkin_init` until the sleep. It is released on any path that stays up (USB wake, give-up, hold, input, debug stay-awake), and the power task's last wish is then applied.
+  - Max modem made every downlink wait for a beacon: kex 684 ms against 335, poll 463 ms against 270.
+  - Measured 10505 ms with max modem against 9800 ms: saves 0.70 s. `listen_interval` is left alone: it only matters while the radio may sleep.
+  - Cost if wrong: radio current for about 6 s per check-in, much smaller than 0.7 s of the whole device.
+- Ruling L37 (Step 5, CPU clock): **already 360 MHz** (`CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360`, no PM, so nothing lowers it). Nothing changed. The bootloader's hashing is bound by flash speed (40 MHz DIO; 80 MHz isn't offered for P4 rev < 3). Cost if wrong: none.
+- Ruling L38 (Step 5, lean init): **dropped.**
+  - Starting Wi-Fi before the display on a check-in boot didn't move the join (9815 against 9800 ms). esp_hosted resets the C6 at transport init (app +0 ms), and the C6 needs about 1.5 s before `esp_wifi_init` can talk to it. The display and UI init already run inside that wait.
+  - The code was reverted. Skipping LVGL or fonts would gain nothing on the critical path.
+  - Cost if wrong: none.
+- Ruling L39 (Step 5, bootloader validation): **`CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` was measured and dropped** (L-C1 allowed it).
+  - The bootloader skips validation only when the reset reason is `CORE_DEEP_SLEEP`. On this chip every timer wake arrives as `HP_SYS_HP_WDT_RESET` (rst:0x7), so there was no "Fast booting" line, and reset→app stayed 3397 ms.
+  - The validation still costs 1.43 s. Only `SKIP_VALIDATE_ON_POWER_ON` or `ALWAYS` would remove it, and P125 objected to those, so they were not tried.
+  - Cost if wrong: none.
+- Ruling L40 (Step 5): **shorter waits.**
+  - The check-in's `wait_for` polls every 20 ms, not 200 (poll→judged 200 → 20 ms).
+  - A check-in boot's way down skips the 300 ms wait for the watch loop (it never runs on a check-in boot, M3) and waits 50 ms, not 200, after the deauth.
+  - Measured 10539 ms with the old waits against 9800: saves 0.74 s.
+  - Cost if wrong: a deauth cut short.
+- Ruling L41 (found while measuring): **the SSH session is closed before the Wi-Fi goes down.**
+  - `go_down` now parks the link (a clean `ssh_disconnect`) and waits up to 1 s before the Wi-Fi disconnect. Before, the link noticed only after the Wi-Fi was gone, so every check-in left an idle `sshd-session` on the Host. macOS sshd here has no ClientAlive, so they last until TCP keepalive.
+  - After about 60 test check-ins, 42 of them had piled up (launchd `copy count = 42`). New connects were then reset ("Connection reset by peer"), from the LAN and from localhost too.
+  - I ended those 42 orphaned sessions. Each was user-owned `sshd-session: you@notty` with peer 192.168.1.60 (the Tab5), and nothing ran under it. sshd answered again at once. After the fix, a 5-boot chain left 0 sessions.
+  - This was pre-existing (Plan 2): at the 15-minute cadence a few idle sessions were always there.
+  - Cost if wrong: up to 1 s more awake if the close hangs (measured: about 30 ms).
+- Ruling L42 (Step 5, battery settle): **a check-in boot calls battery after 3 battery-like samples, not 10** (`vitals_src_seed_battery`, host test `test_checkin_prior_battery`).
+  - A check-in boot only follows a sleep that began on battery: the ladder and the check-in's re-hibernate both need battery.
+  - USB still wins at once, and a no-evidence sample needs the full count again.
+  - Why: Plan 2 measured the settle at 10–12 s after the wake, and the gate waits for it. On battery that, not the network, decided the awake time. The USB `usb` hook can't show it, because USB is known at once.
+  - **Estimated, not measured on battery:** about 15.4 s → about 9.8 s awake.
+  - Cost if wrong: a USB plug-in during the sleep, under a load the USB supply can't carry, is read as battery for 3 s. That check-in then re-hibernates instead of waking fully. It still charges asleep, and the next check-in decides again.

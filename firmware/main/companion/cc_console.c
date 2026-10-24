@@ -12,6 +12,7 @@
 #include "ui/ui.h"
 #include "ui/ui_dashboard.h"
 #include "net/ts_host.h"
+#include "esp_netif.h"
 #include "ssh/ssh_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -99,6 +100,20 @@ static int cmd_companion(int argc, char **argv)
         strlcpy(s_takeover_id, argv[2], sizeof(s_takeover_id));
         ui_async(takeover_async, NULL);
         printf("takeover: opening %s (companion-test-* only)\n", argv[2]);
+        return 0;
+    }
+    if (argc == 4 && strcmp(argv[1], "hostcache") == 0 && strcmp(argv[2], "set") == 0) {
+        printf("hostcache: %s\n", cc_link_host_cache_test_set(argv[3]) ? "set (RAM only; reconnect to use it)" : "refused");
+        return 0;
+    }
+    if ((argc == 2 || argc == 3) && strcmp(argv[1], "hostcache") == 0) {
+        if (argc == 3 && strcmp(argv[2], "on") == 0) cc_link_host_cache_enable(true);
+        else if (argc == 3 && strcmp(argv[2], "off") == 0) cc_link_host_cache_enable(false);
+        else if (argc == 3 && strcmp(argv[2], "clear") == 0) cc_link_host_cache_clear();
+        else if (argc == 3) return 1;
+        char t[200];
+        cc_link_host_cache_text(t, sizeof(t));
+        printf("%s\n", t);
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "resolve") == 0) {
@@ -267,6 +282,14 @@ static int cmd_logs(int argc, char **argv)
 static char s_left_ssid[33];
 
 /* Test helpers for the reconnect check: leave and rejoin a saved network. */
+static bool wifi_static_parse(const char *s, uint32_t *out)
+{
+    esp_ip4_addr_t a;
+    if (!ts_host_is_ipv4(s) || esp_netif_str_to_ip4(s, &a) != ESP_OK) return false;
+    *out = a.addr;
+    return true;
+}
+
 static int cmd_wifi(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "leave") == 0) {
@@ -295,12 +318,42 @@ static int cmd_wifi(int argc, char **argv)
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "status") == 0) {
-        char rc[96];
+        char rc[96], ip[20];
         wifi_mgr_reconnect_text(rc, sizeof(rc));
-        printf("wifi: %s %s; %s\n", wifi_mgr_is_connected() ? "connected" : "not connected", wifi_mgr_ssid(), rc);
+        wifi_mgr_get_ip4(ip, sizeof(ip));
+        wifi_static_ip_t sip;
+        bool st = wifi_mgr_static_ip_get(&sip);
+        printf("wifi: %s %s %s (ch %d, rssi %d); %s; address %s\n", wifi_mgr_is_connected() ? "connected" : "not connected",
+               wifi_mgr_ssid(), ip, wifi_mgr_channel(), wifi_mgr_rssi(), rc, st ? "static" : "dhcp");
         return 0;
     }
-    printf("usage: wifi leave | wifi join [ssid] | wifi status | wifi test drop   (join uses the saved password)\n");
+    if ((argc == 2 || argc == 5 || argc == 6) && strcmp(argv[1], "static") == 0) {
+        /* wifi static off | wifi static <ip> <mask> <gateway> [dns] (from the next join) */
+        wifi_static_ip_t s = { 0 };
+        if (argc == 2) {
+            wifi_static_ip_t cur;
+            bool on = wifi_mgr_static_ip_get(&cur);
+            esp_ip4_addr_t a = { cur.ip }, m = { cur.mask }, g = { cur.gw }, d = { cur.dns };
+            printf("wifi static: %s " IPSTR " / " IPSTR " gw " IPSTR " dns " IPSTR "\n", on ? "on" : "off", IP2STR(&a), IP2STR(&m),
+                   IP2STR(&g), IP2STR(&d));
+            return 0;
+        }
+        if (!wifi_static_parse(argv[2], &s.ip) || !wifi_static_parse(argv[3], &s.mask) || !wifi_static_parse(argv[4], &s.gw) ||
+            (argc == 6 && !wifi_static_parse(argv[5], &s.dns))) {
+            printf("wifi static: bad address\n");
+            return 1;
+        }
+        s.on = 1;
+        printf("wifi static: %s\n", wifi_mgr_static_ip_set(&s) ? "on (from the next join)" : "refused");
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "static") == 0 && strcmp(argv[2], "off") == 0) {
+        wifi_mgr_static_ip_set(NULL);
+        printf("wifi static: off (from the next join)\n");
+        return 0;
+    }
+    printf("usage: wifi leave | wifi join [ssid] | wifi status | wifi test drop | "
+           "wifi static [off | <ip> <mask> <gw> [dns]]   (join uses the saved password)\n");
     return 1;
 }
 
@@ -354,7 +407,7 @@ static int cmd_ts(int argc, char **argv)
 void cc_console_init(void)
 {
     const esp_console_cmd_t cmds[] = {
-        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | server-host <host> [fallback-ip|none] | resolve <host> | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug) | kick on|off | reconnect-log", .func = cmd_companion },
+        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | server-host <host> [fallback-ip|none] | resolve <host> | hostcache [on|off|clear|set <ip>] | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug) | kick on|off | reconnect-log", .func = cmd_companion },
         { .command = "sessions", .help = "List Claude sessions from the last poll: <STATE> <id> <repo> <name>", .func = cmd_sessions },
         { .command = "reply", .help = "reply <id> <text...>: type a quick answer into a running background session", .func = cmd_reply },
         { .command = "logs", .help = "logs <id>: recent output of a session, ANSI stripped", .func = cmd_logs },

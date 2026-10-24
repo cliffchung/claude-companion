@@ -168,6 +168,13 @@ const char *cc_link_tailnet_pin_source(char *out, size_t cap);
 
 /* Registers companion, sessions, reply, logs, wifi and ts console commands. */
 void cc_console_init(void);
+/* Plan 3 Task 3 Step 4: the Host's last looked-up address (connected to first; the name is looked up only
+   when that fails or its pin doesn't match). Console: `companion hostcache [on|off|clear]`. */
+void cc_link_host_cache_text(char *out, size_t cap);
+void cc_link_host_cache_enable(bool on);   /* measurement only, RAM; on at boot */
+void cc_link_host_cache_clear(void);
+bool cc_link_host_cache_test_set(const char *ip);   /* debug, RAM only: `companion hostcache set <ip>` */
+
 #ifdef __cplusplus
 }
 #endif
