@@ -192,3 +192,28 @@ Numbers are medians over 5 check-in boots on USB (`power checkin hibernate keep 
   - The boot-phase init hook says why priority 102 and warns at build time outside IDF 5.5.x.
   - A check-in boot logs the experiment mask when it isn't 0, so a forgotten `exp` can't quietly slow production check-ins.
   - Cost if wrong: none.
+
+## Final review fixes (review: a local review file (not kept))
+
+- Ruling L47 (controller, C1): **every path that takes the link down closes SSH first, including restarts on screens the next plan deletes.**
+  - **One guard.** The pure `sys/link_guard.c` (host-tested in `test_link_guard`) holds the closers: the companion link and every live SSH Terminal or take-over client. `lg_close` asks each to close and waits until all are idle, bounded at `LG_CLOSE_MS` (2 s). `lg_around` runs close → down → reopen. The down step always runs: a hung close never blocks a Wi-Fi leave, a restart or a sleep.
+  - **The link** closes through a nested guard park (`companion/cc_park.c`), separate from Radio off's park. A Wi-Fi leave's reopen never unparks a Radio-off park, and the reverse. `cc_link_close_now(ms)` / `cc_link_reopen()` are the same park for direct callers.
+  - **Terminals** close through a registry of live `ssh_client`s and a `kill` flag. The owner still holds the object, so `ssh_client_stop` stays the only free. A killed client ends as `SSH_ST_ERROR` "the network is going down".
+  - **Covered:** `wifi_mgr_disconnect` (Wi-Fi → Disconnect, the home toggle, `wifi leave`, hibernate), a network switch in `wifi_mgr_connect`, every app `esp_restart` via `link_down_restart` (Settings reboot, backup restore, OTA into the updater, console `reboot`), the Tailscale stop through a stop hook around `teardown()` (the switch, `ts off`, backup restore, `tailscale_stop`, node forget: tailnet sessions only, then the link reconnects), `go_down` and the check-in's radio park.
+  - **Not covered, on purpose:** `wifi test drop` (a debug simulation of a real drop), a real Wi-Fi loss (nothing can be sent), panics and the brownout reset, and the updater image's restart (it has no SSH).
+  - **Cost if wrong:** up to 2 s more before a leave, a switch, a restart or a Tailscale off, while a close hangs (measured: tens of ms).
+- Ruling L48 (controller, M2): **every command line sent to the Host comes from a `cc_cmd_*` function; `ts term-test` sends none.** It now runs only the terminal client's pure first check, `ts_host_term_refusal` (host-tested), which is the same call `ssh_task` makes before any socket. It starts no client, so the literal `"true"` and the user `nobody` are gone. Cost if wrong: the console test no longer exercises the client task itself; the shared pure check does.
+- Ruling L49 (I1): **a park beats a connect in flight.**
+  - `connect_once` checks the park before `ssh_new`, after the TCP/kex step, inside the pending-auth loop and after auth. Parked, it disconnects the new session at once, while the Wi-Fi still carries the close, and returns false without recording a failure.
+  - `do_exec` (and so `refresh()`) gives up when parked, and `do_paste` treats the park as its deadline: it stops between steps and detaches with Ctrl+Z.
+  - `go_down` and the check-in's park wait for `cc_link_idle()` (no session and no connect in flight) through the guard, not for "not connected".
+  - A connect stuck inside `ssh_connect` (up to 10 s) can't be interrupted. The wait ends at 2 s and the device goes down, but no session is authenticated then.
+  - Cost if wrong: one poll counted as failed when a park interrupts it.
+- Ruling L50 (minors): **M1/N2, M3, M4, M5, M6, M7 fixed.**
+  - **M1/N2:** a failed save for `wifi static off` reads "not saved (still on)" on the console and "Static address not changed (not saved)" in Settings.
+  - **M3:** Forget also erases the pin at the Host address cache's address (`PIN_TARGETS` 8) and clears the cache.
+  - **M4:** `companion server-host` bumps a generation, and a tailnet connect that began before it doesn't store the carry source.
+  - **M5:** `on_state` ignores events while the switch is off, and the stop worker sets `TS_OFF` after the free.
+  - **M6:** `s_ok_host` is set only after the key check and the auth. A take-over is handed only that address, and is refused with a toast when there is none.
+  - **M7:** the new strings say "Host": the fallback row, the link line and note, `CC_LINK_TS_OFF_TEXT`, the console's `server-host` lines and check-in logs.
+  - Cost if wrong: a take-over refused during the first moments of a reconnect (M6).
