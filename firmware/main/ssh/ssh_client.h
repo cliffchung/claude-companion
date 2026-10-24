@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include "libssh/libssh.h"
 #include "ssh/kh_rules.h"
+#include "servers/host_rules.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,6 +59,11 @@ bool ssh_known_host_trust(ssh_session session, const char *host, int port);
 bool ssh_known_host_fingerprint(const char *host, int port, char *fp_out, size_t fp_cap);
 /* Erases the pin for host:port; true if there was one. */
 bool ssh_known_host_forget(const char *host, int port);
+/* P4C-10: the keys the companion link ever pinned (SHA256, a FIFO of HF_HOSTKEYS_MAX in NVS "cc"/"hostkeys"; it
+   survives Forget and Host switches). load returns n; add appends a key the link authenticated on. An interactive
+   SSH Terminal session that meets one of them is refused before it authenticates. */
+int ssh_host_keys_load(uint8_t out[HF_HOSTKEYS_MAX][32]);
+void ssh_host_keys_add(const uint8_t hash[32]);
 /* Debug: overwrites the pin for host:port with a wrong hash, so the next connect sees a
    changed key (`companion hostkey corrupt`). */
 bool ssh_known_host_set_debug(const char *host, int port);

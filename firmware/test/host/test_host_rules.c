@@ -1,5 +1,7 @@
 #include "unity.h"
 #include "servers/host_rules.h"
+#include <string.h>
+#include <stdint.h>
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -140,6 +142,53 @@ static void test_auth_plan(void)
     TEST_ASSERT_TRUE(p.try_password);
 }
 
+/* P4C-10: the Host is the server that presents any key the companion link ever pinned (a FIFO of 8) */
+static void key(uint8_t out[32], uint8_t v) { memset(out, v, 32); }
+static void test_hostkey_is_host(void)
+{
+    uint8_t list[HF_HOSTKEYS_MAX][32], k[32];
+    int n = 0;
+    key(k, 1); n = hf_hostkeys_add(list, n, k);
+    key(k, 2); n = hf_hostkeys_add(list, n, k);
+    key(k, 1); n = hf_hostkeys_add(list, n, k);   /* no duplicate */
+    TEST_ASSERT_EQUAL(2, n);
+    key(k, 1); TEST_ASSERT_TRUE(hf_hostkey_is_host(k, list, n));
+    key(k, 2); TEST_ASSERT_TRUE(hf_hostkey_is_host(k, list, n));
+    key(k, 3); TEST_ASSERT_FALSE(hf_hostkey_is_host(k, list, n));
+    TEST_ASSERT_FALSE(hf_hostkey_is_host(k, NULL, 0));
+    key(k, 0); TEST_ASSERT_EQUAL(n, hf_hostkeys_add(list, n, k));   /* an all-zero hash is no key */
+    TEST_ASSERT_FALSE(hf_hostkey_is_host(k, list, n));
+}
+static void test_hostkeys_fifo(void)
+{
+    uint8_t list[HF_HOSTKEYS_MAX][32], k[32];
+    int n = 0;
+    for (int i = 1; i <= HF_HOSTKEYS_MAX + 2; i++) { key(k, (uint8_t)i); n = hf_hostkeys_add(list, n, k); }
+    TEST_ASSERT_EQUAL(HF_HOSTKEYS_MAX, n);
+    key(k, 1); TEST_ASSERT_FALSE(hf_hostkey_is_host(k, list, n));   /* the two oldest went */
+    key(k, 2); TEST_ASSERT_FALSE(hf_hostkey_is_host(k, list, n));
+    key(k, 3); TEST_ASSERT_TRUE(hf_hostkey_is_host(k, list, n));
+    key(k, HF_HOSTKEYS_MAX + 2); TEST_ASSERT_TRUE(hf_hostkey_is_host(k, list, n));
+    key(k, 3); n = hf_hostkeys_add(list, n, k);   /* re-pinning an old key keeps it (moves it to the newest) */
+    key(k, 100); n = hf_hostkeys_add(list, n, k);
+    key(k, 3); TEST_ASSERT_TRUE(hf_hostkey_is_host(k, list, n));
+}
+/* C1 convenience: a .local Host name also matches its peer's MagicDNS name by the first label (invented names) */
+static void test_host_addrs_first_label(void)
+{
+    hf_host_addrs_t h;
+    hf_host_addrs_init(&h);
+    hf_host_addrs_add_name(&h, "studio.local");
+    TEST_ASSERT_TRUE(hf_is_host("studio.tail1234.ts.net", &h));
+    TEST_ASSERT_TRUE(hf_is_host("STUDIO.tail1234.ts.net.", &h));
+    TEST_ASSERT_FALSE(hf_is_host("studio2.tail1234.ts.net", &h));
+    TEST_ASSERT_FALSE(hf_is_host("box.tail1234.ts.net", &h));
+    hf_host_addrs_init(&h);
+    hf_host_addrs_add_name(&h, "192.168.77.20");   /* an IP has no label */
+    TEST_ASSERT_EQUAL(1, h.n);
+    TEST_ASSERT_FALSE(hf_is_host("192.tail1234.ts.net", &h));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -154,5 +203,8 @@ int main(void)
     RUN_TEST(test_hf_name_taken);
     RUN_TEST(test_key_path_confined);
     RUN_TEST(test_auth_plan);
+    RUN_TEST(test_hostkey_is_host);
+    RUN_TEST(test_hostkeys_fifo);
+    RUN_TEST(test_host_addrs_first_label);
     return UNITY_END();
 }

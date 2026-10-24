@@ -74,7 +74,8 @@ void ui_nav_set_back_guard(lv_obj_t *scr, ui_back_guard_t guard)
 static bool guarded(nav_op_t op, ui_screen_create_fn create, void *arg)
 {
     if (!s_guard || !s_guard_scr || s_guard_scr != lv_screen_active()) return false;
-    s_pending.set = true; s_pending.op = op; s_pending.create = create; s_pending.arg = arg;
+    bool asked = s_pending.set;   /* a question is up: the first move keeps waiting; this one is ignored */
+    if (!asked) { s_pending.set = true; s_pending.op = op; s_pending.create = create; s_pending.arg = arg; }
     if (s_guard()) return true;
     s_pending.set = false;
     return false;

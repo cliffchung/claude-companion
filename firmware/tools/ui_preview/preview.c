@@ -20,6 +20,7 @@
 #include "servers/host_rules.h"
 #include "companion/cc_cmd.h"
 #include "ui/ui_host_form.h"
+#include "i18n/i18n.h"
 #include "net/ts_host.h"
 #include "sys/power.h"
 #include "sys/checkin.h"
@@ -121,6 +122,7 @@ bool tailscale_peer(int i, ts_peer_t *out) {
     if (tailscale_state() != TS_CONNECTED || i < 0 || i >= 3) return false;
     *out = k_preview_peers[i];
     if (i == 0 && s_peer_a_offline) out->online = false;
+    if (i == 2 && env_int("PREVIEW_HOST_TSIP", 1) == 0) snprintf(out->hostname, sizeof(out->hostname), "studio-host.tail1234.ts.net");
     return true;
 }
 static wifi_saved_t s_preview_saved[4] = { { "Clientre Wi-Fi", "preview-pass-1" }, { "Cabin", "preview-pass-2" } };
@@ -170,7 +172,7 @@ void server_store_reload(void) {}
    address, online). PREVIEW_HOSTS=empty: the Host's entry only. PREVIEW_HOSTS=sd: the LAN host signs in with a key
    file on the SD card. The add / update / remove calls are recorded. */
 static server_t s_preview_servers[SERVER_MAX] = {
-    { .name = "Mac", .host = "mac", .port = 22, .user = "me", .use_key = true, .keypath = "device" },
+    { .name = "Mac", .host = "studio-host.local", .port = 22, .user = "me", .use_key = true, .keypath = "device" },
     { .name = "pi-lan", .host = "192.168.1.50", .port = 22, .user = "pi", .use_key = true, .keypath = "device" },
     { .name = "build-box", .host = "100.64.0.11", .port = 22, .user = "dev", .use_key = true, .keypath = "device" },
 };
@@ -203,12 +205,15 @@ bool server_store_remove(int i) {
 /* The link's known Host addresses (invented): the entry's host, the LAN fallback and the tailnet carry address,
    preview-host-c's IP (so the tailnet sheet must drop that peer). As cc_link.c decides it: index 0 or any address. */
 #define PREVIEW_HOST_TS_IP "100.64.0.13"
+/* PREVIEW_HOST_TSIP=0: the link never met the Host over the tailnet (no tailnet IP known), and preview-host-c's
+   MagicDNS name is the Host's: studio-host.tail1234.ts.net (C1 by the first label). */
+static bool pv_host_tsip(void) { return env_int("PREVIEW_HOST_TSIP", 1) != 0; }
 void cc_link_host_addresses(hf_host_addrs_t *h) {
     hf_host_addrs_init(h);
     if (!pv_host()) return;
-    hf_host_addrs_add(h, s_preview_servers[0].host);
+    hf_host_addrs_add_name(h, s_preview_servers[0].host);
     hf_host_addrs_add(h, "192.168.77.20");
-    hf_host_addrs_add(h, PREVIEW_HOST_TS_IP);
+    if (pv_host_tsip()) hf_host_addrs_add(h, PREVIEW_HOST_TS_IP);
 }
 bool cc_link_is_companion_server(int idx) {
     const server_t *s = server_store_get(idx);
@@ -238,8 +243,20 @@ bool ssh_known_host_forget(const char *host, int port) {
     s_kh_pinned = false; return had;
 }
 bool tailscale_resolve(const char *host, char *ip, size_t cap) { (void)host; if (cap) ip[0] = 0; return false; }
+/* The SSH Terminal stub: as ssh_task, an interactive session whose server presents a key the link pinned for the Host
+   is refused (P4C-10). "alias-box" (10.20.30.40, an address the link doesn't know) is the Host reached another way:
+   it presents the Host's key. */
 static int s_term_opens, s_term_idx = -1;
-lv_obj_t *ui_terminal_create(void *p) { s_term_opens++; s_term_idx = (int)(intptr_t)p; return ui_screen_base(); }
+static const uint8_t k_pv_host_key[32] = { 0xAB, 0xAB, 0xAB, 0xAB, 1, 2, 3, 4 };
+lv_obj_t *ui_terminal_create(void *p) {
+    s_term_opens++; s_term_idx = (int)(intptr_t)p;
+    const server_t *e = server_store_get(s_term_idx);
+    uint8_t keys[HF_HOSTKEYS_MAX][32], met[32] = { 0x11, 0x22 };
+    int n = hf_hostkeys_add(keys, 0, k_pv_host_key);
+    if (e && !strcmp(e->host, "10.20.30.40")) memcpy(met, k_pv_host_key, 32);
+    if (hf_hostkey_is_host(met, (const uint8_t (*)[32])keys, n)) ui_hosts_note_failure(s_term_idx, tr(STR_HOSTS_NOT_LISTED));
+    return ui_screen_base();
+}
 pr_src_t power_source(int *pct, bool *charging)
 {
     bool chg = env_int("PREVIEW_CHG", 0) != 0;
@@ -1697,7 +1714,8 @@ static lv_obj_t *open_terminal(lv_display_t *d) {
     return lv_screen_active();
 }
 
-/* terminal [on|empty|keys|deleted-event|fail|add]: spec §5.3. The default: Tailscale off. */
+static void form_set(lv_display_t *d, lv_obj_t *scr, const char *row, const char *text);
+/* terminal [on|empty|keys|deleted-event|fail|add|add-fqdn]: spec §5.3. The default: Tailscale off. */
 static int terminal_case(lv_display_t *d, const char *v) {
     char name[48];
     snprintf(name, sizeof(name), "terminal%s%s", v[0] ? "-" : "", v);
@@ -1709,7 +1727,7 @@ static int terminal_case(lv_display_t *d, const char *v) {
     lv_obj_t *s = open_terminal(d), *body = hosts_body(s), *banner = lv_obj_get_child(s, 1), *top = lv_layer_top();
     (void)timers0;
     assert(find_clickable_shown(s, "\xe2\x86\x90 Sessions") && find_label(s, "Terminal", false));
-    if (find_label(body, "Mac", false) || find_label_has(body, "me@mac", 0)) { printf("check %s: FAIL the Host's entry is listed\n", name); return 1; }
+    if (find_label(body, "Mac", false) || find_label_has(body, "me@studio-host", 0)) { printf("check %s: FAIL the Host's entry is listed\n", name); return 1; }
     if (!find_label(body, FOOTNOTE, false)) { printf("check %s: FAIL no footnote\n", name); return 1; }
     int r = 0;
     if (!v[0]) {
@@ -1810,6 +1828,24 @@ static int terminal_case(lv_display_t *d, const char *v) {
         assert(s_term_opens == 1 && s_term_idx == 1);
         ui_nav_back(); step(d, 200);
         assert(ui_nav_is_top(ui_hosts_create) && !host_note(host_row(hosts_body(lv_screen_active()), "pi-lan")));
+        /* P4C-10: the Host reached by an address the link doesn't know (an alias) presents the Host's key: refused at
+           connect, before any authentication, with the footnote's sentence on the row */
+        server_t alias = { .name = "alias-box", .host = "10.20.30.40", .port = 22, .user = "me", .use_key = true, .keypath = "device" };
+        s_preview_servers[s_preview_server_n++] = alias;
+        g_settings.ts_enable = 1;
+        ui_nav_refresh(); step(d, 200);
+        lv_obj_t *al = host_row(hosts_body(lv_screen_active()), "alias-box");
+        if (!al) { printf("check %s: FAIL the alias isn't listed (the address check can't know it)\n", name); return 1; }
+        lv_obj_send_event(al, LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (s_term_opens != 2 || s_term_idx != s_preview_server_n - 1) { printf("check %s: FAIL the alias didn't connect\n", name); return 1; }
+        ui_nav_back(); step(d, 200);
+        al = host_row(hosts_body(lv_screen_active()), "alias-box");
+        lv_obj_t *an = host_note(al);
+        if (!red(an) || strncmp(lv_label_get_text(an), "Your Claude host isn't listed here", 34)) {
+            printf("check %s: FAIL the Host's key wasn't refused (\"%s\")\n", name, an ? lv_label_get_text(an) : "none"); return 1;
+        }
+        r |= pv_run_checks(d, lv_screen_active(), "terminal-hostkey", false, 0);
+        s_preview_server_n--;
         printf("%s: Tailscale off and no Wi-Fi refused on the row; a session failure shown red on its row\n", name);
         return r;
     }
@@ -1842,6 +1878,36 @@ static int terminal_case(lv_display_t *d, const char *v) {
         ui_nav_back(); step(d, 200);
         assert(ui_nav_is_top(ui_hosts_create));
         printf("%s: tailnet peers (online only) and manual entry; Peers' Add as SSH host opens the form over Terminal\n", name);
+        return r;
+    }
+    if (!strcmp(v, "add-fqdn")) {
+        /* C1 with no tailnet IP known: the Host's peer has its MagicDNS FQDN; the first label drops it everywhere */
+        assert(!pv_host_tsip());
+        click_label(d, body, "+ Add host");
+        click_label(d, top, "From your tailnet");
+        if (find_label(top, "studio-host.tail1234.ts.net", false) || sheet_rows("From your tailnet") != 1) {
+            printf("check %s: FAIL the Host's FQDN peer is offered\n", name); return 1;
+        }
+        r |= pv_run_checks(d, s, name, false, 0);
+        lv_obj_clean(top);
+        ts_peer_t hp; tailscale_peer(2, &hp);
+        ui_settings_add_peer_host(&hp); step(d, 200);   /* Peers › Add as SSH host */
+        if (ui_nav_is_top(ui_host_form_create) || !find_label(top, "Your Claude host isn't listed here: its sessions are on the Sessions screen.", false)) {
+            printf("check %s: FAIL Peers' Add as SSH host offered the Host\n", name); return 1;
+        }
+        lv_obj_clean(top);
+        /* typed by hand: the FQDN is refused at Save */
+        click_label(d, hosts_body(lv_screen_active()), "+ Add host");
+        click_label(d, top, "Enter manually");
+        lv_obj_t *f = lv_screen_active();
+        form_set(d, f, "Address", "studio-host.tail1234.ts.net");
+        form_set(d, f, "User", "me");
+        click_label(d, f, "Save");
+        if (!find_label(top, "That's your Claude host: its sessions are on the Sessions screen.", false) || s_store_adds) {
+            printf("check %s: FAIL the FQDN was saved\n", name); return 1;
+        }
+        lv_obj_clean(top);
+        printf("%s: no tailnet IP known; the Host's FQDN peer not offered, not added from Peers, refused at Save\n", name);
         return r;
     }
     fprintf(stderr, "preview: unknown terminal variant %s\n", v);
@@ -1890,7 +1956,7 @@ static int hostform_case(lv_display_t *d, const char *v) {
         click_label(d, s, "Save");
         if (!find_label(top, "The port is a number from 1 to 65535", false) || s_store_adds) { printf("check %s: FAIL port 70000 (adds %d)\n", name, s_store_adds); return 1; }
         lv_obj_clean(top);
-        form_set(d, s, "Address", "MAC");
+        form_set(d, s, "Address", "STUDIO-HOST.local.");
         form_set(d, s, "Port", "2222");
         click_label(d, s, "Save");
         assert(find_label(top, "That's your Claude host: its sessions are on the Sessions screen.", false) && !s_store_adds);
@@ -1915,8 +1981,12 @@ static int hostform_case(lv_display_t *d, const char *v) {
         /* M7: leaving by any way asks too: home (a wake, `ui home`) waits for the answer */
         ui_nav_home(); step(d, 200);
         if (!find_label(top, "Discard changes?", false) || !ui_nav_is_top(ui_host_form_create)) { printf("check %s: FAIL home didn't ask\n", name); return 1; }
+        ui_nav_back(); step(d, 200);   /* M-new-2: a second way out while asking stacks no second dialog */
+        int dialogs = 0;
+        for (uint32_t i = 0; i < lv_obj_get_child_count(top); i++) dialogs += find_label(lv_obj_get_child(top, i), "Discard changes?", false) != NULL;
+        if (dialogs != 1) { printf("check %s: FAIL %d discard dialogs\n", name, dialogs); return 1; }
         click_label(d, top, "Cancel");
-        assert(ui_nav_is_top(ui_host_form_create) && lv_screen_active() == s);
+        assert(ui_nav_is_top(ui_host_form_create) && lv_screen_active() == s && !find_label(top, "Discard changes?", false));
         /* Sign in with: Device key or Password; the password row then shows, masked, starting empty */
         click_row(d, lv_obj_get_child(s, 1), "Sign in with");
         assert(sheet_rows("Sign in with") == 2);

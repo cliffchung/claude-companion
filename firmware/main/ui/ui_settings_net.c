@@ -13,6 +13,7 @@
  * Secrets: the auth key and Wi-Fi passwords are typed masked, never shown, never logged. */
 #include "ui_settings.h"
 #include "ui_host_form.h"
+#include "companion/cc_link.h"
 #include "ui.h"
 #include "ui_comp.h"
 #include "settings/settings.h"
@@ -813,6 +814,13 @@ void ui_settings_add_peer_host(const ts_peer_t *p)
 {
     static hf_arg_t a;
     if (!p) return;
+    /* C1: the Host's own peer (by its tailnet IP, or its MagicDNS name's first label) is never added */
+    hf_host_addrs_t *h = malloc(sizeof(*h));
+    if (!h) return;
+    cc_link_host_addresses(h);
+    bool host = hf_is_host(p->ip, h) || hf_is_host(p->hostname, h);
+    free(h);
+    if (host) { ui_toast(tr(STR_HOSTS_NOT_LISTED)); return; }
     memset(&a, 0, sizeof(a));
     a.index = -1;
     a.origin = HF_FROM_TERMINAL;

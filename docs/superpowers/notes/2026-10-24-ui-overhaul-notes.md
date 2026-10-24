@@ -599,3 +599,42 @@ Final state: `ts off`, `power set defaults`, DHCP, Host link connected on the LA
 - M2 is deferred to Task 12.
 - `idf.py size`: image 7,247,675 B, DIRAM 189,728 B (+800 B against the first Task 9 build).
 - Flashed. Nothing was saved on the device and no navigation keys were sent (P4C-9). The final state is unchanged.
+
+**Task 9 fix round 2 (P4C-10: the Host is known by its SSH host key).**
+- **Primary (C1, I-new-1): key deny-list.**
+  - `ssh_task` checks the server's key on an interactive session (no `cmd`): after the key exchange, before the
+    known-hosts prompt and any authentication. It refuses any key the companion link ever pinned, with the footnote's
+    sentence (`STR_HOSTS_NOT_LISTED`); the done path disconnects. It fails closed when the list or the server key
+    can't be read.
+  - The list is NVS "cc"/"hostkeys": n x SHA256, a FIFO of 8 (`hf_hostkeys_add` / `hf_hostkey_is_host`,
+    host-tested). `cc_link` appends the key it authenticated on at every connect, which covers pins, re-pins and
+    carried keys. Nothing removes from it, so it survives Settings › Host › Forget and Host switches.
+  - `host_keys_migrate()` at `cc_link_start` adds the pins found for the Host's entry host, `mac_lan_ip`,
+    `mac_ts_ip`, the carry IP and the host-cache IP, plus the carry key. The list is never empty while a pin exists.
+  - Logs carry a count only ("host keys: N known for the Host"), never a key.
+  - Device: after the flash the boot log read "host keys: 1 known for the Host" and the link connected on the LAN.
+  - Key type: neither `cc_link` nor `ssh_client` sets `SSH_OPTIONS_HOSTKEYS`. Both negotiate with libssh's default
+    order against the same sshd, so the Host presents the same key type to both, and the deny-list holds that type.
+    Gap: an sshd whose key set changes, so that a new type is preferred, is refused only after the link has met the
+    new key once. That is the same connect, since the link reconnects first after a boot.
+- **Convenience (list and save).**
+  - `cc_link_host_addresses` adds the Host entry host's first label (`hf_host_addrs_add_name`: "studio" from
+    "studio.local", host-tested) and `tailscale_resolve(<label>)`.
+  - The tailnet sheet and Settings › Network › Peers › Add as SSH host drop a peer whose IP or MagicDNS name matches.
+    For example, `studio.<tailnet>.ts.net` matches by the short-name rule. Peers toasts the footnote sentence.
+  - Preview `terminal add-fqdn` (`PREVIEW_HOST_TSIP=0`) covers a peer named studio-host.tail1234.ts.net with no
+    tailnet IP known. The peer is not offered, Peers doesn't add it, and the FQDN typed by hand is refused at Save.
+  - Remaining gap: a Tailscale machine name unlike the Host's `.local` name. The key check closes it at connect.
+- **Optional `getpeername` check: not done.** The key check covers every address, alias, spelling and IPv6 address.
+  An address check would add nothing, and it can't know an IPv6 or unresolved LAN address anyway.
+- **M-new-1:** `authenticate` clears `c->err` first, so a refused password shows "Authentication failed: …".
+- **M-new-2:** a way out while "Discard changes?" is up stacks no second dialog, and the first move stays pending
+  (`guarded` keeps it). Preview `hostform new` covers it.
+- **Preview:**
+  - The terminal stub applies `hf_hostkey_is_host` as `ssh_task` does. In `terminal fail`, "alias-box" (10.20.30.40,
+    an address the link doesn't know) is listed, connects, meets the Host's key, and its row shows the refusal.
+  - The stub Host entry is now studio-host.local.
+- **Parked, as instructed:** real names in older test files, the repair of duplicates saved before the fix, two forms
+  sharing an arg, and the boot-millisecond cache window.
+- **Size:** image 7,249,499 B, DIRAM 189,824 B.
+- **Boot:** the P4 booted unaided after `idf.py flash` (its RTS hard reset); no esptool reset was needed this time.

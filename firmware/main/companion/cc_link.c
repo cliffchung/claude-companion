@@ -249,6 +249,22 @@ bool cc_link_is_companion_server(int idx)
     return host;
 }
 
+/* P4C-10 migration: the keys pinned for the Host's addresses (and the carry key) join the deny-list, so it is never
+   empty while a pin exists. Idempotent (a known key only moves to the newest); runs at every start. */
+static void host_keys_migrate(void)
+{
+    int ci = cc_settings_server();
+    const server_t *c = ci >= 0 ? server_store_get(ci) : NULL;
+    if (c) {
+        const char *addrs[] = { c->host, g_settings.mac_lan_ip, g_settings.mac_ts_ip, s_carry.ip, s_hc.ip };
+        for (unsigned i = 0; i < sizeof(addrs) / sizeof(addrs[0]); i++) {
+            uint8_t h[32];
+            if (addrs[i][0] && ssh_known_host_hash(addrs[i], c->port ? c->port : 22, h) == KH_PIN_FOUND) ssh_host_keys_add(h);
+        }
+    }
+    if (s_carry.host[0]) ssh_host_keys_add(s_carry.hash);
+}
+
 void cc_link_host_addresses(hf_host_addrs_t *h)
 {
     hf_host_addrs_init(h);
@@ -256,8 +272,15 @@ void cc_link_host_addresses(hf_host_addrs_t *h)
     const server_t *c = ci >= 0 ? server_store_get(ci) : NULL;
     if (!c) return;   /* no Host set: nothing is the Host */
     char ip[128];
-    hf_host_addrs_add(h, c->host);
+    hf_host_addrs_add_name(h, c->host);   /* the host and its first label ("studio" matches studio.<tailnet>.ts.net) */
     if (tailscale_resolve(c->host, ip, sizeof(ip))) hf_host_addrs_add(h, ip);
+    const char *dot = strchr(c->host, '.');
+    if (dot && dot > c->host && (size_t)(dot - c->host) < 64 && !ts_host_is_ipv4(c->host)) {
+        char label[64];
+        memcpy(label, c->host, (size_t)(dot - c->host));
+        label[dot - c->host] = 0;
+        if (tailscale_resolve(label, ip, sizeof(ip))) hf_host_addrs_add(h, ip);   /* the peer by its machine name */
+    }
     lock();
     hf_host_addrs_add(h, g_settings.mac_lan_ip);
     hf_host_addrs_add(h, g_settings.mac_ts_ip);
@@ -772,6 +795,7 @@ lookup:
     strlcpy(s_ok_host, host, sizeof(s_ok_host));   /* M6: key checked and authenticated */
     bool moved = s_host_gen != gen;                /* M4: `companion server-host` ran meanwhile */
     unlock();
+    if (have_met) ssh_host_keys_add(met);   /* P4C-10: the Host's key, for the SSH Terminal's refusal */
     if (tnet && moved) ESP_LOGW(TAG, "kh: the Host entry moved during this connect; the carry source is kept");
     if (tnet && !moved) {
         /* remember the key met on the entry's tailnet address: it carries over when the entry moves to the LAN */
@@ -2134,6 +2158,7 @@ esp_err_t cc_link_start(void)
     cJSON_InitHooks(&hooks);
     carry_load();
     hc_load();
+    host_keys_migrate();
     libssh_esp32_init();   /* once only */
     static const lg_closer_t closer = { "cc_link", lg_link_close, lg_link_idle, lg_link_reopen, NULL };
     lg_register(&closer);   /* C1: every path that takes the link down closes it first */

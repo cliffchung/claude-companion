@@ -28,6 +28,7 @@ typedef struct {
     hf_auth_t auth, orig_auth;
     bool pass_typed;
     bool leaving;              /* Save, Delete or Discard: the back guard lets the back through */
+    bool asking;               /* "Discard changes?" is up: a second way out doesn't stack another (M-new-2) */
     lv_obj_t *body;
 } form_t;
 static form_t *s_f;   /* malloc'd while the form shows (PSRAM-sized, not .bss); NULL otherwise */
@@ -221,6 +222,7 @@ static void discard_yes(bool yes, void *ud)
 {
     if (!s_f) return;
     (void)ud;
+    s_f->asking = false;
     if (!yes) { ui_nav_cancel_pending(); return; }
     s_f->leaving = true;
     ui_nav_proceed();   /* whatever was leaving: Back, Esc, a swipe, home, a push (M7) */
@@ -229,6 +231,8 @@ static bool back_guard(void)
 {
     if (!s_f) return false;
     if (s_f->leaving || !dirty()) return false;
+    if (s_f->asking) return true;   /* already asking: this way out waits for the same answer */
+    s_f->asking = true;
     ui_confirm_ex(tr(STR_HF_DISCARD_Q), NULL, tr(STR_HF_DISCARD), true, discard_yes, NULL);
     return true;
 }

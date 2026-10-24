@@ -2,6 +2,7 @@
 #include "companion/cc_cmd.h"
 #include "net/ts_host.h"
 #include <string.h>
+#include <stdint.h>
 
 static bool blank(const char *s)
 {
@@ -34,6 +35,51 @@ void hf_host_addrs_add(hf_host_addrs_t *h, const char *addr)
     strncpy(h->a[h->n], addr, sizeof(h->a[0]) - 1);
     h->a[h->n][sizeof(h->a[0]) - 1] = 0;
     h->n++;
+}
+
+void hf_host_addrs_add_name(hf_host_addrs_t *h, const char *host)
+{
+    hf_host_addrs_add(h, host);
+    if (!host || ts_host_is_ipv4(host)) return;
+    while (*host == ' ' || *host == '\t') host++;
+    const char *dot = strchr(host, '.');
+    if (!dot || dot == host) return;
+    char label[64];
+    size_t n = (size_t)(dot - host);
+    if (n >= sizeof(label)) return;
+    memcpy(label, host, n);
+    label[n] = 0;
+    hf_host_addrs_add(h, label);
+}
+
+static bool zero_key(const uint8_t fp[32])
+{
+    for (int i = 0; i < 32; i++) if (fp[i]) return false;
+    return true;
+}
+
+bool hf_hostkey_is_host(const uint8_t fp[32], const uint8_t (*list)[32], int n)
+{
+    if (!fp || !list || zero_key(fp)) return false;
+    for (int i = 0; i < n; i++)
+        if (!memcmp(fp, list[i], 32)) return true;
+    return false;
+}
+
+int hf_hostkeys_add(uint8_t (*list)[32], int n, const uint8_t fp[32])
+{
+    if (!list || !fp || zero_key(fp)) return n;
+    if (n < 0) n = 0;
+    if (n > HF_HOSTKEYS_MAX) n = HF_HOSTKEYS_MAX;
+    for (int i = 0; i < n; i++)
+        if (!memcmp(fp, list[i], 32)) {   /* already there: move it to the newest */
+            memmove(list[i], list[i + 1], (size_t)(n - i - 1) * 32);
+            n--;
+            break;
+        }
+    if (n == HF_HOSTKEYS_MAX) { memmove(list[0], list[1], (size_t)(n - 1) * 32); n--; }   /* FIFO: the oldest goes */
+    memcpy(list[n], fp, 32);
+    return n + 1;
 }
 
 bool hf_is_host(const char *addr, const hf_host_addrs_t *h)

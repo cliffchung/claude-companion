@@ -22,6 +22,7 @@
 #include "sys/link_guard.h"
 #include "servers/host_rules.h"
 #include "storage/sd.h"
+#include "i18n/i18n.h"
 
 static const char *TAG = "ssh";
 int libssh_esp32_init(void);
@@ -210,6 +211,55 @@ bool ssh_known_host_set_debug(const char *host, int port)
     return ok;
 }
 
+/* ---- P4C-10: every key the companion link ever pinned (NVS "cc"/"hostkeys", n x 32 bytes, FIFO of 8) ---- */
+static StaticSemaphore_t s_hk_buf;
+static SemaphoreHandle_t s_hk_mx;
+static portMUX_TYPE s_hk_spin = portMUX_INITIALIZER_UNLOCKED;
+static void hk_lock(void)
+{
+    taskENTER_CRITICAL(&s_hk_spin);
+    if (!s_hk_mx) s_hk_mx = xSemaphoreCreateMutexStatic(&s_hk_buf);
+    taskEXIT_CRITICAL(&s_hk_spin);
+    xSemaphoreTake(s_hk_mx, portMAX_DELAY);
+}
+static void hk_unlock(void) { xSemaphoreGive(s_hk_mx); }
+
+static int hk_read(uint8_t out[HF_HOSTKEYS_MAX][32])
+{
+    void *b = NULL; size_t n = 0;
+    int k = 0;
+    if (nvs_get_blob_alloc("cc", "hostkeys", &b, &n)) {
+        k = (int)(n / 32);
+        if (k > HF_HOSTKEYS_MAX) k = HF_HOSTKEYS_MAX;
+        memcpy(out, b, (size_t)k * 32);
+        free(b);
+    }
+    return k;
+}
+
+int ssh_host_keys_load(uint8_t out[HF_HOSTKEYS_MAX][32])
+{
+    hk_lock();
+    int n = hk_read(out);
+    hk_unlock();
+    return n;
+}
+
+void ssh_host_keys_add(const uint8_t hash[32])
+{
+    uint8_t list[HF_HOSTKEYS_MAX][32];
+    hk_lock();
+    int n = hk_read(list);
+    uint8_t before[HF_HOSTKEYS_MAX][32];
+    memcpy(before, list, sizeof(before));
+    int m = hf_hostkeys_add(list, n, hash);
+    if (m != n || memcmp(before, list, (size_t)m * 32)) {
+        if (!nvs_set_blob_ns("cc", "hostkeys", list, (size_t)m * 32)) ESP_LOGE(TAG, "host keys: not saved");
+        else ESP_LOGI(TAG, "host keys: %d known for the Host", m);   /* a count, never a key */
+    }
+    hk_unlock();
+}
+
 static int verify_host(ssh_client_t *c)
 {
     char fp[80];
@@ -233,6 +283,7 @@ static int verify_host(ssh_client_t *c)
 static int authenticate(ssh_client_t *c)
 {
     int rc;
+    c->err[0] = 0;   /* set_state copied "tunnel" or a fingerprint here: only authenticate's own reason counts */
     rc = AUTH_RETRY(ssh_userauth_none(c->session, NULL));
     if (rc == SSH_AUTH_SUCCESS) return 0;
     int methods = ssh_userauth_list(c->session, NULL);
@@ -335,6 +386,21 @@ static void ssh_task(void *arg)
         set_state(c, SSH_ST_ERROR, m); goto done;
     }
     if (GONE(c)) goto done;
+    if (!c->p.cmd[0]) {
+        /* P4C-10 (hard rule 1): never a login shell on the Host, by whatever address or name it was reached. The
+           server's key is checked against every key the companion link ever pinned, after the key exchange and
+           before any authentication is sent; it fails closed when either can't be read. */
+        uint8_t met[32];
+        uint8_t (*keys)[32] = malloc(HF_HOSTKEYS_MAX * 32);
+        int n = keys ? ssh_host_keys_load(keys) : 0;
+        bool host = !keys || !ssh_server_key_hash(c->session, met) || hf_hostkey_is_host(met, (const uint8_t (*)[32])keys, n);
+        free(keys);
+        if (host) {
+            ESP_LOGW(TAG, "this server presents the Host's key: no login shell");
+            set_state(c, SSH_ST_ERROR, tr(STR_HOSTS_NOT_LISTED));
+            goto done;
+        }
+    }
     ESP_LOGI(TAG, "connected; checking host key");
     int hv = verify_host(c);
     if (hv != 0) { set_state(c, SSH_ST_ERROR, hv == -2 ? "Can't read the saved host key; not connecting" : "Host key rejected"); goto done; }

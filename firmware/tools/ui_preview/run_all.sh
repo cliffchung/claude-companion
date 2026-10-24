@@ -65,6 +65,7 @@ run art
 run term-spacing
 run terminal
 for v in on empty keys deleted-event fail add; do run terminal "$v"; done
+runv "PREVIEW_HOST_TSIP=0" terminal add-fqdn
 for v in new edit-pin sd-key settings; do run hostform "$v"; done
 run glyphs >/dev/null
 rm -f case.log

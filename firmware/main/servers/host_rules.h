@@ -2,6 +2,7 @@
 /* The host form's and the SSH client's rules for a server entry (Plan 4 Task 9, spec §5.5, B6).
    Pure (no ESP-IDF, no LVGL), so the host tests cover them. */
 #include <stdbool.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -20,6 +21,9 @@ hf_err_t hf_validate(const char *address, const char *port, const char *user, bo
 typedef struct { char a[HF_HOST_ADDRS_MAX][128]; int n; } hf_host_addrs_t;
 void hf_host_addrs_init(hf_host_addrs_t *h);
 void hf_host_addrs_add(hf_host_addrs_t *h, const char *addr);
+/* addr and, when it is a name (not an IPv4 address), its first DNS label: "studio.local" also gives "studio", which
+   cc_same_host matches with the peer's MagicDNS name "studio.<tailnet>.ts.net". */
+void hf_host_addrs_add_name(hf_host_addrs_t *h, const char *host);
 /* addr names the Host: cc_same_host with any of h's addresses (NULL h: no Host). */
 bool hf_is_host(const char *addr, const hf_host_addrs_t *h);
 /* hf_validate against every known Host address (h may be NULL). */
@@ -28,6 +32,17 @@ hf_err_t hf_validate_addrs(const char *address, const char *port, const char *us
 /* I1: name is already another entry's (case-insensitive; names[self] is the entry being edited, -1 for a new one).
    The Host is chosen by name, so two entries with one name could swap which entry is the Host. */
 bool hf_name_taken(const char *name, const char *const *names, int n, int self);
+
+/* P4C-10: the Host is the server that presents a key the companion link has pinned. The link keeps every key it
+   ever authenticated on (SHA256, 32 bytes) in a FIFO of HF_HOSTKEYS_MAX (NVS "cc"/"hostkeys"); it survives Forget
+   and Host switches. The SSH Terminal refuses an interactive shell on any of them, after key exchange and before any
+   authentication. */
+#define HF_HOSTKEYS_MAX 8
+/* fp is one of list's n keys (an all-zero fp is none). */
+bool hf_hostkey_is_host(const uint8_t fp[32], const uint8_t (*list)[32], int n);
+/* Appends fp (moved to the newest when already there; the oldest goes past HF_HOSTKEYS_MAX); returns the new n.
+   An all-zero fp is ignored. */
+int hf_hostkeys_add(uint8_t (*list)[32], int n, const uint8_t fp[32]);
 
 typedef enum { HF_AUTH_DEVICE, HF_AUTH_PASSWORD, HF_AUTH_SD_FILE } hf_auth_t;
 /* "Sign in with": a key with an empty or "device" path is the device key; a key with any other path is the
