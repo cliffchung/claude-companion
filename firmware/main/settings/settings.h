@@ -76,7 +76,7 @@ typedef struct {
     uint8_t  pw_wake_lift;       /* 1 */
     uint8_t  pw_wake_needs_you;  /* 1 */
     uint8_t  kbd_needs_light;    /* 1: keyboard light shows needs-you */
-    uint8_t  kbd_off_cap;        /* 100 = no cap; gated, set in Task 10 */
+    uint8_t  kbd_dark_light;     /* v20 (PT24): needs-you amber % with the screen dark, 2..100, default 5; was kbd_off_cap */
     uint8_t  pw_radio_off;       /* 0; gated, set in Task 10 */
     uint16_t pw_radio_off_min;   /* 20 */
     uint16_t pw_checkin_min;     /* 5 */
@@ -94,7 +94,7 @@ extern app_settings_t g_settings;
 
 void settings_init(void);         /* load from NVS or defaults */
 void settings_save(void);
-/* The Plan 2 power settings (pw_*, kbd_needs_light, kbd_off_cap) back to their defaults; the time zone stays. */
+/* The Plan 2 power settings (pw_*, kbd_needs_light, kbd_dark_light) back to their defaults; the time zone stays. */
 void settings_power_defaults(void);
 void settings_reset_defaults(void);
 

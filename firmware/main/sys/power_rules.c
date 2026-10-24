@@ -1,7 +1,7 @@
 #include "power_rules.h"
 #include <string.h>
 
-#define LIGHT_MIN_BRIGHT 30
+#define LIGHT_MIN_BRIGHT 30   /* screen on (Active, Dim) */
 #define LIGHT_BASE_AGE_MS 300000
 
 bool pr_rgb_amber_like(uint32_t rgb)
@@ -23,17 +23,19 @@ bool pr_any_needs_you(const cc_session_t *s, int n)
     return false;
 }
 
+int pr_dark_light_clamp(int pct)
+{
+    return pct < PR_DARK_LIGHT_LOWEST ? PR_DARK_LIGHT_LOWEST : pct > 100 ? 100 : pct;
+}
+
 pr_led_t pr_kbd_light(const pr_led_t *user, bool setting_on, bool needs_you,
-                      int64_t result_age_ms, int64_t max_age_ms, bool screen_off, int off_cap_pct,
+                      int64_t result_age_ms, int64_t max_age_ms, bool dark, int dark_pct,
                       bool deep_idle)
 {
     if (needs_you && setting_on && result_age_ms < max_age_ms) {
-        int b = user->bright > LIGHT_MIN_BRIGHT ? user->bright : LIGHT_MIN_BRIGHT;
-        if (screen_off) {
-            int cap = off_cap_pct > LIGHT_MIN_BRIGHT ? off_cap_pct : LIGHT_MIN_BRIGHT;
-            if (b > cap) b = cap;
-        }
-        if (deep_idle && b > LIGHT_MIN_BRIGHT) b = LIGHT_MIN_BRIGHT;
+        int b;
+        if (dark || deep_idle) b = pr_dark_light_clamp(dark_pct);   /* PT24: very dim, steady */
+        else b = user->bright > LIGHT_MIN_BRIGHT ? user->bright : LIGHT_MIN_BRIGHT;
         return (pr_led_t){ 1, (uint8_t)b, 0xf4, 0xb5, 0x45 };
     }
     if (deep_idle) return PR_LED_OFF;

@@ -14,11 +14,20 @@ typedef struct { uint8_t mode, bright, r, g, b; } pr_led_t;   /* mode 0 = bind, 
 bool pr_rgb_amber_like(uint32_t rgb);
 /* background && live && CC_NEEDS_YOU */
 bool pr_any_needs_you(const cc_session_t *s, int n);
+/* PT24: the needs-you amber's brightness while the screen is dark (Off, Radio off, Deep idle, Hibernate),
+   "Needs-you light when dark" in Settings -> Power. The A164 scales each channel as c * bright / 100, so at 1%
+   amber is 2,1,0 (orange); 2% (4,3,1) is the lowest step that keeps its hue. */
+#define PR_DARK_LIGHT_LOWEST 2
+#define PR_DARK_LIGHT_LOW 5
+#define PR_DARK_LIGHT_MEDIUM 15
+#define PR_DARK_LIGHT_DEFAULT PR_DARK_LIGHT_LOW
+/* 2..100 */
+int pr_dark_light_clamp(int pct);
 /* needs_you && setting_on && result_age_ms < max_age_ms -> {1, b, 0xf4, 0xb5, 0x45} with
-   b = max(user->bright, 30), then min(b, max(off_cap_pct, 30)) when screen_off, then min(b, 30)
-   when deep_idle; else, in deep_idle, PR_LED_OFF; else *user */
+   b = pr_dark_light_clamp(dark_pct) when dark or deep_idle, else max(user->bright, 30) (screen on);
+   else, in deep_idle, PR_LED_OFF; else *user. The A164 has no breathe mode (PT24): the light is steady. */
 pr_led_t pr_kbd_light(const pr_led_t *user, bool setting_on, bool needs_you,
-                      int64_t result_age_ms, int64_t max_age_ms, bool screen_off, int off_cap_pct,
+                      int64_t result_age_ms, int64_t max_age_ms, bool dark, int dark_pct,
                       bool deep_idle);
 /* 300 000, or max(300 000, (checkin_min + 1) * 60 000) in Radio off */
 int64_t pr_light_max_age_ms(bool radio_off, int checkin_min);
@@ -85,8 +94,8 @@ typedef enum { PR_HC_REHIBERNATE, PR_HC_REHIBERNATE_KEEP_RAIL, PR_HC_STAY_DEEP_I
                PR_HC_POWEROFF   /* the battery <= 10% trigger: down with the light off and no check-in armed */
 } pr_hc_t;
 /* !poll_ok -> REHIBERNATE (light off; recorded as hib-failed); !needs_you -> REHIBERNATE (PR_LED_OFF);
-   needs_you && kbd_rail_survives -> REHIBERNATE_KEEP_RAIL (amber 30% held through deep sleep);
-   needs_you && !kbd_rail_survives -> STAY_DEEP_IDLE (radio parked, amber 30% until input or nothing needs you) */
+   needs_you && kbd_rail_survives -> REHIBERNATE_KEEP_RAIL (dim amber held through deep sleep, PT24);
+   needs_you && !kbd_rail_survives -> STAY_DEEP_IDLE (radio parked, dim amber until input or nothing needs you) */
 pr_hc_t pr_hib_checkin_next(bool poll_ok, bool needs_you, bool kbd_rail_survives);
 /* on_battery && 0 <= pct <= PR_LOW_BATTERY_PCT && !charging (an unknown pct is never low) */
 bool pr_battery_low(bool on_battery, int pct, bool charging);

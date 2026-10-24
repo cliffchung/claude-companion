@@ -30,7 +30,7 @@ uint8_t checkin_log_tag(void);                  /* 0x80|state while a check-in r
 void checkin_on_sample(void);                   /* idle_poll, after each sysinfo_poll: sums the check-in's mW */
 
 /* PT16 Hibernate check-in. True from a check-in boot until a wake: the light follows the Deep-idle rule
-   (amber at 30% or off) and a needs-you result never lights the screen (it only arms). */
+   (dim amber, PT24, or off) and a needs-you result never lights the screen (it only arms). */
 bool checkin_hib_quiet(void);
 /* PR_HC_STAY_DEEP_IDLE: stays in Deep idle until input or until a later result shows nobody needs you,
    then hibernates again; the ladder keeps only its battery <= 10% trigger meanwhile. */

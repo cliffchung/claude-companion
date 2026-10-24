@@ -520,6 +520,9 @@ int hibernate_console(int argc, char **argv)
         printf("boot: reason=%d kind=%s cause=%s wakeup=%d to_live=%u%s%s\n", (int)esp_reset_reason(), kind_name(s_kind), s_cause,
                (int)esp_sleep_get_wakeup_cause(), (unsigned)s_to_live, s_fell_back ? " (power-off fell back to deep sleep)" : "",
                s_dbg_boot ? " (debug check-in)" : "");
+        if (s_led_ok)   /* the light the record says the keyboard held through the sleep (I3) */
+            printf("boot: stored light %u %u %02x %02x %02x%s\n", s_led_boot.mode, s_led_boot.bright, s_led_boot.r,
+                   s_led_boot.g, s_led_boot.b, s_src == HIB_SRC_TIMER ? "" : " (not a timer wake: not used)");
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "rails") == 0) { rails_print(); return 0; }
@@ -573,12 +576,14 @@ int hibernate_console(int argc, char **argv)
             vTaskDelay(pdMS_TO_TICKS(100));
             hibernate_deep_sleep(s, POWER_BOOT_HIB_WAKE);
         } else if (strcmp(src, "light") == 0) {
-            /* PT16: amber at the 30% cap, nothing on the keyboard's supply touched, deep sleep on the timer;
-               the next boot's keyboard probe logs what the A164 still holds */
+            /* PT16: amber at the dark brightness (PT24), nothing on the keyboard's supply touched, deep sleep on
+               the timer; the next boot's keyboard probe logs what the A164 still holds */
             if (argc == 4) s = 60;
+            int pct = pr_dark_light_clamp(g_settings.kbd_dark_light);
             keyboard_led_lock();
-            bool ok = keyboard_write_led(1, 30, 0xf4, 0xb5, 0x45);
-            printf("hib test: light amber 30%% (%s), armed timer %u s, sleeping\n", ok ? "written" : "no keyboard", (unsigned)s);
+            bool ok = keyboard_write_led(1, (uint8_t)pct, 0xf4, 0xb5, 0x45);
+            printf("hib test: light amber %d%% (%s), armed timer %u s, sleeping\n", pct, ok ? "written" : "no keyboard",
+                   (unsigned)s);
             fflush(stdout);
             vTaskDelay(pdMS_TO_TICKS(100));
             hibernate_deep_sleep(s, POWER_BOOT_HIB_WAKE);

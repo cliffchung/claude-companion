@@ -60,24 +60,71 @@ void test_light_stale_result_reverts(void)
     eq(AMBER(30), pr_kbd_light(&u, true, true, 299999, 300000, false, 100, false));
 }
 
-void test_light_off_cap(void)
+/* PT24: with the screen dark (Off and below) a needs-you shows at the dark brightness, whatever the user's
+   own light brightness; the screen-on 30% floor is for Active and Dim only */
+void test_light_dark_brightness(void)
 {
     pr_led_t u = { 1, 80, 0, 128, 255 };
-    eq(AMBER(40), pr_kbd_light(&u, true, true, 0, 300000, true, 40, false));
-    eq(AMBER(30), pr_kbd_light(&u, true, true, 0, 300000, true, 10, false));
-    eq(AMBER(80), pr_kbd_light(&u, true, true, 0, 300000, false, 10, false));
+    eq(AMBER(5), pr_kbd_light(&u, true, true, 0, 300000, true, 5, false));
+    eq(AMBER(2), pr_kbd_light(&u, true, true, 0, 300000, true, 2, false));
+    eq(AMBER(15), pr_kbd_light(&u, true, true, 0, 300000, true, 15, false));
+    eq(AMBER(80), pr_kbd_light(&u, true, true, 0, 300000, false, 5, false));   /* screen on: unchanged */
+    u.bright = 0;
+    eq(AMBER(5), pr_kbd_light(&u, true, true, 0, 300000, true, 5, false));
+    eq(AMBER(30), pr_kbd_light(&u, true, true, 0, 300000, false, 5, false));
+    /* out-of-range settings clamp to 2..100 (below 2 the amber's hue is lost, see below) */
+    eq(AMBER(2), pr_kbd_light(&u, true, true, 0, 300000, true, 1, false));
+    eq(AMBER(2), pr_kbd_light(&u, true, true, 0, 300000, true, 0, false));
+    eq(AMBER(100), pr_kbd_light(&u, true, true, 0, 300000, true, 250, false));
+    /* dark, nobody needs you: the user's own light, as before */
+    u.bright = 20;
+    eq(u, pr_kbd_light(&u, true, false, 0, 300000, true, 5, false));
 }
 
 void test_light_deep_idle(void)
 {
     pr_led_t u = { 1, 80, 0, 128, 255 };
-    eq(AMBER(30), pr_kbd_light(&u, true, true, 0, 300000, true, 100, true));
+    eq(AMBER(5), pr_kbd_light(&u, true, true, 0, 300000, true, 5, true));
     u.bright = 0;
-    eq(AMBER(30), pr_kbd_light(&u, true, true, 0, 300000, true, 100, true));
+    eq(AMBER(5), pr_kbd_light(&u, true, true, 0, 300000, true, 5, true));
+    /* a Hibernate check-in boot is deep_idle even if the ladder says Active: still the dark brightness */
+    eq(AMBER(2), pr_kbd_light(&u, true, true, 0, 300000, false, 2, true));
     u.bright = 80;
-    eq(PR_LED_OFF, pr_kbd_light(&u, true, false, 0, 300000, true, 100, true));
-    eq(PR_LED_OFF, pr_kbd_light(&u, true, true, 300000, 300000, true, 100, true));
-    eq(PR_LED_OFF, pr_kbd_light(&u, false, true, 0, 300000, true, 100, true));
+    eq(PR_LED_OFF, pr_kbd_light(&u, true, false, 0, 300000, true, 5, true));
+    eq(PR_LED_OFF, pr_kbd_light(&u, true, true, 300000, 300000, true, 5, true));
+    eq(PR_LED_OFF, pr_kbd_light(&u, false, true, 0, 300000, true, 5, true));
+}
+
+void test_dark_light_presets(void)
+{
+    TEST_ASSERT_EQUAL_INT(2, PR_DARK_LIGHT_LOWEST);
+    TEST_ASSERT_EQUAL_INT(5, PR_DARK_LIGHT_LOW);
+    TEST_ASSERT_EQUAL_INT(15, PR_DARK_LIGHT_MEDIUM);
+    TEST_ASSERT_EQUAL_INT(PR_DARK_LIGHT_LOW, PR_DARK_LIGHT_DEFAULT);
+    TEST_ASSERT_EQUAL_INT(2, pr_dark_light_clamp(0));
+    TEST_ASSERT_EQUAL_INT(2, pr_dark_light_clamp(1));
+    TEST_ASSERT_EQUAL_INT(5, pr_dark_light_clamp(5));
+    TEST_ASSERT_EQUAL_INT(100, pr_dark_light_clamp(101));
+    TEST_ASSERT_EQUAL_INT(2, pr_dark_light_clamp(-3));
+}
+
+/* The A164 scales each channel as c * bright / 100 in integers (M5Tab5-Keyboard-Internal-FW user_rgb.c
+   apply_brightness). Hue in tenths of a degree of the scaled amber. */
+static int a164_hue10(int bright)
+{
+    int r = 0xf4 * bright / 100, g = 0xb5 * bright / 100, b = 0x45 * bright / 100;
+    int mx = r > g ? (r > b ? r : b) : (g > b ? g : b), mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    if (mx == mn || mx != r) return -1;
+    return 600 * (g - b) / (mx - mn);
+}
+
+void test_dark_lowest_keeps_amber_hue(void)
+{
+    int full = a164_hue10(100);                                   /* f4b545: 38.4 deg */
+    TEST_ASSERT_INT_WITHIN(30, full, a164_hue10(PR_DARK_LIGHT_LOWEST));   /* 4,3,1: 40.0 deg */
+    TEST_ASSERT_INT_WITHIN(30, full, a164_hue10(PR_DARK_LIGHT_LOW));      /* 12,9,3 */
+    TEST_ASSERT_INT_WITHIN(30, full, a164_hue10(PR_DARK_LIGHT_MEDIUM));   /* 36,27,10 */
+    TEST_ASSERT_FALSE(a164_hue10(1) >= full - 30 && a164_hue10(1) <= full + 30);   /* 2,1,0: 30 deg, orange */
 }
 
 void test_light_age_limit_follows_checkin(void)
@@ -492,8 +539,10 @@ int main(void)
     RUN_TEST(test_light_needs_you_amber);
     RUN_TEST(test_light_user_when_clear);
     RUN_TEST(test_light_stale_result_reverts);
-    RUN_TEST(test_light_off_cap);
+    RUN_TEST(test_light_dark_brightness);
     RUN_TEST(test_light_deep_idle);
+    RUN_TEST(test_dark_light_presets);
+    RUN_TEST(test_dark_lowest_keeps_amber_hue);
     RUN_TEST(test_light_age_limit_follows_checkin);
     RUN_TEST(test_any_needs_you);
     RUN_TEST(test_ladder_thresholds);

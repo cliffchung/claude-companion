@@ -331,7 +331,7 @@ static bool kb_probe(void)
         s_boot_read = true;
         uint8_t lb = 0, lm = 0, rgb[4] = { 0 };
         if (kb_read(REG_BRIGHTNESS, &lb, 1) && kb_read(REG_RGB_MODE, &lm, 1) && kb_read(REG_RGB_BASE, rgb, 4))
-            ESP_LOGI(TAG, "light at boot: mode=%u bright=%u rgb=%02x%02x%02x", lm, lb, rgb[1], rgb[2], rgb[3]);
+            ESP_LOGI(TAG, "light at boot: mode=%u bright=%u rgb=%02x%02x%02x", lm, lb, rgb[2], rgb[1], rgb[0]);
     }
     keyboard_led_lock();   /* the colour we ask for is the colour that lands */
     uint8_t m, br, r, g, b;
@@ -422,20 +422,44 @@ void keyboard_led_unlock(void) { if (s_led_lock) xSemaphoreGiveRecursive(s_led_l
 
 /* The three writes and the record of them are one step under the LED lock. The lock is never held
    while calling anything but I2C; callers that hold it may call the LED source (lock order: LED
-   lock, then the power and cc_link locks; nothing takes the LED lock while holding those). */
-bool keyboard_write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
+   lock, then the power and cc_link locks; nothing takes the LED lock while holding those).
+   Register map (M5Tab5-Keyboard-Internal-FW user_i2c_reg.h, Tab5_Keyboard-I2C-Protocol-EN-V1.0): 0x03 brightness
+   0..100, the A164 scaling every channel by it; 0x11 RGB mode, 0 bind (its own indicators) or 1 custom, nothing
+   else (values above 1 are ignored; no breathe or blink, PT24); 0x60..0x67 two LEDs as B, G, R, unused. */
+static bool write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b, bool raw_mode)
 {
     if (!s_present && !s_dev) return false;
     keyboard_led_lock();
     s_last_led[0] = mode ? 1 : 0; s_last_led[1] = bright > 100 ? 100 : bright;
     s_last_led[2] = r; s_last_led[3] = g; s_last_led[4] = b;
     bool ok = kb_write(REG_BRIGHTNESS, s_last_led[1]);
-    ok = kb_write(REG_RGB_MODE, mode ? 1 : 0) && ok;
+    ok = kb_write(REG_RGB_MODE, raw_mode ? mode : s_last_led[0]) && ok;
     if (mode) {
-        uint8_t w[9] = { REG_RGB_BASE, 0, r, g, b, 0, r, g, b };
+        uint8_t w[9] = { REG_RGB_BASE, b, g, r, 0, b, g, r, 0 };   /* PT24: B, G, R per LED (was 0, R, G, B) */
         ok = s_dev && i2c_master_transmit(s_dev, w, 9, 50) == ESP_OK && ok;
     }
     keyboard_led_unlock();
+    return ok;
+}
+
+bool keyboard_write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
+{
+    return write_led(mode, bright, r, g, b, false);
+}
+
+bool keyboard_write_led_raw(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
+{
+    return write_led(mode, bright, r, g, b, true);
+}
+
+bool keyboard_read_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    if (!s_present || !s_dev) return false;
+    uint8_t rgb[4] = { 0 };
+    keyboard_led_lock();
+    bool ok = kb_read(REG_BRIGHTNESS, bright, 1) && kb_read(REG_RGB_MODE, mode, 1) && kb_read(REG_RGB_BASE, rgb, 4);
+    keyboard_led_unlock();
+    *b = rgb[0]; *g = rgb[1]; *r = rgb[2];
     return ok;
 }
 

@@ -32,7 +32,7 @@ static const char *src_name(power_src_t s)
 static int usage(void)
 {
     printf("usage: power | power log on|off|status|dump|clear | power resets [clear] | "
-           "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe] | "
+           "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe | raw <mode> <bright> <r> <g> <b>] | "
            "power go active|dim|off|radio-off|deep-idle|hibernate | "
            "power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate|radio-off|radio-after|checkin|hib-checkin <n> | "
            "power checkin [rebind] | power checkin hibernate [keep|nokeep] | power checkins | "
@@ -154,6 +154,19 @@ static int cmd_power(int argc, char **argv)
             uint8_t m, br, r, g, b;
             keyboard_get_last_led(&m, &br, &r, &g, &b);
             printf("kbd: %u %u %02x %02x %02x\n", m, br, r, g, b);
+            if (keyboard_read_led(&m, &br, &r, &g, &b)) printf("a164: %u %u %02x %02x %02x\n", m, br, r, g, b);
+            else printf("a164: no answer\n");
+            return 0;
+        }
+        if (argc == 8 && strcmp(argv[2], "raw") == 0) {
+            int v[5];
+            for (int i = 0; i < 5; i++)
+                if (!parse_int(argv[3 + i], &v[i]) || v[i] < 0 || v[i] > 255) return usage();
+            bool ok = power_kbd_light_raw((uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2], (uint8_t)v[3], (uint8_t)v[4]);
+            uint8_t m, br, r, g, b;
+            if (ok && keyboard_read_led(&m, &br, &r, &g, &b))
+                printf("raw: a164 %u %u %02x %02x %02x (held until power light test user)\n", m, br, r, g, b);
+            else printf("raw: no keyboard\n");
             return 0;
         }
         if (argc == 4 && strcmp(argv[2], "test") == 0) {
@@ -272,7 +285,7 @@ void power_console_init(void)
     const esp_console_cmd_t cmd = {
         .command = "power",
         .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort | "
-                "light [test bind|user|reprobe] | go <state> | set <name> <n> | set defaults | settings | "
+                "light [test bind|user|reprobe|raw m b r g b] | go <state> | set <name> <n> | set defaults | settings | "
                 "checkin [rebind] | checkin hibernate [keep|nokeep] | checkins | "
                 "sim battery <pct|off> | sim idle <s> | sim touch | touch | wakes | hib ... | boot | rails | rail <n> on|off | imu",
         .func = cmd_power,

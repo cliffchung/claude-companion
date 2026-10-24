@@ -177,6 +177,31 @@ static void pw_switch_cb(lv_event_t *e)
     const char *name = lv_event_get_user_data(e);
     power_setting_set(name, lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
 }
+/* PT24: the needs-you amber's brightness with the screen dark */
+static const struct { const char *name; int pct; } k_dark_light[] = {
+    { "Lowest", PR_DARK_LIGHT_LOWEST }, { "Low", PR_DARK_LIGHT_LOW }, { "Medium", PR_DARK_LIGHT_MEDIUM },
+};
+static const char *dark_light_label(char *buf, size_t cap)
+{
+    for (int i = 0; i < N_OPTS(k_dark_light); i++)
+        if (g_settings.kbd_dark_light == k_dark_light[i].pct) return k_dark_light[i].name;
+    snprintf(buf, cap, "%u%%", g_settings.kbd_dark_light);   /* set from the console */
+    return buf;
+}
+static void dark_light_menu_cb(int i, void *ud)
+{
+    (void)ud;
+    if (i < 0 || i >= N_OPTS(k_dark_light)) return;
+    power_setting_set("dark-light", k_dark_light[i].pct);
+    ui_nav_refresh();
+}
+static void dark_light_cb(lv_event_t *e)
+{
+    (void)e;
+    const char *items[N_OPTS(k_dark_light)];
+    for (int i = 0; i < N_OPTS(k_dark_light); i++) items[i] = k_dark_light[i].name;
+    ui_menu("Needs-you light when dark", items, N_OPTS(k_dark_light), dark_light_menu_cb, NULL);
+}
 static void ssh_awake_cb(lv_event_t *e)
 {
     g_settings.ss_disable_in_ssh = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
@@ -327,6 +352,8 @@ static void panel_fill(lv_obj_t *c, unsigned category)
         ui_switch_row(c, "Sleep on USB power", g_settings.pw_sleep_on_usb, pw_switch_cb, (void *)"sleep-usb");
         ui_switch_row(c, "Wake when a session needs you", g_settings.pw_wake_needs_you, pw_switch_cb, (void *)"needs-wake");
         ui_switch_row(c, tr(STR_SET_KBD_NEEDS_LIGHT), g_settings.kbd_needs_light, led_needs_cb, NULL);
+        char dl[8];
+        ui_setting_row(c, "Needs-you light when dark", dark_light_label(dl, sizeof(dl)), dark_light_cb, NULL);
         ui_switch_row(c, "Stay awake in SSH Terminal", g_settings.ss_disable_in_ssh, ssh_awake_cb, NULL);
         ui_setting_row(c, "Time zone", tz_label(), tz_cb, NULL);
         ui_switch_row(c, "Radio off", g_settings.pw_radio_off, pw_switch_cb, (void *)"radio-off");

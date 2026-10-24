@@ -313,10 +313,8 @@ static void choose(pr_led_t *out, char *reason, size_t cap)
     int64_t last_ok = cc_poll_last_ok_ms();
     int64_t age = last_ok > 0 ? now_ms() - last_ok : INT64_MAX;
     power_state_t st = s_state;
-    int pct;
-    bool chg;
-    bool screen_off = st >= PS_OFF && on_battery_now(&pct, &chg);   /* F30: the Off cap is for battery */
-    bool deep_idle = st >= PS_DEEP_IDLE || checkin_hib_quiet();   /* a Hibernate check-in boot: amber 30% or off */
+    bool dark = st >= PS_OFF;   /* PT24: a needs-you is very dim once the screen is off, on any power source */
+    bool deep_idle = st >= PS_DEEP_IDLE || checkin_hib_quiet();   /* a Hibernate check-in boot: dim amber or off */
     /* with the radio parked a result can be a whole check-in period old (Review Focus 4) */
     int period = checkin_light_period_min();   /* the period plus a slow check-in's worst case (M1) */
     int64_t max_age = pr_light_max_age_ms(period > 0, period);
@@ -336,11 +334,11 @@ static void choose(pr_led_t *out, char *reason, size_t cap)
         return;
     }
     if (bl == POWER_BENCH_LIGHT_AMBER) {
-        *out = pr_kbd_light(&user, true, true, 0, max_age, screen_off, g_settings.kbd_off_cap, deep_idle);
+        *out = pr_kbd_light(&user, true, true, 0, max_age, dark, g_settings.kbd_dark_light, deep_idle);
         if (reason) snprintf(reason, cap, "bench: amber");
         return;
     }
-    *out = pr_kbd_light(&user, g_settings.kbd_needs_light, needs, age, max_age, screen_off, g_settings.kbd_off_cap,
+    *out = pr_kbd_light(&user, g_settings.kbd_needs_light, needs, age, max_age, dark, g_settings.kbd_dark_light,
                         deep_idle);
     if (!reason) return;
     if (!g_settings.kbd_needs_light) snprintf(reason, cap, "setting off");
@@ -380,6 +378,12 @@ void power_kbd_light_refresh(void)
     else {   /* before power_init: nothing owns the light yet */
         apply_light(true);
     }
+}
+
+bool power_kbd_light_raw(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b)
+{
+    s_hold_light = true;
+    return keyboard_write_led_raw(mode, bright, r, g, b);
 }
 
 void power_kbd_light_test(power_light_test_t what)
@@ -928,6 +932,8 @@ bool power_setting_set(const char *name, int n)
         g_settings.pw_sleep_on_usb = n ? 1 : 0;
     } else if (strcmp(name, "needs-wake") == 0) {
         g_settings.pw_wake_needs_you = n ? 1 : 0;
+    } else if (strcmp(name, "dark-light") == 0) {
+        g_settings.kbd_dark_light = (uint8_t)pr_dark_light_clamp(n);
     } else if (strcmp(name, "deep-idle") == 0) {
         g_settings.pw_deep_idle_min = (uint16_t)vitals_clamp_or_zero(u16(n), 15, 720);
     } else if (strcmp(name, "hibernate") == 0) {
@@ -967,10 +973,10 @@ void power_settings_defaults(void)
 void power_settings_text(char *buf, size_t cap)
 {
     snprintf(buf, cap,
-             "dim=%u off=%u sleep-usb=%u wake-lift=%u needs-wake=%u needs-light=%u off-cap=%u radio-off=%u "
+             "dim=%u off=%u sleep-usb=%u wake-lift=%u needs-wake=%u needs-light=%u dark-light=%u radio-off=%u "
              "radio-off-min=%u checkin=%u light-sleep=%u deep-idle=%u hibernate=%u hib-checkin=%u ssh-awake=%u",
              g_settings.pw_dim_s, g_settings.pw_off_s, g_settings.pw_sleep_on_usb, g_settings.pw_wake_lift,
-             g_settings.pw_wake_needs_you, g_settings.kbd_needs_light, g_settings.kbd_off_cap, power_cfg(PCFG_RADIO_OFF),
+             g_settings.pw_wake_needs_you, g_settings.kbd_needs_light, g_settings.kbd_dark_light, power_cfg(PCFG_RADIO_OFF),
              power_cfg(PCFG_RADIO_AFTER), power_cfg(PCFG_CHECKIN), g_settings.pw_light_sleep,
              g_settings.pw_deep_idle_min, g_settings.pw_hibernate_h, power_cfg(PCFG_HIB_CHECKIN),
              g_settings.ss_disable_in_ssh);

@@ -13,7 +13,7 @@
 static const char *TAG = "settings";
 #define NS "app"
 #define KEY "cfg"
-#define CFG_VERSION 19
+#define CFG_VERSION 20
 
 app_settings_t g_settings;
 
@@ -31,7 +31,7 @@ void settings_power_defaults(void)
     g_settings.pw_wake_lift = 1;
     g_settings.pw_wake_needs_you = 1;
     g_settings.kbd_needs_light = 1;
-    g_settings.kbd_off_cap = 100;
+    g_settings.kbd_dark_light = PR_DARK_LIGHT_DEFAULT;   /* PT24 */
     g_settings.pw_radio_off = 0;
     g_settings.pw_radio_off_min = 20;
     g_settings.pw_checkin_min = 5;
@@ -122,6 +122,9 @@ void settings_init(void)
             if (old_version <= 17) plan2_defaults();
             /* v19 added pw_hibernate_checkin_min (PT16): an existing device gets the default */
             if (old_version <= 18) g_settings.pw_hibernate_checkin_min = 15;
+            /* v20 (PT24) reuses kbd_off_cap's byte (a battery Off cap, default 100 = none) as kbd_dark_light:
+               the old value means something else, so an existing device gets the default */
+            if (old_version <= 19) g_settings.kbd_dark_light = PR_DARK_LIGHT_DEFAULT;
             settings_save();
         }
         free(blob);
@@ -144,6 +147,7 @@ void settings_init(void)
     g_settings.pw_deep_idle_min = vitals_clamp_or_zero(g_settings.pw_deep_idle_min, 15, 720);
     g_settings.pw_hibernate_h = vitals_clamp_or_zero(g_settings.pw_hibernate_h, 1, 48);
     g_settings.pw_hibernate_checkin_min = (uint16_t)pr_hib_checkin_clamp_min(g_settings.pw_hibernate_checkin_min);
+    g_settings.kbd_dark_light = (uint8_t)pr_dark_light_clamp(g_settings.kbd_dark_light);
     if (g_settings.pw_radio_off_min < 5) g_settings.pw_radio_off_min = 5;
     if (g_settings.pw_radio_off_min > 240) g_settings.pw_radio_off_min = 240;
     if (g_settings.pw_checkin_min < 1) g_settings.pw_checkin_min = 1;

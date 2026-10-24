@@ -317,7 +317,7 @@ static void give_up(const char *why)
 }
 
 /* Down for the next Hibernate check-in. The light is the power task's own choice (the Deep-idle rule under
-   checkin_hib_quiet: amber at 30% only for needs-you with "Keyboard light shows needs-you" on, else off; I2),
+   checkin_hib_quiet: amber at the dark brightness (PT24) only for needs-you with "Keyboard light shows needs-you" on, else off; I2),
    or off; held under the LED lock so the power task can't change it, then deep sleep with the check-in timer.
    A battery at or under 10% powers off instead, light off and no check-in armed (C1). Returns only if the
    hibernate failed, and then hands the device back to the ladder. */

@@ -101,6 +101,9 @@ void power_kbd_light_get(pr_led_t *out);    /* the current choice, for hot-plug 
 void power_kbd_light_explain(pr_led_t *out, char *reason, size_t cap);
 typedef enum { POWER_LIGHT_TEST_BIND, POWER_LIGHT_TEST_USER, POWER_LIGHT_TEST_REPROBE } power_light_test_t;
 void power_kbd_light_test(power_light_test_t what);   /* debug (console `power light test ...`) */
+/* debug (console `power light raw`): holds the light at exactly this, mode byte unclamped, until
+   `power light test user`; true if the keyboard took it */
+bool power_kbd_light_raw(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
 
 #ifdef __cplusplus
 }

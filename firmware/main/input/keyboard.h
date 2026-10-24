@@ -58,6 +58,10 @@ void keyboard_set_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_
    later picks up the current state. The source runs on the keyboard task. */
 /* Same, but true only if the keyboard took every write (false: absent or an I2C error). */
 bool keyboard_write_led(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
+/* Debug (PT24 probe): writes the mode byte as given, unclamped. */
+bool keyboard_write_led_raw(uint8_t mode, uint8_t bright, uint8_t r, uint8_t g, uint8_t b);
+/* Reads back what the A164 holds (brightness, RGB mode, LED 1's colour); false with no keyboard. */
+bool keyboard_read_led(uint8_t *mode, uint8_t *bright, uint8_t *r, uint8_t *g, uint8_t *b);
 /* Callers that choose a colour and write it hold this around both (recursive). */
 void keyboard_led_lock(void);
 void keyboard_led_unlock(void);

@@ -520,6 +520,7 @@ int main(int argc,char **argv) {
     lv_display_set_flush_cb(d,flush);
     g_settings.brightness=58; g_settings.status_items=STATUS_DEFAULT;
     g_settings.term_line_height=26;
+    g_settings.kbd_dark_light=5;   /* PT24 default: "Low" */
     /* Exercise splash before font runtime copies or the application UI exist. */
     if (argc>1 && !strcmp(argv[1],"boot")) {
         ui_theme_set_preset(argc>2?atoi(argv[2]):0);

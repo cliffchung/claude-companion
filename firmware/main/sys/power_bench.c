@@ -19,6 +19,7 @@
 #include "esp_timer.h"
 #include "companion/cc_link.h"
 #include "sys/checkin.h"
+#include "sys/power_rules.h"
 
 /* Battery bench: runs a fixed list of steps, one log tag each (0x10+n), and keeps the summaries in NVS
  * (ns "power", key "bench") so they survive a brownout reset. */
@@ -270,9 +271,9 @@ static bool probe_start(probe_kind_t k)
     ESP_LOGI(TAG, "step %d %s: %d cycles of %u s", row, k_steps[row].name, PROBE_CYCLES, (unsigned)s_rows[row].seconds);
     uint32_t s = s_rows[row].seconds;
     if (k == PROBE_LIGHT) {
-        /* amber at the Deep-idle 30% cap, written last and held: the power task can't change it now */
+        /* amber at the dark brightness (PT24), written last and held: the power task can't change it now */
         keyboard_led_lock();
-        keyboard_write_led(1, 30, 0xf4, 0xb5, 0x45);
+        keyboard_write_led(1, (uint8_t)pr_dark_light_clamp(g_settings.kbd_dark_light), 0xf4, 0xb5, 0x45);
         hibernate_deep_sleep(s, POWER_BOOT_HIB_PROBE);
         keyboard_led_unlock();
     } else if (k == PROBE_FLOOR) {
