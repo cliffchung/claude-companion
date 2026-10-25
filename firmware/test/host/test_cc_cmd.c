@@ -216,6 +216,20 @@ static void test_log_tail_keeps_short_words(void)
     TEST_ASSERT_EQUAL_STRING("OK\nNo\nHi there", s);
 }
 
+/* The terminal's error line (ui_terminal's cmd_error_line) keeps a real error that mentions tokens, a limit or
+   the version: cc_log_tail itself drops no chrome (the Sessions pane's cc_logview_fallback does). */
+static void test_log_tail_keeps_error_lines(void)
+{
+    static const char *errs[] = { "Error: prompt is too long: 210000 tokens > 200000 maximum",
+                                  "API Error: usage limit reached", "error: Claude Code v2.1 requires a newer Node" };
+    for (size_t i = 0; i < sizeof(errs) / sizeof(errs[0]); i++) {
+        char s[160];
+        snprintf(s, sizeof(s), "$ claude -p hi\r\n%s\r\n", errs[i]);
+        TEST_ASSERT_EQUAL_INT(1, cc_log_tail(s, 1));
+        TEST_ASSERT_EQUAL_STRING(errs[i], s);
+    }
+}
+
 static void test_log_tail_keeps_last(void)
 {
     char s[] = "l01\nl02\nl03\nl04\nl05\nl06\nl07\nl08\n";
@@ -639,6 +653,7 @@ int main(void)
     RUN_TEST(test_log_tail_drops_rules_and_blanks);
     RUN_TEST(test_log_tail_drops_spinner_fragments);
     RUN_TEST(test_log_tail_keeps_short_words);
+    RUN_TEST(test_log_tail_keeps_error_lines);
     RUN_TEST(test_log_tail_keeps_last);
     RUN_TEST(test_paste_build_exact);
     RUN_TEST(test_paste_build_strips_esc);
