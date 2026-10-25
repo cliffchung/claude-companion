@@ -264,6 +264,16 @@ const char *cc_settings_whisper_model(char *out, size_t cap)
     return out;
 }
 
+/* Plan 6: the staged firmware image on the Host (Settings › Host › Firmware file on Host) */
+const char *cc_settings_fw_path(char *out, size_t cap)
+{
+    if (!out || !cap) return "";
+    lock();
+    strlcpy(out, cc_path_valid(g_settings.fw_path) ? g_settings.fw_path : CC_FW_PATH_DEFAULT, cap);
+    unlock();
+    return out;
+}
+
 const char *cc_settings_server_name(char *out, size_t cap)
 {
     if (!out || !cap) return "";
@@ -407,6 +417,11 @@ bool cc_link_set_whisper_path(const char *path)
 bool cc_link_set_whisper_model(const char *path)
 {
     return set_voice_path(g_settings.whisper_model, sizeof(g_settings.whisper_model), path);
+}
+
+bool cc_link_set_fw_path(const char *path)
+{
+    return set_voice_path(g_settings.fw_path, sizeof(g_settings.fw_path), path);   /* the same validated setter */
 }
 
 /* ---------- status ---------- */

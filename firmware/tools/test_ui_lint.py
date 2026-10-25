@@ -199,6 +199,44 @@ class LintTests(unittest.TestCase):
         self.assertEqual(sorted(problems), [os.path.join("companion", "cc_link.c") + ":1: whisper-outside-cc_cmd",
                                             os.path.join("voice", "voice.c") + ":2: whisper-outside-cc_cmd"])
 
+    # ---- Plan 6 (P6-10): flash writes only in ota/fw_update.c, the firmware commands only in cc_cmd ----
+    def test_esp_ota_outside_fw_update_flagged(self):
+        main = self.tree({
+            "ui/ui_settings.c": "void f(void) {\n    esp_ota_begin(p, 0, &h);\n}\n",
+            "ota/fw_update.c": "void g(void) {\n    esp_ota_begin(p, 0, &h);\n    esp_ota_mark_app_valid_cancel_rollback();\n}\n",
+            "sys/sysinfo.c": "/* esp_ota_get_running_partition( in a comment */\nstatic const char *s = \"esp_ota_end(\";\n",
+            "ota/fw_console.c": "void h(void) {\n    const esp_partition_t *r = esp_ota_get_running_partition ();\n}\n",
+        })
+        problems = [p for p in ui_lint.lint(main) if not p.endswith("unused-str")]
+        self.assertEqual(sorted(problems), [os.path.join("ota", "fw_console.c") + ":2: ota-outside-fw_update",
+                                            os.path.join("ui", "ui_settings.c") + ":2: ota-outside-fw_update"])
+
+    def test_partition_write_flagged(self):
+        main = self.tree({
+            "storage/sd.c": "void f(void) {\n    esp_partition_erase_range(p, 0, 4096);\n"
+                            "    esp_partition_write(p, 0, b, 16);\n    esp_partition_write_raw(p, 0, b, 16);\n}\n",
+            "ota/fw_update.c": "void g(void) {\n    esp_partition_write(p, 0, b, 16);\n}\n",
+            "servers/x.c": "void h(void) {\n    esp_partition_read(p, 0, b, 16);\n}\n",
+        })
+        problems = [p for p in ui_lint.lint(main) if not p.endswith("unused-str")]
+        self.assertEqual(problems, [os.path.join("storage", "sd.c") + ":2: ota-outside-fw_update",
+                                    os.path.join("storage", "sd.c") + ":3: ota-outside-fw_update",
+                                    os.path.join("storage", "sd.c") + ":4: ota-outside-fw_update"])
+
+    def test_fwcmd_literal_flagged(self):
+        main = self.tree({
+            "ota/fw_update.c": "static const char *c = \"exec cat x\";\n",
+            "ui/ui_settings.c": "/* claude_companion.bin in a comment */\nstatic const char *d = \"x/claude_companion.bin\";\n",
+            "voice/v.c": "static const char *e = \"head -c 288 f\";\n",
+            "companion/cc_cmd.c": "static const char *f = \"exec cat \\\"$F\\\"; head -c 288\";\n",
+            "companion/cc_cmd.h": "#define CC_FW_PATH_DEFAULT \"~/x/claude_companion.bin\"\n",
+            "i18n/i18n.h": "X(SET_FW_PATH_PH, \"~/x/claude_companion.bin\") \\\n",
+        })
+        problems = [p for p in ui_lint.lint(main) if not p.endswith("unused-str")]
+        self.assertEqual(sorted(problems), [os.path.join("ota", "fw_update.c") + ":1: fwcmd-outside-cc_cmd",
+                                            os.path.join("ui", "ui_settings.c") + ":2: fwcmd-outside-cc_cmd",
+                                            os.path.join("voice", "v.c") + ":1: fwcmd-outside-cc_cmd"])
+
 
 if __name__ == "__main__":
     unittest.main()

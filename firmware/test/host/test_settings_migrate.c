@@ -79,6 +79,19 @@ static void undo_v24_step(app_settings_t *out, const app_settings_t *src)
     memcpy(out->whisper_model, src->whisper_model, sizeof(out->whisper_model));
 }
 
+/* Puts back what the v25 step writes (fw_path, and ota_url zeroed), from src. */
+static void undo_v25_step(app_settings_t *out, const app_settings_t *src)
+{
+    memcpy(out->fw_path, src->fw_path, sizeof(out->fw_path));
+    memcpy(out->ota_url, src->ota_url, sizeof(out->ota_url));
+}
+
+static void assert_v25_step(const app_settings_t *out)
+{
+    TEST_ASSERT_EQUAL_STRING(CC_FW_PATH_DEFAULT, out->fw_path);
+    for (size_t i = 0; i < sizeof(out->ota_url); i++) TEST_ASSERT_EQUAL_HEX8(0, (uint8_t)out->ota_url[i]);
+}
+
 static void assert_v24_step(const app_settings_t *out)
 {
     TEST_ASSERT_EQUAL_STRING(CC_WHISPER_DEFAULT, out->whisper_path);
@@ -115,8 +128,11 @@ static void test_settings_migrate_v20_turns_tailscale_off(void)
     TEST_ASSERT_EQUAL_UINT8(0, out.ts_enable);
     TEST_ASSERT_EQUAL_STRING("", out.mac_lan_ip);
     TEST_ASSERT_EQUAL_STRING("", out.mac_ts_ip);
-    /* every other field of the v20 layout unchanged, once the v23 step's fields are put back */
+    /* every other field of the v20 layout unchanged, once the v23 and v25 steps' fields are put back (the v25 step
+       zeroes ota_url, which sits inside the v20 layout) */
+    assert_v25_step(&out);
     undo_v23_step(&out, &src);
+    undo_v25_step(&out, &src);
     size_t ts = offsetof(app_settings_t, ts_enable);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, ts);
     TEST_ASSERT_EQUAL_MEMORY((uint8_t *)&src + ts + 1, (uint8_t *)&out + ts + 1, V20_END - ts - 1);
@@ -124,8 +140,8 @@ static void test_settings_migrate_v20_turns_tailscale_off(void)
     /* saved again it is a v23 blob */
     cfg_blob_t saved = settings_blob_make(&out);
     TEST_ASSERT_EQUAL_UINT32(CFG_MAGIC, saved.magic);
-    TEST_ASSERT_EQUAL_UINT32(24, saved.version);
-    TEST_ASSERT_EQUAL_UINT32(24, CFG_VERSION);
+    TEST_ASSERT_EQUAL_UINT32(25, saved.version);
+    TEST_ASSERT_EQUAL_UINT32(25, CFG_VERSION);
 }
 
 /* Older blobs get the same one-time switch-off. */
@@ -148,20 +164,20 @@ static void test_settings_current_keeps_tailscale_choice(void)
     memset(src.mac_ts_ip, 0, sizeof(src.mac_ts_ip));
     strcpy(src.mac_lan_ip, "192.168.1.50");
     strcpy(src.mac_ts_ip, "100.101.102.103");
-    size_t len = make_blob(24, &src, sizeof(src));
+    size_t len = make_blob(25, &src, sizeof(src));
     app_settings_t out;
     defaults(&out);
-    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT32(25, settings_blob_load(&out, s_blob, len));
     TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);
     TEST_ASSERT_EQUAL_STRING("192.168.1.50", out.mac_lan_ip);
     TEST_ASSERT_EQUAL_STRING("100.101.102.103", out.mac_ts_ip);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 
     src.ts_enable = 0;
-    len = make_blob(24, &src, sizeof(src));
+    len = make_blob(25, &src, sizeof(src));
     defaults(&out);
     out.ts_enable = 1;   /* whatever the defaults say, the saved off stands */
-    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT32(25, settings_blob_load(&out, s_blob, len));
     TEST_ASSERT_EQUAL_UINT8(0, out.ts_enable);
 }
 
@@ -206,8 +222,10 @@ static void test_migrate_v21_to_v23_terminal_and_rotation(void)
     TEST_ASSERT_EQUAL_STRING("my-host", out.companion_server);
     TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);   /* the v21 step doesn't run again */
     assert_v24_step(&out);
+    assert_v25_step(&out);
     undo_v23_step(&out, &src);
     undo_v24_step(&out, &src);
+    undo_v25_step(&out, &src);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));   /* nothing else moved */
 }
 
@@ -231,6 +249,7 @@ static void test_migrate_v20_and_v22_to_v23(void)
     TEST_ASSERT_EQUAL_STRING("my-host", out.companion_server);
     undo_v23_step(&out, &src);
     undo_v24_step(&out, &src);
+    undo_v25_step(&out, &src);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 }
 
@@ -248,6 +267,7 @@ static void test_v23_blob_unchanged(void)
     TEST_ASSERT_EQUAL_UINT8(0, out.rotation);
     assert_v24_step(&out);   /* the v24 step does run from 23 */
     undo_v24_step(&out, &src);
+    undo_v25_step(&out, &src);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 }
 
@@ -270,17 +290,21 @@ static void test_migrate_amber_kbd_to_blue(void)
     TEST_ASSERT_EQUAL_HEX8_ARRAY(src.kbd_led_rgb, out.kbd_led_rgb, 3);
 }
 
-/* A blob from a newer build (25): copy what fits and return 25; no older step runs (the downgrade path). */
+/* A blob from a newer build (26): copy what fits and return 26; no older step runs (the downgrade path). */
 static void test_newer_blob_takes_newer_path(void)
 {
     app_settings_t src = old_look();
     strcpy(src.whisper_path, "/usr/local/bin/whisper-cli");
     strcpy(src.whisper_model, "~/m.bin");
-    size_t len = make_blob(25, &src, sizeof(src));
+    memset(src.fw_path, 0, sizeof(src.fw_path));
+    strcpy(src.fw_path, "~/fw/claude_companion.bin");
+    strcpy(src.ota_url, "kept-by-a-newer-build");   /* no v25 step on a newer blob */
+    size_t len = make_blob(26, &src, sizeof(src));
     app_settings_t out;
     defaults(&out);
-    TEST_ASSERT_EQUAL_UINT32(25, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT32(26, settings_blob_load(&out, s_blob, len));
     TEST_ASSERT_EQUAL_STRING("/usr/local/bin/whisper-cli", out.whisper_path);
+    TEST_ASSERT_EQUAL_STRING("~/fw/claude_companion.bin", out.fw_path);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
     TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);
 
@@ -289,7 +313,7 @@ static void test_newer_blob_takes_newer_path(void)
     memset(big, 0x5a, sizeof(big));
     memcpy(big, s_blob, len);
     defaults(&out);
-    TEST_ASSERT_EQUAL_UINT32(25, settings_blob_load(&out, big, sizeof(big)));
+    TEST_ASSERT_EQUAL_UINT32(26, settings_blob_load(&out, big, sizeof(big)));
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 }
 
@@ -306,7 +330,9 @@ static void test_migrate_v23_to_v24_voice_paths(void)
     memset(out.whisper_model, 0xAA, sizeof(out.whisper_model));
     TEST_ASSERT_EQUAL_UINT32(23, settings_blob_load(&out, s_blob, len));
     assert_v24_step(&out);
-    /* the v23 fields unchanged, and the v23 step didn't run again */
+    assert_v25_step(&out);
+    /* the v23 fields unchanged (ota_url aside: the v25 step zeroes it), and the v23 step didn't run again */
+    undo_v25_step(&out, &src);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, V23_END);
 }
 
@@ -323,6 +349,8 @@ static void test_v24_blob_keeps_voice_paths(void)
     TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
     TEST_ASSERT_EQUAL_STRING("/usr/local/bin/whisper-cli", out.whisper_path);
     TEST_ASSERT_EQUAL_STRING("~/models/ggml-small.en.bin", out.whisper_model);
+    assert_v25_step(&out);   /* a v24 blob takes the v25 step */
+    undo_v25_step(&out, &src);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 }
 
@@ -451,7 +479,8 @@ static void test_reset_scope_keeps_identity_and_tz(void)
     strcpy(s.ts_auth_key, "tskey-auth-preview");
     strcpy(s.ts_device_name, "my-tab5");
     strcpy(s.tz_rule, "JST-9");
-    strcpy(s.ota_url, "https://example.com/m.json");
+    memset(s.fw_path, 0, sizeof(s.fw_path));
+    strcpy(s.fw_path, "~/src/claude-companion/firmware/build/claude_companion.bin");
     s.kbd_layout = 1;
     s.volume = 33;
     const app_settings_t before = s;
@@ -465,7 +494,7 @@ static void test_reset_scope_keeps_identity_and_tz(void)
     TEST_ASSERT_EQUAL_STRING("JST-9", s.tz_rule);
     TEST_ASSERT_EQUAL_UINT8(1, s.kbd_layout);
     TEST_ASSERT_EQUAL_UINT8(33, s.volume);
-    TEST_ASSERT_EQUAL_STRING("https://example.com/m.json", s.ota_url);
+    TEST_ASSERT_EQUAL_STRING("~/src/claude-companion/firmware/build/claude_companion.bin", s.fw_path);
     /* and every byte outside the reset fields: put the reset fields back and the struct is unchanged */
     s.brightness = before.brightness;
     s.ss_disable_in_ssh = before.ss_disable_in_ssh;
@@ -487,6 +516,75 @@ static void test_reset_scope_keeps_voice_paths(void)
     settings_reset_scope(&s, &d);
     TEST_ASSERT_EQUAL_STRING("/usr/local/bin/whisper-cli", s.whisper_path);
     TEST_ASSERT_EQUAL_STRING("~/models/ggml-small.en.bin", s.whisper_model);
+}
+
+/* ---- CFG 25 (Plan 6): the firmware path; the old OTA URL wiped ---- */
+static void test_migrate_v24_to_v25_fw_path(void)
+{
+    app_settings_t src = old_look();
+    memset(src.fw_path, 0xAA, sizeof(src.fw_path));   /* the v24 tail padding, or whatever followed it */
+    memset(src.ota_url, 0, sizeof(src.ota_url));
+    strcpy(src.ota_url, "https://u:tok@example.com/m.json?k=s");
+    size_t len = make_blob(24, &src, sizeof(src));
+    app_settings_t out;
+    defaults(&out);
+    memset(out.fw_path, 0xAA, sizeof(out.fw_path));
+    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
+    assert_v25_step(&out);
+    for (size_t i = strlen(CC_FW_PATH_DEFAULT); i < sizeof(out.fw_path); i++) TEST_ASSERT_EQUAL_HEX8(0, (uint8_t)out.fw_path[i]);
+    /* nothing else moved, and the older steps didn't run again */
+    undo_v25_step(&out, &src);
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
+
+    /* a v24-sized blob (without the new field at all) takes the default too */
+    len = make_blob(24, &src, offsetof(app_settings_t, fw_path));
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
+    assert_v25_step(&out);
+}
+
+static void test_v25_blob_keeps_fw_path(void)
+{
+    app_settings_t src = old_look();
+    memset(src.fw_path, 0, sizeof(src.fw_path));
+    strcpy(src.fw_path, "~/src/claude-companion/firmware/build/claude_companion.bin");
+    memset(src.ota_url, 0, sizeof(src.ota_url));
+    size_t len = make_blob(25, &src, sizeof(src));
+    app_settings_t out;
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(25, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_STRING("~/src/claude-companion/firmware/build/claude_companion.bin", out.fw_path);
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
+}
+
+static void test_invalid_fw_path_falls_back(void)
+{
+    app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    strcpy(s.fw_path, "/a b.bin");
+    settings_fw_path_check(&s);
+    TEST_ASSERT_EQUAL_STRING(CC_FW_PATH_DEFAULT, s.fw_path);
+    s.fw_path[0] = 0;
+    settings_fw_path_check(&s);
+    TEST_ASSERT_EQUAL_STRING(CC_FW_PATH_DEFAULT, s.fw_path);
+    memset(s.fw_path, 'a', sizeof(s.fw_path));   /* no NUL: 63 chars once cut, still valid */
+    settings_fw_path_check(&s);
+    TEST_ASSERT_EQUAL_size_t(63, strlen(s.fw_path));
+    memset(s.fw_path, 0, sizeof(s.fw_path));
+    strcpy(s.fw_path, "/tmp/cc6.ab12/stage/claude_companion.bin");
+    settings_fw_path_check(&s);
+    TEST_ASSERT_EQUAL_STRING("/tmp/cc6.ab12/stage/claude_companion.bin", s.fw_path);
+}
+
+static void test_reset_scope_keeps_fw_path(void)
+{
+    app_settings_t s = patterned(), d = reset_defaults();
+    memset(d.fw_path, 0, sizeof(d.fw_path));
+    strcpy(d.fw_path, CC_FW_PATH_DEFAULT);
+    memset(s.fw_path, 0, sizeof(s.fw_path));
+    strcpy(s.fw_path, "/tmp/cc6.ab12/stage/claude_companion.bin");
+    settings_reset_scope(&s, &d);
+    TEST_ASSERT_EQUAL_STRING("/tmp/cc6.ab12/stage/claude_companion.bin", s.fw_path);
 }
 
 int main(void)
@@ -512,5 +610,9 @@ int main(void)
     RUN_TEST(test_reset_scope_resets_power_light_brightness);
     RUN_TEST(test_reset_scope_keeps_identity_and_tz);
     RUN_TEST(test_reset_scope_keeps_voice_paths);
+    RUN_TEST(test_migrate_v24_to_v25_fw_path);
+    RUN_TEST(test_v25_blob_keeps_fw_path);
+    RUN_TEST(test_invalid_fw_path_falls_back);
+    RUN_TEST(test_reset_scope_keeps_fw_path);
     return UNITY_END();
 }

@@ -1,6 +1,5 @@
 #include "sdkconfig.h"
 #include "power_console.h"
-#include "sys/url_mask.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -322,43 +321,8 @@ static int cmd_clock(int argc, char **argv)
     return 1;
 }
 
-/* `ota url [<url>|none]`: the OTA manifest URL (no Settings row since Plan 4). It may carry a token in its
-   userinfo or query, which print masked (url_mask). No argument prints the current one. */
-static void ota_url_print(const char *u)
-{
-    char b[200];
-    url_mask(u, b, sizeof(b));   /* userinfo and a query may hold a token */
-    printf("ota url: %s\n", b);
-}
-
-static int cmd_ota(int argc, char **argv)
-{
-    if (argc >= 2 && strcmp(argv[1], "url") == 0 && argc <= 3) {
-        if (argc == 3) {
-            const char *v = argv[2];
-            if (strcmp(v, "none") == 0) v = "";
-            else if ((strncmp(v, "https://", 8) && strncmp(v, "http://", 7)) || strlen(v) >= sizeof(g_settings.ota_url)) {
-                printf("ota url: use http(s)://... (under %u characters) or none\n", (unsigned)sizeof(g_settings.ota_url));
-                return 1;
-            }
-            strcpy(g_settings.ota_url, v);
-            settings_save();
-        }
-        ota_url_print(g_settings.ota_url);
-        return 0;
-    }
-    printf("usage: ota url [<url>|none]\n");
-    return 1;
-}
-
 void power_console_init(void)
 {
-    const esp_console_cmd_t ota = {
-        .command = "ota",
-        .help = "ota url [<url>|none]: the update manifest URL (a query is masked when printed)",
-        .func = cmd_ota,
-    };
-    debug_console_register(&ota);
     const esp_console_cmd_t clk = {
         .command = "clock",
         .help = "clock | tz <rule> | at <epoch>",

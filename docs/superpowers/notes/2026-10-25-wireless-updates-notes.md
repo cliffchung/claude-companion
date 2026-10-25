@@ -79,3 +79,36 @@ B, and the diet saved slightly more than estimated. `idf.py size`: External RAM 
   panel's clock row on `settings-4` (16:10 vs 16:16): the wall clock, which differs between two runs of the same
   build as well. No glyph pixel changed.
 - Step 5 (the migration flash) is a device step: waiting for Task 9.
+
+## Task 4: settings (CFG 25) and removing the SD updater path
+
+- **CFG 25 is free on main** (`settings_migrate.h` was at 24, Plan 5), so this plan takes 25 as written. The comment
+  now says Plan 2's Task 10 would take 26.
+- `app_settings_t` gains `fw_path[64]` at the end. The step `old_version < 25` writes `CC_FW_PATH_DEFAULT` (over
+  zeroes) and zeroes all 160 bytes of `ota_url` (reserved). `settings_fw_path_check` (in `settings_migrate.c`, so
+  the host tests cover it, as `settings_voice_paths_check` is) NUL-terminates it and falls back unless
+  `cc_path_valid`; `settings_init` calls it. `settings_defaults` sets it; `settings_reset_scope` keeps it.
+- The migration tests that byte-compare a whole struct after loading an older blob now put back the v25 step's two
+  fields (`undo_v25_step`), including the v20 and v23 tests whose compare ranges cover `ota_url` (it sits early in
+  the struct). The reset-scope identity test now checks `fw_path` instead of `ota_url`. The newer-blob test uses 26.
+- Removed: `firmware/updater/`, `main/ota/ota.c`, `ota.h`, `cmd_ota` (the `ota url` verb) in `power_console.c`,
+  `esp_https_ota` from `PRIV_REQUIRES` (`esp_http_client`, `app_update`, `esp_partition`, `esp_app_format` stay),
+  `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y`, the Mozgi512 `ota_url` clean-up in `settings_init`, the OTA sentence in
+  `storage/sd.h`.
+- **`url_mask`: deleted** (`sys/url_mask.c`, `.h`, `test/host/test_url_mask.c` and their CMake lines). After the
+  removal, `grep -rn url_mask firmware/main` found no other caller.
+- `merge_flash.sh`: no updater, no `update.json`; 0x2000, 0x8000, 0xF000, 0x20000 only; prints the NVS warning first.
+- `cc_settings_fw_path` and `cc_link_set_fw_path` (validated, saves) next to the whisper ones in `cc_link.c`.
+- `ui_lint.py`: `ota-outside-fw_update` (a call, in code with comments and literals blanked, to `esp_ota_*`,
+  `esp_partition_erase_range` or `esp_partition_write*` outside `ota/fw_update.c`) and `fwcmd-outside-cc_cmd` (the
+  three literals outside `cc_cmd.c`, `cc_cmd.h`, `i18n.h`). Before the removals they flagged `ota/ota.c` (4 calls)
+  and `ota/ota.h` (`claude_companion.bin`); after, the tree is clean.
+- The grep of Step 2 (`updater|factory|main_app|ota_install|ota_download|ALLOW_HTTP|esp_https_ota` over
+  `*.c *.h *.txt *.csv *.defaults *.sh *.py`, build and managed_components left out) finds only: the
+  `partitions.csv` comment ("No factory partition"), the old-layout fixture `main_app` in
+  `test_check_image_size.py`, the `ota_url` reserved comment and the v25 step's comment, and unrelated uses
+  (`microlink_factory_reset`, the Tab5's factory firmware in `hibernate.c`).
+- `THIRD_PARTY_NOTICES.md` doesn't name the updater: unchanged.
+- Step 3 (flash, `settings v24 -> v25` on the first boot, none on the second, snapshot S, `help` without `ota url`)
+  is a device step: waiting for Task 9.
+- FW build after Task 4 (sdkconfig deleted first): passes, image 6,290,784 B, headroom 2,032,288 B (24 %).

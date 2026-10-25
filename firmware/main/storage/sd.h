@@ -10,8 +10,7 @@ extern "C" {
    users until its sd_unmount. Safe from any task; a failed try (false: no user, don't unmount) can be repeated (a
    card put in later mounts). */
 bool sd_mount(void);
-/* Ends one successful sd_mount; the last user's call unmounts the card (the SD driver and its LDO go off). The
-   OTA functions mount without a matching call: the card stays up until ota_install_via_updater's restart. */
+/* Ends one successful sd_mount; the last user's call unmounts the card (the SD driver and its LDO go off). */
 void sd_unmount(void);
 bool sd_is_mounted(void);
 bool sd_space(const char *path, uint64_t *total, uint64_t *free_bytes);

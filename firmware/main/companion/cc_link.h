@@ -166,6 +166,9 @@ const char *cc_settings_whisper_path(char *out, size_t cap);    /* default CC_WH
 const char *cc_settings_whisper_model(char *out, size_t cap);   /* default CC_WHISPER_MODEL_DEFAULT */
 bool cc_link_set_whisper_path(const char *path);                /* false unless cc_path_valid; saves */
 bool cc_link_set_whisper_model(const char *path);
+/* Plan 6: the firmware image on the Host that Update firmware reads (cc_cmd_fw_info, cc_cmd_fw_read). */
+const char *cc_settings_fw_path(char *out, size_t cap);         /* default CC_FW_PATH_DEFAULT */
+bool cc_link_set_fw_path(const char *path);                     /* false unless cc_path_valid; saves */
 /* cc_cmd_voice_check on an exec channel (10 s). ESP_OK with *exit_status 0/120/121/…; ESP_ERR_INVALID_STATE when not
    connected or parked; ESP_ERR_TIMEOUT. Blocks: never from the LVGL task. Counts as link-busy. */
 esp_err_t cc_link_voice_check(int *exit_status);

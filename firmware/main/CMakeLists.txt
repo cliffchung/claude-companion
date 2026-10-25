@@ -8,7 +8,7 @@ idf_component_register(
     SRCS ${APP_SRCS}
     INCLUDE_DIRS "."
     PRIV_REQUIRES nvs_flash esp_wifi esp_netif esp_event lwip json mbedtls fatfs vfs esp_http_client
-                  esp_https_ota app_update esp_partition esp_timer esp_driver_i2c esp_driver_i2s esp_driver_gpio esp_driver_jpeg esp_driver_ppa
+                  app_update esp_partition esp_timer esp_driver_i2c esp_driver_i2s esp_driver_gpio esp_driver_jpeg esp_driver_ppa
                   esp_psram spi_flash esp_app_format sdmmc driver
                   libssh microlink console
     REQUIRES esp_lvgl_port lvgl m5stack_tab5 esp_lcd_touch esp_lcd esp_lcd_touch esp_lcd usb_host_hid esp_wifi_remote)

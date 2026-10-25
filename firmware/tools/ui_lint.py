@@ -29,6 +29,10 @@ Prints one "<file>:<line>: <rule>" per problem and exits 1 if there are any. Rul
   notify-under-lock    net/tailscale.c: a notify() call (the UI's event slot, which reaches ui_async and the LVGL
                        lock) while s_ctl is held: in a *_locked function, or after ctl_lock() and before its
                        ctl_unlock() (a block that unlocks and returns leaves the lock held after it). Final review I2.
+  ota-outside-fw_update  a call to esp_ota_*, esp_partition_erase_range or esp_partition_write* anywhere under
+                       firmware/main outside ota/fw_update.c (Plan 6 ruling P6-10: one file writes app partitions)
+  fwcmd-outside-cc_cmd  claude_companion.bin, "head -c 288" or "exec cat" inside a string literal anywhere under
+                       firmware/main except companion/cc_cmd.c, companion/cc_cmd.h and i18n/i18n.h (P6-10)
 """
 import os
 import re
@@ -64,6 +68,11 @@ STR_USE_RE = re.compile(r"\bSTR_(\w+)")
 
 WHISPER_RE = re.compile(r"whisper-cli|-otxt")
 WHISPER_HOMES = {os.path.join("companion", "cc_cmd.c"), os.path.join("companion", "cc_cmd.h"), I18N_H}
+
+OTA_CALL_RE = re.compile(r"\b(?:esp_ota_\w+|esp_partition_erase_range|esp_partition_write\w*)\s*\(")
+OTA_HOME = os.path.join("ota", "fw_update.c")
+FWCMD_RE = re.compile(r"claude_companion\.bin|head -c 288|exec cat")
+FWCMD_HOMES = WHISPER_HOMES
 
 TS_C = os.path.join("net", "tailscale.c")
 TS_TOKEN_RE = re.compile(r"\bctl_lock\s*\(\s*\)|\bctl_unlock\s*\(\s*\)|\bnotify\s*\(\s*\)|\breturn\b|[{}]")
@@ -211,6 +220,13 @@ def lint_file(rel, text, macros=frozenset()):
         for offset, s in split_source(text)[1]:
             if WHISPER_RE.search(s):
                 problems.add((line_of(text, offset), "whisper-outside-cc_cmd"))
+    if rel != OTA_HOME and OTA_CALL_RE.search(text):
+        for m in OTA_CALL_RE.finditer(split_source(text)[0]):
+            problems.add((line_of(text, m.start()), "ota-outside-fw_update"))
+    if rel not in FWCMD_HOMES and FWCMD_RE.search(text):
+        for offset, s in split_source(text)[1]:
+            if FWCMD_RE.search(s):
+                problems.add((line_of(text, offset), "fwcmd-outside-cc_cmd"))
     in_ui = rel.split(os.sep, 1)[0] == UI
     for m in ALIAS_RE.finditer(text):
         problems.add((line_of(text, m.start()), "ui-alias"))
