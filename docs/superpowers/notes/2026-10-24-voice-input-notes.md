@@ -244,3 +244,18 @@ At the end:
 - The Whisper path and model are at their defaults. The Claude path was never changed.
 - Tailscale off; `companion status` connected with the watch on.
 - Every `companion-test-*` session (three) stopped and removed.
+
+## Touch voice controls (2026-10-25, branch touch-voice)
+
+The take-over and SSH session bar gained a Mic chip (Ctrl+Space by touch), and the Sessions voice strip gained a
+Cancel button (Esc by touch). Review fix round 1 fixed I1, M2, M3, M5 and M7. M4 was accepted as it is. Two findings
+are parked:
+
+- **M1 (parked): a Cancel tap just after the result posts.** The service posts TEXT and goes idle, and Cancel stays
+  shown until the next 300 ms tick. A tap in that window cancels nothing (`voice_busy()` is false), so the text still
+  goes into the draft. Esc behaves the same way, and the text only reaches the draft, never a send. A possible fix:
+  have Cancel drop a result posted for Sessions' run, or hide Cancel as soon as the phase leaves TRANSCRIBING.
+- **M6 (parked): the preview presses Mic and Cancel with `lv_obj_send_event(CLICKED)`, not pointer taps.** Hit
+  testing, a tap where Mic sits while the bar is hidden, and a double tap inside 700 ms are not exercised. Possible
+  additions: `tap()` at the chip's centre and at its edge next to Esc; a tap on the hidden bar that starts nothing;
+  a double tap that calls `voice_start` once. Check them on the device meanwhile.
