@@ -263,7 +263,7 @@ static void fill(lv_obj_t *p)
     char fp[80];
     if (s_f->editing && s_f->origin == HF_FROM_TERMINAL && ssh_known_host_fingerprint(s_f->orig.host, s_f->orig.port, fp, sizeof(fp))) {
         ui_section_header(p, tr(STR_HF_HOST_KEY));
-        ui_srow_fingerprint(p, fp, tr(STR_SET_FORGET), forget_cb, NULL);
+        ui_srow_fingerprint(p, fp, tr(STR_SET_FORGET), true, forget_cb, NULL);
     }
     if (s_f->editing && s_f->origin == HF_FROM_TERMINAL) {   /* never the Host's entry from Settings */
         lv_obj_t *r = ui_srow(p, UI_ROW_ACTION, tr(STR_HF_DELETE), NULL, delete_cb, NULL);

@@ -77,6 +77,13 @@ lv_obj_t *ui_srow_slider(lv_obj_t *parent, const char *label, int min, int max, 
 /* Styles o (an object with its styles removed) as a Settings column: 24 px top and bottom, 32 sideways, 8 between
  * rows, a vertical flex column that scrolls. Settings' panel and the Network sub-pages. */
 void ui_settings_column(lv_obj_t *o);
+/* A column rebuilt in place keeps the keyboard focus on its row (T13-3), by a stable key, never by object pointer:
+ * the row's first label text, its count among the column's rows with that text, and the control's number in the
+ * row. Save before cleaning the column, restore after filling it. A row that went gets the column's first control,
+ * so the focus never falls back to the header's "← Sessions"; a focus outside the column (or none) is left alone. */
+typedef struct { bool had; char text[64]; int nth, ctl; } ui_focus_key_t;
+void ui_focus_save(lv_obj_t *column, ui_focus_key_t *k);
+void ui_focus_restore(lv_obj_t *column, const ui_focus_key_t *k);
 /* A 64 px line for a row (flex-grow it) and a trailing 64 px button, 8 px apart; both keep their 80 px hit. */
 lv_obj_t *ui_srow_line(lv_obj_t *parent);
 /* The row's value label (the switch of a UI_ROW_SWITCH row, the slider of a ui_srow_slider row). */
@@ -105,9 +112,11 @@ void ui_host_row_dot(lv_obj_t *row, int dot);
 /* The trailing label: note in red (a connect failure), or busy (a spinner and note muted); NULL and !busy goes back
  * to hint on focus. */
 void ui_host_row_note(lv_obj_t *row, const char *note, bool busy, const char *hint);
-/* A Host key row: the whole fingerprint in mono, muted and wrapped (at least 64 px), and a drawn destructive chip
- * (chip, NULL for none); the whole row is the hit target. Settings › Host and the host form. */
-lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, lv_event_cb_t cb, void *ud);
+/* A Host key row: the whole fingerprint in mono, muted and wrapped (at least 64 px), and a drawn chip (chip, NULL for
+ * none; destructive for Forget, plain for Trust this key); the whole row is the hit target. Settings › Host and the
+ * host form. */
+lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, bool destructive, lv_event_cb_t cb,
+                              void *ud);
 /* "+ Add host": 72 px, a line border, muted text; the whole row is the hit target. */
 lv_obj_t *ui_add_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *ud);
 /* A ui_chip (or a banner's action chip) in the primary style: fg fill, bg text (Save, Turn on). */

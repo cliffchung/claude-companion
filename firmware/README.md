@@ -136,8 +136,9 @@ go into one: the Claude path and session ids. The link never opens a shell.
 - **Host keys.** Pins are per resolved address, in NVS. The first contact on a tailnet address,
   or the first connection after the user's Forget, pins the key it meets. On a LAN address with no
   pin, a key equal to the same entry's earlier tailnet pin is carried over silently; any other
-  unknown key is refused until the user forgets (`companion/kh_carry.c`, host-tested). A changed
-  key is always refused.
+  unknown key is refused until the user trusts it in Settings › Host (`cc_link_trust_host_key`: only
+  while nothing is pinned, and only the fingerprint the user confirmed, `kh_forget_applies`) or
+  forgets (`companion/kh_carry.c`, host-tested). A changed key is always refused.
 - **Never on the Host as a shell.** The Terminal client refuses a server whose host key is in a
   deny-list of every key ever pinned for the link (NVS, up to 8), checked after key exchange and
   before authentication, besides hiding the Host's entry from the list.

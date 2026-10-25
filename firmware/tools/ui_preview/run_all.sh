@@ -41,6 +41,8 @@ runv "PREVIEW_CLICK=Colour" settings 3
 runv "PREVIEW_SCROLL=400" settings 2
 runv "PREVIEW_HOST=0" settings 0
 runv "PREVIEW_FAIL=notfound" settings 0
+runv "PREVIEW_FAIL=newkey" settings 0      # first run: the key the Host presented, with Trust this key
+PV_ENV="PREVIEW_FAIL=newkey"; PV_ENV2="PREVIEW_CLICK=Trust this key"; run settings 0; PV_ENV=; PV_ENV2=
 runv "PREVIEW_TS=0" settings 1
 runv "PREVIEW_TS=3" settings 1
 runv "PREVIEW_SCROLL=600" settings 1
@@ -53,12 +55,13 @@ PV_ENV="PREVIEW_KEY=0"; PV_ENV2="PREVIEW_CLICK=Forget this device on the tailnet
 for v in networks advanced peers; do run settings-sub "$v"; done
 run settings-sub peers deleted-event
 run network-live
+run network-focus
 run picker-fresh
 run net-sub-open
 runv "PREVIEW_HOST=0" settings-sub networks   # join a saved network with no Host set (the device gate's no-Host leg)
 run keyboard-settings
 for v in live selected-needs-you working loading stale reconnecting no-wifi not-found no-host empty \
-         interactive sent low-battery 16 long resort tap-resort resort-scroll keys idle forget; do run sessions "$v"; done
+         interactive sent low-battery 16 long resort tap-resort resort-scroll keys idle forget new-key; do run sessions "$v"; done
 run ctrlk
 run keyboard
 run gesture

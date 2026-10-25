@@ -76,7 +76,7 @@ typedef struct {
     int64_t at_ms;
 } note_t;
 
-typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY } job_type_t;
+typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY } job_type_t;
 typedef struct {
     job_type_t type;
     unsigned token;        /* which request this is (actions only) */
@@ -254,13 +254,17 @@ static char s_forget_toast[128];
 
 /* The worker's outcome, passed as ui_async's arg; the text is composed here, on the LVGL task, so only
    that task writes s_forget_toast (review M3). */
-enum { FORGET_TIMED_OUT = 1, FORGET_NO_HOST };
+enum { FORGET_TIMED_OUT = 1, FORGET_NO_HOST, FORGET_ENDED, TRUST_TIMED_OUT, TRUST_REFUSED, TRUST_ENDED };
 
 static void forget_toast_cb(void *arg)
 {
-    strlcpy(s_forget_toast, (intptr_t)arg == FORGET_TIMED_OUT ? tr(STR_SES_FORGET_RECONNECTING) : tr(STR_LINK_NO_HOST),
-            sizeof(s_forget_toast));
+    intptr_t why = (intptr_t)arg;
+    str_id_t t = why == FORGET_TIMED_OUT ? STR_SES_FORGET_RECONNECTING : why == FORGET_ENDED ? STR_SES_FORGET_ENDED
+               : why == TRUST_TIMED_OUT ? STR_SES_TRUST_WAITING : why == TRUST_REFUSED ? STR_SES_TRUST_REFUSED
+               : why == TRUST_ENDED ? STR_SES_TRUST_ENDED : STR_LINK_NO_HOST;
+    strlcpy(s_forget_toast, tr(t), sizeof(s_forget_toast));
     ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
+    ui_settings_refill();   /* Settings › Host's key rows follow (nothing when Settings isn't shown) */
 }
 
 static void forget_check(void)
@@ -271,6 +275,7 @@ static void forget_check(void)
     s_forget_seen = n;
     snprintf(s_forget_toast, sizeof(s_forget_toast), "%s %s", tr(STR_SES_NEW_KEY_PINNED), fp);
     ui_toast_ms(s_forget_toast, FORGET_TOAST_MS);
+    ui_settings_key_pinned();   /* the pinned fingerprint replaces the Trust or Forget row; the focus isn't on Forget */
 }
 
 static void forget_done_cb(void *arg) { (void)arg; forget_check(); }
@@ -281,13 +286,28 @@ static void run_forget(void)
     esp_err_t e = cc_link_forget_host_key(fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
     ESP_LOGI(TAG, "forget host key: %s %s", esp_err_to_name(e), fp);
     if (e == ESP_OK) { ui_async(forget_done_cb, NULL); return; }
-    ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? FORGET_TIMED_OUT : FORGET_NO_HOST));
+    ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? FORGET_TIMED_OUT
+                                                 : e == ESP_ERR_INVALID_RESPONSE ? FORGET_ENDED : FORGET_NO_HOST));
+}
+
+/* Trust this key (polish 1): a forget that pins only the key the user confirmed. NOT_ALLOWED: a pin or a carry source
+   is there after all; INVALID_RESPONSE: it ended without a pin (expired, another Host, a pin appeared); INVALID_STATE:
+   no Host. Nothing is called trusted before a key is pinned (fix round 1, M2). */
+static void run_trust(const char *want)
+{
+    char fp[80];
+    esp_err_t e = cc_link_trust_host_key(want, fp, sizeof(fp), CC_FORGET_TIMEOUT_MS);
+    ESP_LOGI(TAG, "trust host key %s: %s %s", want, esp_err_to_name(e), fp);
+    if (e == ESP_OK) { ui_async(forget_done_cb, NULL); return; }
+    ui_async(forget_toast_cb, (void *)(intptr_t)(e == ESP_ERR_TIMEOUT ? TRUST_TIMED_OUT : e == ESP_ERR_NOT_ALLOWED ? TRUST_REFUSED
+                                                 : e == ESP_ERR_INVALID_RESPONSE ? TRUST_ENDED : FORGET_NO_HOST));
 }
 
 static void run_job(const job_t *j)
 {
     char claude[64], cmd[192], msg[160] = "";
     if (j->type == JOB_FORGET_KEY) { run_forget(); return; }
+    if (j->type == JOB_TRUST_KEY) { run_trust(j->text); return; }
     cc_settings_claude_path(claude, sizeof(claude));
     if (j->type == JOB_LOGS) {
         bool ok = false;
@@ -422,6 +442,18 @@ bool ui_sessions_forget_host_key(void)
     init_once();
     job_t *j = job_new(JOB_FORGET_KEY);
     if (!j) return false;
+    bool ok = job_post(j);
+    heap_caps_free(j);
+    return ok;
+}
+
+bool ui_sessions_trust_host_key(const char *fp)
+{
+    if (!fp || !fp[0]) return false;
+    init_once();
+    job_t *j = job_new(JOB_TRUST_KEY);
+    if (!j) return false;
+    strlcpy(j->text, fp, sizeof(j->text));
     bool ok = job_post(j);
     heap_caps_free(j);
     return ok;
@@ -1059,7 +1091,7 @@ static void host_settings_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_H
 static void lowbat_dismiss_cb(lv_event_t *e) { (void)e; s_lowbat_dismiss = true; render(); }
 
 /* Why the Host link is down, for the Sessions banner and Settings › Host › Link: no host, "Can't reach <name>.
-   Is it awake?" when nothing failed, or cc_link's status text up to its parenthetical ("Host not found at
+   Is it awake?" when nothing failed, the pointer to Settings › Host for a first key to trust, or cc_link's status text up to its parenthetical ("Host not found at
    my-host.local (set its fallback address …) (retry in 12s)"), capitalised. */
 void ui_sessions_link_down_text(char *out, size_t cap)
 {
@@ -1067,6 +1099,8 @@ void ui_sessions_link_down_text(char *out, size_t cap)
     cc_settings_server_name(name, sizeof(name));
     if (!name[0]) { strlcpy(out, tr(STR_LINK_NO_HOST), cap); return; }
     if (cc_link_failure() == CC_LINK_FAIL_NONE) { snprintf(out, cap, "%s %s. %s", tr(STR_LINK_CANT_REACH), name, tr(STR_LINK_IS_IT_AWAKE)); return; }
+    /* first run: the fingerprint is too long for the banner's one line; Settings › Host shows it, to trust */
+    if (cc_link_unknown_host_key(NULL, 0)) { strlcpy(out, tr(STR_SES_NEW_HOST_KEY), cap); return; }
     char st[CC_STATUS_MAX];
     cc_link_status_text(st, sizeof(st));
     char *p = strstr(st, " (");

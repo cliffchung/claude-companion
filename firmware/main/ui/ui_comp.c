@@ -859,6 +859,47 @@ void ui_settings_column(lv_obj_t *o)
     lv_obj_set_scroll_dir(o, LV_DIR_VER);
 }
 
+/* The first label's text under obj, depth first ("" when none). */
+static const char *first_label_text(lv_obj_t *obj)
+{
+    if (lv_obj_check_type(obj, &lv_label_class)) return lv_label_get_text(obj);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++) {
+        const char *t = first_label_text(lv_obj_get_child(obj, i));
+        if (t[0]) return t;
+    }
+    return "";
+}
+
+void ui_focus_save(lv_obj_t *column, ui_focus_key_t *k)
+{
+    memset(k, 0, sizeof(*k));
+    lv_obj_t *row = ui_keyboard_focused();
+    while (row && lv_obj_get_parent(row) != column) row = lv_obj_get_parent(row);
+    if (!column || !row) return;
+    k->ctl = ui_keyboard_focus_index(row);
+    if (k->ctl < 0) return;
+    strlcpy(k->text, first_label_text(row), sizeof(k->text));
+    for (uint32_t i = 0; i < lv_obj_get_child_count(column); i++) {
+        lv_obj_t *c = lv_obj_get_child(column, i);
+        if (c == row) break;
+        if (!strcmp(first_label_text(c), k->text)) k->nth++;
+    }
+    k->had = true;
+}
+
+void ui_focus_restore(lv_obj_t *column, const ui_focus_key_t *k)
+{
+    if (!column || !k->had || ui_keyboard_focused()) return;   /* nothing was focused there, or it survived */
+    int nth = k->nth;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(column); i++) {
+        lv_obj_t *c = lv_obj_get_child(column, i);
+        if (strcmp(first_label_text(c), k->text) || nth-- > 0) continue;
+        if (ui_keyboard_focus_in(c, k->ctl) || ui_keyboard_focus_in(c, 0)) return;
+        break;
+    }
+    ui_keyboard_focus_in(column, 0);
+}
+
 lv_obj_t *ui_srow_line(lv_obj_t *parent)
 {
     lv_obj_t *l = plain(parent);
@@ -1037,7 +1078,8 @@ void ui_host_row_note(lv_obj_t *row, const char *note, bool busy, const char *hi
     set_flag(t, LV_OBJ_FLAG_HIDDEN, !note && !busy && !lv_obj_has_state(row, LV_STATE_FOCUS_KEY));
 }
 
-lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, lv_event_cb_t cb, void *ud)
+lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip, bool destructive, lv_event_cb_t cb,
+                              void *ud)
 {
     lv_obj_t *r = ui_srow(parent, UI_ROW_ACTION, fp, NULL, cb, ud);
     lv_obj_add_style(r, &s_srow_wrap, 0);
@@ -1047,7 +1089,7 @@ lv_obj_t *ui_srow_fingerprint(lv_obj_t *parent, const char *fp, const char *chip
     lv_obj_add_style(l, &s_wrap_label, 0);
     tone_apply(l, UI_TONE_MUTED);
     lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
-    if (chip) ui_srow_chip(r, chip, true);
+    if (chip) ui_srow_chip(r, chip, destructive);
     return r;
 }
 
