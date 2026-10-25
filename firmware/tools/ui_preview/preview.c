@@ -1014,6 +1014,7 @@ static int selected_index(lv_obj_t *list) {
 
 /* ------------------------------------------------------------ voice input on Sessions (Plan 5 Task 7) */
 static int timers_with_period(uint32_t ms);
+static int shown_index(int raw);   /* the list hides interactive sessions */
 /* The shown 64 x 64 button in the detail pane: the mic. */
 static lv_obj_t *mic_button_of(lv_obj_t *o) {
     if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return NULL;
@@ -1160,6 +1161,7 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         int k = -1;
         for (int i = 0; i < s_preview_n; i++) if (s_preview_sessions[i].background && s_preview_sessions[i].state == CC_DONE) k = i;
         assert(k >= 0);
+        k = shown_index(k);
         for (int i = 0; i < k; i++) { assert(sink_sk(SK_DOWN)); step(d, 400); }
         assert(selected_index(list) == k && !field_text(s));
         assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
