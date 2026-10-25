@@ -24,6 +24,10 @@ static const char *TAG = "mic";
 #define MIC_SELECT    (ES7210_SEL_MIC1 | ES7210_SEL_MIC2)
 #define MIC_DMA_DESC  4
 #define MIC_DMA_FRAME 400
+/* The ES7210 puts out a pop 100-200 ms after it is enabled (device pass A: block 1 read about 20 dB over the room
+   floor on every open, at every gain). mic_read drops the first MIC_SETTLE_MS of frames, so the pop never reaches
+   the recording, the meter or the silence gate. */
+#define MIC_SETTLE_MS 250
 
 static i2s_chan_handle_t s_rx;
 static const audio_codec_data_if_t *s_data;
@@ -31,20 +35,25 @@ static const audio_codec_ctrl_if_t *s_ctrl;
 static const audio_codec_if_t *s_codec;
 static esp_codec_dev_handle_t s_dev;
 static volatile bool s_open;
+static bool s_dev_opened;                /* esp_codec_dev_open succeeded: its close disables the channel */
+static size_t s_skip;                     /* frames still to drop (MIC_SETTLE_MS after open) */
 
 /* Undoes whatever exists, in reverse order of creation. */
 static void teardown(void)
 {
+    bool disabled = false;
     if (s_dev) {
         esp_codec_dev_close(s_dev);       /* ES7210 off (disable_when_closed), the RX channel disabled */
         esp_codec_dev_delete(s_dev);
         s_dev = NULL;
+        disabled = s_dev_opened;
+        s_dev_opened = false;
     }
     if (s_codec) { audio_codec_delete_codec_if(s_codec); s_codec = NULL; }   /* uses s_ctrl: before it */
     if (s_ctrl) { audio_codec_delete_ctrl_if(s_ctrl); s_ctrl = NULL; }       /* removes the I2C device */
     if (s_data) { audio_codec_delete_data_if(s_data); s_data = NULL; }
     if (s_rx) {
-        (void)i2s_channel_disable(s_rx);  /* ESP_ERR_INVALID_STATE when already disabled: fine */
+        if (!disabled) (void)i2s_channel_disable(s_rx);  /* the codec close already did it (and a second call logs E) */
         i2s_del_channel(s_rx);            /* MCLK stops, the DMA buffers are freed */
         s_rx = NULL;
     }
@@ -110,10 +119,12 @@ esp_err_t mic_open(const mic_cfg_t *cfg)
         .sample_rate = (uint32_t)cfg->rate,
     };
     if (esp_codec_dev_open(s_dev, &fs) != ESP_CODEC_DEV_OK) { e = ESP_FAIL; goto fail; }
+    s_dev_opened = true;
 
     step = "gain";
     if (esp_codec_dev_set_in_gain(s_dev, (float)cfg->gain_db) != ESP_CODEC_DEV_OK) { e = ESP_FAIL; goto fail; }
 
+    s_skip = (size_t)cfg->rate * MIC_SETTLE_MS / 1000;
     s_open = true;
     ESP_LOGI(TAG, "open: %d Hz, gain %d dB, i2s %d", cfg->rate, cfg->gain_db, CONFIG_BSP_I2S_NUM);
     return ESP_OK;
@@ -127,6 +138,14 @@ fail:
 int mic_read(int16_t *buf, size_t frames, int timeout_ms)
 {
     if (!s_open || !buf || frames == 0) return -1;
+    while (s_skip > 0) {                  /* the settling pop, read into the caller's buffer and dropped */
+        size_t want = s_skip < frames ? s_skip : frames, g = 0;
+        esp_err_t e = i2s_channel_read(s_rx, buf, want * 2 * sizeof(int16_t), &g, pdMS_TO_TICKS(MIC_SETTLE_MS + 100));
+        if (e != ESP_OK && e != ESP_ERR_TIMEOUT) return -1;
+        if (g == 0) return -1;
+        size_t n = g / (2 * sizeof(int16_t));
+        s_skip = n < s_skip ? s_skip - n : 0;
+    }
     size_t got = 0;
     esp_err_t e = i2s_channel_read(s_rx, buf, frames * 2 * sizeof(int16_t), &got,
                                    pdMS_TO_TICKS(timeout_ms > 0 ? timeout_ms : 1));

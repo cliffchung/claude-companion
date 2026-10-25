@@ -17,7 +17,9 @@ extern "C" {
 #define VR_PCM_MAX       (VR_RATE * 2 * VR_MAX_S)          /* 960,000 B */
 #define VR_REPEAT_GAP_MS 150
 #define VR_TOGGLE_GUARD_MS 700
-#define VR_SILENCE_DBFS  (-50)    /* Task 5 may retune it (O2) */
+#define VR_SILENCE_DBFS  (-50)    /* device pass A (O2): kept. At 30 dB the quiet floor is -60..-70 and a noisy room
+                                     -46..-55; desk speech from a laptop at low volume -43..-48 (a lower bound for a
+                                     voice). A -55 gate let a -55 dBFS silence through to a 3-char hallucination (O5) */
 #define VR_METER_FLOOR_DBFS (-60)
 #define VR_KEY_MAX       128      /* == SM_KEY_MAX */
 #define VR_TEXT_MAX      480      /* == SM_ANSWER_MAX */
