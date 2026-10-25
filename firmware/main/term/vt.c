@@ -444,12 +444,14 @@ void vt_reset(vt_t *v)
 vt_t *vt_create(int cols, int rows, int scrollback)
 {
     vt_t *v = calloc(1, sizeof(*v));
+    if (!v) return NULL;
     v->cols = cols; v->rows = rows;
     v->main = big_alloc(sizeof(vt_cell_t) * cols * rows);
     v->alt = big_alloc(sizeof(vt_cell_t) * cols * rows);
     v->dirty = calloc(rows, 1);
     v->sb_cap = scrollback;
     if (scrollback > 0) v->sb = big_alloc(sizeof(vt_cell_t) * cols * scrollback);
+    if (!v->main || !v->alt || !v->dirty || (scrollback > 0 && !v->sb)) { vt_destroy(v); return NULL; }   /* out of memory */
     v->screen = v->main;
     vt_reset(v);
     return v;
