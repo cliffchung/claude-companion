@@ -127,12 +127,18 @@ static void post_result(const voice_result_t *r, uint32_t run)
     }
     if (s_expire) esp_timer_stop(s_expire);   /* ESP_ERR_INVALID_STATE when not running: fine */
     taskENTER_CRITICAL(&s_mux);
-    s_result = *r;
-    s_result.gen = ++s_result_gen;
-    s_result_run = run;
-    s_result_pending = true;
+    /* final re-review N1: a cancel that came after the task's last look (it finds nothing posted to drop) still wins,
+       decided under the same lock voice_cancel takes, so a cancelled transcript never reaches the slot */
+    bool cancelled = s_cancel_req && run == s_run;
+    bool older = cancelled && s_result_pending;   /* an older run's untaken result: its expiry timer was stopped above */
+    if (!cancelled) {
+        s_result = *r;
+        s_result.gen = ++s_result_gen;
+        s_result_run = run;
+        s_result_pending = true;
+    }
     taskEXIT_CRITICAL(&s_mux);
-    if (s_expire) esp_timer_start_once(s_expire, RESULT_TTL_US);
+    if (s_expire && (!cancelled || older)) esp_timer_start_once(s_expire, RESULT_TTL_US);
 }
 
 bool voice_take_result(voice_result_t *out)
