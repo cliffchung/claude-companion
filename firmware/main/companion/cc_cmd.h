@@ -7,6 +7,8 @@ bool cc_id_valid(const char *id);           /* ^[0-9a-f]{8}$ */
 bool cc_session_id_valid(const char *sid);  /* lowercase 8-4-4-4-12 hex UUID */
 bool cc_shell_quote(const char *in, char *out, size_t cap);   /* '...' with ' written as '\'' */
 bool cc_cmd_agents(const char *claude, char *out, size_t cap);
+/* `<claude> logs <id> | tail -c CC_LOGS_TAIL_BYTES` */
+#define CC_LOGS_TAIL_BYTES 524288
 bool cc_cmd_logs(const char *claude, const char *id, char *out, size_t cap);
 /* Reserved: not called by the product. The device only answers live sessions, by bracketed
    paste over a pty (cc_link_paste, no shell involved). Kept, with its D4 quoting tests, for a

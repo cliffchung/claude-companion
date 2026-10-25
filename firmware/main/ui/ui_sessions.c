@@ -52,7 +52,7 @@ static const char *TAG = "sessions";
 #define SNAP_CAP         128
 #define MAX_ROWS         16
 #define TAIL_LINES       40      /* cc_logview_tail (or cc_log_tail) keeps this many lines; the wrap keeps what fits */
-#define LOGS_CAP         (512 * 1024)   /* `claude logs` since its latest clear: PSRAM, only while a log job runs */
+#define LOGS_CAP         CC_LOGS_TAIL_BYTES   /* 512 KB: `claude logs` since its latest clear; PSRAM, only during a log job */
 #define LOG_TEXT_CAP     4096
 #define WRAP_CAP         4096
 #define STATUS_CAP       512
@@ -372,7 +372,11 @@ static void run_job(const job_t *j)
         char *raw = heap_caps_malloc(LOGS_CAP, MALLOC_CAP_SPIRAM), *view = heap_caps_malloc(LOG_TEXT_CAP, MALLOC_CAP_SPIRAM);
         const char *src = msg;
         static int last_view = 1;   /* the last cc_logview_tail result logged: one line per change, never text */
-        if (!raw || !view) ESP_LOGW(TAG, "logs: no PSRAM for %u + %u bytes", (unsigned)LOGS_CAP, (unsigned)LOG_TEXT_CAP);
+        static bool no_psram;        /* the same for the buffers: logged when they start failing, not every job */
+        if ((!raw || !view) != no_psram) {
+            no_psram = !raw || !view;
+            if (no_psram) ESP_LOGW(TAG, "logs: no PSRAM for %u + %u bytes", (unsigned)LOGS_CAP, (unsigned)LOG_TEXT_CAP);
+        }
         if (raw && view && cc_cmd_logs(claude, j->id, cmd, sizeof(cmd))) {
             /* the bytes since the stream's latest full clear: what its screen needs (cc_logview.h) */
             esp_err_t e = cc_link_exec_screen(cmd, raw, LOGS_CAP, &status, msg, sizeof(msg), 10000);

@@ -94,9 +94,17 @@ bool cc_cmd_logs(const char *claude, const char *id, char *out, size_t cap)
 {
     size_t n;
     if (!out || !cc_path_valid(claude) || !cc_id_valid(id)) return false;
-    /* the whole stream: the output pane renders it from its latest full clear on (cc_logview.h), and it has no line
-       structure to cut by (a `| tail -n 40` it once had kept everything only because the stream has no LFs) */
-    return put(out, cap, &n, "%s logs %s", claude, id);
+    /* The stream's last CC_LOGS_TAIL_BYTES bytes, cut on the Host: the device never takes more than a long stream's
+       tail across the link (a whole one could pass the 10 s exec timeout, which drops the link). The pane renders
+       from the latest full clear inside them (cc_logview.h). The device's buffer holds one byte fewer, so a stream
+       this long always loses its first byte there: the ring's `dropped` is then exact, set unless a clear lies
+       inside. The pipe's status is tail's, 0 also for a stopped session (`claude logs` itself exits 1 there), so the
+       pane says "No output yet" for it, as before. (The `| tail -n 40` it once had cut nothing: no LFs.) */
+#define STR_(x) #x
+#define STR(x) STR_(x)
+    return put(out, cap, &n, "%s logs %s | tail -c " STR(CC_LOGS_TAIL_BYTES), claude, id);
+#undef STR
+#undef STR_
 }
 
 /* Voice (spec §7.1, §7.2). Paths pass cc_path_valid, so the unquoted W=/M= assignments are safe;

@@ -125,7 +125,13 @@ go into one: the Claude path and session ids. The link never opens a shell.
   on, 15 s with it off), prints the output only when it changes, sends a heartbeat when quiet, and
   exits on stdin EOF, after 60 s without the Tab5's keepalive, or after 30 minutes. If the loop
   can't start, the link falls back to plain polls. The poll buffer is 256 KB.
-- **Previews.** `claude logs <id>`, rendered on a virtual screen from its latest full clear; the pane shows the conversation rows above the input box (`cc_logview`).
+- **Previews.** `claude logs <id> | tail -c 524288`, kept on the Tab5 from the stream's latest full clear
+  (`ESC[2J`) on and rendered on a virtual screen in PSRAM; the pane shows the conversation rows above the
+  input box or a dialog's hint, never the footer, status line or spinner (`cc_logview`). **Limit:** the bytes
+  since that clear must fit 512 KB. Claude Code clears on start, attach and resize, so a session that runs
+  long without being attached can pass it; its pane then falls back to the escape-stripped tail
+  (`cc_log_tail`), which can show footer lines. A stateful streaming replay (a vt per session fed only the new
+  bytes) would lift the limit; it isn't built.
 - **Quick answers.** A pty exec channel runs `claude attach <id>`. The text goes in as a bracketed
   paste (`cc_paste_build` drops ESC, DEL and the other control bytes), then Enter, then Ctrl+Z
   detaches. The device types only when the last `❯` line on screen is an empty input line
