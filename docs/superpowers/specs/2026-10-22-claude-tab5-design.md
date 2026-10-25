@@ -181,9 +181,9 @@ Known issues:
 - ESP-IDF **v5.5.6** at `~/esp/esp-idf` (branch `release/v5.5`). Activate with `. ~/esp/esp-idf/export.sh`.
 - esptool 5.6.0 (global). cmake, ninja and dfu-util from Homebrew.
 - The Tab5 currently runs the Clientre5 v1.0 release image (verified by digest).
-- Factory flash backup: `firmware/backups/tab5-factory-020000000001.bin` (16 MB, sha256
-  `0000000000000000000000000000000000000000000000000000000000000000`, git-ignored). Restore with
-  `esptool --port PORT write-flash 0x0 firmware/backups/tab5-factory-020000000001.bin`.
+- Factory flash backup: `firmware/backups/tab5-factory-<mac>.bin` (16 MB, its sha256 recorded
+  locally, git-ignored). Restore with
+  `esptool --port PORT write-flash 0x0 firmware/backups/tab5-factory-<mac>.bin`.
 
 ## Roadmap
 

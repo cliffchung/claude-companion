@@ -12,9 +12,9 @@ No secrets are recorded here: not the Tailscale auth key, not the Wi-Fi password
 
 | # | Check | Result | Evidence |
 |---|---|---|---|
-| 1 | Wi-Fi: the Tab5 joins the home network | PASS (after a fix) | The first boot failed in `esp_wifi_init`: esp_hosted 3.0.10 defaulted to the P4 Function-EV board and clamped the Tab5 SDIO pins. Task 4a set `CONFIG_ESP32P4_TAB5_C6_BOARD=y` and pinned esp_hosted to `==3.0.10`; SDIO came up and a scan listed networks (the scan screenshot shows neighbours' network names, so it is not kept here). The Tab5 then joined `home-wifi` and got 192.168.1.60 (`img/couch-home-after-tailnet.jpg`, `img/couch-ssh-servers.jpg`). Diagnosis: `a local review file (not kept)`. |
+| 1 | Wi-Fi: the Tab5 joins the home network | PASS (after a fix) | The first boot failed in `esp_wifi_init`: esp_hosted 3.0.10 defaulted to the P4 Function-EV board and clamped the Tab5 SDIO pins. Task 4a set `CONFIG_ESP32P4_TAB5_C6_BOARD=y` and pinned esp_hosted to `==3.0.10`; SDIO came up and a scan listed networks (the scan screenshot shows neighbours' network names, so it is not kept here). The Tab5 then joined `home-wifi` and got 192.168.1.60. Diagnosis: in a review note that is not kept in the repository. |
 | 2 | Tailnet join | PASS (after one reboot) | The first attempt sat on "Status: Connecting" with "No peers yet" and the old device name `clientre5`. After one reboot it registered on the first try as `tab5` (100.64.0.20). The Mac showed in the peer list. The auth key was typed by the user on the Tab5 and is not recorded. |
-| 3 | Server added | PASS | Server "Mac": `you@100.64.0.18:22`, key auth with the device key (`img/couch-ssh-servers.jpg`). |
+| 3 | Server added | PASS | Server "Mac": `you@100.64.0.18:22`, key auth with the device key. |
 | 4 | Device key generated and authorized | PASS | Task 4b: the Tab5 generates an ed25519 key on first use, keeps it in NVS, and `sshkey` prints the public line only. Fingerprint `SHA256:EXAMPLEDeviceKeyFingerprint0000000000000000` (same after a reboot and after flashing the fix round). With the user's approval it was added to `~/.ssh/authorized_keys` as `from="100.64.0.0/10" ssh-ed25519 ... claude-companion` by `firmware/tools/authorize_device_key.sh`. |
 | 5 | SSH key-auth connect | PASS | Connected from the Tab5 with the device key. Tailscale used a **direct WireGuard path over the LAN** (Mac at 192.168.1.50:41641), not a DERP relay. The screenshot of this screen shows the user's own tmux and Claude panes, so it is not kept; in words: the Tab5 terminal shows a live zsh/tmux session of the Mac, with the user's tmux panes and a Claude pane. |
 
@@ -28,7 +28,7 @@ No secrets are recorded here: not the Tailscale auth key, not the Wi-Fi password
 
 ## Quick answer by attach-paste (R11)
 
-Verified on the Mac with a pty (spike `a local review file (not kept)`). The
+Verified on the Mac with a pty (in a spike note that is not kept in the repository). The
 answer reached the session as exactly one user message with the exact text, in every test that used the full recipe, and the session kept running.
 
 Recipe, on a pty channel running `~/.local/bin/claude attach <id>` (120x40, `TERM=xterm-256color`):

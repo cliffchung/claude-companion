@@ -19,7 +19,7 @@ Decisions made while executing Plan 3, each with what it costs if wrong. Overrul
 - Ruling L13 (Task 1): `companion server-host <host> [fallback-ip|none]`: the fallback is optional (omitted keeps the current one, `none` clears it) and must be a private IPv4 address (10/8, 172.16/12, 192.168/16); the host is 1-127 printable characters without spaces. It writes the server entry through `server_store_update` and reconnects — costs nothing.
 - Ruling L14 (Task 1): `companion status` gains `path: <lan|tailnet ip|none> (fallback …; tailnet pin source …; Tailscale on|off)` as its last line; the brief's `cc_link_mac_path` returns `"lan <ip>"`, `"tailnet <ip>"` or `"none"` (none while not connected) — costs nothing.
 
-## Fix round 1 (review: a local review file (not kept))
+## Fix round 1 (the review note is not kept in the repository)
 
 - Ruling L15 (I1, I3, M6, M11): **a switch-off detaches the instance in one locked step and never waits.** One section under `s_ctl` sets `s_ml = NULL`, publishes the instance as `s_zombie` and sets `s_stopping`. A short-lived worker task (`ts_stop`, 6 KB internal stack, created while the old instance still holds its RAM) then runs `microlink_stop` and frees the instance once no task or reference is left.
   - **Callers:** the LVGL task and the console return at once. The UI toasts "Turning Tailscale off…", and the state text reads "Turning off".
@@ -174,7 +174,7 @@ Numbers are medians over 5 check-in boots on USB (`power checkin hibernate keep 
   - **Estimated, not measured on battery:** about 15.4 s → about 9.8 s awake.
   - Cost if wrong: a USB plug-in during the sleep, under a load the USB supply can't carry, is read as battery for 3 s. That check-in then re-hibernates instead of waking fully. It still charges asleep, and the next check-in decides again.
 
-## Task 3 fix round 1 (review: a local review file (not kept))
+## Task 3 fix round 1 (the review note is not kept in the repository)
 
 - Ruling L43 (controller, fixes I1): **the check-in battery settle is Plan 2's 10 samples again (P110); L42 is dropped.**
   - `vitals_src_seed_battery` and its call are removed. Three samples can read a USB-plugged device as battery: Plan 2's `test_usb_with_pack_supplementing` has the pack supplying USB for 9 samples in a row. The check-in would then re-hibernate instead of waking fully, which defeats PT28 I2.
@@ -193,7 +193,7 @@ Numbers are medians over 5 check-in boots on USB (`power checkin hibernate keep 
   - A check-in boot logs the experiment mask when it isn't 0, so a forgotten `exp` can't quietly slow production check-ins.
   - Cost if wrong: none.
 
-## Final review fixes (review: a local review file (not kept))
+## Final review fixes (the review note is not kept in the repository)
 
 - Ruling L47 (controller, C1): **every path that takes the link down closes SSH first, including restarts on screens the next plan deletes.**
   - **One guard.** The pure `sys/link_guard.c` (host-tested in `test_link_guard`) holds the closers: the companion link and every live SSH Terminal or take-over client. `lg_close` asks each to close and waits until all are idle, bounded at `LG_CLOSE_MS` (2 s). `lg_around` runs close → down → reopen. The down step always runs: a hung close never blocks a Wi-Fi leave, a restart or a sleep.
