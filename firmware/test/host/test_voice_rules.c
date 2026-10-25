@@ -87,6 +87,36 @@ static void test_toggle_hold_after_stop_does_not_restart(void)
     TEST_ASSERT_EQUAL(VR_KEY_START, vr_on_voice_key(&k, false, 5500));
 }
 
+/* review M7: the stop press meant for a recording the service already ended (the 30 s limit) starts nothing */
+static void test_toggle_stop_after_auto_stop_is_ignored(void)
+{
+    vr_keys_t k = {0};
+    TEST_ASSERT_EQUAL(VR_KEY_START, vr_on_voice_key(&k, false, 0));
+    vr_on_voice_ended(&k, 30000);                                       /* the limit: no longer recording */
+    TEST_ASSERT_EQUAL(VR_KEY_IGNORE, vr_on_voice_key(&k, false, 30300));   /* the user's late "stop" */
+    TEST_ASSERT_EQUAL(VR_KEY_IGNORE, vr_on_voice_key(&k, false, 30650));   /* still inside the guard */
+    TEST_ASSERT_EQUAL(VR_KEY_START, vr_on_voice_key(&k, false, 31400));    /* a deliberate press later starts */
+}
+
+static void test_toggle_ended_after_user_stop_keeps_guard(void)
+{
+    vr_keys_t k = {0};
+    vr_on_voice_key(&k, false, 0);
+    TEST_ASSERT_EQUAL(VR_KEY_STOP, vr_on_voice_key(&k, true, 3400));
+    vr_on_voice_ended(&k, 3450);                 /* the UI sees the stop take effect a moment later */
+    vr_on_voice_ended(&k, 3000);                 /* an older time never moves the guard back */
+    TEST_ASSERT_EQUAL(VR_KEY_IGNORE, vr_on_voice_key(&k, false, 4100));
+    TEST_ASSERT_EQUAL(VR_KEY_START, vr_on_voice_key(&k, false, 4300));
+}
+
+static void test_toggle_ended_before_any_key(void)
+{
+    vr_keys_t k = {0};
+    vr_on_voice_ended(&k, 1000);                 /* a console recording ended while Sessions watched */
+    TEST_ASSERT_EQUAL(VR_KEY_IGNORE, vr_on_voice_key(&k, false, 1200));
+    TEST_ASSERT_EQUAL(VR_KEY_START, vr_on_voice_key(&k, false, 1800));
+}
+
 static void clean_is(const char *in, const char *want)
 {
     char buf[128];
@@ -199,6 +229,8 @@ int main(void)
     RUN_TEST(test_meter_mapping); RUN_TEST(test_heard_threshold);
     RUN_TEST(test_toggle_press_then_tap_stops); RUN_TEST(test_toggle_held_key_starts_once);
     RUN_TEST(test_toggle_hold_after_stop_does_not_restart);
+    RUN_TEST(test_toggle_stop_after_auto_stop_is_ignored); RUN_TEST(test_toggle_ended_after_user_stop_keeps_guard);
+    RUN_TEST(test_toggle_ended_before_any_key);
     RUN_TEST(test_clean_leading_space); RUN_TEST(test_clean_tags);
     RUN_TEST(test_clean_multiline_and_controls); RUN_TEST(test_clean_keeps_utf8_and_unclosed);
     RUN_TEST(test_clean_symbols_only);

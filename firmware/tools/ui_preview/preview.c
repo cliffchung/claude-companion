@@ -1172,6 +1172,21 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         if (strcmp(field_text(s), "q") || s_paste_calls) { printf("check %s: FAIL draft \"%s\", %d pastes\n", name, field_text(s), s_paste_calls); return 1; }
         return r;
     }
+    if (!strcmp(v, "voice-auto-stop")) {
+        /* review M7: the check fails 0.4 s in and the service ends the recording; the user's stop press, just after,
+           starts nothing. A press past the guard does start. */
+        key_of(0, k0);
+        pv_record(d, 400, 50);
+        pv_voice_post(k0, VR_OUT_NO_WHISPER, "", false); step(d, 100);
+        int starts = s_voice_start_calls;
+        assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
+        if (s_voice_start_calls != starts || s_pv_voice.phase != VOICE_IDLE) { printf("check %s: FAIL the late stop press started a recording\n", name); return 1; }
+        step(d, 400); step(d, 400);
+        assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
+        if (s_voice_start_calls != starts + 1) { printf("check %s: FAIL a press past the guard didn't start\n", name); return 1; }
+        voice_cancel(); step(d, 400);
+        return pv_run_checks(d, s, name, true, 0);
+    }
     if (!strcmp(v, "voice-done")) {
         /* record for the first session; while transcribing, select the second by touch and re-sort the list */
         char first[96]; snprintf(first, sizeof(first), "%s", s_preview_sessions[0].name);

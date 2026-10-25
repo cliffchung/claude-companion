@@ -35,6 +35,9 @@ bool vr_heard(int loudest_block_dbfs);           /* loudest >= VR_SILENCE_DBFS *
 typedef enum { VR_KEY_START, VR_KEY_STOP, VR_KEY_IGNORE } vr_key_t;
 typedef struct { int64_t last_ev_ms, last_toggle_ms; bool seen; } vr_keys_t;   /* zero-init */
 vr_key_t vr_on_voice_key(vr_keys_t *k, bool recording, int64_t now_ms);
+/* A recording ended without a key: the 30 s limit, a failed check, a cancel. Starts the toggle guard there, so the
+   stop press the user meant for it, arriving just after, is ignored instead of starting a new recording. */
+void vr_on_voice_ended(vr_keys_t *k, int64_t now_ms);
 
 size_t vr_clean_transcript(char *s);             /* in place, spec 9.3; returns the new length */
 

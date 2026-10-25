@@ -72,6 +72,12 @@ vr_key_t vr_on_voice_key(vr_keys_t *k, bool recording, int64_t now_ms)
     return recording ? VR_KEY_STOP : VR_KEY_START;
 }
 
+void vr_on_voice_ended(vr_keys_t *k, int64_t now_ms)
+{
+    k->seen = true;
+    if (now_ms > k->last_toggle_ms) k->last_toggle_ms = now_ms;
+}
+
 /* The code point of the UTF-8 sequence at p (lead byte c >= 0xC0), or 0 for a malformed one. */
 static uint32_t utf8_cp(const unsigned char *p)
 {

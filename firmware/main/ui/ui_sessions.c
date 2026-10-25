@@ -1043,8 +1043,15 @@ static bool voice_recording(const voice_status_t *v) { return v->phase == VOICE_
    still waits for the Host. A Ctrl+Space then gets VR_OUT_BUSY from voice_start ("Still transcribing…"). */
 static void voice_get(voice_status_t *v)
 {
+    static bool was_rec;
     voice_status(v);
     if (v->cancelled) v->phase = VOICE_IDLE;
+    /* Review M7: a recording that ended without the user's key (the 30 s limit, a failed check) starts the toggle
+       guard, so the stop press they meant for it starts nothing. A user's stop or Esc passes here too: the guard
+       then runs a moment longer, which is harmless. */
+    bool rec = voice_recording(v);
+    if (was_rec && !rec) vr_on_voice_ended(&s_vkeys, mono_ms());
+    was_rec = rec;
 }
 
 /* Recording or transcribing (not cancelled): Enter, Send, Open and a tap on the selected row do nothing (review M1).
