@@ -53,10 +53,13 @@ void sysinfo_start_sntp(void) {}
 static bool s_rc_preview;   /* sessions reconnecting: woken from Radio off, Wi-Fi and the link not back yet */
 static bool s_stale_preview;   /* sessions stale: woken from Off, no poll result newer than the wake */
 static const char *env_str(const char *n, const char *d) { const char *e = getenv(n); return e && *e ? e : d; }
-/* PREVIEW_WIFI=0: no Wi-Fi. PREVIEW_HOST=0: no Host set. PREVIEW_FAIL=notfound: the Host's name doesn't resolve. */
+/* PREVIEW_WIFI=0: no Wi-Fi. PREVIEW_HOST=0: no Host set. PREVIEW_FAIL=notfound: the Host's name doesn't resolve.
+   PREVIEW_FAIL=newkey: first run, the Host presented a key nothing pins (until Trust this key pins it). */
 static bool pv_wifi(void) { return env_int("PREVIEW_WIFI", 1) != 0 && !s_rc_preview; }
 static bool pv_host(void) { return env_int("PREVIEW_HOST", 1) != 0; }
 static bool pv_notfound(void) { return !strcmp(env_str("PREVIEW_FAIL", ""), "notfound"); }
+static bool s_pv_trusted;   /* newkey: Trust this key ran */
+static bool pv_newkey(void) { return !strcmp(env_str("PREVIEW_FAIL", ""), "newkey") && !s_pv_trusted; }
 bool wifi_mgr_is_connected(void) { return pv_wifi(); }
 bool wifi_mgr_is_connecting(void) { return s_rc_preview; }
 void wifi_mgr_get_ip4(char *b, size_t n) { snprintf(b,n,"192.168.1.25"); }
@@ -371,15 +374,17 @@ bool cc_link_busy(void) { return false; }
 void cc_link_watch_enable(bool on) { (void)on; }
 void cc_link_watch_test_fallback(void) {}
 const char *cc_watch_status_text(char *b, size_t cap) { snprintf(b, cap, "watch: on I=3s, last block 4s ago, heartbeat 12s ago"); return b; }
-bool cc_link_connected(void) { return pv_wifi() && pv_host() && !pv_notfound(); }
+bool cc_link_connected(void) { return pv_wifi() && pv_host() && !pv_notfound() && !pv_newkey(); }
+#define PREVIEW_NEW_FP "SHA256:NewPreviewHostKeyOnly0123456789abcdefghijk"
 /* the device's own wording (cc_link.c), so the banner's cut is tested */
 const char *cc_link_status_text(char *b, size_t cap) {
     if (!pv_host()) snprintf(b, cap, "no Host set up");
     else if (pv_notfound()) snprintf(b, cap, "Host not found at studio-host.local (set its fallback address in Settings \xe2\x80\xba Host) (retry in 12s)");
+    else if (pv_newkey()) snprintf(b, cap, "new host key %s for 192.168.77.20; check and trust it in Settings \xe2\x80\xba Host (retry in 30s)", PREVIEW_NEW_FP);
     else snprintf(b, cap, cc_link_connected() ? "connected studio-host" : "connecting to studio-host");
     return b;
 }
-cc_link_fail_t cc_link_failure(void) { return pv_notfound() ? CC_LINK_FAIL_NOT_FOUND : CC_LINK_FAIL_NONE; }
+cc_link_fail_t cc_link_failure(void) { return pv_notfound() ? CC_LINK_FAIL_NOT_FOUND : pv_newkey() ? CC_LINK_FAIL_HOSTKEY : CC_LINK_FAIL_NONE; }
 bool cc_link_mac_address(char *o, size_t cap) { snprintf(o, cap, "100.101.102.103"); return true; }
 bool cc_link_mac_path(char *o, size_t cap) { snprintf(o, cap, "lan 192.168.77.20"); return true; }
 bool cc_link_set_lan_fallback(const char *ip) { (void)ip; return true; }
@@ -423,8 +428,30 @@ esp_err_t cc_link_forget_host_key(char *fp, size_t cap, int ms) {
     snprintf(fp, cap, PREVIEW_FP);
     return ESP_OK;
 }
-uint32_t cc_link_forget_done(char *fp, size_t cap) { snprintf(fp, cap, PREVIEW_FP); return (uint32_t)s_forget_calls; }
-bool cc_link_pinned_fingerprint(char *fp, size_t cap) { snprintf(fp, cap, "SHA256:OldPreviewKeyOnly9876543210zyxwvutsrqponm"); return true; }
+static int s_trust_calls;
+static char s_trust_fp[80];
+esp_err_t cc_link_trust_host_key(const char *want, char *fp, size_t cap, int ms) {
+    (void)ms; s_trust_calls++;
+    snprintf(s_trust_fp, sizeof(s_trust_fp), "%s", want);
+    s_pv_trusted = true;   /* the link met the confirmed key and pinned it */
+    snprintf(fp, cap, "%s", want);
+    return ESP_OK;
+}
+#define PREVIEW_OTHER_FP "SHA256:OtherPreviewHostKeyOnly9876543210zyxwvutsr"
+static bool s_pv_other_key;   /* newkey: the Host now presents another unknown key (fix round 1, C1) */
+bool cc_link_unknown_host_key(char *fp, size_t cap) {
+    snprintf(fp, cap, "%s", pv_newkey() ? (s_pv_other_key ? PREVIEW_OTHER_FP : PREVIEW_NEW_FP) : "");
+    return pv_newkey();
+}
+uint32_t cc_link_forget_done(char *fp, size_t cap) {
+    snprintf(fp, cap, "%s", s_trust_calls ? s_trust_fp : PREVIEW_FP);
+    return (uint32_t)(s_forget_calls + s_trust_calls);
+}
+bool cc_link_pinned_fingerprint(char *fp, size_t cap) {
+    if (pv_newkey()) { if (cap) fp[0] = 0; return false; }   /* first run: no key pinned yet */
+    snprintf(fp, cap, "%s", s_pv_trusted ? PREVIEW_NEW_FP : "SHA256:OldPreviewKeyOnly9876543210zyxwvutsrqponm");
+    return true;
+}
 esp_err_t cc_link_debug_corrupt_host_key(char *h, size_t cap) { if (cap) h[0] = 0; return ESP_OK; }
 static int snapshot(lv_obj_t *s, const char *path) {
     int w=lv_obj_get_width(s), h=lv_obj_get_height(s);
@@ -492,6 +519,8 @@ static void keyboard_test_cb(lv_event_t *e) {
 }
 static void keyboard_confirmed(bool yes, void *ud) { keyboard_answer=yes ? 1 : -1; }
 static int keyboard_pick=-2;
+static char *s_prompt_got; static int s_prompt_calls;
+static void keyboard_prompted(const char *t, void *ud) { (void)ud; s_prompt_calls++; free(s_prompt_got); s_prompt_got = t ? strdup(t) : NULL; }
 static void keyboard_picked(int index, void *ud) { (void)ud; keyboard_pick=index; }
 static bool press_key(special_key_t key, uint8_t mods, bool terminal) {
     key_event_t ev={.type=KEY_EV_SPECIAL,.key=key,.mods=mods};
@@ -570,6 +599,16 @@ static void keyboard_check(void) {
     /* T10-8 stays: a confirm's first control is Cancel, so Enter alone cancels */
     keyboard_answer=0; ui_confirm_ex("test",NULL,"Go",false,keyboard_confirmed,NULL);
     press_key(SK_ENTER,0,false); assert(keyboard_answer==-1);
+    /* polish 1: Enter in a prompt's one-line field presses OK. The router leaves a textarea's keys to the keyboard
+       sink (input/keyboard.c, not built here), whose Enter sends a one-line field READY: that step is done by hand */
+    s_prompt_got = NULL; s_prompt_calls = 0;
+    ui_prompt("prompt","","~/bin/claude",false,keyboard_prompted,NULL);
+    press_key(SK_TAB,0,false);
+    lv_obj_t *pta=keyboard_lvgl_focused();
+    assert(pta && lv_textarea_get_one_line(pta));
+    assert(!press_key(SK_ENTER,0,false));                      /* the router passes Enter on */
+    lv_obj_send_event(pta,LV_EVENT_READY,NULL);                /* the sink's one-line Enter */
+    assert(s_prompt_calls==1 && s_prompt_got && !strcmp(s_prompt_got,"~/bin/claude") && !ui_keyboard_owns_input());
     puts("Keyboard navigation, slider persistence, modal isolation, mixed input, switches, deletion, sheet focus and SSH routing checks passed.");
 }
 
@@ -937,6 +976,7 @@ static int sessions_case(lv_display_t *d, const char *v) {
     if (!strcmp(v, "no-wifi")) setenv("PREVIEW_WIFI", "0", 1);
     if (!strcmp(v, "no-host")) setenv("PREVIEW_HOST", "0", 1);
     if (!strcmp(v, "not-found")) setenv("PREVIEW_FAIL", "notfound", 1);
+    if (!strcmp(v, "new-key")) setenv("PREVIEW_FAIL", "newkey", 1);
     if (!strcmp(v, "low-battery")) setenv("PREVIEW_BAT", "14", 1);
     if (!strcmp(v, "reconnecting")) s_rc_preview = true;
     if (!strcmp(v, "stale")) s_stale_preview = true;
@@ -981,6 +1021,16 @@ static int sessions_case(lv_display_t *d, const char *v) {
         if (pv_bar_hits_clear(s, row0, why, sizeof(why))) { printf("check %s: FAIL bar hits: %s\n", name, why); return 1; }
     } else if (!strcmp(v, "not-found")) {
         assert(find_label(s, "Host not found at studio-host.local", false) && find_clickable(s, "Host settings"));
+    } else if (!strcmp(v, "new-key")) {
+        /* polish 1: the banner points at Settings › Host, where the key can be trusted; its chip goes there */
+        const char *want = "The Host has a new host key. Check and trust it in Settings \xe2\x80\xba Host.";
+        if (!find_label(s, want, false) || !find_clickable(s, "Host settings")) { printf("check %s: FAIL the new-key banner\n", name); return 1; }
+        lv_obj_send_event(find_clickable(s, "Host settings"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (!ui_nav_is_top(ui_settings_create) || !find_clickable(lv_screen_active(), "Trust this key")) {
+            printf("check %s: FAIL Host settings doesn't reach Trust this key\n", name); return 1;
+        }
+        ui_nav_back(); step(d, 400);
+        s = lv_screen_active();
     } else if (!strcmp(v, "no-host")) {
         lv_obj_t *b = find_clickable(s, "Set up Host");
         assert(b && obj_shown(b));
@@ -1667,6 +1717,7 @@ static int settings_case(lv_display_t *d, int section) {
     if (click[0]) snprintf(name, sizeof(name), "settings-%d-%s", section, sl);
     else if (!pv_host()) snprintf(name, sizeof(name), "settings-%d-no-host", section);
     else if (pv_notfound()) snprintf(name, sizeof(name), "settings-%d-not-found", section);
+    else if (pv_newkey()) snprintf(name, sizeof(name), "settings-%d-new-key", section);
     else if (scroll) snprintf(name, sizeof(name), "settings-%d-scroll-%d", section, scroll);
     else snprintf(name, sizeof(name), "settings-%d", section);
     if (env_int("PREVIEW_TS", 2) != 2) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-ts%d", env_int("PREVIEW_TS", 2));
@@ -1718,6 +1769,60 @@ static int settings_case(lv_display_t *d, int section) {
         assert(ok && s_forget_calls == 0);
         lv_obj_send_event(ok, LV_EVENT_CLICKED, NULL); step(d,200);
         if (s_forget_calls != 1) { printf("check %s: FAIL forget called %d times\n", name, s_forget_calls); r = 1; }
+        lv_obj_clean(top);
+        return r;
+    } else if (section == UI_SET_HOST && !strcmp(click, "Trust this key")) {
+        /* polish 1: the confirm shows the key again and the command that prints the Host's own; only then is it trusted */
+        assert(find_label(top, "Trust this key?", false));
+        lv_obj_t *body = find_label_has(top, PREVIEW_NEW_FP, 0);
+        if (!body || !strstr(lv_label_get_text(body), "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub") ||
+            !strstr(lv_label_get_text(body), "Trust it only if they match")) {
+            printf("check %s: FAIL the confirm doesn't show the key and how to check it\n", name); return 1;
+        }
+        if (s_trust_calls || s_forget_calls) { printf("check %s: FAIL trusted before the confirm\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);   /* the confirm: the wrapped fingerprint fits, every button's hit */
+        lv_obj_t *cancel = find_clickable_shown(top, "Cancel");
+        assert(cancel);
+        lv_obj_send_event(cancel, LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (s_trust_calls) { printf("check %s: FAIL Cancel trusted the key\n", name); return 1; }
+        /* fix round 1, C1: the confirm trusts its own copy. The Host presents key B and the panel refills while the
+           confirm (still reading A) is open: Trust trusts nothing, says so, and the panel shows B */
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Trust this key"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        s_pv_other_key = true;
+        ui_settings_refill(); step(d, 100);
+        if (!find_label_has(top, PREVIEW_NEW_FP, 0) || !find_label(settings_panel(s), PREVIEW_OTHER_FP, false)) {
+            printf("check %s: FAIL the refill under the confirm\n", name); return 1;
+        }
+        lv_obj_send_event(find_clickable_shown(top, "Trust"), LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 200);
+        if (s_trust_calls || !find_label(top, "Not trusted: the Host now presents a different key. Check it again.", false)) {
+            printf("check %s: FAIL a refill changed what the confirm trusts (%d calls, \"%s\")\n", name, s_trust_calls, s_trust_fp); return 1;
+        }
+        lv_obj_clean(top);
+        /* the same key after a refill under the confirm: A is trusted, exactly the copy the confirm showed. The
+           keyboard focus is on the Trust row (M7: after the pin it must not land on Forget) */
+        s_pv_other_key = false;
+        ui_settings_refill(); step(d, 100);
+        lv_obj_t *trow = find_clickable_shown(settings_panel(s), "Trust this key");
+        assert(trow && ui_keyboard_focus_in(trow, 0));
+        lv_obj_send_event(trow, LV_EVENT_CLICKED, NULL); step(d, 200);
+        ui_settings_refill(); step(d, 100);
+        lv_obj_t *ok = find_clickable_shown(top, "Trust");
+        assert(ok);
+        lv_obj_send_event(ok, LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 200);
+        if (s_trust_calls != 1 || strcmp(s_trust_fp, PREVIEW_NEW_FP) || s_forget_calls) {
+            printf("check %s: FAIL trust called %d times with \"%s\" (forget %d)\n", name, s_trust_calls, s_trust_fp, s_forget_calls); return 1;
+        }
+        /* pinned: the toast names the key, and the panel shows it pinned, with Forget */
+        panel = settings_panel(s);
+        if (!find_label_has(top, "New host key pinned: " PREVIEW_NEW_FP, 0) || !find_label(panel, PREVIEW_NEW_FP, false) ||
+            find_clickable_shown(panel, "Trust this key") || !find_clickable_shown(panel, "Forget")) {
+            printf("check %s: FAIL after the trust: no toast, or the panel didn't follow\n", name); return 1;
+        }
+        lv_obj_t *fz = ui_keyboard_focused(), *fg = find_clickable_shown(panel, "Forget");
+        for (lv_obj_t *o = fz; o; o = lv_obj_get_parent(o))
+            if (o == fg) { printf("check %s: FAIL the focus landed on Forget after the trust (M7)\n", name); return 1; }
+        if (!fz || fz != row_labeled(panel, "Host")) { printf("check %s: FAIL the focus after the trust isn't the panel's first control\n", name); return 1; }
+        printf("%s: the confirm shows the key and ssh-keygen; Cancel trusts nothing; a key changed under the confirm is refused; Trust pins the confirmed key once; focus off Forget\n", name);
         lv_obj_clean(top);
         return r;
     } else if (section == UI_SET_ABOUT && !strcmp(click, "Reset settings")) {
@@ -1777,6 +1882,21 @@ static int settings_case(lv_display_t *d, int section) {
         lv_obj_send_event(lv_obj_get_child(sheet, 2), LV_EVENT_CLICKED, NULL); step(d, 200);
         if (lv_obj_get_scroll_y(settings_panel(s)) != y) { printf("check %s: FAIL the panel scrolled %d -> %d on a change\n", name, (int)y, (int)lv_obj_get_scroll_y(settings_panel(s))); return 1; }
         panel = settings_panel(s);
+    } else if (section == UI_SET_HOST && !click[0] && pv_newkey()) {
+        /* polish 1: first run, no key pinned: the key the Host presented, with Trust this key; never pinned by itself */
+        const char *bad = !find_label(panel, "The key the Host presented. It isn't trusted until you check it on the Host and trust it.", false) ? "no note"
+                        : !find_label(panel, PREVIEW_NEW_FP, false) ? "no fingerprint"
+                        : !find_clickable_shown(panel, "Trust this key") ? "no Trust this key"
+                        : find_label(panel, "No key pinned yet", false) ? "\"No key pinned yet\""
+                        : find_clickable_shown(panel, "Forget") ? "a Forget" : NULL;
+        if (bad) {
+            printf("check %s: FAIL the Host key section: %s\n", name, bad);
+            return 1;
+        }
+        lv_obj_t *fp = find_label(panel, PREVIEW_NEW_FP, false);
+        if (lv_obj_get_style_text_font(fp, 0) != FONT_MONO) { printf("check %s: FAIL the fingerprint isn't mono\n", name); return 1; }
+        if (!find_label(panel, "The Host has a new host key. Check and trust it in Settings \xe2\x80\xba Host.", false)) { printf("check %s: FAIL the Link row\n", name); return 1; }
+        if (s_trust_calls || s_forget_calls) { printf("check %s: FAIL trusted without a confirm\n", name); return 1; }
     } else if (section == UI_SET_HOST && !click[0] && (!pv_host() || pv_notfound())) {
         /* U11 and the frozen countdown (T7 review I2): the Link row says Host, never Mac, and no "(retry in Ns)" */
         const char *want = !pv_host() ? "No Host set up" : "Host not found at studio-host.local";
@@ -1888,7 +2008,20 @@ static int terminal_case(lv_display_t *d, const char *v) {
     if (!strcmp(v, "empty")) {
         if (host_lines(body) != 0 || !find_label(body, "+ Add host", false)) { printf("check %s: FAIL rows\n", name); return 1; }
         assert(lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN));
-        return pv_run_checks(d, s, name, false, 0);
+        r |= pv_run_checks(d, s, name, false, 0);
+        /* T13-4: the first Down lands on "+ Add host", never the header's "← Sessions" */
+        lv_obj_t *add = find_clickable_shown(body, "+ Add host"), *back = find_clickable_shown(s, "\xe2\x86\x90 Sessions");
+        press_key(SK_DOWN, 0, false); step(d, 50);
+        if (!lv_obj_has_state(add, LV_STATE_FOCUS_KEY) || lv_obj_has_state(back, LV_STATE_FOCUS_KEY)) {
+            printf("check %s: FAIL the first Down didn't land on + Add host\n", name); return 1;
+        }
+        press_key(SK_ENTER, 0, false); step(d, 200);
+        if (!ui_nav_is_top(ui_hosts_create) || !find_label(top, "Add host", false)) {
+            printf("check %s: FAIL Down, Enter didn't open the add sheet\n", name); return 1;
+        }
+        lv_obj_clean(top);
+        printf("%s: the first Down lands on + Add host; Enter opens the add sheet\n", name);
+        return r;
     }
     if (!strcmp(v, "keys")) {
         assert(!preview_have_sink);
@@ -2264,6 +2397,59 @@ static int keyboard_settings_case(lv_display_t *d) {
     return r;
 }
 
+/* T13-3: a rebuild of Settings › Network (the Tailscale switch's refill, an event's) or of Peers keeps the keyboard
+   focus on its row, found again by its label, so a bare Enter never falls to "← Sessions". */
+static bool focused_in(lv_obj_t *row) { lv_obj_t *f = ui_keyboard_focused(); while (f && f != row) f = lv_obj_get_parent(f); return f != NULL; }
+static int network_focus_case(lv_display_t *d) {
+    const char *name = "network-focus";
+    g_settings.ts_enable = 0;
+    preview_sessions_load();
+    ui_nav_home(); step(d, 200);
+    ui_settings_open(UI_SET_NETWORK); step(d, 200);
+    lv_obj_t *s = lv_screen_active(), *back = find_clickable_shown(s, "\xe2\x86\x90 Sessions");
+    lv_obj_t *sw = row_labeled(settings_panel(s), "Tailscale");   /* the row is the switch's control */
+    int n = 0;
+    while (!lv_obj_has_state(sw, LV_STATE_FOCUS_KEY) && n < 30) { press_key(SK_DOWN, 0, false); step(d, 50); n++; }
+    if (!lv_obj_has_state(sw, LV_STATE_FOCUS_KEY)) { printf("check %s: FAIL the switch never focused\n", name); return 1; }
+    press_key(SK_ENTER, 0, false); step(d, 200);   /* on: saved, toasted and the panel refilled */
+    lv_obj_t *panel = settings_panel(s);
+    lv_obj_t *sw2 = row_labeled(panel, "Tailscale");
+    if (!g_settings.ts_enable) { printf("check %s: FAIL the switch didn't turn on\n", name); return 1; }
+    if (ui_keyboard_focused() != sw2 || !lv_obj_has_state(sw2, LV_STATE_FOCUS_KEY) || lv_obj_has_state(back, LV_STATE_FOCUS_KEY)) {
+        printf("check %s: FAIL the focus after the switch's refill is not on the switch\n", name); return 1;
+    }
+    /* a refill as an event makes it: the focused row (Device name) is found again by its label */
+    while (!focused_in(row_labeled(panel, "Device name")) && n < 60) { press_key(SK_DOWN, 0, false); step(d, 50); n++; }
+    assert(focused_in(row_labeled(panel, "Device name")));
+    ui_settings_refill(); step(d, 100);
+    panel = settings_panel(s);
+    if (!focused_in(row_labeled(panel, "Device name"))) { printf("check %s: FAIL a refill lost the Device name row's focus\n", name); return 1; }
+    /* and a bare Enter acts on that row, never "← Sessions" */
+    press_key(SK_ENTER, 0, false); step(d, 200);
+    if (!ui_nav_is_top(ui_settings_create) || !find_shown(lv_layer_top(), &lv_textarea_class)) {
+        printf("check %s: FAIL Enter after the refill didn't open Device name\n", name); return 1;
+    }
+    press_key(SK_ESC, 0, false); step(d, 200);
+    int r = pv_run_checks(d, s, name, false, 0);
+    /* Peers: a Tailscale event rebuilds the list; the focused peer keeps the focus */
+    ui_nav_push(ui_settings_sub_create, (void *)(intptr_t)UI_NET_SUB_PEERS); step(d, 200);
+    lv_obj_t *ps = lv_screen_active(), *body = lv_obj_get_child(ps, 1);
+    lv_obj_t *pb = lv_obj_get_parent(find_label(body, "preview-host-b", false));
+    while (pb && lv_obj_get_parent(pb) != body) pb = lv_obj_get_parent(pb);
+    int m = 0;
+    while (!focused_in(pb) && m < 20) { press_key(SK_DOWN, 0, false); step(d, 50); m++; }
+    if (!focused_in(pb)) { printf("check %s: FAIL preview-host-b never focused\n", name); return 1; }
+    assert(s_ts_cb);
+    s_ts_cb(s_ts_cb_user); step(d, 200);
+    lv_obj_t *pb2 = lv_obj_get_parent(find_label(body, "preview-host-b", false));
+    while (pb2 && lv_obj_get_parent(pb2) != body) pb2 = lv_obj_get_parent(pb2);
+    if (!focused_in(pb2)) { printf("check %s: FAIL a Tailscale event lost the peer's focus\n", name); return 1; }
+    if (lv_obj_has_state(find_clickable_shown(ps, "\xe2\x86\x90 Settings"), LV_STATE_FOCUS_KEY)) { printf("check %s: FAIL focus on Back\n", name); return 1; }
+    printf("%s: the switch, Device name and a peer keep the focus across their rebuilds\n", name);
+    g_settings.ts_enable = 0;
+    return r;
+}
+
 /* ------------------------------------------------------------ take-over and SSH session (Task 10) */
 static int s_takeover_closed;
 static void takeover_closed_cb(void *ctx) { (void)ctx; s_takeover_closed++; }
@@ -2550,6 +2736,7 @@ int main(int argc,char **argv) {
     if (!strcmp(name,"settings")) return settings_case(d, argc>2 ? atoi(argv[2]) : 0);
     if (!strcmp(name,"keyboard-settings")) return keyboard_settings_case(d);
     if (!strcmp(name,"network-live")) return network_live_case(d);
+    if (!strcmp(name,"network-focus")) return network_focus_case(d);
     if (!strcmp(name,"picker-fresh")) return picker_fresh_case(d);
     if (!strcmp(name,"net-sub-open")) return net_sub_open_case(d);
     if (!strcmp(name,"terminal")) return terminal_case(d, argc>2 ? argv[2] : "");

@@ -17,6 +17,9 @@ lv_obj_t *ui_settings_create(void *arg);
 /* Rebuilds the shown section's panel in place, keeping its scroll position (after a row changed a value).
  * Does nothing while Settings isn't the current screen. */
 void ui_settings_refill(void);
+/* A Host key was pinned (a forget or a trust done): refills like ui_settings_refill, but a keyboard focus in Settings ›
+ * Host's panel goes to its first control, never the new Forget row (fix round 1, M7). */
+void ui_settings_key_pinned(void);
 
 /* ---- Settings › Network (ui_settings_net.c, spec §5.8) ---- */
 /* The Network section's rows into panel: Wi-Fi (the current network, Networks, Advanced), then Tailscale in

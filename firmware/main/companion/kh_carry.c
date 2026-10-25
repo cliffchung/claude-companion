@@ -1,4 +1,5 @@
 #include "kh_carry.h"
+#include <string.h>
 
 khc_t kh_carry_decide(bool lan_pinned, bool tailnet_pinned, bool keys_equal)
 {
@@ -17,4 +18,19 @@ kha_t kh_carry_action(kh_result_t lan, bool tailnet_addr, bool forget_pending, k
     case KHC_REFUSE:     return KHA_REFUSE_CHANGED;
     default:             return KHA_REFUSE_UNKNOWN;
     }
+}
+
+bool kh_trust_allowed(const kh_pin_t *pins, int n, bool carry_for_entry, bool same_entry, bool expired)
+{
+    if (carry_for_entry || !same_entry || expired || n < 0 || (n > 0 && !pins)) return false;
+    for (int i = 0; i < n; i++)
+        if (pins[i] != KH_PIN_NONE) return false;
+    return true;
+}
+
+bool kh_forget_applies(bool pending, const char *expect_fp, const char *met_fp)
+{
+    if (!pending) return false;
+    if (!expect_fp || !expect_fp[0]) return true;
+    return met_fp && met_fp[0] && strcmp(expect_fp, met_fp) == 0;
 }

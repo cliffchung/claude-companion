@@ -1,13 +1,29 @@
 #!/bin/sh
-# Authorize the Tab5's SSH public key on this Mac, for tailnet addresses only.
-#   sh authorize_device_key.sh "ssh-ed25519 AAAA... [comment]"
-# Appends   from="100.64.0.0/10" <type> <base64> claude-companion
+# Authorize the Tab5's SSH public key on this Host.
+#   sh authorize_device_key.sh [--from <list>] "ssh-ed25519 AAAA... [comment]"
+# Appends   [from="<list>" ]<type> <base64> claude-companion
 # to $HOME/.ssh/authorized_keys. Refuses duplicates (matched on the base64 blob).
+# --from limits where the key may sign in from: OpenSSH's comma-separated address patterns, such as
+# 192.168.1.0/24,100.64.0.0/10 (the home network, and the tailnet if you use Tailscale). Without it the line
+# has no from= restriction, and a hint says how to add one.
 set -eu
 
 die() { echo "authorize_device_key: $*" >&2; exit 1; }
 
-[ $# -eq 1 ] || die "usage: $0 \"<ssh public key line>\""
+usage="usage: $0 [--from <list>] \"<ssh public key line>\""
+from=
+if [ $# -ge 1 ] && [ "$1" = --from ]; then
+    [ $# -ge 2 ] || die "$usage"
+    from=$2
+    shift 2
+    [ -n "$from" ] || die "--from needs a list, such as 192.168.1.0/24,100.64.0.0/10"
+    # Address patterns only: nothing that could end the quoted option or add another one.
+    case $from in
+        *[!A-Za-z0-9.:/,*?!_-]*) die "--from must be a comma-separated list of addresses or networks, such as 192.168.1.0/24,100.64.0.0/10" ;;
+        ,*|*,|*,,*) die "--from has an empty entry" ;;
+    esac
+fi
+[ $# -eq 1 ] || die "$usage"
 line=$1
 NL='
 '
@@ -53,5 +69,12 @@ fi
 if [ -s "$auth" ] && [ "$(tail -c1 "$auth" | wc -l | tr -d ' ')" = 0 ]; then
     printf '\n' >> "$auth"
 fi
-printf 'from="100.64.0.0/10" %s %s claude-companion\n' "$type" "$blob" >> "$auth"
-echo "added $type key to $auth (tailnet 100.64.0.0/10 only)"
+if [ -n "$from" ]; then
+    printf 'from="%s" %s %s claude-companion\n' "$from" "$type" "$blob" >> "$auth"
+    echo "added $type key to $auth (from $from only)"
+else
+    printf '%s %s claude-companion\n' "$type" "$blob" >> "$auth"
+    echo "added $type key to $auth (from any address)"
+    echo "hint: limit where it can sign in from with --from, such as --from 192.168.1.0/24,100.64.0.0/10" >&2
+    echo "      (your home network's subnet; add 100.64.0.0/10 only if you use Tailscale)" >&2
+fi

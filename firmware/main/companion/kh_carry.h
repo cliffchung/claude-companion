@@ -32,6 +32,19 @@ typedef enum { KHA_NORMAL, KHA_PIN_NEW, KHA_PIN_SILENT, KHA_REFUSE_CHANGED, KHA_
    forget_pending: the user's forget is waiting for this connect. */
 kha_t kh_carry_action(kh_result_t lan, bool tailnet_addr, bool forget_pending, khs_t src);
 
+/* Whether the user's pending forget counts for the key this connect met (kh_carry_action's forget_pending).
+   A forget (expect_fp NULL or "": `companion hostkey forget`, Settings › Host › Forget) takes any key. A trust from
+   the screen (expect_fp: the "SHA256:..." the user confirmed against ssh-keygen -lf on the Host) takes only that
+   key: any other is refused as unknown, as if nothing were pending, and its own fingerprint is shown to check. */
+bool kh_forget_applies(bool pending, const char *expect_fp, const char *met_fp);
+
+/* Whether a trust from the screen may be asked for, or applied at a connect (fix round 1, I2): only while none of
+   the Host's n addresses has a pin (found, or unreadable: never re-pinned over), there is no carry source for the
+   entry, the trust is for the entry as it is now (same_entry: its host string unchanged, the same Host) and its
+   deadline hasn't passed. Otherwise the connect refuses an unknown or changed key as it would with no trust. */
+#define KH_TRUST_TTL_MS 120000   /* a pending trust expires after 2 minutes */
+bool kh_trust_allowed(const kh_pin_t *pins, int n, bool carry_for_entry, bool same_entry, bool expired);
+
 #ifdef __cplusplus
 }
 #endif

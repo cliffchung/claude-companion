@@ -842,12 +842,15 @@ static void sub_refill(void)
 {
     if (!s_body) return;
     int32_t y = lv_obj_get_scroll_y(s_body);
+    ui_focus_key_t k;
+    ui_focus_save(s_body, &k);   /* T13-3: a scan or a Tailscale event keeps the keyboard focus on its row */
     lv_obj_clean(s_body);
     if (s_sub == UI_NET_SUB_NETWORKS) fill_networks(s_body);
     else if (s_sub == UI_NET_SUB_ADVANCED) fill_advanced(s_body);
     else fill_peers(s_body);
     lv_obj_update_layout(s_body);
     lv_obj_scroll_to_y(s_body, y, LV_ANIM_OFF);
+    ui_focus_restore(s_body, &k);
 }
 
 static void sub_deleted(lv_event_t *e)

@@ -23,6 +23,13 @@ bool ui_keyboard_owns_input(void);
 /* A screen's footer hint ("↑↓ move · Enter choose · Esc back"): ui_core shows it while the last input was a
    key and hides it on a touch. One per screen; forgotten when the label is deleted. */
 void ui_keyboard_hint(lv_obj_t *label);
+/* The control with the keyboard focus (NULL: none), so a panel rebuilt in place can put it back on the same row
+   (T13-3). ui_keyboard_focus_index: the focused control's number among the keyboard controls in root's subtree
+   (root itself counts), -1 when the focus isn't there. ui_keyboard_focus_in focuses control number nth there and
+   returns it, or NULL when there is none (the focus is then unchanged). ui_comp's ui_focus_save/restore use them. */
+lv_obj_t *ui_keyboard_focused(void);
+int ui_keyboard_focus_index(lv_obj_t *root);
+lv_obj_t *ui_keyboard_focus_in(lv_obj_t *root, int nth);
 
 /* Screen gestures. LVGL only walks up from the touched widget while every
  * object in between has LV_OBJ_FLAG_GESTURE_BUBBLE, which is brittle across

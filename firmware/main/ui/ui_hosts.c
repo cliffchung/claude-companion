@@ -245,7 +245,10 @@ static void fill(void)
         if (s_fail.set && same_id(&s_fail.id, s)) ui_host_row_note(r, s_fail.msg, false, hint);
         s_rows[s_n++] = r;
     }
-    ui_add_row(s_body, tr(STR_HOSTS_ADD), add_cb, NULL);
+    lv_obj_t *add = ui_add_row(s_body, tr(STR_HOSTS_ADD), add_cb, NULL);
+    /* T13-4: with no host listed, the first key lands on "+ Add host", not the header's "← Sessions" (Down then
+       Enter left Terminal); with hosts it stays where it was, so a bare Enter never connects to one */
+    if (s_n == 0) lv_obj_add_flag(add, UI_KEYBOARD_FIRST);
     char note[200];
     snprintf(note, sizeof(note), "%s %s", tr(STR_HOSTS_NOT_LISTED), tr(STR_HOSTS_LEAVE_NOTE));
     ui_footnote(s_body, note);
