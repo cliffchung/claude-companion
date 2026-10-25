@@ -397,6 +397,61 @@ static void test_is_companion_server(void)
     TEST_ASSERT_FALSE(cc_is_companion_server(-1, "x", -1, NULL));
 }
 
+#define EXP_TRANSCRIBE "exec /bin/sh -c 'W=%s; M=%s; [ -x \"$W\" ] || { cat >/dev/null; exit 120; }; [ -r \"$M\" ] || { cat >/dev/null; exit 121; }; exec \"$W\" -m \"$M\" -l en -nt -np -otxt -of - -f -'"
+#define EXP_VOICE_CHECK "exec /bin/sh -c 'W=%s; M=%s; [ -x \"$W\" ] || exit 120; [ -r \"$M\" ] || exit 121; exit 0'"
+
+typedef bool (*voice_builder_t)(const char *, const char *, char *, size_t);
+
+static void voice_exact(voice_builder_t fn, const char *fmt)
+{
+    char want[512], out[512];
+    snprintf(want, sizeof(want), fmt, CC_WHISPER_DEFAULT, CC_WHISPER_MODEL_DEFAULT);
+    TEST_ASSERT_TRUE(fn(CC_WHISPER_DEFAULT, CC_WHISPER_MODEL_DEFAULT, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING(want, out);
+    /* exactly the length fits; one byte short is refused and cleared */
+    TEST_ASSERT_TRUE(fn(CC_WHISPER_DEFAULT, CC_WHISPER_MODEL_DEFAULT, out, strlen(want) + 1));
+    memset(out, 'x', sizeof(out));
+    TEST_ASSERT_FALSE(fn(CC_WHISPER_DEFAULT, CC_WHISPER_MODEL_DEFAULT, out, strlen(want)));
+    TEST_ASSERT_EQUAL_CHAR(0, out[0]);
+}
+
+static void voice_rejects(voice_builder_t fn)
+{
+    char long64[65];
+    memset(long64, 'a', 64);
+    long64[0] = '/';
+    long64[64] = 0;
+    const char *bad[] = { NULL, "", long64, "/a b", "/a'b", "/a;b", "/a$b", "/a`b", "/a\nb",
+                          "/a\"b", "/a|b", "/a&b" };
+    char out[512];
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        memset(out, 'x', sizeof(out));
+        TEST_ASSERT_FALSE_MESSAGE(fn(bad[i], CC_WHISPER_MODEL_DEFAULT, out, sizeof(out)), "whisper");
+        TEST_ASSERT_EQUAL_CHAR(0, out[0]);
+        memset(out, 'x', sizeof(out));
+        TEST_ASSERT_FALSE_MESSAGE(fn(CC_WHISPER_DEFAULT, bad[i], out, sizeof(out)), "model");
+        TEST_ASSERT_EQUAL_CHAR(0, out[0]);
+    }
+}
+
+static void test_cmd_transcribe_exact(void) { voice_exact(cc_cmd_transcribe, EXP_TRANSCRIBE); }
+static void test_cmd_voice_check_exact(void) { voice_exact(cc_cmd_voice_check, EXP_VOICE_CHECK); }
+static void test_cmd_transcribe_rejects(void) { voice_rejects(cc_cmd_transcribe); }
+static void test_cmd_voice_check_rejects(void) { voice_rejects(cc_cmd_voice_check); }
+
+static void test_cmd_transcribe_no_quote_inside(void)
+{
+    const char *paths[][2] = { { CC_WHISPER_DEFAULT, CC_WHISPER_MODEL_DEFAULT },
+                               { "/usr/bin/w-c", "~/m.bin" }, { "w", "m" } };
+    char out[512];
+    for (size_t i = 0; i < 3; i++) {
+        TEST_ASSERT_TRUE(cc_cmd_transcribe(paths[i][0], paths[i][1], out, sizeof(out)));
+        int q = 0;
+        for (const char *p = out; *p; p++) if (*p == '\'') q++;
+        TEST_ASSERT_EQUAL_INT(2, q);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -425,5 +480,10 @@ int main(void)
     RUN_TEST(test_screen_input_ready);
     RUN_TEST(test_same_host);
     RUN_TEST(test_is_companion_server);
+    RUN_TEST(test_cmd_transcribe_exact);
+    RUN_TEST(test_cmd_voice_check_exact);
+    RUN_TEST(test_cmd_transcribe_rejects);
+    RUN_TEST(test_cmd_voice_check_rejects);
+    RUN_TEST(test_cmd_transcribe_no_quote_inside);
     return UNITY_END();
 }

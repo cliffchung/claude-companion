@@ -48,6 +48,12 @@ static const char *TAG = "cc_link";
 #define PASTE_BUDGET_MS 15000
 #define MAX_SUBS        4
 #define DEFAULT_CLAUDE  "~/.local/bin/claude"
+#define STDIN_CHUNK     (16 * 1024)    /* cc_link_transcribe writes stdin in chunks this big, draining between them */
+/* ... each as ssh_channel_write calls of at most this much: the port's libssh caps a buffer at 16384 bytes
+   (BUFFER_SIZE_MAX, rounded up to a power of two), so a 16 KB data packet plus its header and MAC doesn't fit
+   ("channel_write_common: Out of memory"); 8 KB plus the packet overhead does, for any cipher. */
+#define SSH_WRITE_MAX   (8 * 1024)
+#define VOICE_CHECK_MS  10000
 
 typedef enum { LS_NO_MAC, LS_CONNECTING, LS_WAITING, LS_CONNECTED } link_state_t;
 typedef enum { REQ_EXEC, REQ_PASTE, REQ_CHECK, REQ_POLL } req_type_t;
@@ -59,7 +65,8 @@ typedef struct {
     char *out; size_t cap;      /* exec stdout */
     int *exit_status;
     char *err; size_t err_cap;
-    const char *payload; size_t payload_len;   /* paste bytes (ends with CR) */
+    const char *payload; size_t payload_len;   /* paste bytes (ends with CR); exec: written to stdin, then EOF */
+    int64_t exec_us, eof_us;    /* exec with a payload: when the exec was requested and the EOF sent (0 = not) */
     bool keep_tail;             /* exec: on overflow keep the newest bytes, not the first */
     int64_t deadline_us;
     esp_err_t result;
@@ -235,6 +242,24 @@ const char *cc_settings_claude_path(char *out, size_t cap)
     return out;
 }
 
+const char *cc_settings_whisper_path(char *out, size_t cap)
+{
+    if (!out || !cap) return "";
+    lock();
+    strlcpy(out, cc_path_valid(g_settings.whisper_path) ? g_settings.whisper_path : CC_WHISPER_DEFAULT, cap);
+    unlock();
+    return out;
+}
+
+const char *cc_settings_whisper_model(char *out, size_t cap)
+{
+    if (!out || !cap) return "";
+    lock();
+    strlcpy(out, cc_path_valid(g_settings.whisper_model) ? g_settings.whisper_model : CC_WHISPER_MODEL_DEFAULT, cap);
+    unlock();
+    return out;
+}
+
 const char *cc_settings_server_name(char *out, size_t cap)
 {
     if (!out || !cap) return "";
@@ -358,6 +383,26 @@ bool cc_link_set_claude_path(const char *path)
     unlock();
     settings_save();
     return true;
+}
+
+static bool set_voice_path(char *field, size_t cap, const char *path)
+{
+    if (!cc_path_valid(path)) return false;
+    lock();
+    strlcpy(field, path, cap);
+    unlock();
+    settings_save();
+    return true;
+}
+
+bool cc_link_set_whisper_path(const char *path)
+{
+    return set_voice_path(g_settings.whisper_path, sizeof(g_settings.whisper_path), path);
+}
+
+bool cc_link_set_whisper_model(const char *path)
+{
+    return set_voice_path(g_settings.whisper_model, sizeof(g_settings.whisper_model), path);
 }
 
 /* ---------- status ---------- */
@@ -954,14 +999,85 @@ static void read_stderr(ssh_channel ch, char *err, size_t err_cap, size_t *elen)
     }
 }
 
+/* Appends n bytes of stdout to r->out (keeping the first or, with keep_tail, the newest bytes). */
+static void exec_take(req_t *r, char *tmp, size_t k, size_t *olen, bool *truncated)
+{
+    if (!r->out || r->cap <= 1) return;
+    size_t room = r->cap - 1;
+    if (r->keep_tail && k > room) { memmove(tmp, tmp + (k - room), room); k = room; *truncated = true; }
+    if (*olen + k > room) {
+        *truncated = true;
+        if (r->keep_tail) {
+            size_t drop = *olen + k - room;
+            memmove(r->out, r->out + drop, *olen - drop);
+            *olen -= drop;
+        } else {
+            k = room - *olen;
+        }
+    }
+    memcpy(r->out + *olen, tmp, k);
+    *olen += k;
+    r->out[*olen] = 0;
+}
+
+static void watch_keepalive(void);
+
+/* Writes r->payload to the channel's stdin in STDIN_CHUNK pieces, draining stdout and stderr between them (so the
+   remote never blocks on a full pipe), then sends EOF. Stops at the deadline or a park. A write that fails is a
+   failure unless the remote has already ended its side (its pre-check exited: the exit status still comes back). */
+static void exec_write_stdin(req_t *r, ssh_channel ch, size_t *olen, size_t *elen, bool *truncated,
+                             bool *failed, bool *timed_out, bool *parked)
+{
+    char tmp[512];
+    size_t off = 0;
+    while (off < r->payload_len) {
+        if (now_us() > r->deadline_us) { *timed_out = true; return; }
+        if (s_parked) { *parked = true; return; }   /* I1 */
+        size_t end = r->payload_len - off > STDIN_CHUNK ? off + STDIN_CHUNK : r->payload_len;
+        while (off < end) {
+            size_t k = end - off > SSH_WRITE_MAX ? SSH_WRITE_MAX : end - off;
+            int w = ssh_channel_write(ch, r->payload + off, (uint32_t)k);
+            if (w == SSH_ERROR || w <= 0) {
+                if (ssh_channel_is_eof(ch) || !ssh_channel_is_open(ch)) {
+                    ESP_LOGW(TAG, "exec: the remote ended stdin after %u of %u bytes", (unsigned)off,
+                             (unsigned)r->payload_len);
+                    return;   /* no EOF to send: the read loop picks up the exit status */
+                }
+                ESP_LOGW(TAG, "exec: stdin write failed at %u of %u bytes: %s", (unsigned)off,
+                         (unsigned)r->payload_len, ssh_get_error(s_sess));
+                *failed = true;
+                return;
+            }
+            off += (size_t)w;
+        }
+        int n;
+        while ((n = ssh_channel_read_nonblocking(ch, tmp, sizeof(tmp), 0)) > 0) exec_take(r, tmp, (size_t)n, olen, truncated);
+        if (n == SSH_ERROR) {
+            ESP_LOGW(TAG, "exec: read failed during the upload: %s", ssh_get_error(s_sess));
+            *failed = true;
+            return;
+        }
+        read_stderr(ch, r->err, r->err_cap, elen);
+        watch_keepalive();
+    }
+    if (ssh_channel_send_eof(ch) != SSH_OK) {
+        ESP_LOGW(TAG, "exec: EOF failed: %s", ssh_get_error(s_sess));
+        *failed = true;
+        return;
+    }
+    r->eof_us = now_us();
+}
+
 static esp_err_t do_exec(req_t *r)
 {
     if (r->out && r->cap) r->out[0] = 0;
     if (r->err && r->err_cap) r->err[0] = 0;
     if (r->exit_status) *r->exit_status = -1;
+    r->exec_us = r->eof_us = 0;
     if (s_parked) return ESP_ERR_INVALID_STATE;   /* I1 */
     ssh_channel ch = open_channel();
     if (!ch) return ESP_ERR_INVALID_STATE;
+    r->exec_us = now_us();
     if (ssh_channel_request_exec(ch, r->cmd) != SSH_OK) {
         ESP_LOGW(TAG, "exec request failed: %s", ssh_get_error(s_sess));
         close_channel(ch);
@@ -971,33 +1087,18 @@ static esp_err_t do_exec(req_t *r)
     size_t olen = 0, elen = 0;
     bool truncated = false, failed = false, timed_out = false, parked = false;
     char tmp[512];
-    for (;;) {
+    if (r->payload && r->payload_len > 0)
+        exec_write_stdin(r, ch, &olen, &elen, &truncated, &failed, &timed_out, &parked);
+    int64_t ka_us = now_us();
+    while (!failed && !timed_out && !parked) {
         int n = ssh_channel_read_timeout(ch, tmp, sizeof(tmp), 0, 50);
         if (n == SSH_ERROR) { failed = true; break; }
-        if (n > 0) {
-            size_t k = (size_t)n;
-            if (r->out && r->cap > 1) {
-                size_t room = r->cap - 1;
-                if (r->keep_tail && k > room) { memmove(tmp, tmp + (k - room), room); k = room; truncated = true; }
-                if (olen + k > room) {
-                    truncated = true;
-                    if (r->keep_tail) {
-                        size_t drop = olen + k - room;
-                        memmove(r->out, r->out + drop, olen - drop);
-                        olen -= drop;
-                    } else {
-                        k = room - olen;
-                    }
-                }
-                memcpy(r->out + olen, tmp, k);
-                olen += k;
-                r->out[olen] = 0;
-            }
-        }
+        if (n > 0) exec_take(r, tmp, (size_t)n, &olen, &truncated);
         read_stderr(ch, r->err, r->err_cap, &elen);
         if (n == 0 && ssh_channel_is_eof(ch)) break;
         if (now_us() > r->deadline_us) { timed_out = true; break; }
         if (s_parked) { parked = true; break; }   /* I1: the link is going down: give up now */
+        if (r->payload && now_us() - ka_us > 1000000) { watch_keepalive(); ka_us = now_us(); }
     }
     if (!failed && !timed_out && !parked && r->exit_status) {
         uint32_t code = 0;
@@ -1481,6 +1582,16 @@ static void watch_service(void)
     }
 }
 
+/* A long stdin exec (cc_link_transcribe, up to 60 s) blocks the task: keep the watch's quiet timer (3 K) from
+   ending the loop. Writes the keepalive only when due; a failed write is left for watch_service to notice. */
+static void watch_keepalive(void)
+{
+    if (!s_wch) return;
+    int64_t t = now_us();
+    if (s_w_ka_us && t - s_w_ka_us < (int64_t)CC_WATCH_KEEPALIVE_S * 1000000) return;
+    if (send_bytes(s_wch, "\n", 1)) s_w_ka_us = t;
+}
+
 /* One step of the connected loop while the watch should run (interval > 0). Returns false
    when the watch is not wanted or in fallback, so the caller polls instead. */
 static bool watch_step(int interval)
@@ -1717,6 +1828,49 @@ esp_err_t cc_link_check_live(const char *id, char *err, size_t err_cap)
     busy(1);
     esp_err_t e = submit(&r);
     busy(-1);
+    return e;
+}
+
+esp_err_t cc_link_voice_check(int *exit_status)
+{
+    int st = -1;
+    if (exit_status) *exit_status = -1;
+    char cmd[256], w[64], m[64];
+    if (!cc_cmd_voice_check(cc_settings_whisper_path(w, sizeof(w)), cc_settings_whisper_model(m, sizeof(m)), cmd, sizeof(cmd)))
+        return ESP_ERR_INVALID_ARG;
+    req_t r = { .type = REQ_EXEC, .cmd = cmd, .exit_status = &st,
+                .deadline_us = now_us() + (int64_t)VOICE_CHECK_MS * 1000 };
+    busy(1);
+    esp_err_t e = submit(&r);
+    busy(-1);
+    if (exit_status) *exit_status = st;
+    ESP_LOGI(TAG, "voice check: %s, exit %d", esp_err_to_name(e), st);
+    return e;
+}
+
+esp_err_t cc_link_transcribe(const void *wav, size_t len, char *out, size_t cap, int *exit_status,
+                             int *upload_ms, int timeout_ms)
+{
+    int st = -1;
+    if (out && cap) out[0] = 0;
+    if (exit_status) *exit_status = -1;
+    if (upload_ms) *upload_ms = -1;
+    if (!wav || !len || !out || cap < 2 || timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+    char cmd[320], w[64], m[64];
+    if (!cc_cmd_transcribe(cc_settings_whisper_path(w, sizeof(w)), cc_settings_whisper_model(m, sizeof(m)), cmd, sizeof(cmd)))
+        return ESP_ERR_INVALID_ARG;
+    int64_t t0 = now_us();
+    req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = out, .cap = cap, .exit_status = &st,
+                .payload = wav, .payload_len = len, .deadline_us = t0 + (int64_t)timeout_ms * 1000 };
+    busy(1);
+    esp_err_t e = submit(&r);
+    busy(-1);
+    if (exit_status) *exit_status = st;
+    int up = r.exec_us && r.eof_us ? (int)((r.eof_us - r.exec_us) / 1000) : -1;
+    if (upload_ms) *upload_ms = up;
+    /* lengths, durations and the exit status only: never the transcript (Plan 5 rule 3) */
+    ESP_LOGI(TAG, "transcribe: %u B up in %d ms, %d ms in all, %s, exit %d, %u B back", (unsigned)len, up,
+             (int)((now_us() - t0) / 1000), esp_err_to_name(e), st, (unsigned)strlen(out));
     return e;
 }
 

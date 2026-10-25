@@ -109,7 +109,7 @@ void cc_poll_set_rate(int seconds);
 void cc_poll_set_floor(int seconds);
 /* Counts successful results published (watch blocks and heartbeats, polls). */
 uint32_t cc_poll_generation(void);
-/* True while a paste or live check is in flight (a power hold). */
+/* True while a paste, live check, host-key forget, voice check or transcription is in flight (a power hold). */
 bool cc_link_busy(void);
 /* The long-poll watch (spec "Long poll"): one pty exec channel runs cc_cmd_watch's loop and
    replaces the fixed poll while connected; it falls back to polling when it can't start or
@@ -154,6 +154,25 @@ bool cc_link_rename_server(const char *old_name, const char *new_name);
 /* Store a new server name / Claude path and reconnect (server) as needed. */
 void cc_link_set_server(const char *name);
 bool cc_link_set_claude_path(const char *path);   /* false unless cc_path_valid */
+
+/* ---- Plan 5: voice input (spec §7) ---- */
+const char *cc_settings_whisper_path(char *out, size_t cap);    /* default CC_WHISPER_DEFAULT */
+const char *cc_settings_whisper_model(char *out, size_t cap);   /* default CC_WHISPER_MODEL_DEFAULT */
+bool cc_link_set_whisper_path(const char *path);                /* false unless cc_path_valid; saves */
+bool cc_link_set_whisper_model(const char *path);
+/* cc_cmd_voice_check on an exec channel (10 s). ESP_OK with *exit_status 0/120/121/…; ESP_ERR_INVALID_STATE when not
+   connected or parked; ESP_ERR_TIMEOUT. Blocks: never from the LVGL task. Counts as link-busy. */
+esp_err_t cc_link_voice_check(int *exit_status);
+/* cc_cmd_transcribe on a non-pty exec channel: writes wav (len bytes) to stdin in 16 KB chunks, draining stdout and
+   stderr between chunks, sends EOF, then reads stdout into out (NUL-terminated) and the exit status. *upload_ms
+   (may be NULL) is the time from the exec request to the EOF. ESP_OK; ESP_ERR_INVALID_STATE (not connected, or a
+   park mid-request); ESP_FAIL (a channel or write error: the session is dropped); ESP_ERR_TIMEOUT (timeout_ms
+   from the request's start; the session is dropped, as do_exec does); ESP_ERR_INVALID_SIZE (stdout didn't fit).
+   Counts as link-busy (a power hold) while it runs. Logs only lengths, durations and the exit status.
+   The only public way to run an exec with stdin (ruling P5-2): it builds its command itself from the settings. */
+esp_err_t cc_link_transcribe(const void *wav, size_t len, char *out, size_t cap, int *exit_status,
+                             int *upload_ms, int timeout_ms);
+#define CC_TRANSCRIBE_TIMEOUT_MS 60000
 
 /* ---- Plan 2 Task 8: Radio off ---- */
 /* Parked closes the session (the Tab5's own close: never counted toward the watch fallback) and

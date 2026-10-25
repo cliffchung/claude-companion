@@ -2,6 +2,7 @@
 #include <string.h>
 #include "ui/ui_tokens.h"
 #include "sys/power_rules.h"
+#include "companion/cc_cmd.h"
 
 uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len)
 {
@@ -42,6 +43,13 @@ uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len)
                 s->kbd_led_rgb[0] = 0x00; s->kbd_led_rgb[1] = 0x80; s->kbd_led_rgb[2] = 0xFF;
             }
         }
+        if (version < 24) {
+            /* v24 (Plan 5): the voice paths appended at the end; the old tail padding may hold anything */
+            memset(s->whisper_path, 0, sizeof(s->whisper_path));
+            memset(s->whisper_model, 0, sizeof(s->whisper_model));
+            strcpy(s->whisper_path, CC_WHISPER_DEFAULT);
+            strcpy(s->whisper_model, CC_WHISPER_MODEL_DEFAULT);
+        }
     }
     s->mac_lan_ip[sizeof(s->mac_lan_ip) - 1] = 0;
     s->mac_ts_ip[sizeof(s->mac_ts_ip) - 1] = 0;
@@ -53,6 +61,21 @@ sd_import_plan_t settings_sd_import_step(uint8_t creds_on_sd, bool checkin_boot,
     sd_import_plan_t p = { .attempt = creds_on_sd == 1 && !checkin_boot };
     p.clear = p.attempt && import_result >= 0;
     return p;
+}
+
+void settings_voice_paths_check(app_settings_t *s)
+{
+    if (!s) return;
+    s->whisper_path[sizeof(s->whisper_path) - 1] = 0;
+    s->whisper_model[sizeof(s->whisper_model) - 1] = 0;
+    if (!cc_path_valid(s->whisper_path)) {
+        memset(s->whisper_path, 0, sizeof(s->whisper_path));
+        strcpy(s->whisper_path, CC_WHISPER_DEFAULT);
+    }
+    if (!cc_path_valid(s->whisper_model)) {
+        memset(s->whisper_model, 0, sizeof(s->whisper_model));
+        strcpy(s->whisper_model, CC_WHISPER_MODEL_DEFAULT);
+    }
 }
 
 cfg_blob_t settings_blob_make(const app_settings_t *s)
@@ -87,4 +110,5 @@ void settings_reset_scope(app_settings_t *s, const app_settings_t *d)
     s->kbd_dark_light = d->kbd_dark_light;
     /* display */
     s->brightness = d->brightness;
+    /* whisper_path and whisper_model (v24) are kept: they describe the Host, like claude_path */
 }

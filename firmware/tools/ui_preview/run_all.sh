@@ -34,6 +34,9 @@ for i in 0 1 2 3 4 5; do run settings "$i"; done
 runv() { PV_ENV="$1"; shift; run "$@"; PV_ENV=; }
 runv "PREVIEW_CLICK=Public key" settings 0
 runv "PREVIEW_CLICK=Forget" settings 0
+runv "PREVIEW_CLICK=Voice input" settings 0
+PV_ENV="PREVIEW_VOICE_RC=121"; PV_ENV2="PREVIEW_CLICK=Voice input"; run settings 0; PV_ENV=; PV_ENV2=
+runv "PREVIEW_CLICK=Whisper model on Host" settings 0
 runv "PREVIEW_CLICK=Reset settings" settings 5
 runv "PREVIEW_CLICK=Diagnostics" settings 5
 runv "PREVIEW_CLICK=Reboot" settings 5
@@ -61,7 +64,8 @@ run net-sub-open
 runv "PREVIEW_HOST=0" settings-sub networks   # join a saved network with no Host set (the device gate's no-Host leg)
 run keyboard-settings
 for v in live selected-needs-you working loading stale reconnecting no-wifi not-found no-host empty \
-         interactive sent low-battery 16 long resort tap-resort resort-scroll keys idle forget new-key; do run sessions "$v"; done
+         interactive sent low-battery 16 long resort tap-resort resort-scroll keys idle forget new-key \
+         voice-rec voice-rec-limit voice-busy voice-cancel-busy voice-auto-stop voice-done voice-gone voice-error voice-nofield; do run sessions "$v"; done
 run ctrlk
 run keyboard
 run gesture

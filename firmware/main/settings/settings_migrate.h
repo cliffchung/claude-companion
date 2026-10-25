@@ -9,9 +9,9 @@ extern "C" {
 #endif
 
 #define CFG_MAGIC   0x54414235u
-/* 21 is Plan 3's. 22 is reserved for Plan 2's Task 10; if it lands later it takes 24. Each step is keyed
-   "old version < N", so the order the plans land in doesn't matter. */
-#define CFG_VERSION 23
+/* 21 is Plan 3's, 23 Plan 4's, 24 Plan 5's. 22 is reserved for Plan 2's Task 10; if it lands later it takes 25.
+   Each step is keyed "old version < N", so the order the plans land in doesn't matter. */
+#define CFG_VERSION 24
 
 typedef struct {
     uint32_t magic;
@@ -23,7 +23,8 @@ typedef struct {
    other) version copies what fits and applies the pure migrations: from 20 or older, ts_enable = 0
    and the v21 addresses cleared (the old tail padding may have landed on them); below 23, the token
    terminal values (term_fg, term_bg, term_cursor, term_ansi), a steady block cursor, line height 32,
-   rotation 1 and an amber-like kbd_led_rgb back to 0x0080FF. A newer blob (from a later build) only
+   rotation 1 and an amber-like kbd_led_rgb back to 0x0080FF; below 24, whisper_path and whisper_model take their
+   defaults (CC_WHISPER_DEFAULT, CC_WHISPER_MODEL_DEFAULT: the old tail padding may have landed on them). A newer blob (from a later build) only
    copies what fits. Returns the blob's
    version, or 0 when the blob isn't ours (s keeps the defaults). The caller applies the migrations
    that need ESP-IDF for versions below CFG_VERSION, then saves. */
@@ -36,12 +37,14 @@ uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len);
    to attempt, then with the import's result. */
 typedef struct { bool attempt, clear; } sd_import_plan_t;
 sd_import_plan_t settings_sd_import_step(uint8_t creds_on_sd, bool checkin_boot, int import_result);
+/* settings_init's check of the two voice paths: each ends in a NUL and takes its default unless cc_path_valid. */
+void settings_voice_paths_check(app_settings_t *s);
 /* The blob settings_save writes. */
 cfg_blob_t settings_blob_make(const app_settings_t *s);
 /* Settings › About › Reset settings (spec §5.12, U3): every pw_* field, ss_disable_in_ssh, the keyboard light
    (kbd_led_mode, kbd_led_bright, kbd_led_rgb, kbd_needs_light, kbd_dark_light) and brightness take their value
    from defaults. Every other field is kept: Wi-Fi, the Host and the Terminal hosts, the pins, Tailscale, the
-   time zone, the key layout, the OTA URL. */
+   time zone, the key layout, the OTA URL, the whisper and model paths. */
 void settings_reset_scope(app_settings_t *s, const app_settings_t *defaults);
 
 #ifdef __cplusplus

@@ -25,6 +25,7 @@
 #include "sys/power_log.h"
 #include "sys/power_bench.h"
 #include "sys/power_console.h"
+#include "voice/voice_console.h"
 #include "sys/power.h"
 #include "sys/hibernate.h"
 #include "sys/checkin.h"
@@ -199,6 +200,7 @@ void app_main(void)
     device_key_console_init();
     cc_console_init();
     power_console_init();
+    voice_console_init();      /* the console verb only: nothing voice-related is created at boot */
     if (s_dark_boot && (boot_phase_exp() & BPX_NO_HOSTCACHE)) cc_link_host_cache_enable(false);
     if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
     hibernate_init();        /* boot-to-live after a hibernate */

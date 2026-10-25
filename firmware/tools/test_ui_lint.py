@@ -180,6 +180,25 @@ class LintTests(unittest.TestCase):
         self.assertEqual(self.rules(problems), ["notify-under-lock"])
         self.assertTrue(problems[0].startswith(self.TS + ":5:"))
 
+    # P5-7 (Plan 5): the whisper command line and its defaults live in cc_cmd only.
+    def test_whisper_literal_flagged(self):
+        main = self.tree({
+            "ui/ui_sessions.c": "static const char *w = \"/x/whisper-cli\";\n",
+            "companion/cc_cmd.h": "#define CC_WHISPER_DEFAULT \"/x/whisper-cli\"\n",
+            "companion/cc_cmd.c": "static const char *f = \"exec \\\"$W\\\" -otxt -of -\";\n",
+            "i18n/i18n.h": "X(VOICE_NO_WHISPER, \"/x/whisper-cli isn't on the Host\") \\\n",
+            "voice/voice.c": "/* runs whisper-cli on the Host */\nstatic int n;\n",
+        })
+        problems = [p for p in ui_lint.lint(main) if not p.endswith("unused-str")]
+        self.assertEqual(problems, [os.path.join("ui", "ui_sessions.c") + ":1: whisper-outside-cc_cmd"])
+
+    def test_otxt_literal_flagged(self):
+        main = self.tree({"voice/voice.c": "void f(void) {\n    run(\"w -otxt -of -\");\n}\n",
+                          "companion/cc_link.c": "static const char *a = \"x\", *b = \"-otxt\";\n"})
+        problems = ui_lint.lint(main)
+        self.assertEqual(sorted(problems), [os.path.join("companion", "cc_link.c") + ":1: whisper-outside-cc_cmd",
+                                            os.path.join("voice", "voice.c") + ":2: whisper-outside-cc_cmd"])
+
 
 if __name__ == "__main__":
     unittest.main()

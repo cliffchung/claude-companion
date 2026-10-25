@@ -18,6 +18,9 @@
 #include "ssh/ssh_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
+#include "i18n/i18n.h"
+#include "voice/voice_rules.h"
 
 /* Console commands for the companion link: companion, sessions, reply, logs, wifi, ts.
  * Everything that reaches the Host goes through cc_link and a cc_cmd_* builder. */
@@ -60,8 +63,79 @@ static void takeover_async(void *arg)
     else if (r != UI_SESS_TEST_OK) printf("takeover: no companion-test-* row %s on Sessions\n", s_takeover_id);
 }
 
+/* `companion voice-upload-test <kb> [delay-ms]` (Plan 5 Task 3): a WAV of <kb> KB of silence through
+   cc_link_transcribe, on its own task so the console stays free (a paste or `power go radio-off` can follow it on
+   the next line). delay-ms waits before the call, so a paste typed next gets queued first. Prints lengths,
+   durations and the exit status, never the text. */
+static volatile bool s_upload_running;
+static struct { size_t bytes; int delay_ms; } s_upload;
+
+static void upload_task(void *arg)
+{
+    (void)arg;
+    size_t len = s_upload.bytes;
+    if (s_upload.delay_ms > 0) vTaskDelay(pdMS_TO_TICKS(s_upload.delay_ms));
+    uint8_t *wav = heap_caps_calloc(1, len, MALLOC_CAP_SPIRAM);   /* calloc: the samples are silence */
+    char *out = heap_caps_calloc(1, 2048, MALLOC_CAP_SPIRAM);
+    if (!wav || !out) {
+        printf("voice-upload-test: no memory\n");
+    } else {
+        vr_wav_header(wav, (uint32_t)(len - VR_WAV_HDR), VR_RATE, 1, 16);
+        int rc = -1, up = -1;
+        int64_t t0 = esp_timer_get_time();
+        esp_err_t e = cc_link_transcribe(wav, len, out, 2048, &rc, &up, CC_TRANSCRIBE_TIMEOUT_MS);
+        int total = (int)((esp_timer_get_time() - t0) / 1000);
+        printf("upload %d ms, total %d ms, rc %d, %u chars%s%s\n", up, total, rc, (unsigned)strlen(out),
+               e == ESP_OK ? "" : ", ", e == ESP_OK ? "" : esp_err_to_name(e));
+    }
+    if (wav) { memset(wav, 0, len); heap_caps_free(wav); }
+    if (out) { memset(out, 0, 2048); heap_caps_free(out); }
+    s_upload_running = false;
+    vTaskDelete(NULL);
+}
+
+static int voice_upload_test(int argc, char **argv)
+{
+    int kb = atoi(argv[2]);
+    int max_kb = (VR_WAV_HDR + VR_PCM_MAX) / 1024;   /* 937: 30 s at 16 kHz mono */
+    if (kb < 1 || kb > max_kb) { printf("voice-upload-test: 1 to %d KB\n", max_kb); return 1; }
+    if (s_upload_running) { printf("voice-upload-test: one is running\n"); return 1; }
+    s_upload.bytes = (size_t)kb * 1024;
+    s_upload.delay_ms = argc == 4 ? atoi(argv[3]) : 0;
+    s_upload_running = true;
+    if (xTaskCreate(upload_task, "vupload", 4096, NULL, 5, NULL) != pdPASS) {
+        s_upload_running = false;
+        printf("voice-upload-test: no task\n");
+        return 1;
+    }
+    printf("voice-upload-test: %d KB started\n", kb);
+    return 0;
+}
+
 static int cmd_companion(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "voice-check") == 0) {
+        int rc = -1;
+        esp_err_t e = cc_link_voice_check(&rc);
+        if (e == ESP_OK) printf("voice-check: rc %d\n", rc);
+        else printf("voice-check: %s\n", esp_err_to_name(e));
+        return e == ESP_OK && rc == 0 ? 0 : 1;
+    }
+    if (argc == 3 && (strcmp(argv[1], "voice-path") == 0 || strcmp(argv[1], "voice-model") == 0)) {
+        bool model = strcmp(argv[1], "voice-model") == 0;
+        if (!(model ? cc_link_set_whisper_model(argv[2]) : cc_link_set_whisper_path(argv[2]))) {
+            printf("%s\n", tr(STR_SET_CLAUDE_PATH_BAD));
+            return 1;
+        }
+        printf("ok\n");
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "voice-paths") == 0) {
+        char w[64], m[64];
+        printf("whisper %s, model %s\n", cc_settings_whisper_path(w, sizeof(w)), cc_settings_whisper_model(m, sizeof(m)));
+        return 0;
+    }
+    if ((argc == 3 || argc == 4) && strcmp(argv[1], "voice-upload-test") == 0) return voice_upload_test(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "host") == 0) {
         char *name = join_args(argc, argv, 2);
         if (!name) return 1;
@@ -184,7 +258,8 @@ static int cmd_companion(int argc, char **argv)
     printf("usage: companion host <server name> | companion claude-path <path> | companion status |\n"
            "       companion server-host <host> [fallback-ip|none] | companion resolve <host> |\n"
            "       companion watch on|off|status|test-fallback | companion hostkey forget|corrupt |\n"
-           "       companion kick on|off | companion reconnect-log\n");
+           "       companion kick on|off | companion reconnect-log | companion voice-check |\n"
+           "       companion voice-path|voice-model <path> | companion voice-paths | companion voice-upload-test <kb> [delay-ms]\n");
     return 1;
 }
 
@@ -395,7 +470,7 @@ static int cmd_ts(int argc, char **argv)
 void cc_console_init(void)
 {
     const esp_console_cmd_t cmds[] = {
-        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | server-host <host> [fallback-ip|none] | resolve <host> | hostcache [on|off|clear|set <ip>] | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug) | kick on|off | reconnect-log", .func = cmd_companion },
+        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | server-host <host> [fallback-ip|none] | resolve <host> | hostcache [on|off|clear|set <ip>] | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug) | kick on|off | reconnect-log | voice-check | voice-path|voice-model <path> | voice-paths | voice-upload-test <kb> [delay-ms]", .func = cmd_companion },
         { .command = "sessions", .help = "List Claude sessions from the last poll: <STATE> <id> <repo> <name>", .func = cmd_sessions },
         { .command = "reply", .help = "reply <id> <text...>: type a quick answer into a running background session", .func = cmd_reply },
         { .command = "logs", .help = "logs <id>: recent output of a session, ANSI stripped", .func = cmd_logs },

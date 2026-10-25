@@ -24,6 +24,8 @@ Prints one "<file>:<line>: <rule>" per problem and exits 1 if there are any. Rul
   ui-alias             UI_BG, UI_CARD, UI_CARD_HI, UI_ACCENT, UI_ACCENT2, UI_DANGER, UI_WARN, UI_TEXT,
                        UI_MUTED or ui_button_colored, word-bounded, anywhere under firmware/main
   unused-str           an X(ID, ...) entry in i18n/i18n.h whose STR_ID no code under firmware/main uses
+  whisper-outside-cc_cmd  whisper-cli or -otxt inside a string literal anywhere under firmware/main except
+                       companion/cc_cmd.c, companion/cc_cmd.h and i18n/i18n.h (Plan 5 ruling P5-7)
   notify-under-lock    net/tailscale.c: a notify() call (the UI's event slot, which reaches ui_async and the LVGL
                        lock) while s_ctl is held: in a *_locked function, or after ctl_lock() and before its
                        ctl_unlock() (a block that unlocks and returns leaves the lock held after it). Final review I2.
@@ -59,6 +61,9 @@ ALIAS_RE = re.compile(r"\b(?:UI_BG|UI_CARD|UI_CARD_HI|UI_ACCENT|UI_ACCENT2|UI_DA
 I18N_H = os.path.join("i18n", "i18n.h")
 STR_ENTRY_RE = re.compile(r"^X\((\w+),", re.MULTILINE)
 STR_USE_RE = re.compile(r"\bSTR_(\w+)")
+
+WHISPER_RE = re.compile(r"whisper-cli|-otxt")
+WHISPER_HOMES = {os.path.join("companion", "cc_cmd.c"), os.path.join("companion", "cc_cmd.h"), I18N_H}
 
 TS_C = os.path.join("net", "tailscale.c")
 TS_TOKEN_RE = re.compile(r"\bctl_lock\s*\(\s*\)|\bctl_unlock\s*\(\s*\)|\bnotify\s*\(\s*\)|\breturn\b|[{}]")
@@ -202,6 +207,10 @@ def lint_file(rel, text, macros=frozenset()):
     if rel == TS_C:
         for offset in notify_under_lock(split_source(text)[0]):
             problems.add((line_of(text, offset), "notify-under-lock"))
+    if rel not in WHISPER_HOMES and WHISPER_RE.search(text):
+        for offset, s in split_source(text)[1]:
+            if WHISPER_RE.search(s):
+                problems.add((line_of(text, offset), "whisper-outside-cc_cmd"))
     in_ui = rel.split(os.sep, 1)[0] == UI
     for m in ALIAS_RE.finditer(text):
         problems.add((line_of(text, m.start()), "ui-alias"))

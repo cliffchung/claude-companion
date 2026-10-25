@@ -327,6 +327,7 @@ int pv_timers(bool sessions_shown, char *why, size_t cap)
         for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in))
             if (t == lv_indev_get_read_timer(in)) indev = true;
         if (indev) continue;
+        if (t == ui_sessions_voice_meter() && t->period == 100) continue;   /* P5-4: the voice meter, only while recording */
         if (t->period < 300 && !(t->period == 16 && ui_terminal_is_top())) {   /* the pty pump */
             say(why, cap, "a %u ms timer", (unsigned)t->period);
             return 1;

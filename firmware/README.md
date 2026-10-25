@@ -35,6 +35,8 @@ firmware/
 │   ├── storage/          microSD mount on demand (reference-counted; never at boot)
 │   ├── sys/              power ladder, Hibernate, check-ins, vitals, INA226 power monitor, RX8130 RTC, SNTP,
 │   │                     screenshot, USB host manager, the debug console, the close-SSH-before-link-down guard
+│   ├── voice/            voice input: mic.c (the microphone), voice.c (the record and transcribe service),
+│   │                     voice_rules.c (pure rules, host-tested), voice_console.c (the `voice` console verbs)
 │   ├── term/             VT100/xterm-256color emulator (wide characters, scrollback) and its LVGL view
 │   └── ui/               Sessions, take-over / SSH session, Terminal host list, host form, Settings,
 │                         shared components and design tokens, soft keyboard, boot splash
@@ -129,6 +131,17 @@ go into one: the Claude path and session ids. The link never opens a shell.
   detaches. The device types only when the last `❯` line on screen is an empty input line
   (`cc_screen_input_ready`); a permission dialog (`cc_screen_is_permission_prompt`) or anything
   else is refused.
+- **Transcribing.** `cc_cmd_transcribe` is a plain (non-pty) exec channel that runs `whisper-cli`
+  on the Host with the WAV on the channel's stdin and reads the text from stdout. The command is
+  `exec /bin/sh -c 'W=<whisper>; M=<model>; [ -x "$W" ] || { cat >/dev/null; exit 120; }; [ -r "$M" ] || { cat >/dev/null; exit 121; }; exec "$W" -m "$M" -l en -nt -np -otxt -of - -f -'`.
+  The paths are checked by `cc_path_valid`. A failed pre-check drains stdin first, so the Tab5's
+  upload isn't cut off; exit 120 means no executable at the Whisper path and 121 means no readable
+  model. `cc_link_transcribe` is the only public way to run an exec with stdin, and it builds the
+  command itself from the settings. It queues behind other link work and gives up with "Lost the
+  connection to the Host" if the link parks mid-upload.
+- **Voice check.** `cc_cmd_voice_check` runs the same two tests and exits 0, 120 or 121, with no
+  audio. Voice input starts it when a recording starts and Settings › Host › Voice input › Check
+  runs it on demand.
 - **Take-over.** A pty exec channel runs `claude attach <id>` and the terminal view draws it.
 - **Resolving the Host.** A literal IPv4 address as is; MagicDNS while Tailscale is connected;
   `getaddrinfo` (lwIP sends an mDNS query for `*.local`, DNS for the rest); and only if all of
@@ -144,6 +157,34 @@ go into one: the Claude path and session ids. The link never opens a shell.
   before authentication, besides hiding the Host's entry from the list.
 - **Closing before going down.** Every path that takes the link down (Wi-Fi off, sleep, restart)
   closes SSH first (`sys/link_guard.c`, `sys/link_down.c`).
+
+## Voice input
+
+`voice/` records on the Tab5 and has the Host transcribe (README › Daily use › Voice input).
+Ctrl+Space (`HK_D_VOICE`) or the mic button toggles it on Sessions.
+
+- **Buffer.** One PSRAM buffer, a 44-byte WAV header slot then 16 kHz mono 16-bit samples, up to
+  30 s (960,044 B). The header is written at stop and the whole buffer is the stdin payload. The
+  buffer is zeroed and freed on every exit path. No sample or transcript text goes to a log, the
+  console, NVS or a file; logs show lengths, durations, dBFS levels and exit codes.
+- **Mic notes.** `mic.c` opens its own RX-only I2S channel (I2S 1, which drives MCLK) with the
+  ES7210 as a slave, every time a recording starts, and deletes it when the recording ends. Nothing
+  holds the mic open, and the codec returns to its power-down state at close. MIC1 and MIC2 are
+  averaged at 30 dB gain, and the first 250 ms after each open are dropped to skip a power-up pop.
+  The open costs about 7.4 KB of internal RAM, all returned at close. Block levels under -50 dBFS
+  count as silence ("No speech heard"), and nothing is uploaded.
+- **Tasks.** A 4 KB voice task records and uploads. A 3 KB helper task runs the voice check at
+  start. The 100 ms meter timer exists only while recording. All are gone after stop, cancel, an
+  error, leaving Sessions or a link park.
+- **Result.** One result slot with a generation counter. Sessions takes it on its 300 ms tick, and
+  puts the text only in the draft of the session key captured at start. A result not taken within
+  60 s is wiped. Nothing calls the paste path with transcript text, so only Enter sends.
+- **Console.** `voice rec <s>`, `voice status`, `voice test <s>`, `voice test-bg <s>`,
+  `voice test-short` and `voice test-cancel <s>` drive the service without the UI (`help` has the
+  details). They use the same code path and print only lengths and timings.
+- **Settings.** `whisper_path` and `whisper_model` are the last fields of the settings blob
+  (CFG 24). Their defaults, `CC_WHISPER_DEFAULT` and `CC_WHISPER_MODEL_DEFAULT`, live only in
+  `companion/cc_cmd.h`; `tools/ui_lint.py` flags `whisper-cli` or `-otxt` anywhere else under `main/`.
 
 ## Boot splash
 
