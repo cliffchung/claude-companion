@@ -3752,7 +3752,7 @@ int main(int argc,char **argv) {
     /* Exercise splash before font runtime copies or the application UI exist. */
     if (!strcmp(name,"boot")) {
         lv_font_glyph_dsc_t g;
-        assert(lv_font_get_glyph_dsc(&font_px20,&g,0x2026,0) && !g.is_placeholder);   /* "Starting…" */
+        assert(lv_font_get_glyph_dsc(&font_px24,&g,0x2026,0) && !g.is_placeholder);   /* "Starting…" */
         ui_boot_show();
         lv_obj_t *boot=lv_screen_active();
         assert(lv_obj_get_child_count(boot)==1);

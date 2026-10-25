@@ -1,8 +1,10 @@
-# Name,     Type, SubType,  Offset,   Size,     Flags
-# Launcher-compatible layout: main_app is the first app partition at 0x20000,
-# factory (updater) lives at 0xF80000.
-nvs,        data, nvs,      0x9000,   0x6000,
-otadata,    data, ota,      0xF000,   0x2000,
-phy_init,   data, phy,      0x11000,  0x1000,
-main_app,   app,  ota_0,    0x20000,  0xF60000,
-factory,    app,  ota_1,    0xF80000, 0x80000,
+# Name,   Type, SubType, Offset,   Size,     Flags
+# Plan 6 (spec §6.4): two OTA app slots for wireless updates with rollback. The first three rows keep the
+# offsets and sizes they always had, so NVS, otadata and phy_init stay in place through the one wired migration
+# flash. 0x20000 + 2 x 0x7F0000 = 0x1000000: the 16 MB flash is used to the end. No factory partition: a blank
+# otadata boots app0. FW_SLOT_SIZE in main/ota/fw_rules.h is the slot size (test_check_image_size.py checks it).
+nvs,      data, nvs,     0x9000,   0x6000,
+otadata,  data, ota,     0xF000,   0x2000,
+phy_init, data, phy,     0x11000,  0x1000,
+app0,     app,  ota_0,   0x20000,  0x7F0000,
+app1,     app,  ota_1,   0x810000, 0x7F0000,

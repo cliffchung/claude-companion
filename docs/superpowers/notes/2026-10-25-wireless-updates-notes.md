@@ -43,3 +43,39 @@ This round covers Tasks 1 to 8 (code and host-side tests only). Every device ste
   a text file / the bootloader's shape (no descriptor) / another project / no version / a missing file refused with
   exit 1 and nothing staged, and a replace while a reader loops: every read is the whole old or the whole new
   file, the inode changes and a reader holding the old file still reads it whole.
+
+## Task 3: the layout, rollback, the image diet and the version
+
+- `partitions.csv` is spec §6.4; `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`, `CONFIG_FATFS_CODEPAGE_437=y` (the dynamic
+  code page removed). `firmware/sdkconfig` was deleted before the build. The bootloader with rollback is 0x5920 B
+  (0x6E0, 7 %, free before the partition table).
+- `font_px20.c` deleted; `fonts.c` makes `s_px20` a RAM copy of `font_px24` (the role and its CJK fallback stay).
+  `ui_boot.c` and the preview's boot case used `&font_px20` directly (the splash runs before `fonts_init`); both
+  now name `font_px24`. `gen_pixel_fonts.sh` writes only `font_px24.c`.
+- `PROJECT_VER`: `firmware/CMakeLists.txt` builds `<version.txt>+<hash>[.dirty]` from `git describe --always
+  --dirty --abbrev=7` (handles both the tagless `<hash>[-dirty]` and the `<tag>-<n>-g<hash>` forms; `nogit` when git
+  fails) before `project()`, unless `PROJECT_VER` is already defined (`-D PROJECT_VER=…`). This build:
+  `1.6.0+91ff89d.dirty`.
+- The size guard is a custom target `image_size_check` (ALL, depends on `app`) in the project `CMakeLists.txt`,
+  not `add_custom_command(TARGET app POST_BUILD)`: `app` is created in ESP-IDF's `esptool_py` directory, and CMake
+  only attaches a POST_BUILD command to a target of the current directory. It runs after every build and fails only
+  when the image doesn't fit.
+
+### Sizes (this Host's builds)
+
+| | Before (main 80ab00e) | After (Task 3) | Saving |
+|---|---|---|---|
+| `claude_companion.bin` | 7,340,544 B | **6,291,360 B** | 1,049,184 B |
+| `font_px20.c` | 567,531 B | gone | 567,531 B |
+| `ffunicode.c` | (dynamic code page, ~480 KB) | 1,336 B | ~480 KB |
+| headroom in the 8,323,072 B slot | 982,528 B (11.8 %) | **2,031,712 B (24 %)** | |
+
+The plan expected about 6.38 MB from the spec's 7,415,488 B baseline; this Host's main build was already 7,340,544
+B, and the diet saved slightly more than estimated. `idf.py size`: External RAM 6,143,416 B (`.rodata` 4,393,652,
+`.text` 1,749,216); DIRAM 193,858 B used.
+
+- Preview after the font change: `run_all.sh` passes (0 FAIL). Pixel diff of all 120 PNGs against the saved
+  `t3-before` set: every difference is inside the status bar's clock (x ≥ 1244, y ≤ 38), plus the Display & time
+  panel's clock row on `settings-4` (16:10 vs 16:16): the wall clock, which differs between two runs of the same
+  build as well. No glyph pixel changed.
+- Step 5 (the migration flash) is a device step: waiting for Task 9.
