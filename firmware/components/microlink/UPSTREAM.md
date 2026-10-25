@@ -15,3 +15,6 @@ Local changes: none besides moving wireguard_lwip to a sibling component directo
   Companion polish 2).
 - ml_derp.c: the DERP connect and reconnect retry loops stop retrying once ML_EVT_SHUTDOWN_REQUEST is set
   (derp_stopping(), before each attempt and after each backoff). Same reason (polish 2).
+- ml_coord.c: the coord task's wait for the first DERP connect (up to 15 s) also wakes on ML_EVT_SHUTDOWN_REQUEST
+  and then skips the long-poll. With the ml_derp.c change the connect never comes after a stop, so the wait sat out
+  its whole 15 s, as long as microlink_stop()'s own wait, and the device still logged "leaked" (polish 2 device pass).
