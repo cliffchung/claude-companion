@@ -362,8 +362,14 @@ Dictate an answer instead of typing it. This needs the one-time
   session ended meanwhile, the text is dropped with "That session is gone, so the text was dropped".
 - **Limit:** a recording stops by itself at 30 s ("Stopped at the 30 s limit").
 - **Esc cancels** a recording or a transcription and throws the audio away.
-- **Take-over isn't supported.** Voice input works in a session's answer field, not inside a
-  full-screen session or in Terminal.
+- **Inside a session** (a take-over, or an SSH session from Terminal), **Ctrl+Space** dictates too.
+  The session bar shows a red dot and "Recording 0:07 / 0:30" while it listens; keys you press then
+  are ignored, so they don't reach the session or the recording, except Esc (cancels) and the leave
+  keys (cancel, then leave). Press **Ctrl+Space** again to stop. The text is typed into the session's
+  prompt as if you had typed it, **without Enter**: check it, then press Enter yourself. Control
+  characters and line breaks are removed first, so dictated text can't run anything. While it
+  transcribes, keys work normally; leaving the session drops the text. Inside a session Ctrl+Space
+  no longer sends NUL to the Host; **Ctrl+@** still does.
 - **Speed (measured on a home LAN):** from stop to text takes about 0.5 to 0.65 s for a 5 s clip and
   about 1.8 s for 30 s. The first run after a Host restart takes several seconds. How well it hears
   you depends on your voice, the room and the model; it was only tested with the Host's `say` voice.
@@ -383,12 +389,13 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | Ctrl+K | The shortcuts list |
 | Esc | Clear the answer, or go back |
 | Ctrl+Space | Voice input: press to start, again to stop (Esc cancels) |
+| Ctrl+Space (inside a session) | Dictate into the session's prompt; the text is typed, not sent (Ctrl+@ sends NUL) |
 | Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
 | Shift+↑ / ↓ | Scroll back in a take-over |
 
 In Settings and Terminal, the arrow keys move the focus, Enter chooses and Esc goes back. Inside a
-take-over or SSH session the Tab5 keeps only Ctrl+← / Ctrl+Q / Ctrl+] and the Shift scroll keys; every
-other key goes to the Host.
+take-over or SSH session the Tab5 keeps only Ctrl+← / Ctrl+Q / Ctrl+], the Shift scroll keys and
+Ctrl+Space (voice input); every other key goes to the Host, and Ctrl+@ still sends NUL.
 
 ---
 

@@ -42,14 +42,16 @@ It never sends on its own.
 6. The mic draws power only while recording. Idle power and the check-in path are unchanged.
 
 ### Non-goals
-- **Voice in a take-over (full-screen session).** **Decision:** out of scope for Plan 5. Reasons:
+- **Voice in a take-over (full-screen session).** *Reversed by user request on 2026-10-24: see §14.*
+  The original decision, kept for the record: out of scope for Plan 5. Reasons:
   in a take-over every key belongs to Claude Code (Ctrl+Space is a real terminal key, NUL), so the
   hotkey would have to be stolen from the session; the text would have to be typed into a live pty,
   which needs its own fail-closed gate like the answer field's (D5); and a take-over is the
   tightest internal-RAM case (≥ 20 KB with Tailscale on, Plan 4 B2), where recording's DMA buffers
   and task stack would cut into the margin. The answer field covers the common case: answer, then
   Open if you need the full screen. Cost if wrong: a follow-up plan with its own hotkey and gate.
-- **Voice in Terminal (SSH session to other hosts)** and in Settings prompts.
+- **Voice in Settings prompts.** (Voice in a Terminal SSH session was a non-goal too; §14 adds it
+  with the take-over.)
 - **Streaming or live (partial) transcription.** One recording, one transcription.
 - **Sound feedback** (beeps). The speaker stays off; the `volume` field stays unused.
 - **Wake word, voice activity auto-stop, voice commands** ("send", "open"). Voice only produces text.
@@ -514,7 +516,7 @@ nothing new on the Host).
 - **O5. A one-word "you" or "Thank you."** from near-silence that passes the gate. Measure how often
   it happens; if it does, a later rule can drop a lone one. Not filtered now (it can be real speech).
 - **Later, not in Plan 5:** a multilingual model (a settings change plus `-l auto`); streaming while
-  recording; voice in a take-over.
+  recording. (Voice in a take-over and in an SSH session: done in §14.)
 
 ## 13. Decisions (index)
 1. Toggle on Ctrl+Space, not hold-to-talk (§5.1).
@@ -531,5 +533,63 @@ nothing new on the Host).
 12. 60 s transcription deadline (§7.3).
 13. Our own RX-only I2S channel per recording (§9.2).
 14. Audio discarded on every outcome (§9.4).
-15. Voice in a take-over is out of scope (§2).
+15. Voice in a take-over was out of scope (§2); reversed by user request, with SSH sessions too (§14).
 16. CFG 24 (§3).
+
+## 14. Voice in a session (follow-up, user request 2026-10-24)
+
+The user asked for voice input inside the full-screen terminal screen too: the take-over of a Claude
+Code session (`claude attach <id>` on a pty) and an SSH session to another host. This reverses the
+first Non-goals bullet (§2). Everything in §5–§10 still holds unless this section says otherwise.
+
+1. **The toggle.** Ctrl+Space in the terminal screen toggles a recording, in a take-over and in an
+   SSH session alike. `hk_takeover` returns `HK_T_VOICE` for it, so it is no longer sent to the Host
+   as NUL; **Ctrl+@ still sends NUL** (README). The same `vr_on_voice_key` guard as Sessions (150 ms
+   repeat gap, 700 ms after a start or stop, `vr_on_voice_ended` after a stop without a key), with
+   its own `vr_keys_t` per screen. Ctrl+Space while transcribing toasts "Still transcribing…"; before
+   the session is connected it toasts "Connecting…" and starts nothing.
+2. **The indicator.** No new widgets: the session bar's own dot and state label. Recording: a red dot
+   and "Recording 0:07 / 0:30" in red, updated on the 16 ms pty pump only when the second changes
+   (no new timer; the 100 ms meter timer is Sessions-only). Transcribing: a muted dot and
+   "Transcribing on the Host…" (muted). The bar stays up while voice is active and hides 3 s after.
+   **Red, never amber.** **Decision:** the bar's state slot (about 420 px beside the name and five
+   chips) has no room for the hint, so the start toasts `VOICE_HINT` ("Ctrl+Space stops · Esc
+   cancels") for 3 s instead. No meter in the bar. Cost if wrong: a wider bar layout.
+3. **Keys while recording.** Every key but Ctrl+Space, Esc and the leave keys (Ctrl+←, Ctrl+Q,
+   Ctrl+]) is eaten, and so are the bar's key chips (the Esc chip cancels), so key clicks stay off
+   the Host and typing doesn't mix with the transcript. Esc cancels. A leave key (or "← Leave")
+   cancels, then leaves (an SSH session still asks first). **While transcribing, keys pass normally,
+   Esc included**: Esc belongs to Claude Code and the shell, so it doesn't cancel a transcription
+   here (unlike Sessions); leaving does.
+4. **Delivering the text.** The recording is keyed `term:<the screen's generation>`
+   (`VR_TERM_KEY_PREFIX`); the screen takes only its own result (`voice_take_result_for`), and
+   Sessions drops any `term:` result (`vr_key_is_term`). A TEXT result is typed into the pty as input
+   with no Enter or newline, built by the pure, host-tested `cc_voice_type_build(text, bracketed,
+   out, cap)` in `cc_cmd.c`:
+   - every C0 control (`\n`, `\r`, `\t` become a space), DEL, ESC, C1 (U+0080–U+009F) and invalid
+     UTF-8 removed, so the text can't execute anything or end the paste early; whitespace runs
+     collapsed to one space and both ends trimmed;
+   - wrapped in `ESC[200~ … ESC[201~` like `cc_paste_build`, but with no Ctrl+U clear and no Enter.
+     **Decision:** wrapped only when the remote side turned bracketed paste on (`vt_bracketed_paste`,
+     DECSET 2004; Claude Code does); otherwise the bare sanitized text, so a shell without it doesn't
+     get `[200~` typed into its line. The text is already free of control bytes, so either form is
+     safe. Cost if wrong: one argument.
+   - empty (also after sanitizing) gives nothing; output that doesn't fit `cap` gives nothing.
+   Errors toast with the §6.4 copy (6 s); "Stopped at the 30 s limit" toasts after the text. If the
+   screen closed (or the session dropped) before the result arrived, the result is dropped: leaving
+   calls `voice_cancel` for a run of this screen's (recording or transcribing) and takes and wipes
+   a result it posted that nobody took. Never auto-send: no Enter, no `cc_link_paste`.
+5. **RAM.** A take-over is the tightest internal-RAM case (≥ 20,480 B with Tailscale on, Plan 4 B2).
+   This adds no internal-RAM allocation beyond what `voice_start` already takes (its two task
+   stacks and the I2S DMA buffers): no LVGL objects (the bar's dot and label are reused), the result
+   struct (about 620 B) and the typed bytes (≤ 493 B) are in PSRAM and zeroed after use. The bytes go
+   through the SSH client's existing tx ring buffer, like typed keys. **Device gate:** the combined
+   device pass measures `ui heapmin` across a take-over recording with Tailscale on; it must stay
+   ≥ 20,480 B.
+
+Tests: `test_cc_cmd` `test_voice_type_*` (no byte < 0x20 outside the markers, no 0x7f, no CR or LF,
+exact wrapping, empty input, the cap), `test_hotkeys` `test_terminal_ctrl_space_is_voice`,
+`test_voice_rules` `test_term_key`; preview `terminal voice-rec` (indicator, bar kept up, keys and
+chips eaten, Esc, transcribing passes keys, leaving cancels, SSH too, no amber) and `terminal
+voice-done` (the pty write equals the builder's output, bracketed and bare; no Enter or newline; no
+paste; limit and error toasts; another key's result left alone).
