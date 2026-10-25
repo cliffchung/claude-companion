@@ -332,7 +332,7 @@ static void term_voice_get(term_ctx_t *c, voice_status_t *v)
 }
 
 /* The indicator in the session bar: a red dot and "Recording 0:07 / 0:30" in red (the state slot has no room for the
-   hint, so the start toasts "Ctrl+Space stops · Esc cancels"), or
+   Sessions hint, and a toast would be one more internal-RAM allocation while the DMA buffers are up), or
    a muted dot and "Transcribing on the Host…". Red, never amber (amber means needs-you). Only a change writes. */
 static void voice_bar(term_ctx_t *c, const voice_status_t *v)
 {
@@ -401,7 +401,6 @@ static void term_voice_toggle(term_ctx_t *c)
         return;
     }
     c->voice_mine = true;
-    ui_toast(tr(STR_VOICE_HINT));   /* "Ctrl+Space stops · Esc cancels" */
     term_voice_get(c, &v);
     voice_bar(c, &v);
 }

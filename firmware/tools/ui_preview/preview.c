@@ -3075,7 +3075,7 @@ static int term_voice_case(lv_display_t *d, const char *v) {
         assert(bar && !obj_shown(bar));
         /* Ctrl+Space starts a recording keyed to this screen and sends nothing (no NUL) */
         if (!pv_term_record(d, 7000, key)) { printf("check %s: FAIL Ctrl+Space didn't start a terminal recording, or sent a byte\n", name); return 1; }
-        if (!find_label(lv_layer_top(), "Ctrl+Space stops \xc2\xb7 Esc cancels", false)) { printf("check %s: FAIL no hint toast at the start\n", name); return 1; }
+        if (lv_obj_get_child_count(lv_layer_top())) { printf("check %s: FAIL the start made a toast (internal RAM while recording)\n", name); return 1; }
         lv_obj_t *ind = find_label(bar, TV_REC_7, false);
         if (!obj_shown(bar) || !ind || !label_red(ind) || !bar_dot_red(bar)) { printf("check %s: FAIL no red dot and \"" TV_REC_7 "\" in the bar\n", name); return 1; }
         step(d, 3100);

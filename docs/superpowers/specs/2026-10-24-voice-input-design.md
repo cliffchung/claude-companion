@@ -552,9 +552,11 @@ first Non-goals bullet (§2). Everything in §5–§10 still holds unless this s
    and "Recording 0:07 / 0:30" in red, updated on the 16 ms pty pump only when the second changes
    (no new timer; the 100 ms meter timer is Sessions-only). Transcribing: a muted dot and
    "Transcribing on the Host…" (muted). The bar stays up while voice is active and hides 3 s after.
-   **Red, never amber.** **Decision:** the bar's state slot (about 420 px beside the name and five
-   chips) has no room for the hint, so the start toasts `VOICE_HINT` ("Ctrl+Space stops · Esc
-   cancels") for 3 s instead. No meter in the bar. Cost if wrong: a wider bar layout.
+   **Red, never amber.** **Decision:** no hint and no meter in the bar. The state slot (about 420 px
+   beside the name and five chips) cuts "Recording 0:07 / 0:30 · Esc cancels" short, and a hint
+   toast at the start would be one more internal-RAM allocation while the DMA buffers are up (item
+   5). The README says Ctrl+Space stops and Esc cancels. Cost if wrong: a wider bar layout or a
+   second label.
 3. **Keys while recording.** Every key but Ctrl+Space, Esc and the leave keys (Ctrl+←, Ctrl+Q,
    Ctrl+]) is eaten, and so are the bar's key chips (the Esc chip cancels), so key clicks stay off
    the Host and typing doesn't mix with the transcript. Esc cancels. A leave key (or "← Leave")
