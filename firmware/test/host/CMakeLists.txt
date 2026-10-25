@@ -101,3 +101,9 @@ add_test(NAME ui_lint COMMAND python3 ${MAIN}/../tools/ui_lint.py ${MAIN})
 # Prints cc_cmd_watch's output for firmware/tools/test_watch_loop.py (not a test itself).
 add_executable(cc_cmd_print cc_cmd_print.c)
 target_link_libraries(cc_cmd_print companion)
+
+# fw_print: fw_rules.c over a real or synthetic image, for firmware/tools/test_fw_cmd.py and test_stage_update.py
+# (not a test itself). sha256_tiny.c is for this tool only; the firmware hashes with mbedTLS.
+add_executable(fw_print fw_print.c sha256_tiny.c)
+target_link_libraries(fw_print pure)
+target_compile_options(fw_print PRIVATE -Wall -Wextra)

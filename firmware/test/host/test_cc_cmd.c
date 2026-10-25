@@ -597,6 +597,64 @@ static void test_cmd_transcribe_no_quote_inside(void)
     }
 }
 
+/* Firmware updates (Plan 6, spec §9.1). Written out by hand: the info string has a single %% (the shell's ${H%% *}). */
+#define EXP_FW_INFO_DEFAULT "exec /bin/sh -c 'F=~/.local/share/claude-companion/claude_companion.bin; [ -f \"$F\" ] && [ -r \"$F\" ] || exit 120; S=$(wc -c < \"$F\") || exit 121; H=$(shasum -a 256 < \"$F\" 2>/dev/null || sha256sum < \"$F\") || exit 122; echo $S ${H%% *}; exec head -c 288 \"$F\"'"
+#define EXP_FW_READ_DEFAULT "exec /bin/sh -c 'F=~/.local/share/claude-companion/claude_companion.bin; [ -f \"$F\" ] && [ -r \"$F\" ] || exit 120; exec cat \"$F\"'"
+
+typedef bool (*fw_builder_t)(const char *, char *, size_t);
+
+static void fw_exact(fw_builder_t fn, const char *want)
+{
+    char out[512];
+    TEST_ASSERT_TRUE(fn(CC_FW_PATH_DEFAULT, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING(want, out);
+    TEST_ASSERT_TRUE(fn(CC_FW_PATH_DEFAULT, out, strlen(want) + 1));
+    memset(out, 'x', sizeof(out));
+    TEST_ASSERT_FALSE(fn(CC_FW_PATH_DEFAULT, out, strlen(want)));
+    TEST_ASSERT_EQUAL_CHAR(0, out[0]);
+}
+
+static void fw_rejects(fw_builder_t fn)
+{
+    char long64[65];
+    memset(long64, 'a', 64);
+    long64[0] = '/';
+    long64[64] = 0;
+    const char *bad[] = { NULL, "", long64, "/a b", "/a'b", "/a;b", "/a$b", "/a`b", "/a\nb",
+                          "/a\"b", "/a|b", "/a&b" };
+    char out[512];
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        memset(out, 'x', sizeof(out));
+        TEST_ASSERT_FALSE(fn(bad[i], out, sizeof(out)));
+        TEST_ASSERT_EQUAL_CHAR(0, out[0]);
+    }
+    TEST_ASSERT_FALSE(fn(CC_FW_PATH_DEFAULT, NULL, 512));
+    TEST_ASSERT_FALSE(fn(CC_FW_PATH_DEFAULT, out, 0));
+}
+
+static void test_cmd_fw_info_exact(void) { fw_exact(cc_cmd_fw_info, EXP_FW_INFO_DEFAULT); }
+static void test_cmd_fw_read_exact(void) { fw_exact(cc_cmd_fw_read, EXP_FW_READ_DEFAULT); }
+static void test_cmd_fw_info_rejects(void) { fw_rejects(cc_cmd_fw_info); }
+static void test_cmd_fw_read_rejects(void) { fw_rejects(cc_cmd_fw_read); }
+
+static void test_cmd_fw_no_quote_inside(void)
+{
+    const char *paths[] = { CC_FW_PATH_DEFAULT, "/tmp/cc6.ab12/stage/claude_companion.bin", "~/fw.bin", "f" };
+    fw_builder_t fns[] = { cc_cmd_fw_info, cc_cmd_fw_read };
+    char out[512];
+    for (size_t f = 0; f < 2; f++) {
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            TEST_ASSERT_TRUE(fns[f](paths[i], out, sizeof(out)));
+            int q = 0;
+            for (const char *p = out; *p; p++) if (*p == '\'') q++;
+            TEST_ASSERT_EQUAL_INT(2, q);
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(120, CC_FW_RC_NO_FILE);
+    TEST_ASSERT_EQUAL_INT(121, CC_FW_RC_SIZE);
+    TEST_ASSERT_EQUAL_INT(122, CC_FW_RC_HASH);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -636,5 +694,10 @@ int main(void)
     RUN_TEST(test_cmd_transcribe_rejects);
     RUN_TEST(test_cmd_voice_check_rejects);
     RUN_TEST(test_cmd_transcribe_no_quote_inside);
+    RUN_TEST(test_cmd_fw_info_exact);
+    RUN_TEST(test_cmd_fw_read_exact);
+    RUN_TEST(test_cmd_fw_info_rejects);
+    RUN_TEST(test_cmd_fw_read_rejects);
+    RUN_TEST(test_cmd_fw_no_quote_inside);
     return UNITY_END();
 }
