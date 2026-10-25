@@ -191,6 +191,47 @@ static void test_log_tail_keeps_short_words(void)
     TEST_ASSERT_EQUAL_STRING("OK\nNo\nHi there", s);
 }
 
+/* The fallback drops the TUI's chrome as its redraws leave it (busy-pane fix): the spinner and its counters, the
+   footer, the status line, tips and hooks. The conversation around it stays. */
+static void test_log_tail_drops_chrome(void)
+{
+    char s[] =
+        "\xe2\x9c\xbd Swirling\xe2\x80\xa6 (12s \xc2\xb7 \xe2\x86\x93 3k tokens)\r\n"
+        "What's your favorite color?\r\n"
+        "Swirling\xe2\x80\xa6\r\n"
+        "Beboppin'\xe2\x80\xa6 1\r\n"
+        "Galliva ting\xe2\x80\xa6\r\n"
+        "  12k tokens | Opus 5.5\r\n"
+        "\xe2\x8f\xb5\xe2\x8f\xb5 auto mode on (shift+tab to cycle) \xc2\xb7 2 agents\r\n"
+        "\xe2\x8f\xb8 manual mode on \xc2\xb7 \xe2\x86\x90 for agents\r\n"
+        "running stop hooks\xe2\x80\xa6 1/2\r\n"
+        "UserPromptSubmit hook \xc2\xb7 0s)\r\n"
+        "\xe2\x9c\xbb Baked for 5s\r\n"
+        "ought for 1s)\r\n"
+        "Checking for updates\xe2\x80\xa6\r\n"
+        "  esc to interrupt\r\n"
+        "3 agents\r\n"
+        "Ran 2 shell commands\r\n"
+        "10s \xc2\xb7 11 lines)\r\n"
+        "\xe2\x9c\xa2 5 thinking\r\n"
+        "thinking with medium effort\r\n"
+        "\xe2\x9c\xb3 313\r\n"
+        "200\r\n"
+        "\xe2\x8e\xbf  Tip: Use /statusline to set up a custom status line\r\n"
+        "\xe2\x97\x90 medium \xc2\xb7 /effort\r\n"
+        "You've used 89% of your weekly limit\r\n"
+        "(ctrl+b to run in background)\r\n"
+        "\xe2\x96\x90\xe2\x96\x9b\xe2\x96\x88\xe2\x96\x88 Claude Code v2.1.310\r\n"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 companion-test-busy \xe2\x94\x80\r\n"
+        "\xe2\x8f\xba Done. The color is blue.\r\n";
+    TEST_ASSERT_EQUAL_INT(3, cc_log_tail(s, 40));
+    TEST_ASSERT_EQUAL_STRING("What's your favorite color?\nRan 2 shell commands\n\xe2\x8f\xba Done. The color is blue.", s);
+    /* only chrome: nothing, so the pane says "No output yet" */
+    char t[] = "\x1b[H\r\x1b[43B\xe2\x9c\xa2\x1b[3GActualizing\xe2\x80\xa6\x1b[50;1H\x1b[H\r\x1b[65C\x1b[9B51s \xc2\xb7 412 words)";
+    TEST_ASSERT_EQUAL_INT(0, cc_log_tail(t, 40));
+    TEST_ASSERT_EQUAL_STRING("", t);
+}
+
 static void test_log_tail_keeps_last(void)
 {
     char s[] = "l01\nl02\nl03\nl04\nl05\nl06\nl07\nl08\n";
@@ -613,6 +654,7 @@ int main(void)
     RUN_TEST(test_log_tail_drops_rules_and_blanks);
     RUN_TEST(test_log_tail_drops_spinner_fragments);
     RUN_TEST(test_log_tail_keeps_short_words);
+    RUN_TEST(test_log_tail_drops_chrome);
     RUN_TEST(test_log_tail_keeps_last);
     RUN_TEST(test_paste_build_exact);
     RUN_TEST(test_paste_build_strips_esc);

@@ -19,6 +19,7 @@
 #define WRAP_SLACK   4     /* a row this close to the width, with the next word not fitting, was wrapped */
 #define RULE_NEAR    8     /* with no input box or dialog, a rule this close to the last drawn row ends the view */
 #define HINT_SPAN    40    /* a dialog's options lie this close above its "Esc to cancel" hint */
+#define SPIN_NEAR    12    /* on a sparse screen, the spinner lies this close above the parked cursor */
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -135,8 +136,9 @@ static bool is_banner(const scr_t *s, int y)   /* the welcome logo: block elemen
 
 /* Claude Code's spinner line, at column 0: a spinner glyph, a space, a verb, then either "…" and an optional
    "(…)" tail ("✽ Pollinating… (2s · thinking)", "· Computing…") or " for " and a time ("✻ Baked for 5s · done").
-   A reply's own "* Item" or "· note" doesn't match. */
-static bool is_spinner(const scr_t *s, int y)
+   A reply's own "* Item" or "· note" doesn't match. loose: anything after the "…" (a sparse screen, whose "(" was
+   drawn before the stream's front and never again). */
+static bool is_spinner(const scr_t *s, int y, bool loose)
 {
     uint32_t c = row_at(s, y)[0].cp;
     if (!(c == 0xb7 || c == 0x2722 || c == 0x2733 || c == 0x2736 || c == 0x273b || c == 0x273d || c == '*')) return false;
@@ -153,7 +155,7 @@ static bool is_spinner(const scr_t *s, int y)
     if (t[0] == 0xe2 && t[1] == 0x80 && t[2] == 0xa6) {   /* … */
         t += 3;
         while (*t == ' ') t++;
-        if (!*t) return true;
+        if (!*t || loose) return true;
         if (*t != '(') return false;
         const unsigned char *close = (const unsigned char *)strrchr((const char *)t, ')');
         if (!close) return false;
@@ -161,6 +163,30 @@ static bool is_spinner(const scr_t *s, int y)
         return !*t;
     }
     return !strncmp((const char *)t, " for ", 5) && t[5] >= '0' && t[5] <= '9';
+}
+
+/* A whole row that is only a key hint: "(ctrl+b to run in background)" under a running command. */
+static bool is_hint(const scr_t *s, int y)
+{
+    const char *t = row_text(s, y);
+    while (*t == ' ') t++;
+    size_t n = strlen(t);
+    return n > 2 && t[0] == '(' && t[n - 1] == ')' && strstr(t, "ctrl+") && !strchr(t + 1, '(');
+}
+
+/* A row with a word in it: two ASCII letters in a row, or a CJK (or other non-symbol, past U+2E80) character. A
+   sparse screen's stale spinner fragments ("3  12s…", "51s · 412 words)") have none. */
+static bool has_word(const scr_t *s, int y)
+{
+    const vt_cell_t *r = row_at(s, y);
+    int run = 0;
+    for (int x = 0; x < s->cols; x++) {
+        uint32_t c = r[x].cp;
+        if (c >= 0x2e80 && !(r[x].attr & VT_ATTR_WIDE_CONT)) return true;
+        run = ((c | 32) >= 'a' && (c | 32) <= 'z') ? run + 1 : 0;
+        if (run >= 2) return true;
+    }
+    return false;
 }
 
 static bool is_tip(const scr_t *s, int y)   /* "  ⎿  Tip: …" under the spinner */
@@ -257,6 +283,22 @@ static int rule_near_bottom(const scr_t *s)
     return -1;
 }
 
+/* A busy session's sparse screen (no full clear in the stream: `claude logs` keeps only its recent output, and a
+   turn's spinner redraws fill that): no rules, no input box, only the rows redrawn since. The spinner is the
+   anchor: the lowest spinner line within SPIN_NEAR rows above the parked cursor (the input line), or above the last
+   drawn row when the cursor is hidden. Returns its row, else -1. Under it lie only the tip, the effort, the box and
+   the footer. */
+static int sparse_spinner(const scr_t *s)
+{
+    int cx, cy;
+    bool visible;
+    vt_cursor(s->vt, &cx, &cy, &visible);
+    int ref = visible && cy > 0 && cy < s->rows ? cy : last_drawn(s);
+    for (int y = ref; y >= 0 && y >= ref - SPIN_NEAR; y--)
+        if (is_spinner(s, y, true)) return y;
+    return -1;
+}
+
 /* ------------------------------------------------------------ the tail */
 static int replay(vt_t *vt, const char *p, size_t n)
 {
@@ -284,11 +326,15 @@ int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, c
     if (kept) goto done;
 
     /* where the conversation ends: a dialog's hint (first: a numbered draft is no dialog, a selector's "❯ 1." under
-       its frame is no input box), else the input box, else a rule near the bottom */
+       its frame is no input box), else the input box, else a rule near the bottom, else a sparse screen's spinner */
     int top = 0, hint = dialog_hint(&s), end;
-    bool dialog = hint >= 0;
+    bool dialog = hint >= 0, sparse = false;
     if (dialog) end = hint + 1;
-    else if ((end = input_box_top(&s)) < 0) end = rule_near_bottom(&s);
+    else if ((end = input_box_top(&s)) < 0 && (end = rule_near_bottom(&s)) < 0 && !cleared) {
+        /* a busy session's sparse screen: up to its spinner, which goes too */
+        end = sparse_spinner(&s);
+        if (end >= 0) { end++; sparse = true; }
+    }
     kept = CC_LV_NO_LAYOUT;
     if (end < 0) goto done;
     while (top < end && top < 4 && first_x(&s, top) < 0) top++;
@@ -297,6 +343,8 @@ int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, c
     int width = 0;
     for (int y = 0; y < rows; y++)
         if (is_rule(&s, y)) { int w = row_width(&s, y); if (w > width) width = w; }
+    if (!width && sparse)   /* no rule drawn: the widest row is the closest to the width */
+        for (int y = top; y < end; y++) { int w = row_width(&s, y) + 1; if (w > width) width = w; }
     if (!width) width = cols;
 
     size_t o = 0;
@@ -309,9 +357,12 @@ int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, c
         if (x0 < 0 || is_rule(&s, y)) { after_spinner = false; continue; }
         if (x0 > RIGHT_MIN_X && row_width(&s, y) >= width - WRAP_SLACK)
             continue;   /* right-aligned status, nothing at its left: the effort, a usage notice, the update check */
-        if (is_spinner(&s, y)) { after_spinner = true; continue; }
+        if (is_spinner(&s, y, sparse)) { after_spinner = true; continue; }
         if (after_spinner && is_tip(&s, y)) continue;
         after_spinner = false;
+        if (is_hint(&s, y)) continue;
+        if (sparse && (x0 > RIGHT_MIN_X || !has_word(&s, y)))
+            continue;   /* stale fragments of a redraw (a moved spinner's time, the status), not conversation */
         bool join = prev == y - 1 && x0 >= 1 && !starts_item(&s, y) &&
                     row_width(&s, prev) + 1 + first_word_width(&s, y) > width - WRAP_SLACK;
         int ox = option_x(&s, y);

@@ -1,6 +1,7 @@
 /* The Sessions output pane read off a rendered `claude logs` screen (cc_logview). The fixtures are `claude logs <id>`
    of live companion-test-* background sessions (Claude Code 2.1.310, a 200 x 50 terminal; the plan label and the
-   time zone replaced with same-length placeholders). */
+   time zone replaced with same-length placeholders). logs_working.bin is a busy one (same version) whose turn outlasted
+   the buffer `claude logs` keeps: no clear in it. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,22 +50,30 @@ static void has(const char *needle)
     }
 }
 
+static const char *const s_chrome[] = {
+    "tokens |", "auto mode on", "shift+tab", "agents", "SessionStart", "Checking for updates", "/effort",
+    "weekly limit", "esc to interrupt", "Claude Code v", "Plan label", "\xe2\x96\x90\xe2\x96\x9b",   /* ▐▛ logo */
+    "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",                                                         /* ─── rule */
+    "Baked for", "Cogitated for", "Worked for", "Cooked for", "Saut\xc3\xa9" "ed for", "Pollinating", "Computing",
+    "\xe2\x9c\xbb ", "\xe2\x9c\xbd ", SEL " \n",
+    "tokens)", "thinking with", "Deliberating", "Actualizing", "ctrl+b", "Region/Example_Zone", "hook \xc2\xb7",
+};
+
+/* none of the chrome strings in t */
+static void no_chrome_in(const char *t)
+{
+    for (size_t i = 0; i < sizeof(s_chrome) / sizeof(s_chrome[0]); i++) {
+        if (strstr(t, s_chrome[i])) {
+            printf("chrome \"%s\" in:\n%s\n", s_chrome[i], t);
+            TEST_FAIL_MESSAGE(s_chrome[i]);
+        }
+    }
+}
+
 /* The footer, the status line, the spinner, the input box, the banner and the update check: none of it shows. */
 static void no_chrome(void)
 {
-    static const char *chrome[] = {
-        "tokens |", "auto mode on", "shift+tab", "agents", "SessionStart", "Checking for updates", "/effort",
-        "weekly limit", "esc to interrupt", "Claude Code v", "Plan label", "\xe2\x96\x90\xe2\x96\x9b",   /* ▐▛ logo */
-        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",                                                         /* ─── rule */
-        "Baked for", "Cogitated for", "Worked for", "Cooked for", "Saut\xc3\xa9" "ed for", "Pollinating", "Computing",
-        "\xe2\x9c\xbb ", "\xe2\x9c\xbd ", SEL " \n",
-    };
-    for (size_t i = 0; i < sizeof(chrome) / sizeof(chrome[0]); i++) {
-        if (strstr(s_out, chrome[i])) {
-            printf("chrome \"%s\" in:\n%s\n", chrome[i], s_out);
-            TEST_FAIL_MESSAGE(chrome[i]);
-        }
-    }
+    no_chrome_in(s_out);
     size_t n = strlen(s_out);
     TEST_ASSERT_TRUE(n > 0 && s_out[n - 1] != '\n' && s_out[n - 1] != ' ');
     TEST_ASSERT_FALSE(cc_screen_input_ready(s_out));   /* no empty input line left */
@@ -98,12 +107,23 @@ static void test_short_reply(void)
     TEST_ASSERT_EQUAL(0, sm_tail_options(s_out));
 }
 
-/* The bug: the escape-stripping heuristic on the same bytes ends in the footer's redraws. */
-static void test_heuristic_shows_chrome(void)
+/* The fallback (busy-pane fix): the escape-stripping heuristic on the same bytes used to end in the footer's
+   redraws ("auto mode on", tokens, "SessionStart"). It now drops the chrome and keeps the conversation. */
+static void test_heuristic_drops_chrome(void)
 {
+    static const char *fx[] = { "logs_short.bin", "logs_long.bin", "logs_busy.bin", "logs_tool.bin", "logs_numbered.bin",
+                                "logs_perm.bin", "logs_working.bin" };
+    for (size_t i = 0; i < sizeof(fx) / sizeof(fx[0]); i++) {
+        load(fx[i]);
+        TEST_ASSERT_GREATER_THAN(0, cc_log_tail(s_raw, 40));
+        no_chrome_in(s_raw);
+    }
     load("logs_short.bin");
     cc_log_tail(s_raw, 40);
-    TEST_ASSERT_TRUE(strstr(s_raw, "auto mode on") || strstr(s_raw, "tokens") || strstr(s_raw, "SessionStart"));
+    TEST_ASSERT_NOT_NULL(strstr(s_raw, "The short test reply is here."));
+    load("logs_working.bin");
+    cc_log_tail(s_raw, 40);
+    TEST_ASSERT_NOT_NULL(strstr(s_raw, DOT " Running 1 shell command"));
 }
 
 /* Four paragraphs on a 200-column screen: each wrapped paragraph comes back as one line for the pane to wrap. */
@@ -189,6 +209,49 @@ static void test_busy(void)
     no_chrome();
     has(DOT " The light on Garrow Point");
     has("\n  They came to her in cardboard boxes");
+}
+
+/* A busy session whose turn outlasted `claude logs`'s buffer (it keeps only its recent output, trimmed at a frame):
+   no clear, so no rules, no input box and no footer drawn, only the rows redrawn since. The list above the command
+   was redrawn as the screen moved up; the spinner (its "(" never redrawn), the usage notice under it, the counter's
+   stale fragments and the "(ctrl+b …)" hint don't show. */
+static void test_working(void)
+{
+    size_t n = load("logs_working.bin");
+    TEST_ASSERT_NULL(strstr(s_raw, "\x1b[2J"));
+    TEST_ASSERT_EQUAL(40, cc_logview_tail(s_raw, n, true, 40, s_out, sizeof(s_out)));
+    no_chrome();
+    has("  60  Breadfruit\n" DOT " Running 1 shell command \xc2\xb7 44s\xe2\x80\xa6\n");
+    has("Passionfruit\n");
+    const char *last = "  \xe2\x8e\xbf  $ for i in $(seq 1 120); do echo tick $i; sleep 1; done (42s \xc2\xb7 43 lines)";
+    TEST_ASSERT_EQUAL_STRING(last, s_out + strlen(s_out) - strlen(last));
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_raw, n, true, 2, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL(0, strncmp(s_out, DOT " Running 1 shell command", strlen(DOT " Running 1 shell command")));
+    /* a front cut on the device as well: still refused, as before */
+    TEST_ASSERT_EQUAL(CC_LV_PARTIAL, cc_logview_tail(s_raw, n, false, 40, s_out, sizeof(s_out)));
+}
+
+/* A sparse busy screen with nothing but the spinner and its stale counters: no conversation (0), and the fallback
+   keeps nothing either, so the pane says "No output yet" rather than "Actualizing…" or "51s · 412 words)". */
+static void test_working_spinner_only(void)
+{
+    static const char frames[] =
+        "\x1b[H\r\x1b[8B\x1b[38;2;153;153;153m\xe2\x8f\xba\x1b[39m\x1b[50;1H\x1b[47;3H"
+        "\x1b[H\r\x1b[43B\x1b[38;2;215;119;87m\xe2\x9c\xa2\x1b[3G\x1b[38;2;233;154;122mActualizing\xe2\x80\xa6\x1b[39m\x1b[50;1H\x1b[47;3H"
+        "\x1b[H\r\x1b[31C\x1b[8B\x1b[38;2;153;153;153m4\r\x1b[35B\x1b[38;2;215;119;87m\xe2\x9c\xb6\x1b[39m\x1b[50;1H\x1b[47;3H"
+        "\x1b[H\r\x1b[65C\x1b[9B51s \xc2\xb7 412 words)\x1b[50;1H\x1b[47;3H"
+        "\x1b[H\r\x1b[16C\x1b[43B12s \xc2\xb7 \xe2\x86\x93 312 tokens)\x1b[50;1H\x1b[47;3H"
+        "\x1b[H\r\x1b[43C\x1b[48B7\x1b[50;1H\x1b[47;3H";
+    char buf[sizeof(frames)];
+    memcpy(buf, frames, sizeof(frames));
+    TEST_ASSERT_EQUAL(CC_LV_NONE, cc_logview_tail(buf, sizeof(frames) - 1, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING("", s_out);
+    TEST_ASSERT_EQUAL(0, cc_log_tail(buf, 40));
+    TEST_ASSERT_EQUAL_STRING("", buf);
+    /* the same frames after a clear are no busy sparse screen: no layout, as before */
+    char clr[sizeof(frames) + 8] = "\x1b[2J";
+    memcpy(clr + 4, frames, sizeof(frames));
+    TEST_ASSERT_EQUAL(CC_LV_NO_LAYOUT, cc_logview_tail(clr, sizeof(frames) + 3, true, 40, s_out, sizeof(s_out)));
 }
 
 /* The update check is a right-aligned notice on the row above the input box (as live sessions draw it, past the
@@ -554,7 +617,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_size);
     RUN_TEST(test_short_reply);
-    RUN_TEST(test_heuristic_shows_chrome);
+    RUN_TEST(test_heuristic_drops_chrome);
     RUN_TEST(test_long_reply);
     RUN_TEST(test_tool_call);
     RUN_TEST(test_numbered_question);
@@ -562,6 +625,8 @@ int main(void)
     RUN_TEST(test_permission_dialog);
     RUN_TEST(test_overflow);
     RUN_TEST(test_busy);
+    RUN_TEST(test_working);
+    RUN_TEST(test_working_spinner_only);
     RUN_TEST(test_update_check_hidden);
     RUN_TEST(test_partial);
     RUN_TEST(test_cap_and_args);
