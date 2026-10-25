@@ -1182,6 +1182,7 @@ static void voice_toggle(void)
 static void apply_voice_result(const voice_result_t *r)
 {
     if (r->out == VR_OUT_CANCELLED || r->out == VR_OUT_STARTED) return;
+    power_note_activity();   /* the text or the error is new on screen: the idle clock restarts (never a wake) */
     const cc_session_t *s = item_by_key(r->key);
     str_id_t id = vr_out_text(r->out);
     if (!s) {

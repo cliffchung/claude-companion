@@ -70,6 +70,9 @@ pr_cards_t pr_cards_view(bool hibernate_boot, uint32_t gen_now, uint32_t gen_at_
 #define PR_SWALLOW_MS 600       /* longer than the A164's 500 ms auto-repeat delay (keyboard.c) */
 /* true when state_at_input != ACTIVE, or now - woke_at < PR_SWALLOW_MS, or now - last_swallowed < PR_SWALLOW_MS */
 bool pr_swallow(power_state_t state_at_input, int64_t now_ms, int64_t woke_at_ms, int64_t last_swallowed_ms);
+/* Activity that is not input (a voice result landing): the new last-input time. now_ms while ACTIVE with no wake
+   pending, else last_input_ms unchanged: it never wakes Dim or deeper, and the wake and swallow fields don't move. */
+int64_t pr_activity_input(power_state_t state, bool wake_pending, int64_t last_input_ms, int64_t now_ms);
 
 #define PR_IDS_MAX 32
 typedef struct { char ids[PR_IDS_MAX][16]; int n; } pr_idset_t;

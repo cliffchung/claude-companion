@@ -355,7 +355,10 @@ static void voice_task(void *arg)
     /* ---- the one exit: every path above lands here ---- */
     wipe_buffer();
     /* Only now: cc_link_transcribe held link-busy until it returned, so the screen never had a moment with neither
-       hold (at a 30 s auto-stop the user is already past the dim timeout). */
+       hold (at a 30 s auto-stop the user is already past the dim timeout). The result lands now: it restarts the idle
+       clock first, so the ladder doesn't dim the screen as the text arrives and swallow the next key as a wake (a
+       screen that isn't Active is left alone). */
+    power_note_activity();
     set_hold(false);
 
     taskENTER_CRITICAL(&s_mux);

@@ -88,6 +88,8 @@ int power_cfg(power_cfg_t c) {
 }
 power_boot_t hibernate_boot_kind(void) { return POWER_BOOT_NORMAL; }
 void power_hold(power_hold_t h, bool on) { (void)h; (void)on; }
+static int s_note_activity_calls;
+void power_note_activity(void) { s_note_activity_calls++; }
 uint32_t power_wake_seq(void) { return s_rc_preview || s_stale_preview ? 1 : 0; }
 uint32_t power_wake_gen(void) { return s_rc_preview || s_stale_preview ? 1 : 0; }   /* no result newer than the wake: stale */
 power_state_t power_woke_from(void) { return s_rc_preview ? PS_RADIO_OFF : s_stale_preview ? PS_OFF : PS_ACTIVE; }
@@ -1170,6 +1172,7 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         /* the Host answers; the service drops the result and goes idle: the draft is only what was typed */
         s_pv_voice.phase = VOICE_IDLE; s_pv_voice.cancelled = false; step(d, 400); step(d, 400);
         if (strcmp(field_text(s), "q") || s_paste_calls) { printf("check %s: FAIL draft \"%s\", %d pastes\n", name, field_text(s), s_paste_calls); return 1; }
+        if (s_note_activity_calls) { printf("check %s: FAIL a cancelled run counted as activity\n", name); return 1; }
         return r;
     }
     if (!strcmp(v, "voice-auto-stop")) {
@@ -1200,6 +1203,8 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         preview_resort_to_last(0); step(d, 400);
         assert(find_label_x(s, second, 440));
         pv_voice_post(k0, VR_OUT_TEXT, "Please run the tests.", false); step(d, 400);
+        /* polish 2: the result restarts the idle clock (power_note_activity), so the screen doesn't dim as it lands */
+        if (s_note_activity_calls != 1) { printf("check %s: FAIL power_note_activity called %d times\n", name, s_note_activity_calls); return 1; }
         if (strcmp(field_text(s), "")) { printf("check %s: FAIL the second session's draft is \"%s\"\n", name, field_text(s)); return 1; }
         /* select the first session again (now the last row): its draft has the text, and the review note */
         lv_obj_t *row = row_named(s, first);
