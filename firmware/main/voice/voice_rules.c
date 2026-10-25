@@ -202,3 +202,8 @@ str_id_t vr_out_text(vr_out_t o)
     default: return STR_COUNT;
     }
 }
+
+bool vr_key_is_term(const char *key)
+{
+    return key && strncmp(key, VR_TERM_KEY_PREFIX, sizeof(VR_TERM_KEY_PREFIX) - 1) == 0;
+}
