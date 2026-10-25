@@ -470,7 +470,23 @@ X(VOICE_FAILED, "Transcription failed on the Host. Try again.") \
 X(VOICE_TIMEOUT, "The Host took too long to transcribe. Try again.") \
 X(VOICE_LINK_LOST, "Lost the connection to the Host. Try again.") \
 X(VOICE_MIC_FAILED, "The microphone didn't start. Restart the Tab5 and try again.") \
-X(VOICE_NO_MEMORY, "Not enough memory to record. Restart the Tab5 and try again.")
+X(VOICE_NO_MEMORY, "Not enough memory to record. Restart the Tab5 and try again.") \
+X(FW_CANCELLED, "Update cancelled. Nothing was changed.") \
+X(FW_ERR_LINK, "Lost the connection to the Host. Nothing was changed. Try again.") \
+X(FW_ERR_TIMEOUT, "The Host took too long to send the firmware. Nothing was changed. Try again.") \
+X(FW_ERR_NO_FILE, "No firmware file on the Host at the firmware path (Settings \xe2\x80\xba Host).") \
+X(FW_ERR_HOST_READ, "The Host couldn't read the firmware file.") \
+X(FW_ERR_NOT_APP, "That file isn't Claude Companion firmware for the Tab5.") \
+X(FW_ERR_TOO_BIG, "That firmware is too large for the Tab5's update slot.") \
+X(FW_ERR_CORRUPT, "The firmware file is damaged. Build it again on the Host.") \
+X(FW_ERR_CHANGED, "The file on the Host changed during the download. Try again.") \
+X(FW_ERR_WRITE, "Writing the update failed. The current version stays installed.") \
+X(FW_ERR_BATTERY, "Charge the Tab5 to 30 % or plug it in, then update.") \
+X(FW_ERR_BATTERY_UNKNOWN, "Checking the battery. Try again in a few seconds.") \
+X(FW_ERR_BUSY_SESSION, "Close the session first, then update.") \
+X(FW_ERR_BUSY_VOICE, "Wait for voice input to finish, then update.") \
+X(FW_ERR_BUSY, "An update is already running.") \
+X(FW_ERR_NO_MEMORY, "Not enough memory for the update. Restart the Tab5 and try again.")
 
 typedef enum {
 #define X(id, en) STR_##id,

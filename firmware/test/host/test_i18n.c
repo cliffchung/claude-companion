@@ -62,6 +62,8 @@ static const struct { str_id_t id; const char *conv; } k_formats[] = {
    pinned too ("?" is its lone '%', which starts no conversion), so none can gain a stray "%s" (review M3). */
 static const struct { str_id_t id; const char *conv; } k_plain_percent[] = {
     { STR_SET_DARK_LOWEST, "?" }, { STR_SET_DARK_LOW, "?" }, { STR_SET_DARK_MEDIUM, "?" }, { STR_SES_SLEEPS_AT, "?" },
+    /* "30 % or" reads as a "% o" conversion: pinned, and only ever shown through "%s" or as a toast */
+    { STR_FW_ERR_BATTERY, "o" },
 };
 
 static void test_formats_match_their_callers(void)
