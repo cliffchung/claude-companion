@@ -84,6 +84,15 @@ target_link_libraries(test_server_store pure unity)
 target_compile_options(test_server_store PRIVATE -Wall -Wextra)
 add_test(NAME test_server_store COMMAND test_server_store)
 
+# The Sessions output pane (cc_logview) over the terminal emulator; stubs/ holds an esp_heap_caps.h on the plain heap.
+add_library(logview STATIC ${MAIN}/companion/cc_logview.c ${MAIN}/term/vt.c ${MAIN}/term/wcwidth.c)
+target_include_directories(logview PUBLIC ${MAIN} ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
+target_compile_options(logview PRIVATE -Wall -Wextra -Wno-misleading-indentation)
+add_executable(test_cc_logview test_cc_logview.c)
+target_link_libraries(test_cc_logview logview pure unity)
+target_compile_definitions(test_cc_logview PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+add_test(NAME test_cc_logview COMMAND test_cc_logview)
+
 # The UI lint (Plan 4): amber only through ui_comp, Host command lines only from cc_cmd, "Host" never "Mac",
 # UI strings only through tr(), no UI_* aliases and no unused STR_ entries.
 add_test(NAME ui_lint COMMAND python3 ${MAIN}/../tools/ui_lint.py ${MAIN})
