@@ -134,6 +134,17 @@ bool cc_cmd_voice_check(const char *whisper, const char *model, char *out, size_
     return true;
 }
 
+bool cc_cmd_stop(const char *claude, const char *id, char *out, size_t cap)
+{
+    size_t n;
+    if (!out) return false;
+    if (cap) out[0] = 0;   /* a refusal leaves no partial command behind */
+    if (!cc_path_valid(claude) || !cc_id_valid(id)) return false;
+    if (put(out, cap, &n, "%s stop %s", claude, id)) return true;
+    if (cap) out[0] = 0;
+    return false;
+}
+
 bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap)
 {
     size_t n;

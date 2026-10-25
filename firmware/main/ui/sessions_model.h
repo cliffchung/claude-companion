@@ -35,6 +35,22 @@ void sm_meta(const cc_session_t *s, const char *age, char *out, size_t cap);
 #define SM_TEST_PREFIX "companion-test-"
 int sm_hide_finished_tests(cc_session_t *s, int n);
 
+/* Sessions stopped from the Tab5 in this boot (stop review I2): up to SM_PINS keys, RAM only, the oldest dropped when
+   full. A pinned session stays listed (as ENDED) past the finished limit and the companion-test-* filter, so the stop
+   confirm's "Open starts it again" holds. A pin goes when its session, once seen stopped, runs again (it was opened),
+   or when it leaves the Host's list. Zero-initialised is empty. */
+#define SM_PINS 4
+typedef struct { char key[SM_PINS][SM_KEY_MAX]; uint32_t used[SM_PINS]; bool seen_stopped[SM_PINS]; uint32_t clock; } sm_pins_t;
+void sm_pin_add(sm_pins_t *p, const char *key);
+bool sm_pinned(const sm_pins_t *p, const char *key);
+/* Drops the pins whose key is not in items[0..n), and those whose session runs again after a poll showed it stopped
+   (a pin made while the list still shows the process keeps it until then). */
+void sm_pins_prune(sm_pins_t *p, const cc_session_t *items, int n);
+/* The list as Sessions shows it, compacted in place (order kept): sm_hide_finished_tests, then every active session
+   plus the newest max_finished DONE/ENDED ones (cc_sessions_visible), plus every pinned one, which counts toward
+   neither filter. pins may be NULL. Prunes pins (sm_pins_prune) against the whole list first. */
+int sm_visible(cc_session_t *s, int n, int max_finished, sm_pins_t *pins);
+
 typedef enum { SM_B_NO_WIFI, SM_B_NO_HOST, SM_B_UNREACHABLE, SM_B_LOW_BATTERY, SM_B_RECONNECTING,
                SM_B_LOADING, SM_B_STALE, SM_B_EMPTY, SM_B_LIVE } sm_banner_t;
 typedef struct {

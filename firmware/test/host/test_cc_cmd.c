@@ -78,6 +78,31 @@ static void test_cmd_exact(void)
     TEST_ASSERT_EQUAL_STRING(CL " attach aaaaaaa2", o);
     TEST_ASSERT_TRUE(cc_cmd_logs(CL, "aaaaaaa2", o, sizeof(o)));
     TEST_ASSERT_EQUAL_STRING(CL " logs aaaaaaa2 | tail -c 524288", o);
+    TEST_ASSERT_TRUE(cc_cmd_stop(CL, "aaaaaaa2", o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING(CL " stop aaaaaaa2", o);
+}
+
+static void test_cmd_stop_rejects(void)
+{
+    char o[256] = "junk", small[16];
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "AAAAAAA2", o, sizeof(o)));      /* ids are lowercase hex */
+    TEST_ASSERT_EQUAL_STRING("", o);
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa", o, sizeof(o)));       /* 7 digits */
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa22", o, sizeof(o)));     /* 9 digits */
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaa;rm ", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, NULL, o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop("~/bin/claude;rm", "aaaaaaa2", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop("my claude", "aaaaaaa2", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop(NULL, "aaaaaaa2", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa2", NULL, sizeof(o)));
+    /* exact fit: strlen + 1 bytes; one less fails */
+    char want[256], buf[256];
+    TEST_ASSERT_TRUE(cc_cmd_stop(CL, "aaaaaaa2", want, sizeof(want)));
+    size_t need = strlen(want) + 1;
+    TEST_ASSERT_TRUE(cc_cmd_stop(CL, "aaaaaaa2", buf, need));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa2", buf, need - 1));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa2", small, sizeof(small)));
 }
 
 static void test_cmd_rejects(void)
@@ -606,6 +631,7 @@ int main(void)
     RUN_TEST(test_quote_clears_out_on_failure);
     RUN_TEST(test_cmd_exact);
     RUN_TEST(test_cmd_rejects);
+    RUN_TEST(test_cmd_stop_rejects);
     RUN_TEST(test_cmd_watch_exact);
     RUN_TEST(test_cmd_watch_rejects);
     RUN_TEST(test_strip_ansi);

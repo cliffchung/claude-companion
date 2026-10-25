@@ -23,7 +23,7 @@ lists your Claude Code sessions, NEEDS YOU first, then WORKING, IDLE, DONE and E
 with its name, state, folder and how long ago it changed. A row that needs you has an amber edge, and the
 keyboard's backlight turns amber with it; nothing else on the device is ever amber. The right
 half shows the selected session: the last lines of its conversation, an answer field with a mic
-button, and **↵ Send** and **⌃O Open**.
+button, and **↵ Send**, **⌃O Open** and **⌃X Stop**.
 
 | | |
 |---|---|
@@ -341,7 +341,7 @@ appear on the Sessions screen.
 
 The left side lists the Host's sessions: **NEEDS YOU** first, then WORKING, IDLE, DONE and ENDED,
 the most recent first within each. The right side shows the selected session: its name, the tail
-of its output, an answer field, **↵ Send** and **⌃O Open**. The header shows "● N need you" in
+of its output, an answer field, **↵ Send**, **⌃O Open** and **⌃X Stop** (for a running session). The header shows "● N need you" in
 amber when any session needs you, then the vitals: battery, Wi-Fi, the Tailscale mark (only while
 Tailscale is on), the Host link dot and the clock.
 
@@ -354,7 +354,8 @@ YOU, and doesn't light anything.
 - **Interactive sessions** (a plain `claude` in a terminal) aren't listed: nothing outside that
   terminal can open them.
 - **Stopped and finished sessions** can be opened: Open starts them again with their history, as
-  agent view does. Quick answers need a running session.
+  agent view does. Quick answers need a running session. A session with no process left (it was
+  stopped, even while it waited for you) shows as ENDED, and like DONE only the 4 newest are listed.
 
 ### Answering and opening
 
@@ -374,6 +375,17 @@ YOU, and doesn't light anything.
   of the screen to bring it back. Its chips send Esc, Tab, ^C, ↑ and ↓, **Mic** dictates (as
   Ctrl+Space), and ⌨ opens the on-screen keyboard when no physical keyboard is attached.
 - **Scroll back in a take-over:** Shift+↑ / Shift+↓ (or Shift+PgUp / Shift+PgDn), or drag.
+- **Stop a session:** **Ctrl+X** (or tap **⌃X Stop** next to Open) asks "Stop <name>?" first.
+  Cancel has the focus, and only Tab, Shift+Tab or a tap reaches **Stop**: Enter, Space, Esc and the
+  arrow keys on the question all cancel, so a stray Ctrl+X followed by ↑ and Enter does nothing. To
+  stop by keyboard, press Ctrl+X, Tab, Enter. **Stop** runs `claude stop <id>` on the Host for the
+  session you asked about, even if the list moves meanwhile (if that session ended, left the list or
+  became another conversation first, nothing is stopped). Its conversation stays on the Host: the row
+  turns ENDED and **Open** starts it again. A session you stopped from the Tab5 stays listed until
+  the Tab5 restarts or the session runs again, even past the 4 finished sessions the list keeps.
+  Only running background sessions can be stopped; the button shows only for them, not while you
+  dictate, and not when a note beside it would be cut. A failure shows the command's exit status.
+  `claude stop` may take up to 30 s; the list doesn't update until it answers.
 
 **If the session is also attached at your desk,** both screens mirror the same session, and it is
 resized to the Tab5's width (about 106 columns). After you leave on the Tab5, the Host terminal
@@ -437,6 +449,7 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | ↑ / ↓ | Move between sessions |
 | Enter | Send the answer; on an empty field, open the session |
 | Ctrl+O | Open the selected session |
+| Ctrl+X | Stop the selected session (asks first; Open starts it again). By touch: ⌃X Stop |
 | Ctrl+T (or Ctrl+M) | Terminal (other SSH hosts) |
 | Ctrl+P | Settings |
 | Ctrl+K | The shortcuts list |
@@ -446,7 +459,9 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
 | Shift+↑ / ↓ | Scroll back in a take-over |
 
-In Settings and Terminal, the arrow keys move the focus, Enter chooses and Esc goes back. Inside a
+In Settings and Terminal, the arrow keys move the focus, Enter chooses and Esc goes back. On a
+question such as Forget, Delete, Disconnect or Stop, Cancel comes first and the arrow keys never move
+onto the action: press Tab, then Enter, to confirm (Tab twice when the question was opened by touch). Inside a
 take-over or SSH session the Tab5 keeps only Ctrl+← / Ctrl+Q / Ctrl+], the Shift scroll keys and
 Ctrl+Space (voice input); every other key goes to the Host, and Ctrl+@ still sends NUL.
 
@@ -784,7 +799,8 @@ Use a Debug build: a Release build of the preview crashes in one case. The cases
   answer text is never part of a command line. It reaches Claude Code as pasted keystrokes on a
   `claude attach` session, with control characters removed, so no shell ever parses it.
 - **No login shell on the Host.** The Host link runs only exec channels: `claude agents --json
-  --all`, `claude logs <id>`, `claude attach <id>`, and the session watch. The Terminal screen
+  --all`, `claude logs <id>`, `claude attach <id>`, `claude stop <id>` (built by `cc_cmd_stop`, only
+  after you confirm "Stop <name>?"), whisper-cli for voice input, and the session watch. The Terminal screen
   refuses to open a shell on the Host, which it recognizes by host key.
 - **Nothing is left running on the Host.** There is no daemon or helper. The session watch is a
   short shell loop inside the Tab5's own SSH channel. It runs `claude agents --json --all` and

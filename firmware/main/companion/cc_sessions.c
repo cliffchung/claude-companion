@@ -26,12 +26,13 @@ static const char *jstr(const cJSON *o, const char *key)
 
 /* "needs you" is a question on screen: status "waiting" (Claude Code 2.1.310 adds waitingFor, e.g.
    "input needed"). state "blocked" with status "idle" only means the turn ended and the session waits for
-   your next message, so it is IDLE. */
-static cc_state_t map_state(const char *s)
+   your next message, so it is IDLE. A blocked entry with no process (no pid, so no status) stopped while it
+   waited: that is ENDED, so it sorts and is limited with the finished ones (cc_sessions_visible). */
+static cc_state_t map_state(const char *s, bool live)
 {
     if (!s) return CC_IDLE;
     if (!strcmp(s, "waiting")) return CC_NEEDS_YOU;
-    if (!strcmp(s, "blocked")) return CC_IDLE;
+    if (!strcmp(s, "blocked")) return live ? CC_IDLE : CC_ENDED;
     if (!strcmp(s, "working") || !strcmp(s, "busy")) return CC_WORKING;
     if (!strcmp(s, "done")) return CC_DONE;
     if (!strcmp(s, "failed") || !strcmp(s, "stopped")) return CC_ENDED;
@@ -100,6 +101,8 @@ int cc_sessions_parse(const char *json, cc_session_t *out, int cap)
         basename_of(cwd ? cwd : "", s->repo, sizeof(s->repo));
         const char *name = jstr(e, "name");
         copy_trunc(s->name, sizeof(s->name), (name && name[0]) ? name : s->repo);
+        const cJSON *pid = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "pid");
+        s->live = cJSON_IsNumber(pid) && pid->valuedouble > 0;
         const char *state = jstr(e, "state"), *status = jstr(e, "status");
         const char *wfor = jstr(e, "waitingFor");
         bool asking = (status && !strcmp(status, "waiting")) || (wfor && wfor[0]);
@@ -107,12 +110,10 @@ int cc_sessions_parse(const char *json, cc_session_t *out, int cap)
         else if (status && !strcmp(status, "busy")) s->state = CC_WORKING;
         /* status idle is the live process's word: a stale state "working" doesn't make it WORKING */
         else if (status && !strcmp(status, "idle")) s->state = (state && !strcmp(state, "done")) ? CC_DONE : CC_IDLE;
-        else s->state = map_state(state ? state : status);
+        else s->state = map_state(state ? state : status, s->live);
         s->background = bg;
         const cJSON *st = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "startedAt");
         s->started_ms = cJSON_IsNumber(st) ? (int64_t)st->valuedouble : 0;
-        const cJSON *pid = cJSON_GetObjectItemCaseSensitive((cJSON *)e, "pid");
-        s->live = cJSON_IsNumber(pid) && pid->valuedouble > 0;
     }
     qsort(all, (size_t)n, sizeof(*all), cmp_sessions);
     if (n > cap) n = cap;

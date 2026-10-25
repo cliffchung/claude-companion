@@ -400,6 +400,11 @@ static lv_obj_t *dialog_buttons(lv_obj_t *box)
 
 static lv_obj_t *dialog_body(lv_obj_t *box, const char *text) { return ui_comp_body(box, text); }
 
+static void confirm_focus_cancel(lv_obj_t *ov, lv_obj_t *cancel);
+
+/* The action (user data 1) goes after Cancel (user data 0). Arrow keys never move the focus onto the action: only Tab,
+   Shift+Tab or a touch reach it (keyboard_arrow_target), so Enter, Space and the arrows all keep Cancel, and a stray
+   Up or Left then Enter can't confirm. Opened from a key, Cancel has the focus at once, so one Tab reaches the action. */
 void ui_confirm_ex(const char *title, const char *body, const char *action, bool destructive,
                    ui_confirm_cb_t cb, void *ud)
 {
@@ -415,6 +420,7 @@ void ui_confirm_ex(const char *title, const char *body, const char *action, bool
     lv_obj_t *yes = ui_btn(row, destructive ? UI_BTN_DESTRUCTIVE : UI_BTN_PRIMARY, action ? action : tr(STR_OK),
                            confirm_btn_cb, c);
     lv_obj_set_user_data(yes, (void *)1);
+    confirm_focus_cancel(ov, no);
 }
 
 void ui_confirm(const char *title, const char *text, ui_confirm_cb_t cb, void *user_data)
@@ -742,6 +748,22 @@ lv_obj_t *ui_keyboard_focus_in(lv_obj_t *root, int nth)
     return hit;
 }
 
+/* A confirm's action button (ui_confirm_ex): the arrows never land on it. */
+static bool keyboard_tab_only(lv_obj_t *obj)
+{
+    if (!obj || lv_obj_get_user_data(obj) != (void *)1) return false;
+    for (uint32_t i = 0; i < lv_obj_get_event_count(obj); i++)
+        if (lv_event_dsc_get_cb(lv_obj_get_event_dsc(obj, i)) == confirm_btn_cb) return true;
+    return false;
+}
+
+static void confirm_focus_cancel(lv_obj_t *ov, lv_obj_t *cancel)
+{
+    if (!s_key_last) return;   /* opened by touch: no focus ring until a key */
+    s_keyboard_scope = ov;
+    keyboard_focus_set(cancel);
+}
+
 bool ui_keyboard_route(const key_event_t *ev, bool terminal)
 {
     lv_display_trigger_activity(NULL);
@@ -814,8 +836,10 @@ bool ui_keyboard_route(const key_event_t *ev, bool terminal)
         }
         if (arrow) {
             bool back = ev->key == SK_LEFT || ev->key == SK_UP;
-            if (!had_focus) keyboard_focus_set(back ? walk.last : start);
-            else keyboard_focus_set(back ? (walk.previous ? walk.previous : walk.last) : (walk.next ? walk.next : walk.first));
+            lv_obj_t *to = !had_focus ? (back ? walk.last : start)
+                                      : (back ? (walk.previous ? walk.previous : walk.last) : (walk.next ? walk.next : walk.first));
+            if (keyboard_tab_only(to)) to = had_focus ? obj : start;   /* a confirm's action: Tab only (stop review I1) */
+            keyboard_focus_set(to);
             return true;
         }
         if (ev->key == SK_PGUP || ev->key == SK_PGDN) {
