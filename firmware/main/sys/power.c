@@ -156,6 +156,14 @@ void power_wake(power_wake_t why)
     notify();
 }
 
+void power_note_activity(void)
+{
+    int64_t now = now_ms();
+    taskENTER_CRITICAL(&s_mux);
+    s_last_input_ms = pr_activity_input(s_state, s_wake_pending, s_last_input_ms, now);
+    taskEXIT_CRITICAL(&s_mux);
+}
+
 void IRAM_ATTR power_wake_from_isr(power_wake_t why)
 {
     int64_t now = esp_timer_get_time() / 1000;

@@ -88,6 +88,8 @@ int power_cfg(power_cfg_t c) {
 }
 power_boot_t hibernate_boot_kind(void) { return POWER_BOOT_NORMAL; }
 void power_hold(power_hold_t h, bool on) { (void)h; (void)on; }
+static int s_note_activity_calls;
+void power_note_activity(void) { s_note_activity_calls++; }
 uint32_t power_wake_seq(void) { return s_rc_preview || s_stale_preview ? 1 : 0; }
 uint32_t power_wake_gen(void) { return s_rc_preview || s_stale_preview ? 1 : 0; }   /* no result newer than the wake: stale */
 power_state_t power_woke_from(void) { return s_rc_preview ? PS_RADIO_OFF : s_stale_preview ? PS_OFF : PS_ACTIVE; }
@@ -493,9 +495,11 @@ esp_err_t cc_link_trust_host_key(const char *want, char *fp, size_t cap, int ms)
 }
 #define PREVIEW_OTHER_FP "SHA256:OtherPreviewHostKeyOnly9876543210zyxwvutsr"
 static bool s_pv_other_key;   /* newkey: the Host now presents another unknown key (fix round 1, C1) */
+static bool s_pv_key_cleared;   /* newkey: a reconnect cleared the unknown key (polish 2, N3) */
 bool cc_link_unknown_host_key(char *fp, size_t cap) {
-    snprintf(fp, cap, "%s", pv_newkey() ? (s_pv_other_key ? PREVIEW_OTHER_FP : PREVIEW_NEW_FP) : "");
-    return pv_newkey();
+    bool on = pv_newkey() && !s_pv_key_cleared;
+    snprintf(fp, cap, "%s", on ? (s_pv_other_key ? PREVIEW_OTHER_FP : PREVIEW_NEW_FP) : "");
+    return on;
 }
 uint32_t cc_link_forget_done(char *fp, size_t cap) {
     snprintf(fp, cap, "%s", s_trust_calls ? s_trust_fp : PREVIEW_FP);
@@ -1055,6 +1059,14 @@ static void pv_stop(lv_display_t *d) {
 }
 static char *key_of(int i, char *k) { sm_key(&s_preview_sessions[i], k, SM_KEY_MAX); return k; }
 static lv_obj_t *find_clickable_shown(lv_obj_t *o, const char *t);
+/* A toast showing text whole: its label is as wide as the text, so nothing is cut with dots. */
+static bool toast_whole(lv_obj_t *top, const char *text) {
+    lv_obj_t *l = find_label(top, text, false);
+    if (!l) return false;
+    lv_point_t sz;
+    lv_text_get_size(&sz, text, lv_obj_get_style_text_font(l, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x <= lv_obj_get_width(l);
+}
 /* Review M1: while recording or transcribing, Send, Open and a tap on the selected row do nothing, like Enter. */
 static int pv_taps_inert(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *name) {
     int pastes = s_paste_calls, checks = s_check_calls;
@@ -1170,6 +1182,7 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         /* the Host answers; the service drops the result and goes idle: the draft is only what was typed */
         s_pv_voice.phase = VOICE_IDLE; s_pv_voice.cancelled = false; step(d, 400); step(d, 400);
         if (strcmp(field_text(s), "q") || s_paste_calls) { printf("check %s: FAIL draft \"%s\", %d pastes\n", name, field_text(s), s_paste_calls); return 1; }
+        if (s_note_activity_calls) { printf("check %s: FAIL a cancelled run counted as activity\n", name); return 1; }
         return r;
     }
     if (!strcmp(v, "voice-auto-stop")) {
@@ -1200,6 +1213,8 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         preview_resort_to_last(0); step(d, 400);
         assert(find_label_x(s, second, 440));
         pv_voice_post(k0, VR_OUT_TEXT, "Please run the tests.", false); step(d, 400);
+        /* polish 2: the result restarts the idle clock (power_note_activity), so the screen doesn't dim as it lands */
+        if (s_note_activity_calls != 1) { printf("check %s: FAIL power_note_activity called %d times\n", name, s_note_activity_calls); return 1; }
         if (strcmp(field_text(s), "")) { printf("check %s: FAIL the second session's draft is \"%s\"\n", name, field_text(s)); return 1; }
         /* select the first session again (now the last row): its draft has the text, and the review note */
         lv_obj_t *row = row_named(s, first);
@@ -1234,9 +1249,50 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         lv_obj_t *n = find_label_has(s, "The whisper model isn't on the Host", 440);   /* dotted to its slot */
         if (!n || !obj_shown(n) || !label_red(n)) { printf("check %s: FAIL no red NO_MODEL note\n", name); return 1; }
         printf("sessions voice-error: note \"%s\"\n", lv_label_get_text(n));
-        if (!find_label(lv_layer_top(), tr(STR_VOICE_NO_MODEL), false)) { printf("check %s: FAIL no toast with the whole copy\n", name); return 1; }
+        lv_obj_t *tl = find_label(lv_layer_top(), tr(STR_VOICE_NO_MODEL), false);
+        if (!tl) { printf("check %s: FAIL no toast with the whole copy\n", name); return 1; }
+        /* polish 2: the 6 s toast sits above the answer row; the field, the mic, Send and Open stay in view */
+        lv_area_t ta, oa;
+        lv_obj_get_coords(lv_obj_get_parent(tl), &ta);
+        lv_obj_t *keep[] = { find_clickable_shown(s, tr(STR_SES_SEND)), find_clickable_shown(s, tr(STR_SES_OPEN)), mic_button_of(s),
+                             find_shown(s, &lv_textarea_class) };
+        for (unsigned i = 0; i < sizeof(keep) / sizeof(keep[0]); i++) {
+            assert(keep[i]);
+            lv_obj_get_coords(keep[i], &oa);
+            if (ta.y2 >= oa.y1 && ta.y1 <= oa.y2 && ta.x2 >= oa.x1 && ta.x1 <= oa.x2) {
+                printf("check %s: FAIL the toast (y %d-%d) covers control %u (y %d-%d)\n", name, (int)ta.y1, (int)ta.y2, i, (int)oa.y1, (int)oa.y2);
+                return 1;
+            }
+        }
+        printf("sessions voice-error: toast y %d-%d\n", (int)ta.y1, (int)ta.y2);
         assert(!strcmp(field_text(s), ""));
         return pv_run_checks(d, s, name, true, 0);   /* the note dots inside its slot */
+    }
+    if (!strcmp(v, "voice-norow")) {
+        /* M3: recording on the first session, then a tap on a stopped one, which has no answer field (so no mic). The
+           strip stays while recording and the transcribing note after the stop; once the result is in, the stopped
+           session's pane is back to its plain look. */
+        key_of(0, k0);
+        pv_record(d, 5000, 50);
+        lv_obj_t *row = row_named(s, "done one");
+        assert(row);
+        lv_obj_send_event(row, LV_EVENT_PRESSED, NULL);
+        lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 400);
+        assert(find_label_x(s, "done one", 440) && !field_text(s) && !mic_button_of(s));
+        lv_obj_t *rec = find_label(s, "Recording", false), *t = find_label(s, "0:05 / 0:30", false);
+        if (!rec || !obj_shown(rec) || !t || !obj_shown(t)) { printf("check %s: FAIL no voice strip on a row with no field\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, true, 0);
+        pv_stop(d);
+        s_pv_voice.transcribing_ms = 4000; step(d, 400);
+        lv_obj_t *n = find_label(s, "Transcribing on the Host\xe2\x80\xa6 4 s", false);
+        if (!n || !obj_shown(n)) { printf("check %s: FAIL no transcribing note on a row with no field\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, true, 0);   /* the snapshot shows this: the note beside Open */
+        pv_voice_post(k0, VR_OUT_TEXT, "Please run the tests.", false); step(d, 400); step(d, 400);
+        n = find_label_has(s, "Transcribing on the Host", 0);
+        rec = find_label(s, "Recording", false);
+        if ((n && obj_shown(n)) || (rec && obj_shown(rec))) { printf("check %s: FAIL the voice row outlived the result\n", name); return 1; }
+        if (!find_label_x(s, "done one", 440) || s_paste_calls) { printf("check %s: FAIL the selection or a paste changed\n", name); return 1; }
+        return r;
     }
     if (!strcmp(v, "voice-nofield")) {
         int k = -1;
@@ -2098,9 +2154,24 @@ static int settings_case(lv_display_t *d, int section) {
             printf("check %s: FAIL the refill under the confirm\n", name); return 1;
         }
         lv_obj_send_event(find_clickable_shown(top, "Trust"), LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 200);
-        if (s_trust_calls || !find_label(top, "Not trusted: the Host now presents a different key. Check it again.", false)) {
+        if (s_trust_calls || !find_label(top, tr(STR_SET_TRUST_STALE), false)) {
             printf("check %s: FAIL a refill changed what the confirm trusts (%d calls, \"%s\")\n", name, s_trust_calls, s_trust_fp); return 1;
         }
+        if (!toast_whole(top, tr(STR_SET_TRUST_STALE))) { printf("check %s: FAIL the stale-key toast is cut\n", name); return 1; }
+        lv_obj_clean(top);
+        /* polish 2 (N3): a reconnect clears the unknown key while the confirm is open: the same refusal, the same copy
+           (it names both cases) */
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Trust this key"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        s_pv_key_cleared = true;
+        lv_obj_send_event(find_clickable_shown(top, "Trust"), LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 200);
+        s_pv_key_cleared = false;
+        if (s_trust_calls || !find_label(top, tr(STR_SET_TRUST_STALE), false)) {
+            printf("check %s: FAIL a cleared key: %d trust calls, or no stale-key toast\n", name, s_trust_calls); return 1;
+        }
+        lv_obj_clean(top);
+        /* the trust worker's own refusals fit the toast whole too */
+        ui_toast_ms(tr(STR_SES_TRUST_ENDED), 3000); step(d, 50);
+        if (!toast_whole(top, tr(STR_SES_TRUST_ENDED))) { printf("check %s: FAIL the trust-ended toast is cut\n", name); return 1; }
         lv_obj_clean(top);
         /* the same key after a refill under the confirm: A is trusted, exactly the copy the confirm showed. The
            keyboard focus is on the Trust row (M7: after the pin it must not land on Forget) */

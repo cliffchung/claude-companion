@@ -91,6 +91,11 @@ bool pr_swallow(power_state_t state_at_input, int64_t now_ms, int64_t woke_at_ms
     return now_ms - last_swallowed_ms < PR_SWALLOW_MS;
 }
 
+int64_t pr_activity_input(power_state_t state, bool wake_pending, int64_t last_input_ms, int64_t now_ms)
+{
+    return state == PS_ACTIVE && !wake_pending ? now_ms : last_input_ms;
+}
+
 void pr_needs_you_ids(const cc_session_t *s, int n, pr_idset_t *out)
 {
     out->n = 0;

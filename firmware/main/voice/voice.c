@@ -45,14 +45,17 @@ static int s_check_code;            /* the check's exit code for run s_run; 0 = 
 static int s_elapsed_ms, s_meter;
 static bool s_at_limit;
 static int64_t s_trans_start_us;
-static char s_key[VR_KEY_MAX];
 static bool s_hold;
 static int s_stack_free = -1;     /* the last voice task's stack high-water mark (bytes left), -1 before one */
 
-static voice_result_t s_result;     /* the one slot (P5-3) */
+/* The one result slot (P5-3) and the session key, in PSRAM (polish 2: 750 B out of internal .bss). voice_start
+   allocates them once, after it has claimed the service, and they are never freed. NULL until then: no run, no result
+   and no key. */
+typedef struct { voice_result_t result; char key[VR_KEY_MAX]; } voice_slot_t;
+static voice_slot_t *s_slot;
 static bool s_result_pending;
 static uint32_t s_result_gen;
-static uint32_t s_result_run;       /* the run that posted s_result */
+static uint32_t s_result_run;       /* the run that posted the slot's result */
 static esp_timer_handle_t s_expire;
 
 /* Owned by the voice task between voice_start and wipe_buffer(). */
@@ -113,7 +116,7 @@ static void expire_cb(void *arg)
     (void)arg;
     taskENTER_CRITICAL(&s_mux);
     if (s_result_pending) {
-        zero(&s_result, sizeof(s_result));
+        zero(&s_slot->result, sizeof(s_slot->result));
         s_result_pending = false;
     }
     taskEXIT_CRITICAL(&s_mux);
@@ -132,8 +135,8 @@ static void post_result(const voice_result_t *r, uint32_t run)
     bool cancelled = s_cancel_req && run == s_run;
     bool older = cancelled && s_result_pending;   /* an older run's untaken result: its expiry timer was stopped above */
     if (!cancelled) {
-        s_result = *r;
-        s_result.gen = ++s_result_gen;
+        s_slot->result = *r;
+        s_slot->result.gen = ++s_result_gen;
         s_result_run = run;
         s_result_pending = true;
     }
@@ -147,8 +150,8 @@ bool voice_take_result(voice_result_t *out)
     bool got = false;
     taskENTER_CRITICAL(&s_mux);
     if (s_result_pending) {
-        *out = s_result;
-        zero(&s_result, sizeof(s_result));
+        *out = s_slot->result;
+        zero(&s_slot->result, sizeof(s_slot->result));
         s_result_pending = false;
         got = true;
     }
@@ -178,7 +181,8 @@ void voice_status(voice_status_t *out)
     out->at_limit = s_at_limit;
     out->transcribing_ms = s_phase == VOICE_TRANSCRIBING ? (int)((now - s_trans_start_us) / 1000) : 0;
     out->cancelled = s_phase != VOICE_IDLE && s_cancel_req;
-    memcpy(out->key, s_key, sizeof(out->key));
+    if (s_slot) memcpy(out->key, s_slot->key, sizeof(out->key));
+    else memset(out->key, 0, sizeof(out->key));
     taskEXIT_CRITICAL(&s_mux);
 }
 
@@ -265,7 +269,7 @@ static void voice_task(void *arg)
     voice_result_t res;
     memset(&res, 0, sizeof(res));
     taskENTER_CRITICAL(&s_mux);
-    memcpy(res.key, s_key, sizeof(res.key));
+    memcpy(res.key, s_slot->key, sizeof(res.key));
     taskEXIT_CRITICAL(&s_mux);
 
     vr_out_t out = VR_OUT_FAILED;
@@ -355,7 +359,10 @@ static void voice_task(void *arg)
     /* ---- the one exit: every path above lands here ---- */
     wipe_buffer();
     /* Only now: cc_link_transcribe held link-busy until it returned, so the screen never had a moment with neither
-       hold (at a 30 s auto-stop the user is already past the dim timeout). */
+       hold (at a 30 s auto-stop the user is already past the dim timeout). The result lands now: it restarts the idle
+       clock first, so the ladder doesn't dim the screen as the text arrives and swallow the next key as a wake (a
+       screen that isn't Active is left alone). */
+    power_note_activity();
     set_hold(false);
 
     taskENTER_CRITICAL(&s_mux);
@@ -400,10 +407,19 @@ vr_out_t voice_start(const char *key)
     if (!busy) s_phase = VOICE_STARTING;
     taskEXIT_CRITICAL(&s_mux);
     if (busy) return VR_OUT_BUSY;
+    if (!s_slot) {
+        voice_slot_t *slot = heap_caps_calloc(1, sizeof(*slot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        taskENTER_CRITICAL(&s_mux);
+        s_slot = slot;
+        taskEXIT_CRITICAL(&s_mux);
+    }
     vr_out_t refuse = VR_OUT_STARTED;
     if (mic_is_open()) refuse = VR_OUT_BUSY;              /* `voice rec` has the mic */
     else if (!cc_link_connected()) refuse = VR_OUT_NO_LINK;
-    else {
+    else if (!s_slot) {
+        ESP_LOGW(TAG, "start: no memory for the result slot");
+        refuse = VR_OUT_NO_MEMORY;
+    } else {
         s_buf = heap_caps_malloc(VOICE_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_scratch = heap_caps_calloc(1, SCRATCH_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_buf || !s_scratch) {
@@ -428,8 +444,8 @@ vr_out_t voice_start(const char *key)
     s_meter = 0;
     s_at_limit = false;
     s_trans_start_us = 0;
-    memset(s_key, 0, sizeof(s_key));
-    if (key) strlcpy(s_key, key, sizeof(s_key));
+    memset(s_slot->key, 0, sizeof(s_slot->key));
+    if (key) strlcpy(s_slot->key, key, sizeof(s_slot->key));
     s_tasks++;                   /* the helper, counted before it can end */
     taskEXIT_CRITICAL(&s_mux);
     set_hold(true);
@@ -477,7 +493,7 @@ void voice_cancel(void)
         s_cancel_req = true;
         /* The task posts just before it goes idle: a result this run already posted is dropped too. */
         if (s_result_pending && s_result_run == s_run) {
-            zero(&s_result, sizeof(s_result));
+            zero(&s_slot->result, sizeof(s_slot->result));
             s_result_pending = false;
         }
     }

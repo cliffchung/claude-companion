@@ -269,8 +269,8 @@ void ui_toast(const char *text)
     ui_toast_ms(text, 3000);
 }
 
-/* Spec §5.13: one line at the bottom centre, panel and fg, cut with dots if it is too long. */
-void ui_toast_ms(const char *text, uint32_t ms)
+/* Spec §5.13: one line, panel and fg, cut with dots if it is too long. Built here, placed by the caller. */
+static void toast_build(const char *text)
 {
     ESP_LOGI(TAG, "toast: %s", text);
     if (s_toast_timer) { lv_timer_delete(s_toast_timer); s_toast_timer = NULL; }
@@ -292,7 +292,30 @@ void ui_toast_ms(const char *text, uint32_t ms)
     lv_text_get_size(&sz, lv_label_get_text(l), FONT_BODY, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     lv_obj_set_size(l, sz.x < max_w ? sz.x : max_w, lv_font_get_line_height(FONT_BODY));
     lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+}
+
+/* At the bottom centre, just above the footer. */
+void ui_toast_ms(const char *text, uint32_t ms)
+{
+    toast_build(text);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -(UI_TK_FOOTER_H + UI_TK_GAP_M));
+    s_toast_timer = lv_timer_create(toast_del_cb, ms, NULL);
+}
+
+/* Centred, its bottom edge a gap above `above` (a shown object on screen), so a long-lived toast leaves the controls
+   from there down free to see; where ui_toast_ms puts it when `above` is NULL, hidden or too high for it. */
+void ui_toast_above_ms(const char *text, uint32_t ms, lv_obj_t *above)
+{
+    toast_build(text);
+    int32_t y = -1;
+    if (above && lv_obj_is_visible(above)) {
+        lv_obj_update_layout(s_toast);
+        lv_area_t a;
+        lv_obj_get_coords(above, &a);
+        y = a.y1 - UI_TK_GAP_M - lv_obj_get_height(s_toast);
+    }
+    if (y >= 0) lv_obj_align(s_toast, LV_ALIGN_TOP_MID, 0, y);
+    else lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -(UI_TK_FOOTER_H + UI_TK_GAP_M));
     s_toast_timer = lv_timer_create(toast_del_cb, ms, NULL);
 }
 void ui_toastf(const char *fmt, ...)

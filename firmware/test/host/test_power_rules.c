@@ -244,6 +244,29 @@ void test_swallow_held_key_repeats(void)
     TEST_ASSERT_FALSE(pr_swallow(PS_ACTIVE, 2200, woke, last));
 }
 
+/* A voice result after a 30 s recording with no key: the idle clock restarts while Active, so the ladder stays
+   Active; Dim and deeper, or a wake already pending, are left alone (never a wake). */
+void test_activity_input(void)
+{
+    int64_t last = 1000, now = 1000 + 31000;
+    TEST_ASSERT_EQUAL_INT64(now, pr_activity_input(PS_ACTIVE, false, last, now));
+    TEST_ASSERT_EQUAL_INT64(last, pr_activity_input(PS_ACTIVE, true, last, now));
+    for (power_state_t st = PS_DIM; st <= PS_HIBERNATE; st++)
+        TEST_ASSERT_EQUAL_INT64(last, pr_activity_input(st, false, last, now));
+    pr_in_t in;
+    memset(&in, 0, sizeof(in));
+    in.state = PS_ACTIVE; in.now_ms = now; in.dim_s = 30; in.off_s = 120; in.sleep_on_usb = true;
+    in.on_battery = true; in.battery_pct = -1;
+    in.last_input_ms = last;
+    TEST_ASSERT_EQUAL(PS_DIM, pr_next_state(&in));   /* without it: the screen dims as the text lands */
+    in.last_input_ms = pr_activity_input(PS_ACTIVE, false, last, now);
+    TEST_ASSERT_EQUAL(PS_ACTIVE, pr_next_state(&in));
+    in.now_ms = now + 29000;
+    TEST_ASSERT_EQUAL(PS_ACTIVE, pr_next_state(&in));
+    in.now_ms = now + 30000;
+    TEST_ASSERT_EQUAL(PS_DIM, pr_next_state(&in));   /* a full dim timeout from the result, no extra hold */
+}
+
 static pr_idset_t ids(const char *a, const char *b)
 {
     pr_idset_t s;
@@ -601,5 +624,6 @@ int main(void)
     RUN_TEST(test_hib_checkin_low_battery);
     RUN_TEST(test_hib_checkin_gate);
     RUN_TEST(test_unknown_source_backstop);
+    RUN_TEST(test_activity_input);
     return UNITY_END();
 }

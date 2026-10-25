@@ -9,3 +9,9 @@ Local changes: none besides moving wireguard_lwip to a sibling component directo
 - microlink.c/.h: microlink_destroy_finish() + the ml_free_instance() split out of microlink_destroy()
   (Claude Companion Plan 3, rulings L6/L15): frees an instance microlink_stop() already stopped, once its
   last task exits, without stopping it twice. Required by main/net/tailscale.c; keep it on a re-vendor.
+- ml_netcheck.c: the netcheck (on the coord task, up to 25 s) ends early once ML_EVT_SHUTDOWN_REQUEST is set: it
+  checks before each region and at least every 250 ms while it waits, and then returns no region. Before this, a
+  stop during the first map outlived microlink_stop()'s 15 s wait and was logged as a leaked instance (Claude
+  Companion polish 2).
+- ml_derp.c: the DERP connect and reconnect retry loops stop retrying once ML_EVT_SHUTDOWN_REQUEST is set
+  (derp_stopping(), before each attempt and after each backoff). Same reason (polish 2).

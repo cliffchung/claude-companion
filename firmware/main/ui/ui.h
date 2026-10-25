@@ -64,6 +64,7 @@ lv_obj_t *ui_switch_row(lv_obj_t *parent, const char *label, bool on, lv_event_c
 
 void ui_toast(const char *text);                  /* ui_toast_ms(text, 3000) */
 void ui_toast_ms(const char *text, uint32_t ms);
+void ui_toast_above_ms(const char *text, uint32_t ms, lv_obj_t *above);   /* centred just above `above` */
 void ui_toastf(const char *fmt, ...);
 typedef void (*ui_confirm_cb_t)(bool yes, void *user_data);
 void ui_confirm(const char *title, const char *text, ui_confirm_cb_t cb, void *user_data);
