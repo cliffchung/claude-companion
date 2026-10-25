@@ -59,16 +59,23 @@ static const char *const s_chrome[] = {
     "tokens)", "thinking with", "Deliberating", "Actualizing", "ctrl+b", "Region/Example_Zone", "hook \xc2\xb7",
 };
 
-/* none of the chrome strings in t */
-static void no_chrome_in(const char *t)
+/* none of the chrome strings in t. The fallback may keep a stray piece that is also a sentence: "3 agents", or a bare
+   verb redrawn without its glyph ("Pollinating…", as a reply's "Thinking…" would be). */
+static void no_chrome_in_as(const char *t, bool fallback)
 {
+    static const char *const strays[] = { "agents", "Pollinating", "Computing", "Deliberating", "Actualizing" };
     for (size_t i = 0; i < sizeof(s_chrome) / sizeof(s_chrome[0]); i++) {
+        bool stray = false;
+        for (size_t k = 0; fallback && k < sizeof(strays) / sizeof(strays[0]); k++) stray |= !strcmp(s_chrome[i], strays[k]);
+        if (stray) continue;
         if (strstr(t, s_chrome[i])) {
             printf("chrome \"%s\" in:\n%s\n", s_chrome[i], t);
             TEST_FAIL_MESSAGE(s_chrome[i]);
         }
     }
 }
+
+static void no_chrome_in(const char *t) { no_chrome_in_as(t, false); }
 
 /* The footer, the status line, the spinner, the input box, the banner and the update check: none of it shows. */
 static void no_chrome(void)
@@ -109,20 +116,20 @@ static void test_short_reply(void)
 
 /* The fallback (busy-pane fix): the escape-stripping heuristic on the same bytes used to end in the footer's
    redraws ("auto mode on", tokens, "SessionStart"). It now drops the chrome and keeps the conversation. */
-static void test_heuristic_drops_chrome(void)
+static void test_fallback_drops_chrome(void)
 {
     static const char *fx[] = { "logs_short.bin", "logs_long.bin", "logs_busy.bin", "logs_tool.bin", "logs_numbered.bin",
                                 "logs_perm.bin", "logs_working.bin" };
     for (size_t i = 0; i < sizeof(fx) / sizeof(fx[0]); i++) {
         load(fx[i]);
-        TEST_ASSERT_GREATER_THAN(0, cc_log_tail(s_raw, 40));
-        no_chrome_in(s_raw);
+        TEST_ASSERT_GREATER_THAN(0, cc_logview_fallback(s_raw, 40));
+        no_chrome_in_as(s_raw, true);
     }
     load("logs_short.bin");
-    cc_log_tail(s_raw, 40);
+    cc_logview_fallback(s_raw, 40);
     TEST_ASSERT_NOT_NULL(strstr(s_raw, "The short test reply is here."));
     load("logs_working.bin");
-    cc_log_tail(s_raw, 40);
+    cc_logview_fallback(s_raw, 40);
     TEST_ASSERT_NOT_NULL(strstr(s_raw, DOT " Running 1 shell command"));
 }
 
@@ -232,7 +239,7 @@ static void test_working(void)
 }
 
 /* A sparse busy screen with nothing but the spinner and its stale counters: no conversation (0), and the fallback
-   keeps nothing either, so the pane says "No output yet" rather than "Actualizing…" or "51s · 412 words)". */
+   keeps nothing either, so the pane says "Nothing to show yet" rather than "Actualizing…" or "51s · 412 words)". */
 static void test_working_spinner_only(void)
 {
     static const char frames[] =
@@ -246,7 +253,7 @@ static void test_working_spinner_only(void)
     memcpy(buf, frames, sizeof(frames));
     TEST_ASSERT_EQUAL(CC_LV_NONE, cc_logview_tail(buf, sizeof(frames) - 1, true, 40, s_out, sizeof(s_out)));
     TEST_ASSERT_EQUAL_STRING("", s_out);
-    TEST_ASSERT_EQUAL(0, cc_log_tail(buf, 40));
+    TEST_ASSERT_EQUAL(0, cc_logview_fallback(buf, 40));
     TEST_ASSERT_EQUAL_STRING("", buf);
     /* the same frames after a clear are no busy sparse screen: no layout, as before */
     char clr[sizeof(frames) + 8] = "\x1b[2J";
@@ -501,6 +508,172 @@ static void test_lookalikes_survive(void)
                              "                                        centred code, column 40", s_out);
 }
 
+/* ------------------------------------------------------------ chrome vs prose (busy-pane review round 1) */
+/* Ordinary lines that look a little like chrome: the review's probe. The pane must keep every one. */
+static const char *const s_prose[] = {
+    "The model has a 200k tokens window", "Wait\xe2\x80\xa6 that's wrong", "Hmm\xe2\x80\xa6 let me check", "(1) Install it",
+    "The server is still running on 8080", "I thought for a moment", "Press ctrl+b to bold", "Turn dark mode on",
+    "Spawned 3 agents in parallel", "The pre-commit hook is running lint", "Retry (wait for 5 seconds)", "Please wait\xe2\x80\xa6",
+    "\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 src", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 README.md", "3.14159", "});",
+    "Press \xe2\x86\x91 to recall", "Tip: use git", "\xe5\x8f\xb2\xe5\xaf\x86\xe6\x96\xaf\xc2\xb7\xe7\xba\xa6\xe7\xbf\xb0",
+    "\xe8\x80\x83\xe3\x81\x88\xe4\xb8\xad\xe2\x80\xa6", "\xe6\x97\xa5\xe6\x9c\xac(\xe4\xbe\x8b)", "\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88 40% done",
+    "* Pay for 3 items", "OK", "thinking", "Loading data\xe2\x80\xa6", "1. Use 2 shells", "Thinking\xe2\x80\xa6", "The webhook is running",
+    "Done (took 3s)", "Step 2 (of 5)", "2 agents finished", "20 tokens", "I'll keep thinking", "120", "$ 1,234", DOT " Done.",
+    "Use auto mode for that", "1) First", "Run it (for 2 minutes)", "Wrote 12 lines to a.c", "Edited (3 files)",
+    "\xe4\xbd\xa0\xe5\xa5\xbd\xe2\x80\xa6", "\xe4\xbd\xa0\xe5\xa5\xbd\xe5\x90\x97", "(ctrl+c stops the server)",
+    "Error: prompt is too long: 210000 tokens > 200000 maximum", "API Error: usage limit reached",
+    "error: Claude Code v2.1 requires a newer Node", "esc to interrupt the build, then retry",
+};
+#define N_PROSE (sizeof(s_prose) / sizeof(s_prose[0]))
+
+/* Chrome as the TUI's redraws leave it in the escape-stripped tail: each goes. */
+static const char *const s_chrome_lines[] = {
+    "\xe2\x9c\xbd Swirling\xe2\x80\xa6 (12s \xc2\xb7 \xe2\x86\x93 3k tokens)", "Swirling\xe2\x80\xa6 (12s \xc2\xb7 \xe2\x86\x93 3k tokens)",
+    "\xc2\xb7 Computing\xe2\x80\xa6", "\xe2\x9c\xbb Baked for 5s", "\xe2\x9c\xbb Worked for 2m 6s \xc2\xb7 1 shell still running",
+    "\xe2\x9c\xb3 n (2s \xc2\xb7 thinking with medium effort)", "\xe2\x9c\xa2 5 thinking", "\xe2\x9c\xb3 313",
+    "a n thinking with medium effort", "thinking with medium effort", "10s \xc2\xb7 11 lines)", "51s \xc2\xb7 412 words)",
+    "12s \xc2\xb7 \xe2\x86\x93 312 tokens)", "2 0s \xc2\xb7 1 8 lines)", "5 thinking)",
+    "12k tokens | Opus 5.5", "46k tokens | [\xe2\x96\x88\xe2\x96\x88\xe2\x96\x91\xe2\x96\x91] 7% reset | 51% 3d 14h weekly reset",
+    "\xe2\x8f\xb5\xe2\x8f\xb5 auto mode on (shift+tab to cycle) \xc2\xb7 2 agents", "\xe2\x8f\xb8 manual mode on \xc2\xb7 \xe2\x86\x90 for agents",
+    "auto mode on (shift+tab to cycle)", "? for shortcuts", "Checking for updates\xe2\x80\xa6", "running stop hooks\xe2\x80\xa6 1/2",
+    "UserPromptSubmit hook \xc2\xb7 0s)", "SessionStart:startup hook succeeded",
+    "\xe2\x8e\xbf  Tip: Use /statusline to set up a custom status line", "\xe2\x97\x90 medium \xc2\xb7 /effort",
+    "You've used 89% of your weekly limit \xc2\xb7 resets Oct 27 at 7pm (Region/Example_Zone)", "(ctrl+b to run in background)",
+    "(ctrl+b to  run in background)", "\xe2\x96\x90\xe2\x96\x9b\xe2\x96\x88\xe2\x96\x88 Claude Code v2.1.310",
+    "\xe2\x96\x9d\xe2\x96\x9c\xe2\x96\x88\xe2\x96\x88 Opus 5.5 with medium effort \xc2\xb7 Plan label",
+    "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 companion-test-busy \xe2\x94\x80", "/rc", "3  12s\xe2\x80\xa6", "\xc2\xb7 4",
+};
+#define N_CHROME (sizeof(s_chrome_lines) / sizeof(s_chrome_lines[0]))
+
+static void test_fallback_chrome_shapes(void)
+{
+    char buf[512];
+    for (size_t i = 0; i < N_CHROME; i++) {
+        snprintf(buf, sizeof(buf), "%s\r\n", s_chrome_lines[i]);
+        if (cc_logview_fallback(buf, 40) != 0) { printf("kept chrome: %s\n", s_chrome_lines[i]); TEST_FAIL(); }
+        TEST_ASSERT_EQUAL_STRING("", buf);
+    }
+    /* chrome around the conversation: only the conversation stays, in order */
+    static char all[16384];
+    size_t o = 0;
+    for (size_t i = 0; i < N_CHROME; i++) {
+        o += (size_t)sprintf(all + o, "%s\r\n", s_chrome_lines[i]);
+        if (i == 3) o += (size_t)sprintf(all + o, "What's your favorite color?\r\n");
+        if (i == 20) o += (size_t)sprintf(all + o, "Ran 2 shell commands\r\n");
+    }
+    sprintf(all + o, DOT " Done. The color is blue.\r\n");
+    TEST_ASSERT_EQUAL(3, cc_logview_fallback(all, 40));
+    TEST_ASSERT_EQUAL_STRING("What's your favorite color?\nRan 2 shell commands\n" DOT " Done. The color is blue.", all);
+    /* a bare verb the spinner redraws again and again goes; a reply's one "Thinking…" stays */
+    char rep[] = "Deliberating\xe2\x80\xa6\r\nThinking\xe2\x80\xa6\r\nDeliberating\xe2\x80\xa6\r\nI checked it.\r\nDeliberating\xe2\x80\xa6\r\n";
+    TEST_ASSERT_EQUAL(2, cc_logview_fallback(rep, 40));
+    TEST_ASSERT_EQUAL_STRING("Thinking\xe2\x80\xa6\nI checked it.", rep);
+}
+
+/* M5: prose survives the fallback (as cc_log_tail keeps it), the chrome matcher, and the pane on an idle screen
+   and on a busy sparse one. */
+static void test_prose_survives(void)
+{
+    char buf[512];
+    int kept = 0;
+    for (size_t i = 0; i < N_PROSE; i++) {
+        TEST_ASSERT_FALSE_MESSAGE(cc_logview_chrome_line(s_prose[i]), s_prose[i]);
+        snprintf(buf, sizeof(buf), "%s\r\n", s_prose[i]);
+        char plain[512];
+        snprintf(plain, sizeof(plain), "%s\r\n", s_prose[i]);
+        int base = cc_log_tail(plain, 40);   /* what the plain heuristic keeps (it drops two CJK characters alone) */
+        int got = cc_logview_fallback(buf, 40);
+        if (got != base) { printf("fallback dropped: %s\n", s_prose[i]); TEST_FAIL(); }
+        kept += got;
+    }
+    printf("prose kept by the fallback: %d of %d\n", kept, (int)N_PROSE);
+    TEST_ASSERT_EQUAL((int)N_PROSE, kept);
+    /* the pane: an idle screen with its input box, then the same rows on a busy sparse screen */
+    static char screen[16384];
+    const char *rows[N_PROSE + 1];
+    rows[0] = NULL;
+    for (size_t i = 0; i < N_PROSE; i++) rows[i + 1] = s_prose[i];
+    for (int sparse = 0; sparse < 2; sparse++) {
+        size_t n = synth(screen, rows, (int)N_PROSE + 1, !sparse, (int)N_PROSE + 2);
+        if (sparse) {   /* no clear, a spinner under the rows and the cursor parked below it */
+            memmove(screen, screen + 7, n - 7);
+            n -= 7;
+            n += (size_t)sprintf(screen + n, "\x1b[%d;1H\xe2\x9c\xa2 Actualizing\xe2\x80\xa6\x1b[%d;1H\x1b[%d;3H",
+                                 (int)N_PROSE + 3, (int)N_PROSE + 9, (int)N_PROSE + 6);
+        }
+        TEST_ASSERT_EQUAL_MESSAGE((int)N_PROSE, cc_logview_tail(screen, n, true, 80, s_out, sizeof(s_out)),
+                                  sparse ? "sparse" : "idle");
+        for (size_t i = 0; i < N_PROSE; i++) has(s_prose[i]);
+    }
+}
+
+/* A sparse screen of rows that open with a busy screen's buffer (the spinner and the parked cursor appended). */
+static size_t sparse_screen(char *buf, const char *body, int spin_row)
+{
+    return (size_t)sprintf(buf, "%s\x1b[%d;1H\xe2\x9c\xa2 Actualizing\xe2\x80\xa6\x1b[%d;1H\x1b[%d;3H", body, spin_row,
+                           spin_row + 6, spin_row + 3);
+}
+
+/* M1-M3: row by row on a sparse screen: a stale counter goes wherever it starts; short rows, deep code and a reply's
+   own "(ctrl+…)" stay; the TUI's own hint goes (on an idle screen too). */
+static void test_sparse_rows(void)
+{
+    char buf[4096];
+    size_t n = sparse_screen(buf, "\x1b[30;3HHello world\x1b[31;17H12s \xc2\xb7 \xe2\x86\x93 312 tokens)\x1b[32;5H51s \xc2\xb7 412 words)"
+                                  "\x1b[33;3H1. A\x1b[34;3H2. B\x1b[35;3Hx = 1\x1b[36;3H42\x1b[37;3Hif a:\x1b[38;29Hdeep_call(arg)"
+                                  "\x1b[39;3H(ctrl+c stops the server)\x1b[40;6H(ctrl+b to run in background)", 42);
+    TEST_ASSERT_EQUAL(8, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING("  Hello world\n  1. A\n  2. B\n  x = 1\n  42\n  if a:\n                            deep_call(arg)\n"
+                             "  (ctrl+c stops the server)", s_out);
+    const char *rows[] = { NULL, DOT " Started it.", "  (ctrl+c stops the server)", "     (ctrl+b to run in background)" };
+    n = synth(buf, rows, 4, true, 6);
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING(DOT " Started it.\n  (ctrl+c stops the server)", s_out);
+}
+
+/* I3: a sparse screen has no rule to give the width: a table and a code block stay row by row; a paragraph the TUI
+   wrapped (the row above running to the widest row, the next starting lowercase at its text column) still joins. */
+static void test_sparse_join(void)
+{
+    char buf[8192];
+    size_t n = sparse_screen(buf, "\x1b[30;3H\xe2\x94\x82 Name  \xe2\x94\x82 Age \xe2\x94\x82\x1b[31;3H\xe2\x94\x82 Alice \xe2\x94\x82 30  \xe2\x94\x82"
+                                  "\x1b[32;3H\xe2\x94\x82 Bob   \xe2\x94\x82 41  \xe2\x94\x82", 34);
+    TEST_ASSERT_EQUAL(3, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING("  \xe2\x94\x82 Name  \xe2\x94\x82 Age \xe2\x94\x82\n  \xe2\x94\x82 Alice \xe2\x94\x82 30  \xe2\x94\x82\n"
+                             "  \xe2\x94\x82 Bob   \xe2\x94\x82 41  \xe2\x94\x82", s_out);
+    /* code: rows of equal length, wide enough to look wrapped */
+    char body[4096];
+    const char *code = "result_%c = compute(alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda)";
+    size_t o = (size_t)sprintf(body, "\x1b[30;1H" DOT " Here:");
+    for (int i = 0; i < 3; i++) { o += (size_t)sprintf(body + o, "\x1b[%d;3H", 31 + i); o += (size_t)sprintf(body + o, code, 'a' + i); }
+    o += (size_t)sprintf(body + o, "\x1b[34;3Hdef f(x):\x1b[35;7Hreturn x + 1\x1b[36;7Hpass\x1b[37;3Hprint(f(2))");
+    n = sparse_screen(buf, body, 39);
+    TEST_ASSERT_EQUAL(8, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    has("\n  def f(x):\n      return x + 1\n      pass\n  print(f(2))");
+    /* a wrapped paragraph: one line */
+    char para[400] = DOT " Tides";
+    while (strlen(para) < 140) strcat(para, " begin");
+    n = (size_t)sprintf(body, "\x1b[30;1H%s\x1b[31;3Hwith gravity, mostly the Moon's.\x1b[32;3HA new sentence here.", para);
+    n = sparse_screen(buf, body, 34);
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    has(" begin with gravity, mostly the Moon's.\n  A new sentence here.");
+}
+
+/* M4: the anchor when the stream ends mid-frame (cursor above the spinner) and with a tall todo list under it. */
+static void test_sparse_anchor(void)
+{
+    char buf[4096];
+    size_t n = sparse_screen(buf, "\x1b[30;1H" DOT " Working on it.", 43);
+    n += (size_t)sprintf(buf + n, "\x1b[H\r\x1b[8B");   /* a frame cut after its first move */
+    TEST_ASSERT_EQUAL(1, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING(DOT " Working on it.", s_out);
+    size_t o = (size_t)sprintf(buf, "\x1b[5;1H" DOT " Planning.\x1b[8;1H\xe2\x9c\xa2 Actualizing\xe2\x80\xa6");
+    for (int i = 0; i < 16; i++) o += (size_t)sprintf(buf + o, "\x1b[%d;3H\xe2\x8e\xbf  \xe2\x98\x90 Task number %d", 9 + i, i);
+    o += (size_t)sprintf(buf + o, "\x1b[33;1H\x1b[30;3H");
+    TEST_ASSERT_EQUAL(1, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING(DOT " Planning.", s_out);
+}
+
 /* M5: a recording wider than 312 columns or taller than 160 rows is refused, not clamped. */
 static void test_too_big(void)
 {
@@ -617,7 +790,12 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_size);
     RUN_TEST(test_short_reply);
-    RUN_TEST(test_heuristic_drops_chrome);
+    RUN_TEST(test_fallback_drops_chrome);
+    RUN_TEST(test_fallback_chrome_shapes);
+    RUN_TEST(test_prose_survives);
+    RUN_TEST(test_sparse_rows);
+    RUN_TEST(test_sparse_join);
+    RUN_TEST(test_sparse_anchor);
     RUN_TEST(test_long_reply);
     RUN_TEST(test_tool_call);
     RUN_TEST(test_numbered_question);

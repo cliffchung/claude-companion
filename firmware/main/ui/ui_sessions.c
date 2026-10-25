@@ -396,7 +396,7 @@ static void run_job(const job_t *j)
                 } else {   /* no screen to read (a cut stream, no memory, an unknown screen): the escape-stripping heuristic */
                     char *start = raw;
                     while ((*start & 0xC0) == 0x80) start++;   /* the tail may start mid-character */
-                    cc_log_tail(start, TAIL_LINES);
+                    cc_logview_fallback(start, TAIL_LINES);   /* without the TUI's chrome */
                     src = start;
                 }
             }

@@ -15,8 +15,10 @@
  * measured, trimmed at a frame start), so a long turn's spinner redraws push the clear and the first full frame out
  * of it. Its screen is then sparse: no rules, no input box, no footer, only the rows redrawn since (the conversation
  * where the screen moved, the spinner, stale counter fragments). It is read up to the spinner, the lowest one within
- * 12 rows above the parked cursor. A row redrawn by cell diff can miss the cells that didn't change (a letter in the
- * same place on the row before); only a repaint (attach, resize) would bring those back.
+ * 40 rows above the parked cursor or the last drawn row, whichever finds the lower one (a stream can end mid-frame;
+ * a todo list or an agent tree can sit under the spinner, and goes with it). With no spinner there it is still
+ * CC_LV_NO_LAYOUT and the pane falls back (cc_logview_fallback). A row redrawn by cell diff can miss the cells that
+ * didn't change (a letter in the same place on the row before); only a repaint (attach, resize) brings those back.
  *
  * The limit (accepted, fix round 2): the bytes since the latest clear must fit 512 KB (LOGS_CAP in ui_sessions.c).
  * Claude Code clears on start, attach and resize, so a long-running session that nobody attaches to can pass that;
@@ -65,12 +67,35 @@ bool cc_logview_size(const char *raw, size_t len, int *cols, int *rows, size_t *
      right edge: the effort, usage notices, the update check), the spinner's line (a spinner glyph at column 0, a
      verb and "…" with an optional "(…)", or "<verb> for <time>": "✻ Baked for 5s", "· Computing…") with a "⎿" tip
      under it, and, with a dialog up, the description rows under its numbered options (indented past the number),
-     so that the question and every option fit the pane; a row that is only a key hint ("(ctrl+b to run in
-     background)"); on a sparse screen also rows starting past column 24 and rows without a word (two letters in
-     a row, or a CJK character): a moved spinner's stale time and counters. Tool calls stay as the TUI draws them,
+     so that the question and every option fit the pane; a row that is only one of the TUI's key hints ("(ctrl+b to
+     run in background)"; a reply's "(ctrl+c stops the server)" stays); on a sparse screen, row by row, the rows
+     cc_logview_chrome_line calls chrome (wherever they start: a moved spinner's stale counter, the effort, a usage
+     notice) and stale fragments (no word, and a "…", "·" or arrow), never a short row or deep code ("42", "x = 1",
+     "1. A"); its right-aligned check is off, the width being a guess. Tool calls stay as the TUI draws them,
      already compact: "⏺ Running 1 shell command · 44s…", its "⎿  $ command (42s · 43 lines)", "Listed 1 directory";
    - a row the TUI wrapped (the previous row full up to its next word, and the row not starting an item: a number
      and ".", a bullet, ⏺, ❯, ⎿) is joined to the previous one, with a space unless either side is a wide (CJK)
-     character, so the pane can wrap it to its own width.
+     character, so the pane can wrap it to its own width. On a sparse screen (no rule: the width is the widest row)
+     only prose joins: the row above ran to within 4 cells of the widest row (80 or more), doesn't end a sentence or
+     a code line (. ! ? : ; brackets, a box character) and has no " = ", and this row starts lowercase at that row's
+     text column; a table, a code block or short rows stay as they are.
    Returns the number of lines written, or one of the CC_LV_ results above (out = "" then). */
 int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, char *out, size_t cap);
+
+/* True when line (one line, NUL-terminated; leading and trailing blanks ignored) is Claude Code's chrome, matched by
+   its whole shape or anchored at its start, never a word inside a sentence: the spinner ("✽ Swirling… (12s · ↓ 3k
+   tokens)", "✻ Baked for 5s", "✢ 5 thinking") and its counter or a stale piece of it ("10s · 11 lines)"), the footer's
+   meter ("12k tokens | …"), the mode line (⏵⏵, ⏸, "auto mode on (shift+tab …"), "? for shortcuts", "Checking for
+   updates…", hooks ("running stop hooks…", "UserPromptSubmit hook · 0s)"), a "⎿  Tip:", the effort ("◐ … /effort"),
+   usage notices ("You've used 89% of your …"), the banner, the frame rule with the session's name, "/rc" and the
+   TUI's own key hints ("(ctrl+b to run in background)"). Anything unclear is not chrome. */
+bool cc_logview_chrome_line(const char *line);
+
+/* The Sessions pane's fallback when cc_logview_tail can't read the screen: cc_log_tail (escape stripping, in place),
+   then without the chrome lines above, stale redraw fragments (no word, and a "…", "·" or arrow: "3  12s…") and a
+   bare verb ("Deliberating…") seen more than once among the last 16 bare verbs (the spinner's; a reply's single
+   "Thinking…" stays). A bare verb seen once may stay: a stray chrome line beats a lost sentence.
+   Keeps the last max_lines; returns how many, 0 (s = "") when only chrome was left (the pane then says "Nothing to
+   show yet"). cc_log_tail itself is unchanged
+   for its other callers (the terminal's error line). */
+int cc_logview_fallback(char *s, int max_lines);

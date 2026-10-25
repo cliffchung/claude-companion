@@ -1,6 +1,8 @@
 /* The Sessions output pane's text, read off a rendered screen of `claude logs` (see cc_logview.h). */
 #include "cc_logview.h"
+#include "companion/cc_cmd.h"
 #include "term/vt.h"
+#include <limits.h>
 #include "esp_heap_caps.h"
 #include <stdint.h>
 #include <stdlib.h>
@@ -19,7 +21,9 @@
 #define WRAP_SLACK   4     /* a row this close to the width, with the next word not fitting, was wrapped */
 #define RULE_NEAR    8     /* with no input box or dialog, a rule this close to the last drawn row ends the view */
 #define HINT_SPAN    40    /* a dialog's options lie this close above its "Esc to cancel" hint */
-#define SPIN_NEAR    12    /* on a sparse screen, the spinner lies this close above the parked cursor */
+#define SPIN_NEAR    40    /* on a sparse screen, the spinner lies this close above the cursor or the last drawn row
+                              (a todo list or an agent tree may sit between it and the input box) */
+#define JOIN_MIN     80    /* on a sparse screen, rows narrower than this were never wrapped by an 80+ column TUI */
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -70,6 +74,293 @@ bool cc_logview_size(const char *raw, size_t len, int *cols, int *rows, size_t *
     if (start) *start = from;
     if (cleared) *cleared = clr;
     return fits;
+}
+
+/* ------------------------------------------------------------ chrome lines (busy-pane fix round 1) */
+/* Every rule matches the whole line, or a shape anchored at its start, as Claude Code draws it. Anything unclear is
+   kept: a stray chrome line is better than a lost sentence. */
+static bool pre(const char *s, const char *p) { return !strncmp(s, p, strlen(p)); }
+
+/* a spinner glyph at s (· ✢ ✳ ✶ ✻ ✽ or *): its length, else 0 */
+static size_t spin_glyph(const unsigned char *u)
+{
+    if (u[0] == 0xc2 && u[1] == 0xb7) return 2;
+    if (u[0] == 0xe2 && u[1] == 0x9c && (u[2] == 0xa2 || u[2] == 0xb3 || u[2] == 0xb6 || u[2] == 0xbb || u[2] == 0xbd)) return 3;
+    return u[0] == '*' ? 1 : 0;
+}
+
+/* a spinner verb: a capital, then letters ("Beboppin'", "Sautéed"); the end, else NULL */
+static const char *verb_end(const char *s)
+{
+    const unsigned char *t = (const unsigned char *)s;
+    if (!(*t >= 'A' && *t <= 'Z')) return NULL;
+    for (t++;;) {
+        if ((*t >= 'a' && *t <= 'z') || (*t >= 'A' && *t <= 'Z') || *t == '\'') t++;
+        else if (t[0] >= 0xc3 && t[0] <= 0xc5 && (t[1] & 0xc0) == 0x80) t += 2;
+        else break;
+    }
+    return (const char *)t;
+}
+
+/* a duration ("5s", "2m 6s", "1h 3m"): its end, else NULL */
+static const char *duration_end(const char *s)
+{
+    const char *t = s, *ok = NULL;
+    for (;;) {
+        const char *d = t;
+        while (*t >= '0' && *t <= '9') t++;
+        if (t == d || (*t != 's' && *t != 'm' && *t != 'h')) return ok;
+        ok = ++t;
+        if (*t != ' ' || !(t[1] >= '0' && t[1] <= '9')) return ok;
+        t++;
+    }
+}
+
+/* one word of a spinner's counter: "12s", "3.2k", "·", "↓", "tokens", "thinking", "medium", "effort", ... */
+static bool counter_word(const char *w, size_t n, bool *marker, bool *amount)
+{
+    static const char *const words[] = { "tokens", "thinking", "thought", "for", "with", "low", "medium", "high", "xhigh",
+                                         "max", "effort", "lines", "words", "esc", "to", "interrupt" };
+    if (n && w[0] == '(') { w++; n--; }
+    if (n && w[n - 1] == ')') n--;
+    if (!n) return true;
+    if ((n == 2 && !memcmp(w, "\xc2\xb7", 2)) || (n == 3 && (!memcmp(w, "\xe2\x86\x93", 3) || !memcmp(w, "\xe2\x86\x91", 3)))) {
+        *marker = true;
+        return true;
+    }
+    size_t d = 0;
+    while (d < n && ((w[d] >= '0' && w[d] <= '9') || w[d] == '.' || w[d] == ',')) d++;
+    if (d && (d == n || (d + 1 == n && strchr("kMsmh", w[d])))) { *amount = true; return true; }
+    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++)
+        if (strlen(words[i]) == n && !memcmp(w, words[i], n)) {
+            if (i == 0 || i == 1 || i == 2) *amount = true;
+            return true;
+        }
+    return false;
+}
+
+/* A spinner's counter, whole or a stale piece of it: "(12s · ↓ 3k tokens)", "10s · 11 lines)", "51s · 412 words)",
+   "a n thinking with medium effort", "5 thinking)". Every word is a counter word (or a lone letter left by a redraw),
+   with an amount, and a "·", an arrow, a closing ")" or "with … effort". */
+static bool counter_line_as(const char *l, bool glyph)
+{
+    bool marker = false, amount = false, with = false, effort = false;
+    const char *p = l;
+    size_t len = strlen(l);
+    if (!len) return false;
+    while (*p) {
+        while (*p == ' ') p++;
+        const char *w = p;
+        while (*p && *p != ' ') p++;
+        size_t n = (size_t)(p - w);
+        if (!n) break;
+        if (n == 1 && ((*w | 32) >= 'a' && (*w | 32) <= 'z')) continue;
+        if (!counter_word(w, n, &marker, &amount)) return false;
+        if (n == 4 && !memcmp(w, "with", 4)) with = true;
+        if (n >= 6 && !memcmp(w, "effort", 6)) effort = true;
+    }
+    return amount && (glyph || marker || l[len - 1] == ')' || (with && effort));
+}
+
+static bool counter_line(const char *l) { return counter_line_as(l, false); }
+
+/* the hints the TUI puts on a row of their own */
+static bool hint_line(const char *l)
+{
+    static const char *const hints[] = { "(ctrl+b to run in background)", "(ctrl+o to expand)", "(ctrl+r to expand)",
+                                         "(esc to interrupt)", "(shift+tab to cycle)" };
+    for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]); i++) {
+        const char *a = l, *b = hints[i];
+        while (*a && *b) {   /* a redraw's skipped cell may double a space */
+            if (*a == ' ' && *b == ' ') { while (*a == ' ') a++; b++; continue; }
+            if (*a != *b) break;
+            a++, b++;
+        }
+        if (!*a && !*b) return true;
+    }
+    return false;
+}
+
+bool cc_logview_chrome_line(const char *line)
+{
+    const char *l = line;
+    while (*l == ' ') l++;
+    const unsigned char *u = (const unsigned char *)l;
+    size_t n = strlen(l);
+    while (n && l[n - 1] == ' ') n--;
+    if (!n) return false;
+    char buf[1024];
+    if (n >= sizeof(buf)) return false;   /* chrome is short (a 320-column rule is 960 bytes) */
+    memcpy(buf, l, n);
+    buf[n] = 0;
+    l = buf;
+    u = (const unsigned char *)l;
+    static const char ell[] = "\xe2\x80\xa6";
+    /* the spinner: a glyph, a space, a verb and "…" ("✽ Swirling… (12s · ↓ 3k tokens)"; "*" only with nothing or
+       a counter after it), or "<verb> for <time>" ("✻ Baked for 5s · 1 shell still running"); or the glyph and a
+       counter ("✢ 5 thinking", "✳ n (2s · thinking with medium effort)") */
+    size_t g = spin_glyph(u);
+    if (g && l[g] == ' ') {
+        const char *r = l + g + 1, *v = verb_end(r);
+        if (v && pre(v, ell)) {
+            const char *t = v + 3;
+            while (*t == ' ') t++;
+            if (u[0] != '*' || !*t || counter_line(t)) return true;
+        }
+        if (v && pre(v, " for ")) {
+            const char *t = duration_end(v + 5);
+            if (t && (!*t || pre(t, " \xc2\xb7 "))) return true;
+        }
+        if (u[0] != '*' && counter_line_as(r, true)) return true;   /* after a glyph, any counter words */
+        bool bare = true;   /* "✻ 313": a glyph and a number left by a redraw */
+        for (const char *t = r; *t && bare; t++) bare = (*t >= '0' && *t <= '9') || *t == ' ';
+        if (u[0] != '*' && bare) return true;
+        if (u[0] != '*' && cc_logview_chrome_line(r)) return true;   /* "✢ UserPromptSubmit hook · 0s)" */
+    }
+    /* a bare verb and its counter, whole or in pieces: "Swirling… (12s · ↓ 3k tokens)", "Honking… 39 thinking …" */
+    const char *v = verb_end(l);
+    if (v && pre(v, ell) && v[3] == ' ' && counter_line_as(v + 4, true)) return true;   /* "Honking… 5", "… (2s · …)" */
+    if (counter_line(l)) return true;
+    if (hint_line(l)) return true;
+    /* a status line's stale tail, its "(" never redrawn: "running Stop h ok · 17s · ↓ 1.1k tokens)" */
+    if (l[n - 1] == ')' && !strchr(l, '(')) {
+        const char *t = strstr(l, " \xc2\xb7 ");
+        if (t && counter_line(t + 1)) return true;
+    }
+    /* the footer's meter: "12k tokens | Opus 5.5", "46k tokens | [██░░] 7% reset | …" */
+    {
+        const char *t = l;
+        while ((*t >= '0' && *t <= '9') || *t == '.') t++;
+        if (t > l && (*t == 'k' || *t == 'M')) t++;
+        if (t > l && pre(t, " tokens |")) return true;
+    }
+    /* the mode line: ⏵⏵ or ⏸ and its text, or the text alone */
+    if (u[0] == 0xe2 && u[1] == 0x8f && (u[2] == 0xb5 || u[2] == 0xb8)) return true;
+    static const char *const modes[] = { "auto mode on", "plan mode on", "manual mode on", "accept edits on",
+                                         "bypass permissions on" };
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
+        if (pre(l, modes[i])) {
+            const char *t = l + strlen(modes[i]);
+            if (!*t || pre(t, " (shift+tab") || pre(t, " \xc2\xb7 ")) return true;
+        }
+    if (pre(l, "? for shortcuts")) return true;
+    if (!strcmp(l, "Checking for updates") || !strcmp(l, "Checking for updates\xe2\x80\xa6")) return true;
+    if (!strcmp(l, "/rc") || !strcmp(l, "/rc connecting\xe2\x80\xa6")) return true;
+    /* hooks: "running stop hooks…", "(running SessionStart hooks… 0/2 · 0s)", "running Stop hook · 5s · …" */
+    {
+        const char *t = l + (l[0] == '(');
+        if (pre(t, "running ") || pre(t, "Running ")) {
+            t = strchr(t + 8, ' ');
+            if (t && (pre(t, " hook") )) {
+                t += pre(t, " hooks") ? 6 : 5;
+                if (!*t || pre(t, ell) || pre(t, " \xc2\xb7")) return true;
+            }
+        }
+    }
+    static const char *const events[] = { "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                                          "Stop", "SubagentStop", "PreCompact", "Notification" };
+    for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); i++)
+        if (pre(l, events[i])) {
+            const char *t = l + strlen(events[i]);
+            if (*t == ':') while (*t && *t != ' ') t++;
+            if (pre(t, " hook")) return true;
+        }
+    /* a tip under the spinner: "⎿  Tip: …" */
+    if (u[0] == 0xe2 && u[1] == 0x8e && u[2] == 0xbf) {
+        const char *t = l + 3;
+        while (*t == ' ') t++;
+        if (pre(t, "Tip:")) return true;
+    }
+    /* the effort: "◐ medium · /effort"; usage notices: "You've used 89% of your weekly limit · resets …" */
+    if (u[0] == 0xe2 && u[1] == 0x97 && u[2] >= 0x90 && u[2] <= 0x93 && strstr(l, "/effort")) return true;
+    if (pre(l, "You've used ") && strstr(l, "% of your ")) return true;
+    if (pre(l, "Approaching ") && strstr(l, " limit \xc2\xb7 resets")) return true;
+    /* the banner: two logo glyphs (block elements), then the version, the model or the folder line */
+    if (u[0] == 0xe2 && u[1] == 0x96 && u[2] >= 0x80 && u[2] <= 0x9f && u[3] == 0xe2 && u[4] == 0x96 &&
+        u[5] >= 0x80 && u[5] <= 0x9f && (strstr(l, "Claude Code v") || strstr(l, " \xc2\xb7 "))) return true;
+    /* a frame rule with the session's name in it: "──── companion-test-busy ─" */
+    if (pre(l, "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80") && n >= 3 && !memcmp(l + n - 3, "\xe2\x94\x80", 3)) return true;
+    return false;
+}
+
+/* A stale fragment of a redraw: no word (two letters in a row, or a CJK character) and a counter's mark ("3  12s…",
+   "· 4", "↓ 3"); a bare number or "});" stays. */
+static bool fragment_line(const char *l)
+{
+    const unsigned char *u = (const unsigned char *)l;
+    for (size_t i = 0; u[i]; i++) {
+        if (((u[i] | 32) >= 'a' && (u[i] | 32) <= 'z') && ((u[i + 1] | 32) >= 'a' && (u[i + 1] | 32) <= 'z')) return false;
+        if (u[i] >= 0xe3) return false;   /* CJK and the rest past U+3000 */
+    }
+    if (!strncmp(l, "\xe2\x8f\xba", 3) || !strncmp(l, "\xe2\x8e\xbf", 3)) return true;   /* a bare ⏺ or ⎿ and a digit */
+    return strstr(l, "\xe2\x80\xa6") || strstr(l, "\xc2\xb7") || strstr(l, "\xe2\x86\x93") || strstr(l, "\xe2\x86\x91");
+}
+
+/* a bare spinner verb: one capitalised word and "…", nothing else ("Deliberating…"; a reply's "Thinking…" too) */
+static bool bare_verb_line(const char *l, size_t n)
+{
+    const char *v = verb_end(l);
+    return v && (size_t)(v - l) + 3 == n && !memcmp(v, "\xe2\x80\xa6", 3);
+}
+
+#define DROP_MARK 0x01   /* a dropped line's first byte while sorting (cc_log_tail leaves no control bytes) */
+#define VERB_SEEN 16     /* the bare verbs remembered, to tell the spinner's repeats from a reply's one "Thinking…" */
+
+int cc_logview_fallback(char *s, int max_lines)
+{
+    if (!s) return 0;
+    cc_log_tail(s, INT_MAX);
+    /* pass 1: mark the chrome, the fragments, and a bare verb seen again (the spinner redraws it; both go) */
+    struct { size_t at, n; } seen[VERB_SEEN];
+    int nseen = 0, next = 0;
+    for (size_t r = 0; s[r];) {
+        size_t a = r;
+        while (s[r] && s[r] != '\n') r++;
+        size_t e = r;
+        if (s[r]) r++;
+        char save = s[e];
+        s[e] = 0;
+        bool drop = cc_logview_chrome_line(s + a) || fragment_line(s + a);
+        s[e] = save;
+        if (!drop && bare_verb_line(s + a, e - a)) {
+            for (int k = 0; k < nseen; k++) {
+                size_t b = seen[k].at;
+                if (seen[k].n == e - a && !memcmp(s + b + 1, s + a + 1, e - a - 1) &&
+                    (s[b] == s[a] || (unsigned char)s[b] == DROP_MARK)) {
+                    drop = true;
+                    s[b] = DROP_MARK;   /* its first sighting goes too (its first byte is a capital: compared above) */
+                }
+            }
+            seen[next].at = a;   /* the newest replace the oldest */
+            seen[next].n = e - a;
+            next = (next + 1) % VERB_SEEN;
+            if (nseen < VERB_SEEN) nseen++;
+        }
+        if (drop) s[a] = DROP_MARK;
+    }
+    /* pass 2: keep the rest, in order */
+    size_t w = 0;
+    int kept = 0;
+    for (size_t r = 0; s[r];) {
+        size_t a = r;
+        while (s[r] && s[r] != '\n') r++;
+        size_t e = r;
+        if (s[r]) r++;
+        if ((unsigned char)s[a] == DROP_MARK || e == a) continue;
+        if (kept++) s[w++] = '\n';
+        memmove(s + w, s + a, e - a);
+        w += e - a;
+    }
+    s[w] = 0;
+    if (max_lines < 0) max_lines = 0;
+    if (kept > max_lines) {
+        int skip = kept - max_lines;
+        size_t p = 0;
+        while (skip && p < w) { if (s[p++] == '\n') skip--; }
+        memmove(s, s + p, w - p + 1);
+        kept = max_lines;
+    }
+    return kept;
 }
 
 /* ------------------------------------------------------------ row classes */
@@ -162,31 +453,17 @@ static bool is_spinner(const scr_t *s, int y, bool loose)
         for (t = close + 1; *t == ' '; t++) {}
         return !*t;
     }
-    return !strncmp((const char *)t, " for ", 5) && t[5] >= '0' && t[5] <= '9';
+    if (strncmp((const char *)t, " for ", 5)) return false;
+    const char *e = duration_end((const char *)t + 5);   /* "5s", "2m 6s": not "* Pay for 3 items" */
+    return e && (!*e || !strncmp(e, " \xc2\xb7 ", 4));
 }
 
-/* A whole row that is only a key hint: "(ctrl+b to run in background)" under a running command. */
+/* A whole row that is only one of the TUI's key hints: "(ctrl+b to run in background)" under a running command. */
 static bool is_hint(const scr_t *s, int y)
 {
     const char *t = row_text(s, y);
     while (*t == ' ') t++;
-    size_t n = strlen(t);
-    return n > 2 && t[0] == '(' && t[n - 1] == ')' && strstr(t, "ctrl+") && !strchr(t + 1, '(');
-}
-
-/* A row with a word in it: two ASCII letters in a row, or a CJK (or other non-symbol, past U+2E80) character. A
-   sparse screen's stale spinner fragments ("3  12s…", "51s · 412 words)") have none. */
-static bool has_word(const scr_t *s, int y)
-{
-    const vt_cell_t *r = row_at(s, y);
-    int run = 0;
-    for (int x = 0; x < s->cols; x++) {
-        uint32_t c = r[x].cp;
-        if (c >= 0x2e80 && !(r[x].attr & VT_ATTR_WIDE_CONT)) return true;
-        run = ((c | 32) >= 'a' && (c | 32) <= 'z') ? run + 1 : 0;
-        if (run >= 2) return true;
-    }
-    return false;
+    return hint_line(t);
 }
 
 static bool is_tip(const scr_t *s, int y)   /* "  ⎿  Tip: …" under the spinner */
@@ -285,18 +562,37 @@ static int rule_near_bottom(const scr_t *s)
 
 /* A busy session's sparse screen (no full clear in the stream: `claude logs` keeps only its recent output, and a
    turn's spinner redraws fill that): no rules, no input box, only the rows redrawn since. The spinner is the
-   anchor: the lowest spinner line within SPIN_NEAR rows above the parked cursor (the input line), or above the last
-   drawn row when the cursor is hidden. Returns its row, else -1. Under it lie only the tip, the effort, the box and
-   the footer. */
+   anchor: the lowest spinner line within SPIN_NEAR rows above the parked cursor (the input line) or above the last
+   drawn row, whichever is lower (a stream may end mid-frame with the cursor above the spinner). Returns its row, else
+   -1. Under it lie only a todo list or an agent tree, the tip, the effort, the box and the footer. */
 static int sparse_spinner(const scr_t *s)
 {
-    int cx, cy;
+    int cx, cy, best = -1;
     bool visible;
     vt_cursor(s->vt, &cx, &cy, &visible);
-    int ref = visible && cy > 0 && cy < s->rows ? cy : last_drawn(s);
-    for (int y = ref; y >= 0 && y >= ref - SPIN_NEAR; y--)
-        if (is_spinner(s, y, true)) return y;
-    return -1;
+    int refs[2] = { visible && cy > 0 && cy < s->rows ? cy : -1, last_drawn(s) };
+    for (int i = 0; i < 2; i++)
+        for (int y = refs[i]; y > best && y >= refs[i] - SPIN_NEAR; y--)
+            if (is_spinner(s, y, true)) { best = y; break; }
+    return best;
+}
+
+/* Sparse screens only: the row y continues the wrapped row above it. The width is a guess (no rule drawn), so only
+   prose: the row above ran to within WRAP_SLACK of the widest row (JOIN_MIN or more) and doesn't end a sentence, and
+   this row sits at the same column as that row's text, starts lowercase and isn't a list item or table row. */
+static bool sparse_join(const scr_t *s, int prev, int y, int width)
+{
+    if (width < JOIN_MIN || row_width(s, prev) + 1 + first_word_width(s, y) <= width - WRAP_SLACK) return false;
+    const vt_cell_t *p = row_at(s, prev), *r = row_at(s, y);
+    int px = first_x(s, prev), x0 = first_x(s, y);
+    uint32_t pc = p[px].cp;
+    int text_x = (pc == 0x23fa || pc == 0x276f || pc == 0x23bf) ? px + 2 : px;   /* ⏺ ❯ ⎿ and their space */
+    if (x0 != text_x || starts_item(s, y)) return false;
+    uint32_t c = r[x0].cp, last = p[row_width(s, prev) - 1].cp;
+    if (!(c >= 'a' && c <= 'z')) return false;
+    if ((last < 0x80 && last && strchr(".!?:;)]}{([|", (int)last)) || box_cp(last)) return false;   /* a sentence's end, code */
+    /* code, not prose: "x = 1" */
+    return !strstr(row_text(s, prev), " = ") && !strstr(row_text(s, y), " = ");
 }
 
 /* ------------------------------------------------------------ the tail */
@@ -355,16 +651,20 @@ int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, c
     for (int y = top; y < end; y++) {
         int x0 = first_x(&s, y);
         if (x0 < 0 || is_rule(&s, y)) { after_spinner = false; continue; }
-        if (x0 > RIGHT_MIN_X && row_width(&s, y) >= width - WRAP_SLACK)
+        if (!sparse && x0 > RIGHT_MIN_X && row_width(&s, y) >= width - WRAP_SLACK)
             continue;   /* right-aligned status, nothing at its left: the effort, a usage notice, the update check */
         if (is_spinner(&s, y, sparse)) { after_spinner = true; continue; }
         if (after_spinner && is_tip(&s, y)) continue;
         after_spinner = false;
         if (is_hint(&s, y)) continue;
-        if (sparse && (x0 > RIGHT_MIN_X || !has_word(&s, y)))
-            continue;   /* stale fragments of a redraw (a moved spinner's time, the status), not conversation */
+        if (sparse) {   /* chrome (the status, a counter) and stale fragments of a redraw, judged row by row */
+            const char *t = row_text(&s, y);
+            while (*t == ' ') t++;
+            if (cc_logview_chrome_line(t) || fragment_line(t)) continue;
+        }
         bool join = prev == y - 1 && x0 >= 1 && !starts_item(&s, y) &&
-                    row_width(&s, prev) + 1 + first_word_width(&s, y) > width - WRAP_SLACK;
+                    (sparse ? sparse_join(&s, prev, y, width)
+                            : row_width(&s, prev) + 1 + first_word_width(&s, y) > width - WRAP_SLACK);
         int ox = option_x(&s, y);
         if (dialog && y != hint && !join && ox < 0 && opt >= 0 && x0 > opt)
             continue;   /* an option's description: the question and options fit the pane */

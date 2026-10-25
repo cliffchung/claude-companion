@@ -346,7 +346,7 @@ X(SES_LIST_TOO_BIG, "Session list too large to load") \
 X(SES_CANT_LOAD, "Can't load sessions from the Host\xe2\x80\xa6") \
 X(SES_LOADING_OUTPUT, "Loading recent output\xe2\x80\xa6") \
 X(SES_NO_OUTPUT, "No output to show") \
-X(SES_NO_OUTPUT_YET, "No output yet") \
+X(SES_NO_OUTPUT_YET, "Nothing to show yet") \
 X(SES_INTERACTIVE, "Running in a terminal on the Host. Start sessions with claude --bg to open them here.") \
 X(SES_ON_HOST, "on Host") \
 X(SES_STOPPED_OPEN, "This session has stopped. Open it to start it again.") \
