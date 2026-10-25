@@ -834,17 +834,13 @@ The full table is in the [design spec](docs/superpowers/specs/2026-10-22-claude-
 
 ```
 firmware/   the Tab5 firmware (ESP-IDF + LVGL); internals in firmware/README.md
-docs/       design specs, plans and notes (docs/superpowers/); PROTOCOL.md is the legacy bridge's
-bridge/     legacy: an optional HTTP bridge from an earlier design; the firmware doesn't use it
-web/        legacy: the bridge's browser dashboard
+docs/       design specs, plans and notes (docs/superpowers/)
 ```
 
-`bridge/` and `web/` are from the project's first design, in which a small Python server on the
-Host served a browser dashboard and relayed replies with `claude -p --resume`. The firmware talks
-to Claude Code over SSH instead and needs neither. They are kept for reference, are not
-maintained, and are described in [docs/PROTOCOL.md](docs/PROTOCOL.md). The design record in
-`docs/superpowers/` is written as it happened, so older specs and plans describe things that
-have since changed.
+The project's first design had a small Python server on the Host serving a browser dashboard. It was
+replaced by plain SSH, which needs nothing installed on the Host, and removed from the tree. The
+design record in `docs/superpowers/` is written as it happened, so older specs and plans describe
+things that have since changed (they still mention that early design).
 
 ## License and credits
 

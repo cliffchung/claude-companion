@@ -60,7 +60,7 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   - Remote Control: only the official apps can use it, and there's no device interface.
   - A bridge daemon on the Mac: unnecessary, because plain SSH exec does the job.
 
-  The earlier `bridge/` and `web/` stay in the repo as optional extras.
+  The earlier `bridge/` and `web/` were optional extras; they have since been removed from the tree.
 - **D2 — Only background sessions can be taken over.** `claude agents --json` also lists plain
   interactive sessions (`kind: "interactive"`). The Tab5 shows those read-only with the hint
   "Run /bg in this session on your Mac to take it over here."
