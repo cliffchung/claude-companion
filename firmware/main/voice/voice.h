@@ -31,6 +31,8 @@ void voice_cancel(void);     /* RECORDING/STARTING: stop and wipe, no result; TR
 void voice_status(voice_status_t *out);
 /* True once per result (cleared and zeroed after the copy); a result not taken within 60 s is zeroed. */
 bool voice_take_result(voice_result_t *out);
+/* As voice_take_result, but only a result posted for key (a terminal's "term:<n>"); another key's stays in the slot. */
+bool voice_take_result_for(const char *key, voice_result_t *out);
 
 #ifdef __cplusplus
 }

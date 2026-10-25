@@ -144,12 +144,12 @@ static void post_result(const voice_result_t *r, uint32_t run)
     if (s_expire && (!cancelled || older)) esp_timer_start_once(s_expire, RESULT_TTL_US);
 }
 
-bool voice_take_result(voice_result_t *out)
+static bool take_result(const char *key, voice_result_t *out)
 {
     if (!out) return false;
     bool got = false;
     taskENTER_CRITICAL(&s_mux);
-    if (s_result_pending) {
+    if (s_result_pending && (!key || strncmp(s_slot->result.key, key, sizeof(s_slot->result.key)) == 0)) {
         *out = s_slot->result;
         zero(&s_slot->result, sizeof(s_slot->result));
         s_result_pending = false;
@@ -159,6 +159,9 @@ bool voice_take_result(voice_result_t *out)
     if (got && s_expire) esp_timer_stop(s_expire);
     return got;
 }
+
+bool voice_take_result(voice_result_t *out) { return take_result(NULL, out); }
+bool voice_take_result_for(const char *key, voice_result_t *out) { return key && take_result(key, out); }
 
 bool voice_result_pending(void)
 {

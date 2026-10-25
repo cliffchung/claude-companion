@@ -63,6 +63,9 @@ const char *vt_title(const vt_t *vt);
 int vt_wcwidth(uint32_t cp);
 /* Extract plain text of a row (for copy). */
 size_t vt_row_text(vt_t *vt, int row, char *buf, size_t cap);
+/* The live active screen's plain text (main or alternate, never the scrollback), one row per line, each ending in '\n';
+   NUL-terminated, cut at cap. Rows need up to cols * 4 + 1 bytes. */
+size_t vt_screen_text(const vt_t *vt, char *buf, size_t cap);
 
 #ifdef __cplusplus
 }

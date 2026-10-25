@@ -439,6 +439,8 @@ X(HF_ERR_BAD_PORT, "The port is a number from 1 to 65535") \
 X(HF_ERR_IS_HOST, "That's the Host: its sessions are on the Sessions screen.") \
 X(VOICE_RECORDING, "Recording") \
 X(VOICE_HINT, "Ctrl+Space stops \xc2\xb7 Esc cancels") \
+X(VOICE_NOT_AT_PROMPT, "Not typed: the session isn't at an empty prompt. Press Ctrl+Space there to type it.") \
+X(VOICE_NOT_READY, "Not typed: the session isn't ready. Press Ctrl+Space when it is to type it.") \
 X(VOICE_TRANSCRIBING, "Transcribing on the Host\xe2\x80\xa6") \
 X(VOICE_REVIEW, "Check the text, then press Enter to send") \
 X(VOICE_CUT, "The text was cut to fit the answer field") \

@@ -23,6 +23,10 @@ extern "C" {
 #define VR_METER_FLOOR_DBFS (-60)
 #define VR_KEY_MAX       128      /* == SM_KEY_MAX */
 #define VR_TEXT_MAX      480      /* == SM_ANSWER_MAX */
+/* Voice in a session (follow-up 2026-10-24): a terminal screen records under "term:<its generation>", a key no
+   session has (sm_key gives 8 hex digits or "i:<name>:<ms>"), so Sessions never puts that text in a draft. */
+#define VR_TERM_KEY_PREFIX "term:"
+bool vr_key_is_term(const char *key);
 
 /* 44-byte PCM WAV header; 0 for rate 0, channels 0 or bits not 16. */
 size_t vr_wav_header(uint8_t out[VR_WAV_HDR], uint32_t data_bytes, uint32_t rate, uint16_t channels, uint16_t bits);

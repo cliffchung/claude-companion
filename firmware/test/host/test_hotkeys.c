@@ -45,8 +45,17 @@ static void test_terminal_passes_host_keys(void)
     for (int t = 0; t < 2; t++) {
         e = ch('k', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
         e = ch('t', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
-        e = ch(' ', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = ch('@', MOD_CTRL); TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));   /* NUL still reaches the Host */
+        e = ch(' ', 0);        TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
     }
+}
+
+/* Voice in a session (follow-up 2026-10-24): Ctrl+Space is taken in a take-over and an SSH session alike */
+static void test_terminal_ctrl_space_is_voice(void)
+{
+    key_event_t e = ch(' ', MOD_CTRL);
+    TEST_ASSERT_EQUAL(HK_T_VOICE, hk_takeover(&e, true));
+    TEST_ASSERT_EQUAL(HK_T_VOICE, hk_takeover(&e, false));
 }
 
 static void test_dashboard_terminal_keys(void)
@@ -130,6 +139,7 @@ int main(void)
     RUN_TEST(test_dashboard_terminal_keys);
     RUN_TEST(test_ctrl_space_is_voice);
     RUN_TEST(test_takeover_scroll);
+    RUN_TEST(test_terminal_ctrl_space_is_voice);
     RUN_TEST(test_dashboard_keys);
     RUN_TEST(test_dashboard_ctrl_never_typed);
     RUN_TEST(test_ctrl_m_is_not_enter);

@@ -221,6 +221,17 @@ static void test_out_text_ids(void)
     }
 }
 
+static void test_term_key(void)
+{
+    TEST_ASSERT_TRUE(vr_key_is_term("term:1"));
+    TEST_ASSERT_TRUE(vr_key_is_term("term:4294967295"));
+    TEST_ASSERT_FALSE(vr_key_is_term("1a2b3c4d"));
+    TEST_ASSERT_FALSE(vr_key_is_term("i:term:5"));
+    TEST_ASSERT_FALSE(vr_key_is_term("term"));
+    TEST_ASSERT_FALSE(vr_key_is_term(""));
+    TEST_ASSERT_FALSE(vr_key_is_term(NULL));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -236,5 +247,6 @@ int main(void)
     RUN_TEST(test_clean_symbols_only);
     RUN_TEST(test_merge_spacing); RUN_TEST(test_merge_cut_at_word); RUN_TEST(test_merge_cut_utf8_boundary);
     RUN_TEST(test_host_result_map); RUN_TEST(test_out_text_ids);
+    RUN_TEST(test_term_key);
     return UNITY_END();
 }

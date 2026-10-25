@@ -260,6 +260,151 @@ static void test_paste_build_rejects(void)
     TEST_ASSERT_EQUAL_UINT(0, cc_paste_build("blue", o, 0));
 }
 
+/* Voice in a session: cc_voice_type_build. The only bytes under 0x20 are the two markers' ESCs; never DEL, CR or LF. */
+static void assert_typed_safe(const char *o, size_t n, bool bracketed)
+{
+    size_t body0 = bracketed ? 6 : 0, body1 = bracketed ? n - 6 : n;
+    if (bracketed) {
+        TEST_ASSERT_EQUAL_MEMORY(PS, o, 6);
+        TEST_ASSERT_EQUAL_MEMORY(PE, o + n - 6, 6);
+    }
+    for (size_t i = body0; i < body1; i++) {
+        unsigned char c = (unsigned char)o[i];
+        TEST_ASSERT_TRUE(c >= 0x20);
+        TEST_ASSERT_TRUE(c != 0x7f);
+    }
+    TEST_ASSERT_NULL(memchr(o, '\r', n));
+    TEST_ASSERT_NULL(memchr(o, '\n', n));
+    TEST_ASSERT_NULL(memchr(o, 0x7f, n));
+    TEST_ASSERT_EQUAL_UINT8(0, o[n]);
+}
+
+static void test_voice_type_exact(void)
+{
+    char o[64];
+    memset(o, 'x', sizeof(o));
+    size_t n = cc_voice_type_build("Please run the tests.", true, o, sizeof(o));
+    const char want[] = PS "Please run the tests." PE;   /* no Ctrl+U, no Enter */
+    TEST_ASSERT_EQUAL_UINT(sizeof(want) - 1, n);
+    TEST_ASSERT_EQUAL_MEMORY(want, o, n);
+    assert_typed_safe(o, n, true);
+    TEST_ASSERT_NULL(memchr(o, 0x15, n));
+    n = cc_voice_type_build("Please run the tests.", false, o, sizeof(o));
+    TEST_ASSERT_EQUAL_UINT(21, n);
+    TEST_ASSERT_EQUAL_STRING("Please run the tests.", o);
+    assert_typed_safe(o, n, false);
+}
+
+static void test_voice_type_strips_controls(void)
+{
+    char o[128];
+    /* an early end marker, CR/LF, Ctrl+C/U/Z, BEL, DEL, an 8-bit CSI (0x9b), a UTF-8 C1 (U+009B) and invalid UTF-8 */
+    const char in[] = "a\x1b[201~b\r\nc\x03\x15\x1a\x07\x7f" "d\x9b" "e\xc2\x9b" "f\xc0\xaf" "g\xed\xa0\x80" "h \xc3\xbc\xe2\x80\xa6";
+    size_t n = cc_voice_type_build(in, true, o, sizeof(o));
+    const char want[] = PS "a[201~b cdefgh \xc3\xbc\xe2\x80\xa6" PE;
+    TEST_ASSERT_EQUAL_UINT(sizeof(want) - 1, n);
+    TEST_ASSERT_EQUAL_MEMORY(want, o, n);
+    assert_typed_safe(o, n, true);
+    int esc = 0;
+    for (size_t i = 0; i < n; i++) esc += (o[i] == 0x1b);
+    TEST_ASSERT_EQUAL_INT(2, esc);
+    n = cc_voice_type_build(in, false, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING("a[201~b cdefgh \xc3\xbc\xe2\x80\xa6", o);
+    TEST_ASSERT_NULL(memchr(o, 0x1b, n));
+    assert_typed_safe(o, n, false);
+    /* every byte 0x01..0xff on its own, wrapped: nothing below 0x20 but the markers' ESCs */
+    for (int c = 1; c < 256; c++) {
+        char one[4] = { 'x', (char)c, 'y', 0 };
+        n = cc_voice_type_build(one, true, o, sizeof(o));
+        TEST_ASSERT_TRUE(n >= 14);
+        assert_typed_safe(o, n, true);
+    }
+}
+
+static void test_voice_type_whitespace(void)
+{
+    char o[64];
+    size_t n = cc_voice_type_build("  one \t\t two\n\n\nthree \r\n ", false, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING("one two three", o);
+    TEST_ASSERT_EQUAL_UINT(13, n);
+    n = cc_voice_type_build("\n word \n", true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_MEMORY(PS "word" PE, o, n);
+    TEST_ASSERT_EQUAL_UINT(16, n);
+}
+
+static void test_voice_type_empty_and_cap(void)
+{
+    char o[64];
+    o[0] = 'x';
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build("", true, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_UINT8(0, o[0]);
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build(NULL, true, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build("", false, o, sizeof(o)));
+    o[0] = 'x';
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build(" \r\n\x1b\x7f\t", true, o, sizeof(o)));   /* empty once sanitized */
+    TEST_ASSERT_EQUAL_UINT8(0, o[0]);
+    /* "blue" wrapped needs 6 + 4 + 6 bytes plus the NUL */
+    TEST_ASSERT_EQUAL_UINT(16, cc_voice_type_build("blue", true, o, 17));
+    o[0] = 'x';
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build("blue", true, o, 16));
+    TEST_ASSERT_EQUAL_UINT8(0, o[0]);
+    TEST_ASSERT_EQUAL_UINT(4, cc_voice_type_build("blue", false, o, 5));
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build("blue", false, o, 4));
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build("blue", true, o, 0));
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build("blue", true, NULL, 17));
+    /* a multibyte character that doesn't fit is not cut in half */
+    o[0] = 'x';
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build("ab\xe2\x80\xa6", false, o, 5));
+    TEST_ASSERT_EQUAL_UINT8(0, o[0]);
+}
+
+/* Review M5: every UTF-8 C1 (U+0080..U+009F, NEL included) is dropped, not turned into a space; so is anything past
+   U+10FFFF. */
+static void test_voice_type_utf8_c1_and_range(void)
+{
+    char o[64], in[16];
+    for (int cp = 0x80; cp <= 0x9f; cp++) {
+        snprintf(in, sizeof(in), "a%c%cb", (char)0xc2, (char)cp);
+        size_t n = cc_voice_type_build(in, true, o, sizeof(o));
+        TEST_ASSERT_EQUAL_UINT(14, n);
+        TEST_ASSERT_EQUAL_MEMORY(PS "ab" PE, o, n);
+        assert_typed_safe(o, n, true);
+        for (size_t i = 0; i < n; i++) TEST_ASSERT_FALSE((unsigned char)o[i] == 0xc2);
+    }
+    TEST_ASSERT_EQUAL_UINT(2, cc_voice_type_build("a\xc2\x85" "b", false, o, sizeof(o)));   /* NEL: no space */
+    TEST_ASSERT_EQUAL_STRING("ab", o);
+    TEST_ASSERT_EQUAL_UINT(2, cc_voice_type_build("a\xf4\x90\x80\x80" "b", false, o, sizeof(o)));   /* U+110000 */
+    TEST_ASSERT_EQUAL_STRING("ab", o);
+    TEST_ASSERT_EQUAL_UINT(2, cc_voice_type_build("a\xf7\xbf\xbf\xbf" "b", false, o, sizeof(o)));   /* U+1FFFFF */
+    TEST_ASSERT_EQUAL_STRING("ab", o);
+    TEST_ASSERT_EQUAL_UINT(6, cc_voice_type_build("a\xf4\x8f\xbf\xbf" "b", false, o, sizeof(o)));   /* U+10FFFF kept */
+    TEST_ASSERT_EQUAL_STRING("a\xf4\x8f\xbf\xbf" "b", o);
+    TEST_ASSERT_EQUAL_UINT(4, cc_voice_type_build("a\xc2\xa0" "b", false, o, sizeof(o)));   /* U+00A0 is no C1 */
+}
+
+/* Joining an earlier dictation: one leading space before a letter or digit, none before punctuation. */
+static void test_voice_type_join(void)
+{
+    char o[64];
+    size_t n = cc_voice_type_build_ex("next one", true, true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_MEMORY(PS " next one" PE, o, n);
+    TEST_ASSERT_EQUAL_UINT(21, n);
+    TEST_ASSERT_EQUAL_UINT(3, cc_voice_type_build_ex("\n 42", false, true, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING(" 42", o);
+    cc_voice_type_build_ex("Xy", false, true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING(" Xy", o);
+    cc_voice_type_build_ex(", and then", false, true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING(", and then", o);
+    cc_voice_type_build_ex("\xc3\xbc" "ber", false, true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING("\xc3\xbc" "ber", o);
+    cc_voice_type_build_ex("next", false, false, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING("next", o);
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build_ex(" \r\n", true, true, o, sizeof(o)));   /* empty stays empty */
+    /* the cap counts the leading space: " ab" wrapped is 15 bytes plus the NUL */
+    TEST_ASSERT_EQUAL_UINT(15, cc_voice_type_build_ex("ab", true, true, o, 16));
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build_ex("ab", true, true, o, 15));
+}
+
 /* Synthetic screens, ANSI already stripped. "\xe2\x9d\xaf" is the TUI's selection/input glyph,
    "\xe2\x94\x80" a frame rule. A dialog ends the screen with a numbered option list plus an esc hint;
    an input prompt ends with an empty "\xe2\x9d\xaf " line inside the input box. */
@@ -473,6 +618,12 @@ int main(void)
     RUN_TEST(test_paste_build_strips_esc);
     RUN_TEST(test_paste_build_controls);
     RUN_TEST(test_paste_build_rejects);
+    RUN_TEST(test_voice_type_exact);
+    RUN_TEST(test_voice_type_strips_controls);
+    RUN_TEST(test_voice_type_whitespace);
+    RUN_TEST(test_voice_type_empty_and_cap);
+    RUN_TEST(test_voice_type_utf8_c1_and_range);
+    RUN_TEST(test_voice_type_join);
     RUN_TEST(test_screen_permission_prompt);
     RUN_TEST(test_screen_input_prompt_is_not_permission);
     RUN_TEST(test_screen_real_input_after_question);

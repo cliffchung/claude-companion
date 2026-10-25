@@ -3470,8 +3470,13 @@ void ml_coord_task(void *arg) {
                     xEventGroupSetBits(ml->events, ML_EVT_DERP_CONNECT_REQ);
                     /* Wait for DERP to connect (up to 15s) before continuing */
                     ESP_LOGI(TAG, "Waiting for DERP I/O task to connect...");
-                    xEventGroupWaitBits(ml->events, ML_EVT_DERP_CONNECTED,
-                                        pdFALSE, pdTRUE, pdMS_TO_TICKS(15000));
+                    /* LOCAL CHANGE (Claude Companion polish 2 device pass; UPSTREAM.md): wake on a stop too. The DERP
+                     * task stops retrying once the shutdown bit is set, so DERP_CONNECTED never comes, and this
+                     * wait sat out its whole 15 s: as long as microlink_stop()'s own wait, so a switch-off while
+                     * connecting still logged the instance as leaked. */
+                    EventBits_t db = xEventGroupWaitBits(ml->events, ML_EVT_DERP_CONNECTED | ML_EVT_SHUTDOWN_REQUEST,
+                                                         pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+                    if (db & ML_EVT_SHUTDOWN_REQUEST) break;   /* the loop condition then ends the task */
                 }
 
                 /* Start streaming long-poll for incremental updates */

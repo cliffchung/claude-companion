@@ -437,6 +437,10 @@ bool voice_take_result(voice_result_t *o) {
     *o = s_pv_vres; memset(&s_pv_vres, 0, sizeof(s_pv_vres)); s_pv_vres_ready = false;
     return true;
 }
+bool voice_take_result_for(const char *key, voice_result_t *o) {
+    if (!s_pv_vres_ready || !key || strcmp(s_pv_vres.key, key)) return false;
+    return voice_take_result(o);
+}
 /* The service's end: a result for key, then idle. */
 static void pv_voice_post(const char *key, vr_out_t out, const char *text, bool at_limit) {
     memset(&s_pv_vres, 0, sizeof(s_pv_vres));
@@ -2371,7 +2375,9 @@ static lv_obj_t *open_terminal(lv_display_t *d) {
 
 static void form_set(lv_display_t *d, lv_obj_t *scr, const char *row, const char *text);
 /* terminal [on|empty|keys|deleted-event|fail|add|add-fqdn]: spec §5.3. The default: Tailscale off. */
+static int term_voice_case(lv_display_t *d, const char *v);   /* voice in a session, below the take-over cases */
 static int terminal_case(lv_display_t *d, const char *v) {
+    if (!strncmp(v, "voice-", 6)) return term_voice_case(d, v);
     char name[48];
     snprintf(name, sizeof(name), "terminal%s%s", v[0] ? "-" : "", v);
     bool ts_off = !v[0] || !strcmp(v, "fail");
@@ -3067,6 +3073,285 @@ static int ssh_case(lv_display_t *d, const char *v) {
     s_preview_server_n--;
     printf("%s: Ctrl+] asks \"Disconnect from box?\", keys stay out of the box, Cancel and Enter stay, Leave then Disconnect leaves, Tab Tab Enter leaves\n", name);
     return r;
+}
+
+/* ------------------------------------------------------------ voice input in a session (follow-up 2026-10-24) */
+/* The session bar's 12 px link dot, red. */
+static bool bar_dot_red(lv_obj_t *bar) {
+    for (uint32_t i = 0; i < lv_obj_get_child_count(bar); i++) {
+        lv_obj_t *o = lv_obj_get_child(bar, i);
+        if (lv_obj_check_type(o, &lv_label_class) || lv_obj_get_width(o) != 12 || lv_obj_get_height(o) != 12) continue;
+        return lv_color_eq(lv_obj_get_style_bg_color(o, 0), lv_color_hex(UI_TK_RED));
+    }
+    return false;
+}
+#define TV_REC_7 "Recording 0:07 / 0:30"
+#define TV_TRANSCRIBING "Transcribing on the Host\xe2\x80\xa6"
+#define TV_NOT_AT_PROMPT "Not typed: the session isn't at an empty prompt. Press Ctrl+Space there to type it."
+#define TV_NOT_READY "Not typed: the session isn't ready. Press Ctrl+Space when it is to type it."
+/* Claude Code's empty input line, and a permission dialog over it (synthetic, as the cc_cmd tests' screens) */
+#define TV_PROMPT "\r\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\r\n\xe2\x9d\xaf \r\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\r\n  ? for shortcuts\r\n"
+#define TV_DIALOG "\x1b[2J\x1b[H Do you want to make this edit?\r\n \xe2\x9d\xaf 1. Yes\r\n   2. Yes, and don't ask again\r\n   3. No, and tell Claude what to do differently (esc)\r\n Esc to cancel\r\n"
+static void pv_ctrl_space(lv_display_t *d) { pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ' ', .mods = MOD_CTRL }); step(d, 20); }
+/* Ctrl+Space in the terminal on screen starts a recording (after the 700 ms toggle guard); the stub records ms. */
+static bool pv_term_record(lv_display_t *d, int ms, char *key) {
+    step(d, 800);
+    int starts = s_voice_start_calls;
+    size_t sent = s_ssh_sent_n;
+    pv_ctrl_space(d);
+    if (s_voice_start_calls != starts + 1 || s_pv_voice.phase != VOICE_STARTING || s_ssh_sent_n != sent) return false;
+    if (strncmp(s_pv_voice.key, "term:", 5)) return false;
+    snprintf(key, VR_KEY_MAX, "%s", s_pv_voice.key);
+    s_pv_voice.phase = VOICE_RECORDING; s_pv_voice.elapsed_ms = ms; s_pv_voice.meter = 60;
+    step(d, 20);
+    return true;
+}
+static bool pv_term_stop(lv_display_t *d) {
+    step(d, 800);
+    int stops = s_voice_stop_calls;
+    pv_ctrl_space(d);
+    return s_voice_stop_calls == stops + 1 && s_pv_voice.phase == VOICE_TRANSCRIBING;
+}
+static void pv_voice_reset(void) {
+    memset(&s_pv_voice, 0, sizeof(s_pv_voice));
+    memset(&s_pv_vres, 0, sizeof(s_pv_vres)); s_pv_vres_ready = false;
+}
+static lv_obj_t *pv_open_takeover(lv_display_t *d) {
+    s_ssh_autoclose = false;
+    ui_nav_home(); step(d, 200);
+    ui_terminal_open_command(0, "~/.local/bin/claude attach 1a2b3c4d", "companion-test-colour", takeover_closed_cb, NULL);
+    step(d, 20);
+    assert(ui_terminal_is_top());
+    return lv_screen_active();
+}
+static lv_obj_t *pv_open_ssh(lv_display_t *d) {
+    s_ssh_autoclose = false;
+    preview_store_init();
+    server_t box = { .name = "box", .host = "192.168.1.60", .port = 22, .user = "pi", .use_key = true, .keypath = "device" };
+    s_preview_servers[s_preview_server_n++] = box;
+    ui_nav_home(); step(d, 200);
+    ui_nav_push(ui_hosts_create, NULL); step(d, 200);
+    ui_nav_push(ui_terminal_create, (void *)(intptr_t)(s_preview_server_n - 1)); step(d, 20);
+    assert(ui_terminal_is_top());
+    return lv_screen_active();
+}
+static bool sent_has_line_end(size_t from) {
+    for (size_t i = from; i < s_ssh_sent_n; i++) if (s_ssh_sent[i] == '\r' || s_ssh_sent[i] == '\n') return true;
+    return false;
+}
+
+static int term_voice_case(lv_display_t *d, const char *v) {
+    char name[48], key[VR_KEY_MAX];
+    snprintf(name, sizeof(name), "terminal-%s", v);
+    int r = 0;
+    pv_voice_reset();
+    if (!strcmp(v, "voice-rec")) {
+        lv_obj_t *s = pv_open_takeover(d), *bar = session_bar_of(s);
+        pv_ssh_feed(k_takeover_sample); step(d, 3100);
+        assert(bar && !obj_shown(bar));
+        /* Ctrl+Space starts a recording keyed to this screen and sends nothing (no NUL) */
+        if (!pv_term_record(d, 7000, key)) { printf("check %s: FAIL Ctrl+Space didn't start a terminal recording, or sent a byte\n", name); return 1; }
+        if (lv_obj_get_child_count(lv_layer_top())) { printf("check %s: FAIL the start made a toast (internal RAM while recording)\n", name); return 1; }
+        lv_obj_t *ind = find_label(bar, TV_REC_7, false);
+        if (!obj_shown(bar) || !ind || !label_red(ind) || !bar_dot_red(bar)) { printf("check %s: FAIL no red dot and \"" TV_REC_7 "\" in the bar\n", name); return 1; }
+        step(d, 3100);
+        if (!obj_shown(bar)) { printf("check %s: FAIL the bar hid while recording\n", name); return 1; }
+        if (pv_amber_pixels(s)) { printf("check %s: FAIL amber while recording\n", name); return 1; }
+        if (fast_timers(16) != 1 || fast_timers(100)) { printf("check %s: FAIL timers: 16 ms %d, 100 ms %d\n", name, fast_timers(16), fast_timers(100)); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        /* every key but Ctrl+Space, Esc and the leave keys is eaten; so are the bar's key chips */
+        size_t sent = s_ssh_sent_n;
+        pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'a' });
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER });
+        pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'c', .mods = MOD_CTRL });
+        pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = '@', .mods = MOD_CTRL });
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_BACKSPACE });
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_SHIFT });
+        step(d, 20);
+        click_label(d, bar, "Tab"); click_label(d, bar, "^C"); click_label(d, bar, "\xe2\x86\x91");
+        if (s_ssh_sent_n != sent || s_voice_cancel_calls || s_pv_voice.phase != VOICE_RECORDING) {
+            printf("check %s: FAIL %d bytes reached the Host while recording (or the recording ended)\n", name, (int)(s_ssh_sent_n - sent)); return 1;
+        }
+        /* the timer moves on the 16 ms pump */
+        s_pv_voice.elapsed_ms = 12000; step(d, 20);
+        if (!find_label(bar, "Recording 0:12 / 0:30", false)) { printf("check %s: FAIL the timer didn't move\n", name); return 1; }
+        /* Esc cancels and sends nothing; the bar gives the session its state back and hides after 3 s */
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ESC }); step(d, 20);
+        if (s_voice_cancel_calls != 1 || s_pv_voice.phase != VOICE_IDLE || s_ssh_sent_n != sent) { printf("check %s: FAIL Esc: %d cancels, %d bytes sent\n", name, s_voice_cancel_calls, (int)(s_ssh_sent_n - sent)); return 1; }
+        if (find_label(bar, "Recording", true) || bar_dot_red(bar)) { printf("check %s: FAIL the indicator outlived the cancel\n", name); return 1; }
+        step(d, 3100);
+        if (obj_shown(bar)) { printf("check %s: FAIL the bar stayed up after the cancel\n", name); return 1; }
+        /* while transcribing, keys pass and the bar says so; Ctrl+Space says "Still transcribing…"; Esc cancels this
+           screen's transcription and isn't sent (review M1), and with nothing pending Esc goes to the Host again */
+        if (!pv_term_record(d, 2000, key) || !pv_term_stop(d)) { printf("check %s: FAIL the second recording didn't start and stop\n", name); return 1; }
+        lv_obj_t *tl = find_label(bar, TV_TRANSCRIBING, false);
+        if (!tl || !obj_shown(bar) || bar_dot_red(bar) || label_red(tl)) { printf("check %s: FAIL no muted \"" TV_TRANSCRIBING "\"\n", name); return 1; }
+        if (pv_amber_pixels(s)) { printf("check %s: FAIL amber while transcribing\n", name); return 1; }
+        r |= pv_run_checks(d, s, "terminal-voice-transcribing", false, 0);
+        sent = s_ssh_sent_n;
+        pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'a' }); step(d, 20);
+        if (s_ssh_sent_n != sent + 1 || s_ssh_sent[sent] != 'a') { printf("check %s: FAIL keys didn't pass while transcribing\n", name); return 1; }
+        int starts = s_voice_start_calls;
+        step(d, 800); pv_ctrl_space(d);
+        if (s_voice_start_calls != starts || !find_label(lv_layer_top(), "Still transcribing\xe2\x80\xa6", false)) { printf("check %s: FAIL Ctrl+Space while transcribing\n", name); return 1; }
+        sent = s_ssh_sent_n;
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ESC }); step(d, 20);
+        if (s_voice_cancel_calls != 2 || s_ssh_sent_n != sent || find_label(bar, TV_TRANSCRIBING, false)) { printf("check %s: FAIL Esc while transcribing: %d cancels, %d bytes sent\n", name, s_voice_cancel_calls, (int)(s_ssh_sent_n - sent)); return 1; }
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ESC }); step(d, 20);
+        if (s_voice_cancel_calls != 2 || s_ssh_sent_n != sent + 1 || s_ssh_sent[sent] != 0x1b) { printf("check %s: FAIL Esc with nothing pending didn't reach the Host\n", name); return 1; }
+        pv_voice_reset(); step(d, 20);
+        /* leaving while transcribing cancels it; a result that comes after types nothing */
+        if (!pv_term_record(d, 2000, key) || !pv_term_stop(d)) { printf("check %s: FAIL the third recording\n", name); return 1; }
+        int cancels0 = s_voice_cancel_calls;
+        pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+        if (ui_terminal_is_top() || s_voice_cancel_calls != cancels0 + 1) { printf("check %s: FAIL leaving didn't cancel the transcription (%d cancels)\n", name, s_voice_cancel_calls); return 1; }
+        sent = s_ssh_sent_n;
+        pv_voice_post(key, VR_OUT_TEXT, "Late words.", false); step(d, 400);
+        if (s_ssh_sent_n != sent) { printf("check %s: FAIL a late result was typed\n", name); return 1; }
+        pv_voice_reset();
+        /* every leave while recording cancels, then leaves the take-over: Ctrl+←, Ctrl+Q and the "← Leave" chip */
+        for (int how = 0; how < 3; how++) {
+            s = pv_open_takeover(d); bar = session_bar_of(s);
+            pv_ssh_feed(k_takeover_sample); step(d, 20);
+            if (!pv_term_record(d, 4000, key)) { printf("check %s: FAIL no recording to leave (%d)\n", name, how); return 1; }
+            int cancels = s_voice_cancel_calls, closed = s_takeover_closed;
+            sent = s_ssh_sent_n;
+            if (how == 0) pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_LEFT, .mods = MOD_CTRL });
+            else if (how == 1) pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'q', .mods = MOD_CTRL });
+            else click_label(d, bar, "\xe2\x86\x90 Leave");
+            step(d, 20);
+            if (ui_terminal_is_top() || s_voice_cancel_calls != cancels + 1 || s_takeover_closed != closed + 1 || s_ssh_sent_n != sent || s_pv_voice.phase != VOICE_IDLE) {
+                printf("check %s: FAIL leave %s while recording: top %d, %d cancels, %d bytes\n", name, how == 0 ? "Ctrl+\xe2\x86\x90" : how == 1 ? "Ctrl+Q" : "chip",
+                       ui_terminal_is_top(), s_voice_cancel_calls - cancels, (int)(s_ssh_sent_n - sent));
+                return 1;
+            }
+            pv_voice_reset();
+        }
+        /* an SSH session: the same key and indicator; Ctrl+] while recording cancels, then asks */
+        s = pv_open_ssh(d); bar = session_bar_of(s);
+        pv_ssh_feed("pi@box:~ $ "); step(d, 20);
+        char k2[VR_KEY_MAX];
+        if (!pv_term_record(d, 7000, k2) || !strcmp(k2, key)) { printf("check %s: FAIL no SSH recording with its own key\n", name); return 1; }
+        if (!find_label(bar, TV_REC_7, false) || !bar_dot_red(bar)) { printf("check %s: FAIL no indicator in the SSH bar\n", name); return 1; }
+        if (pv_amber_pixels(s)) { printf("check %s: FAIL amber on the SSH recording\n", name); return 1; }
+        r |= pv_run_checks(d, s, "terminal-voice-rec-ssh", false, 0);
+        sent = s_ssh_sent_n;
+        int cancels = s_voice_cancel_calls;
+        pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+        lv_obj_t *top = lv_layer_top();
+        if (s_voice_cancel_calls != cancels + 1 || !find_label(top, "Disconnect from box?", false) || s_ssh_sent_n != sent) { printf("check %s: FAIL Ctrl+] while recording didn't cancel and ask\n", name); return 1; }
+        click_label(d, top, "Disconnect");
+        assert(!ui_terminal_is_top());
+        s_preview_server_n--;
+        printf("%s: Ctrl+Space starts (no NUL sent), red dot and timer in the bar, bar kept up, keys and chips eaten, Esc cancels; transcribing passes keys; leaving cancels; SSH too\n", name);
+        return r;
+    }
+    if (!strcmp(v, "voice-done")) {
+        /* a take-over at Claude Code's empty prompt; the vt never saw DECSET 2004, and the text is still bracketed */
+        lv_obj_t *s = pv_open_takeover(d), *bar = session_bar_of(s), *top = lv_layer_top();
+        pv_ssh_feed(k_takeover_sample); pv_ssh_feed(TV_PROMPT); step(d, 3100);
+        if (!pv_term_record(d, 3000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no recording\n", name); return 1; }
+        size_t sent = s_ssh_sent_n;
+        const char *text = "Please run\nthe tests.\r";
+        pv_voice_post(key, VR_OUT_TEXT, text, false); step(d, 20);
+        char want[VR_TEXT_MAX + 14];
+        size_t wn = cc_voice_type_build_ex(text, true, false, want, sizeof(want));
+        if (!wn || s_ssh_sent_n - sent != wn || memcmp(s_ssh_sent + sent, want, wn)) {
+            printf("check %s: FAIL the pty got %d bytes, not the builder's %d\n", name, (int)(s_ssh_sent_n - sent), (int)wn); return 1;
+        }
+        if (memcmp(s_ssh_sent + sent, "\x1b[200~Please run the tests.\x1b[201~", wn) || sent_has_line_end(sent)) { printf("check %s: FAIL not bracketed, or an Enter or newline was written\n", name); return 1; }
+        if (s_paste_calls) { printf("check %s: FAIL cc_link_paste was called\n", name); return 1; }
+        if (find_label(bar, TV_TRANSCRIBING, false)) { printf("check %s: FAIL the indicator outlived the result\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        step(d, 3100);
+        if (obj_shown(bar)) { printf("check %s: FAIL the bar stayed up after the result\n", name); return 1; }
+        /* a second dictation in a take-over doesn't join (it types only at an empty prompt: re-review N1); the 30 s
+           limit toasts after the text */
+        if (!pv_term_record(d, 30000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no second recording\n", name); return 1; }
+        sent = s_ssh_sent_n;
+        pv_voice_post(key, VR_OUT_TEXT, "More.", true); step(d, 20);
+        if (s_ssh_sent_n - sent != 17 || memcmp(s_ssh_sent + sent, "\x1b[200~More.\x1b[201~", 17) || !find_label(top, "Stopped at the 30 s limit", false)) { printf("check %s: FAIL the limit result\n", name); return 1; }
+        /* an error types nothing and toasts */
+        if (!pv_term_record(d, 3000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no third recording\n", name); return 1; }
+        sent = s_ssh_sent_n;
+        pv_voice_post(key, VR_OUT_NO_SPEECH, "", false); step(d, 20);
+        if (s_ssh_sent_n != sent || !find_label(top, "No speech heard. Try again closer to the Tab5.", false)) { printf("check %s: FAIL the error result\n", name); return 1; }
+        /* review I1: a permission dialog came up while transcribing. Nothing is typed (a "2" would pick option 2); the text
+           is held, and Ctrl+Space types it once the prompt is back, without starting a recording */
+        if (!pv_term_record(d, 3000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no dialog recording\n", name); return 1; }
+        pv_ssh_feed(TV_DIALOG); step(d, 20);
+        sent = s_ssh_sent_n;
+        pv_voice_post(key, VR_OUT_TEXT, "2 more tests, then stop", false); step(d, 20);
+        if (s_ssh_sent_n != sent || !find_label(top, TV_NOT_AT_PROMPT, false)) { printf("check %s: FAIL typed into a permission dialog (%d bytes)\n", name, (int)(s_ssh_sent_n - sent)); return 1; }
+        r |= pv_run_checks(d, s, "terminal-voice-held", false, 0);
+        int starts = s_voice_start_calls;
+        step(d, 800); pv_ctrl_space(d);
+        if (s_ssh_sent_n != sent || s_voice_start_calls != starts) { printf("check %s: FAIL Ctrl+Space at the dialog typed or recorded\n", name); return 1; }
+        pv_ssh_feed("\x1b[2J\x1b[H"); pv_ssh_feed(TV_PROMPT); step(d, 20);
+        step(d, 800); pv_ctrl_space(d);
+        if (s_voice_start_calls != starts || s_ssh_sent_n - sent != 35 || memcmp(s_ssh_sent + sent, "\x1b[200~2 more tests, then stop\x1b[201~", 35)) {
+            printf("check %s: FAIL the held text at the prompt: %d bytes\n", name, (int)(s_ssh_sent_n - sent)); return 1;
+        }
+        /* the held text is typed once: the next press records */
+        step(d, 800); pv_ctrl_space(d);
+        if (s_voice_start_calls != starts + 1) { printf("check %s: FAIL the press after a held text didn't record\n", name); return 1; }
+        voice_cancel(); pv_voice_reset(); step(d, 20);
+        /* a draft on the input line is not an empty prompt either; a held text older than 60 s is wiped */
+        if (!pv_term_record(d, 3000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no draft recording\n", name); return 1; }
+        pv_ssh_feed("\x1b[2J\x1b[H" "\xe2\x9d\xaf my own draft\r\n"); step(d, 20);
+        sent = s_ssh_sent_n;
+        pv_voice_post(key, VR_OUT_TEXT, "Lost later.", false); step(d, 20);
+        if (s_ssh_sent_n != sent) { printf("check %s: FAIL typed over a draft\n", name); return 1; }
+        step(d, 61000);
+        pv_ssh_feed("\x1b[2J\x1b[H"); pv_ssh_feed(TV_PROMPT); step(d, 20);
+        starts = s_voice_start_calls;
+        pv_ctrl_space(d);
+        if (s_ssh_sent_n != sent || s_voice_start_calls != starts + 1) { printf("check %s: FAIL a held text came back after 60 s\n", name); return 1; }
+        voice_cancel(); pv_voice_reset(); step(d, 20);
+        /* another screen's result (a Sessions key) is never taken or typed */
+        if (!pv_term_record(d, 3000, key)) { printf("check %s: FAIL no foreign-key recording\n", name); return 1; }
+        sent = s_ssh_sent_n;
+        pv_voice_post("1a2b3c4d", VR_OUT_TEXT, "Not mine.", false); step(d, 20);
+        if (s_ssh_sent_n != sent || !s_pv_vres_ready) { printf("check %s: FAIL a result for another key was taken\n", name); return 1; }
+        pv_voice_reset();
+        pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+        /* an SSH shell that never turned on bracketed paste gets the bare, sanitized text */
+        s = pv_open_ssh(d);
+        pv_ssh_feed("pi@box:~ $ "); step(d, 20);
+        if (!pv_term_record(d, 3000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no SSH recording\n", name); return 1; }
+        sent = s_ssh_sent_n;
+        const char *t2 = "ls \x1b[201~ -la\n";
+        pv_voice_post(key, VR_OUT_TEXT, t2, false); step(d, 20);
+        wn = cc_voice_type_build_ex(t2, false, false, want, sizeof(want));
+        if (s_ssh_sent_n - sent != wn || memcmp(s_ssh_sent + sent, "ls [201~ -la", wn) || sent_has_line_end(sent)) { printf("check %s: FAIL the SSH bytes\n", name); return 1; }
+        /* review M3: the Disconnect confirm is up when the result comes: nothing typed behind it; held, and typed (joined)
+           by Ctrl+Space after Cancel */
+        if (!pv_term_record(d, 3000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no confirm recording\n", name); return 1; }
+        pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = ']', .mods = MOD_CTRL }); step(d, 20);
+        if (!find_label(top, "Disconnect from box?", false)) { printf("check %s: FAIL no confirm\n", name); return 1; }
+        sent = s_ssh_sent_n;
+        pv_voice_post(key, VR_OUT_TEXT, "cd src", false); step(d, 20);
+        if (s_ssh_sent_n != sent || !find_label(top, TV_NOT_READY, false)) { printf("check %s: FAIL typed behind the confirm\n", name); return 1; }
+        click_label(d, top, "Cancel");
+        assert(ui_terminal_is_top());
+        step(d, 800); pv_ctrl_space(d);
+        if (s_ssh_sent_n - sent != 7 || memcmp(s_ssh_sent + sent, " cd src", 7)) { printf("check %s: FAIL the held text after Cancel\n", name); return 1; }
+        /* the link lost when the result comes: held with a toast, typed when it is back */
+        if (!pv_term_record(d, 3000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no link-lost recording\n", name); return 1; }
+        setenv("PREVIEW_WIFI", "0", 1); step(d, 20);
+        sent = s_ssh_sent_n;
+        pv_voice_post(key, VR_OUT_TEXT, "pwd", false); step(d, 20);
+        if (s_ssh_sent_n != sent || !find_label(top, TV_NOT_READY, false)) { printf("check %s: FAIL typed with the link down\n", name); return 1; }
+        setenv("PREVIEW_WIFI", "1", 1); step(d, 20);
+        step(d, 800); pv_ctrl_space(d);
+        if (s_ssh_sent_n - sent != 4 || memcmp(s_ssh_sent + sent, " pwd", 4)) { printf("check %s: FAIL the held text after the link came back\n", name); return 1; }
+        ui_nav_back(); step(d, 20);
+        s_preview_server_n--;
+        printf("%s: the pty got exactly cc_voice_type_build_ex's bytes (always bracketed in a take-over, bare in a plain shell), no Enter or newline, no paste; joined with a space; a dialog, a draft, a confirm or a lost link holds the text for Ctrl+Space (60 s); limit and error toasts; another key's result left alone\n", name);
+        return r;
+    }
+    printf("preview: unknown case terminal %s\n", v);
+    return 2;
 }
 
 int main(int argc,char **argv) {
