@@ -271,6 +271,13 @@ static void bar_show(term_ctx_t *c, uint32_t ms)
     }
 }
 
+/* The name gives way (ui_session_bar_name_narrow) whenever the state slot has text: connecting, a lost link, voice.
+   At the narrowest bar (⌨ and Mic shown, a long name) the slot then holds each of them whole (review M2). */
+static void bar_name_fit(term_ctx_t *c)
+{
+    ui_session_bar_name_narrow(c->bar_name, c->voice_shown != VOICE_IDLE || c->bar_st != BAR_LIVE);
+}
+
 /* The bar's state from the session and the link: "Connecting…" muted until the session is up, a red
  * "Link lost, reconnecting…" while the link is down. Only a change writes anything. */
 static void bar_update(term_ctx_t *c)
@@ -280,6 +287,7 @@ static void bar_update(term_ctx_t *c)
     c->bar_st = st;
     if (c->voice_shown != VOICE_IDLE) { c->bar_dirty = true; return; }   /* the voice indicator owns the dot and label */
     c->bar_dirty = false;
+    bar_name_fit(c);
     ui_dot_tone(c->bar_dot, st == BAR_LIVE ? UI_TONE_GREEN : st == BAR_LINK_LOST ? UI_TONE_RED : UI_TONE_MUTED);
     ui_text_tone(c->bar_state, st == BAR_LINK_LOST ? UI_TONE_RED : UI_TONE_MUTED);
     lv_label_set_text(c->bar_state, st == BAR_CONNECTING ? tr(STR_HOSTS_CONNECTING)
@@ -355,10 +363,10 @@ static void voice_bar(term_ctx_t *c, const voice_status_t *v)
     bool was = c->voice_shown != VOICE_IDLE;
     if (ph != c->voice_shown) {   /* the phase only: the 16 ms pump's seconds touch neither the chip nor the name */
         ui_text_tone(c->mic_label, rec ? UI_TONE_RED : ph == VOICE_TRANSCRIBING ? UI_TONE_MUTED : UI_TONE_FG);
-        ui_session_bar_name_narrow(c->bar_name, ph != VOICE_IDLE);
     }
     c->voice_shown = ph;
     c->voice_sec_shown = sec;
+    if (ph != VOICE_IDLE) bar_name_fit(c);   /* idle: bar_update below gives the name back with the session's state */
     if (ph == VOICE_IDLE) {   /* the bar goes back to the session's state, then hides after 3 s */
         c->bar_dirty = true;
         bar_update(c);
@@ -634,9 +642,9 @@ static void kbd_cb(lv_event_t *e)
 
 /* 56 px over the top of the terminal: ← Leave, the name, the link dot, the state, ⌨ (no physical keyboard
  * only), Mic, then Esc, Tab, ^C, ↑ and ↓. Every control is a bar chip: the bar's full height, >= 80 px across. The
- * state slot takes what is left. While it shows voice input the name gives way (ui_session_bar_name_narrow), so at
- * its narrowest (⌨ shown, a long name) it still holds "Recording 0:30 / 0:30" and "Transcribing on the Host…" whole
- * (the preview's terminal voice-touch-nokbd case measures both). */
+ * state slot takes what is left. While it has text the name gives way (bar_name_fit), so at its narrowest (⌨ shown,
+ * a long name) it still holds "Connecting…", "Link lost, reconnecting…", "Recording 0:30 / 0:30" and "Transcribing on
+ * the Host…" whole (the preview's terminal voice-touch cases measure them). */
 static lv_obj_t *session_bar(term_ctx_t *c, const char *name)
 {
     lv_obj_t *b = ui_session_bar(c->scr);
@@ -893,6 +901,11 @@ static lv_obj_t *ui_terminal_cmd_create(void *arg)
     s_pending_cmd.ctx = NULL;
     return scr;
 }
+
+#ifdef UI_PREVIEW
+/* The preview reads the open terminal's screen (the banner's touch wording). */
+const vt_t *ui_terminal_preview_vt(void) { return s_ctx ? s_ctx->vt : NULL; }
+#endif
 
 bool ui_terminal_is_top(void)
 {

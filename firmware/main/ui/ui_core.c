@@ -599,21 +599,7 @@ static void key_hint_deleted(lv_event_t *e)
     if (lv_event_get_target_obj(e) == s_key_hint) s_key_hint = NULL;
 }
 
-str_id_t ui_touch_text(str_id_t keys)
-{
-    if (keyboard_any_present()) return keys;
-    switch (keys) {
-    case STR_HOSTS_LEAVE_NOTE:    return STR_HOSTS_LEAVE_NOTE_TOUCH;
-    case STR_TERM_OPENING_HINT:   return STR_TERM_OPENING_HINT_TOUCH;
-    case STR_TERM_SSH_HINT:       return STR_TERM_SSH_HINT_TOUCH;
-    case STR_VOICE_HINT:          return STR_VOICE_HINT_TOUCH;
-    case STR_VOICE_NOT_AT_PROMPT: return STR_VOICE_NOT_AT_PROMPT_TOUCH;
-    case STR_VOICE_NOT_READY:     return STR_VOICE_NOT_READY_TOUCH;
-    case STR_VOICE_REVIEW:        return STR_VOICE_REVIEW_TOUCH;
-    case STR_VOICE_TOO_SHORT:     return STR_VOICE_TOO_SHORT_TOUCH;
-    default:                      return keys;
-    }
-}
+str_id_t ui_touch_text(str_id_t keys) { return i18n_touch_text(keys, keyboard_any_present()); }
 
 void ui_keyboard_hint(lv_obj_t *label)
 {

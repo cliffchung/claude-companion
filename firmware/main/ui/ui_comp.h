@@ -135,7 +135,7 @@ lv_obj_t *ui_title(lv_obj_t *parent, const char *text);   /* the title role (a p
  * 24 px margins. Its chips (ui_chip) hit its full height. */
 lv_obj_t *ui_session_bar(lv_obj_t *scr);
 /* The bar's name (one line, cut with "…", at most 400 px) and its muted state text, which takes the rest of the
- * row; both shared styles (no local ones). */
+ * row. Shared styles, except the name's cap: a local max-width made once here (ui_session_bar_name_narrow). */
 lv_obj_t *ui_session_bar_name(lv_obj_t *bar, const char *name);
 /* While the bar shows voice input the name gives way (at most 160 px), so the state slot holds the indicator whole at
    the narrowest bar (the soft-keyboard chip shown, a long name). No allocation: the cap's local style exists. */

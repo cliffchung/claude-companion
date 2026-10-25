@@ -65,7 +65,7 @@ runv "PREVIEW_HOST=0" settings-sub networks   # join a saved network with no Hos
 run keyboard-settings
 for v in live selected-needs-you working loading stale reconnecting no-wifi not-found no-host empty \
          interactive sent low-battery 16 long screen-log screen-dialog resort tap-resort resort-scroll keys idle forget new-key \
-         voice-rec voice-rec-limit voice-busy voice-cancel-busy voice-auto-stop voice-done voice-gone voice-error voice-nofield voice-norow voice-cancel-touch; do run sessions "$v"; done
+         voice-rec voice-rec-limit voice-busy voice-cancel-busy voice-auto-stop voice-done voice-gone voice-error voice-nofield voice-norow voice-cancel-touch voice-kbd-banner; do run sessions "$v"; done
 run ctrlk
 run keyboard
 run gesture

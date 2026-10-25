@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -480,6 +481,9 @@ typedef enum {
 
 lang_t i18n_get_lang(void);   /* always LANG_EN: the UI is English only */
 const char *tr(str_id_t id);
+/* The touch wording of a text that names keys, when no physical keyboard is present (keyboard false); any other id,
+   or any id with a keyboard, comes back as it is. ui_touch_text passes keyboard_any_present(). */
+str_id_t i18n_touch_text(str_id_t keys, bool keyboard);
 
 #ifdef __cplusplus
 }
