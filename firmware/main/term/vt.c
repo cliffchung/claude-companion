@@ -14,7 +14,7 @@ enum { ST_GROUND, ST_ESC, ST_CSI, ST_OSC, ST_DCS, ST_CHARSET, ST_ESC_HASH };
 struct vt {
     int cols, rows;
     vt_cell_t *main;         /* rows*cols */
-    vt_cell_t *alt;
+    vt_cell_t *alt;          /* allocated on the first switch to the alternate screen */
     vt_cell_t *screen;       /* points to main or alt */
     vt_cell_t *sb;           /* scrollback ring, sb_cap lines of cols cells */
     int sb_cap, sb_head, sb_used;
@@ -37,7 +37,10 @@ struct vt {
     vt_bell_cb_t bell_cb; void *bell_user;
     vt_title_cb_t title_cb; void *title_user;
     uint8_t tabs[512 / 8];
+    size_t work;             /* cells written, cleared or moved so far (vt_work) */
 };
+
+static void *big_alloc(size_t n);
 
 /* vt_wcwidth: term/wcwidth.c (pure, shared with the Sessions log wrap) */
 
@@ -54,6 +57,7 @@ static void clear_cells(vt_t *v, int y, int x0, int x1)
 {
     if (y < 0 || y >= v->rows) return;
     if (x0 < 0) x0 = 0; if (x1 > v->cols) x1 = v->cols;
+    if (x1 > x0) v->work += (size_t)(x1 - x0);
     for (int x = x0; x < x1; x++) blank_cell(v, cell(v, x, y));
     mark_dirty(v, y);
 }
@@ -75,6 +79,7 @@ static void scroll_up(vt_t *v, int top, int bot, int n)   /* bot inclusive */
     if (n <= 0) return;
     if (n > bot - top + 1) n = bot - top + 1;
     for (int i = 0; i < n; i++) if (top == 0) sb_push(v, cell(v, 0, top + i));
+    v->work += (size_t)v->cols * (bot - top + 1 - n);
     memmove(cell(v, 0, top), cell(v, 0, top + n), sizeof(vt_cell_t) * v->cols * (bot - top + 1 - n));
     for (int y = bot - n + 1; y <= bot; y++) clear_cells(v, y, 0, v->cols);
     for (int y = top; y <= bot; y++) mark_dirty(v, y);
@@ -83,6 +88,7 @@ static void scroll_down(vt_t *v, int top, int bot, int n)
 {
     if (n <= 0) return;
     if (n > bot - top + 1) n = bot - top + 1;
+    v->work += (size_t)v->cols * (bot - top + 1 - n);
     memmove(cell(v, 0, top + n), cell(v, 0, top), sizeof(vt_cell_t) * v->cols * (bot - top + 1 - n));
     for (int y = top; y < top + n; y++) clear_cells(v, y, 0, v->cols);
     for (int y = top; y <= bot; y++) mark_dirty(v, y);
@@ -143,6 +149,7 @@ static void put_char(vt_t *v, uint32_t cp)
         if (v->autowrap) { v->cx = 0; linefeed(v); }
     }
     if (v->insert_mode) {
+        v->work += (size_t)v->cols;
         memmove(cell(v, v->cx + w, v->cy), cell(v, v->cx, v->cy), sizeof(vt_cell_t) * (v->cols - v->cx - w));
     }
     vt_cell_t *c = cell(v, v->cx, v->cy);
@@ -227,7 +234,9 @@ static void set_mode(vt_t *v, bool on)
             case 1000: case 1002: case 1003: case 1006: v->mouse = on; break;
             case 2004: v->bracketed_paste = on; break;
             case 47: case 1047: case 1049:
-                if (on && !v->alt_active) {
+                if (on && !v->alt_active && !v->alt)
+                    v->alt = big_alloc(sizeof(vt_cell_t) * v->cols * v->rows);   /* no memory: stay on the main screen */
+                if (on && !v->alt_active && v->alt) {
                     if (p == 1049) { v->saved_cx = v->cx; v->saved_cy = v->cy; v->saved_fg = v->fg; v->saved_bg = v->bg; v->saved_attr = v->attr; }
                     v->screen = v->alt; v->alt_active = true;
                     clear_rows(v, 0, v->rows);
@@ -254,6 +263,7 @@ static void do_csi(vt_t *v, char final)
     int n;
     switch (final) {
     case '@': n = P(0, 1); if (n > v->cols - v->cx) n = v->cols - v->cx;
+        v->work += (size_t)v->cols;
         memmove(cell(v, v->cx + n, v->cy), cell(v, v->cx, v->cy), sizeof(vt_cell_t) * (v->cols - v->cx - n));
         clear_cells(v, v->cy, v->cx, v->cx + n); break;
     case 'A': set_cursor(v, v->cx, v->cy - P(0, 1)); break;
@@ -278,6 +288,7 @@ static void do_csi(vt_t *v, char final)
     case 'L': if (v->cy >= v->scroll_top && v->cy <= v->scroll_bot) scroll_down(v, v->cy, v->scroll_bot, P(0, 1)); break;
     case 'M': if (v->cy >= v->scroll_top && v->cy <= v->scroll_bot) scroll_up(v, v->cy, v->scroll_bot, P(0, 1)); break;
     case 'P': n = P(0, 1); if (n > v->cols - v->cx) n = v->cols - v->cx;
+        v->work += (size_t)v->cols;
         memmove(cell(v, v->cx, v->cy), cell(v, v->cx + n, v->cy), sizeof(vt_cell_t) * (v->cols - v->cx - n));
         clear_cells(v, v->cy, v->cols - n, v->cols); mark_dirty(v, v->cy); break;
     case 'S': scroll_up(v, v->scroll_top, v->scroll_bot, P(0, 1)); break;
@@ -447,11 +458,10 @@ vt_t *vt_create(int cols, int rows, int scrollback)
     if (!v) return NULL;
     v->cols = cols; v->rows = rows;
     v->main = big_alloc(sizeof(vt_cell_t) * cols * rows);
-    v->alt = big_alloc(sizeof(vt_cell_t) * cols * rows);
     v->dirty = calloc(rows, 1);
     v->sb_cap = scrollback;
     if (scrollback > 0) v->sb = big_alloc(sizeof(vt_cell_t) * cols * scrollback);
-    if (!v->main || !v->alt || !v->dirty || (scrollback > 0 && !v->sb)) { vt_destroy(v); return NULL; }   /* out of memory */
+    if (!v->main || !v->dirty || (scrollback > 0 && !v->sb)) { vt_destroy(v); return NULL; }   /* out of memory */
     v->screen = v->main;
     vt_reset(v);
     return v;
@@ -463,13 +473,20 @@ void vt_destroy(vt_t *v)
     free(v->main); free(v->alt); free(v->sb); free(v->dirty); free(v);
 }
 
-void vt_resize(vt_t *v, int cols, int rows)
+bool vt_resize(vt_t *v, int cols, int rows)
 {
-    if (cols == v->cols && rows == v->rows) return;
-    if (cols < 2 || rows < 1) return;
+    if (!v) return false;
+    if (cols == v->cols && rows == v->rows) return true;
+    if (cols < 2 || rows < 1) return false;
     vt_cell_t *nm = big_alloc(sizeof(vt_cell_t) * cols * rows);
-    vt_cell_t *na = big_alloc(sizeof(vt_cell_t) * cols * rows);
-    for (int i = 0; i < cols * rows; i++) { nm[i].cp = ' '; nm[i].fg = nm[i].bg = VT_COLOR_DEFAULT; na[i] = nm[i]; }
+    vt_cell_t *na = v->alt ? big_alloc(sizeof(vt_cell_t) * cols * rows) : NULL;
+    vt_cell_t *nsb = v->sb ? big_alloc(sizeof(vt_cell_t) * cols * v->sb_cap) : NULL;
+    uint8_t *nd = calloc(rows, 1);
+    if (!nm || (v->alt && !na) || (v->sb && !nsb) || !nd) {   /* out of memory: keep the old screen */
+        free(nm); free(na); free(nsb); free(nd);
+        return false;
+    }
+    for (int i = 0; i < cols * rows; i++) { nm[i].cp = ' '; nm[i].fg = nm[i].bg = VT_COLOR_DEFAULT; if (na) na[i] = nm[i]; }
     /* keep bottom rows when shrinking */
     int copy_rows = rows < v->rows ? rows : v->rows;
     int src_start = (v->rows > rows) ? v->rows - rows : 0;
@@ -479,11 +496,10 @@ void vt_resize(vt_t *v, int cols, int rows)
     int cc = cols < v->cols ? cols : v->cols;
     for (int y = 0; y < copy_rows; y++) {
         memcpy(&nm[y * cols], &v->main[(y + src_start) * v->cols], sizeof(vt_cell_t) * cc);
-        memcpy(&na[y * cols], &v->alt[(y + src_start) * v->cols], sizeof(vt_cell_t) * cc);
+        if (na) memcpy(&na[y * cols], &v->alt[(y + src_start) * v->cols], sizeof(vt_cell_t) * cc);
     }
     /* rebuild scrollback with new width */
     if (v->sb) {
-        vt_cell_t *nsb = big_alloc(sizeof(vt_cell_t) * cols * v->sb_cap);
         for (int i = 0; i < v->sb_cap * cols; i++) { nsb[i].cp = ' '; nsb[i].fg = nsb[i].bg = VT_COLOR_DEFAULT; }
         for (int i = 0; i < v->sb_used; i++) {
             int src = (v->sb_head - v->sb_used + i + v->sb_cap) % v->sb_cap;
@@ -494,16 +510,18 @@ void vt_resize(vt_t *v, int cols, int rows)
     bool alt = v->alt_active;
     free(v->main); free(v->alt); free(v->dirty);
     v->main = nm; v->alt = na; v->screen = alt ? na : nm;
-    v->dirty = calloc(rows, 1);
+    v->dirty = nd;
     v->cols = cols; v->rows = rows;
     v->cy -= src_start; if (v->cy >= rows) v->cy = rows - 1; if (v->cy < 0) v->cy = 0;
     if (v->cx >= cols) v->cx = cols - 1;
     v->scroll_top = 0; v->scroll_bot = rows - 1;
     v->view_off = 0;
     mark_all(v);
+    return true;
 }
 
 int vt_cols(const vt_t *v) { return v->cols; }
+size_t vt_work(const vt_t *v) { return v ? v->work : 0; }
 int vt_rows(const vt_t *v) { return v->rows; }
 
 const vt_cell_t *vt_view_row(vt_t *v, int row)

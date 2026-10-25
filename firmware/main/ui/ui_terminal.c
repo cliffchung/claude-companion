@@ -571,8 +571,7 @@ static void layout(term_ctx_t *c)
     lv_obj_set_size(term_view_obj(c->tv), W, h);
     int cols, rows;
     if (term_view_fit(c->tv, &cols, &rows)) {
-        vt_resize(c->vt, cols, rows);
-        if (c->ssh) ssh_client_resize(c->ssh, cols, rows);
+        if (vt_resize(c->vt, cols, rows) && c->ssh) ssh_client_resize(c->ssh, cols, rows);   /* no memory: the old size stays */
     }
     lv_obj_invalidate(term_view_obj(c->tv));
 }
@@ -773,6 +772,17 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
         lv_async_call(back_async, NULL);
         return ui_screen_base();
     }
+    int W = lv_display_get_horizontal_resolution(NULL), H = lv_display_get_vertical_resolution(NULL);
+    fonts_set_term_line_height(UI_TK_TERM_LINE_H);
+    int cols = W / 12, rows = H / UI_TK_TERM_LINE_H;   /* 12 px cells */
+    vt_t *vt = vt_create(cols, rows, 1500);
+    if (!vt) {   /* out of memory (M1): nothing is set up yet, so leave as a refusal does */
+        ESP_LOGW(TAG, "terminal: no memory for a %dx%d screen", cols, rows);
+        ui_toast(tr(STR_TERM_NO_MEMORY));
+        if (cmd && cmd->on_close) cmd->on_close(cmd->ctx);
+        lv_async_call(back_async, NULL);
+        return ui_screen_base();
+    }
     term_ctx_t *c = calloc(1, sizeof(*c));
     s_ctx = c;
     c->server_idx = idx;
@@ -795,10 +805,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
     c->scr = ui_screen_base();   /* bg: UI_TK_TERM_BG */
     lv_obj_add_event_cb(c->scr, scr_delete_cb, LV_EVENT_DELETE, c);
 
-    int W = lv_display_get_horizontal_resolution(NULL), H = lv_display_get_vertical_resolution(NULL);
-    fonts_set_term_line_height(UI_TK_TERM_LINE_H);
-    int cols = W / 12, rows = H / UI_TK_TERM_LINE_H;   /* 12 px cells */
-    c->vt = vt_create(cols, rows, 1500);
+    c->vt = vt;
     vt_set_write_cb(c->vt, vt_write_cb, c);
     vt_set_bell_cb(c->vt, vt_bell_cb, c);
     vt_set_title_cb(c->vt, vt_title_cb, c);
@@ -814,7 +821,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
     c->bar = session_bar(c, c->name);
     layout(c);
     term_view_fit(c->tv, &cols, &rows);
-    vt_resize(c->vt, cols, rows);
+    if (!vt_resize(c->vt, cols, rows)) { cols = vt_cols(c->vt); rows = vt_rows(c->vt); }   /* no memory: the old size */
     bar_update(c);   /* "Connecting…": the bar stays up until the session is live, then hides after 3 s */
 
     char banner[320], what[200];

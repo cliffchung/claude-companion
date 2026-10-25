@@ -305,6 +305,7 @@ X(TERM_SESSION_ENDED, "The session ended (status %d)") \
 X(TERM_CANT_OPEN, "Can't open the session") \
 X(TERM_NO_SSH_TASK, "Couldn't start the connection. Try again.") \
 X(TERM_NOT_VERIFIED, "The Host link isn't verified yet; try again in a moment") \
+X(TERM_NO_MEMORY, "Not enough memory to open the terminal") \
 X(BOOT_STARTING, "Starting\xe2\x80\xa6") \
 X(SLEEP_NOTICE, "Sleeping to save battery. Press the side button to wake.") \
 X(UNIT_S, "s") \
