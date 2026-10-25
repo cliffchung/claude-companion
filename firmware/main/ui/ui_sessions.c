@@ -779,6 +779,7 @@ static void pane_update(void)
 static void select_index(int i);
 static void sessions_open_selected(void);
 static void render(void);
+static bool voice_busy(void);
 
 /* A tap belongs to the session under the finger when it went down (review I1): a poll can re-sort the
    rows between the press and the release, and the row object then shows another session. */
@@ -806,7 +807,7 @@ static void row_click_cb(lv_event_t *e)
     if (moved) return;   /* the row shows another session now: the tap does nothing */
     if (i == s_sel) {
         const cc_session_t *s = selected();
-        if (openable(s)) { sessions_open_selected(); render(); }
+        if (openable(s) && !voice_busy()) { sessions_open_selected(); render(); }   /* like Enter (spec 5.2) */
         return;
     }
     select_index(i);
@@ -1044,6 +1045,15 @@ static void voice_get(voice_status_t *v)
 {
     voice_status(v);
     if (v->cancelled) v->phase = VOICE_IDLE;
+}
+
+/* Recording or transcribing (not cancelled): Enter, Send, Open and a tap on the selected row do nothing (review M1).
+   A send would change the draft under the recording; an open deletes Sessions and cancels it. */
+static bool voice_busy(void)
+{
+    voice_status_t v;
+    voice_get(&v);
+    return v.phase != VOICE_IDLE;
 }
 
 static const cc_session_t *item_by_key(const char *key)
@@ -1574,8 +1584,8 @@ static void chip_select_cb(lv_event_t *e)
     select_index(sm_next_needs_you(s_items, s_n, s_sel));
     render();
 }
-static void chip_send_cb(lv_event_t *e) { (void)e; enter_pressed(); render(); }
-static void chip_open_cb(lv_event_t *e) { (void)e; sessions_open_selected(); render(); }
+static void chip_send_cb(lv_event_t *e) { (void)e; if (voice_busy()) return; enter_pressed(); render(); }
+static void chip_open_cb(lv_event_t *e) { (void)e; if (voice_busy()) return; sessions_open_selected(); render(); }
 static void chip_terminal_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_hosts_create, NULL); }
 static void chip_settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }
 static void chip_keys_cb(lv_event_t *e) { (void)e; ui_sessions_keys_overlay(true); }

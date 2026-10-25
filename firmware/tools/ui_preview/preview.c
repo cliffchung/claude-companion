@@ -1054,6 +1054,27 @@ static void pv_stop(lv_display_t *d) {
     step(d, 400); step(d, 400);
 }
 static char *key_of(int i, char *k) { sm_key(&s_preview_sessions[i], k, SM_KEY_MAX); return k; }
+static lv_obj_t *find_clickable_shown(lv_obj_t *o, const char *t);
+/* Review M1: while recording or transcribing, Send, Open and a tap on the selected row do nothing, like Enter. */
+static int pv_taps_inert(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *name) {
+    int pastes = s_paste_calls, checks = s_check_calls;
+    voice_phase_t ph = s_pv_voice.phase;
+    char before[SM_ANSWER_MAX + 1]; snprintf(before, sizeof(before), "%s", field_text(s) ? field_text(s) : "");
+    lv_obj_t *send = find_clickable_shown(s, tr(STR_SES_SEND)), *open = find_clickable_shown(s, tr(STR_SES_OPEN));
+    assert(send && open);
+    lv_obj_send_event(send, LV_EVENT_CLICKED, NULL); step(d, 400);
+    lv_obj_send_event(open, LV_EVENT_CLICKED, NULL); step(d, 400);
+    lv_obj_t *row = lv_obj_get_child(list, selected_index(list));
+    lv_obj_send_event(row, LV_EVENT_PRESSED, NULL);
+    lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 400);
+    if (s_paste_calls != pastes || s_check_calls != checks || !ui_nav_is_top(ui_sessions_create) || s_pv_voice.phase != ph
+        || strcmp(field_text(s), before)) {
+        printf("check %s: FAIL a tap acted while busy (%d pastes, %d checks, draft \"%s\")\n", name,
+               s_paste_calls - pastes, s_check_calls - checks, field_text(s));
+        return 1;
+    }
+    return 0;
+}
 
 static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *name, const char *v) {
     char why[256], k0[SM_KEY_MAX];
@@ -1076,6 +1097,7 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
             printf("check %s: FAIL keys acted while recording (draft \"%s\", %d pastes, row %d)\n", name, field_text(s), s_paste_calls, selected_index(list));
             return 1;
         }
+        if (pv_taps_inert(d, s, list, name)) return 1;   /* with a draft: Send would paste it */
         /* Esc cancels (and keeps the draft) */
         assert(sink_sk(SK_ESC)); step(d, 400);
         if (s_voice_cancel_calls != 1 || strcmp(field_text(s), "ab")) { printf("check %s: FAIL Esc: %d cancels, draft \"%s\"\n", name, s_voice_cancel_calls, field_text(s)); return 1; }
@@ -1110,6 +1132,7 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         assert(s_voice_start_calls == starts && find_label(lv_layer_top(), "Still transcribing\xe2\x80\xa6", false));
         sink_text("q"); assert(sink_sk(SK_ENTER)); step(d, 400);
         assert(!strcmp(field_text(s), "") && s_paste_calls == 0);
+        if (pv_taps_inert(d, s, list, name)) return 1;   /* an empty draft: Send would open a take-over */
         return r;
     }
     if (!strcmp(v, "voice-cancel-busy")) {
