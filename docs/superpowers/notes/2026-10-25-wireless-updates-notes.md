@@ -196,3 +196,24 @@ B, and the diet saved slightly more than estimated. `idf.py size`: External RAM 
 - Strings: the remaining `SET_FW_*` and `FW_*` entries and `SET_HOST_NOTE` as spec §8.6; `test_i18n` pins the
   conversions of the ten format strings.
 - Steps 3–6 (touch, keyboard, Go back, gates) are device steps: waiting for Task 9.
+
+## Task 8: the docs
+
+- `README.md`: §1 "Flash and watch the log" without the updater sentence, and a new "Update over Wi-Fi" (the
+  migration with its must / must-not lists and the `app-flash` and merged-image warnings, staging with
+  `stage_update.sh` and the alias with the placeholder `~/src/claude-companion`, installing, what happens on a
+  failure, when USB is still needed); §4 one line; §5 the Host and About rows; §9 `ota`, `ota check`, `ota path`, the
+  debug verbs, `ota url` gone; §10 six troubleshooting entries; §12 the update bullet; Status, Known limitations and
+  the Roadmap (6 Wireless updates, 7 Camera, 8 Release).
+- **Deviation:** the Roadmap row says "built; device gates pending", not "done", and Status says the device gates
+  are pending, because Task 9 hasn't run. Task 9 changes both to done.
+- `firmware/README.md`: the layout (`ota/` contents, `updater/` gone, the new tools, `version.txt`), the partitions
+  line, the Build paragraph (migration flash, version, size guard, CP437, rollback), Release images rewritten with
+  the NVS warning (and no updater row), "OTA (dormant)" replaced by "Firmware updates", the two firmware commands in
+  the Host link section, the microSD list without the OTA path, the debug verbs, the fonts paragraph.
+- The main spec's roadmap gains Plan 6 and renumbers camera (7) and release (8); its command table gains the two
+  firmware commands. `THIRD_PARTY_NOTICES.md` names no updater: unchanged.
+- Checks: `grep -n "updater\|factory\|ota url\|dormant\|0xF80000" README.md firmware/README.md` finds nothing;
+  every `merge_flash` / `full_flash` / `write_flash … 0x0` mention sits next to the NVS warning; no "Mac" was added
+  for the Host; placeholders only. The README's staging line ran locally with `STAGE_DIR` in the scratchpad:
+  `staged 1.6.0+66fe269.dirty, 6322736 B, sha256 39f50fbd2909…`, one file in the directory, removed after.

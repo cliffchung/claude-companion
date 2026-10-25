@@ -122,9 +122,10 @@ ls /dev/cu.usbmodem*
 idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-`idf.py flash` writes the bootloader, the partition table and the app; that is all you need. (The
-factory-updater partition is used only by the firmware-update path, which is not in use.) Leave
-`idf.py monitor` with **Ctrl+]**.
+`idf.py flash` writes the bootloader, the partition table, a blank `otadata` and the app, and
+keeps NVS (your Wi-Fi, keys and settings); that is all you need. Leave `idf.py monitor` with
+**Ctrl+]**. After this first wired flash, new builds can go over Wi-Fi: see
+[Update over Wi-Fi](#update-over-wi-fi).
 
 **If the screen stays dark after flashing**, reset the chip once:
 
@@ -137,6 +138,73 @@ booted on their own. See [Troubleshooting](#10-troubleshooting).
 
 **Don't flash the ESP32-C6** (the Wi-Fi co-processor). The log shows it reporting firmware
 `0.0.0` and a "major version mismatch". That is harmless: scanning and joining work.
+
+### Update over Wi-Fi
+
+The firmware has two app slots. The Tab5 pulls a new build from the Host over its SSH link,
+checks it, writes it to the slot it isn't running, restarts into it, and keeps it only once it has
+reached the Host. Otherwise it goes back to the version it ran before, by itself.
+
+**Once: the migration flash.** A Tab5 running a build from before this layout needs one wired
+flash of this build, because the partition table and a bootloader with rollback can only arrive
+over USB. With the Tab5 plugged in:
+
+```sh
+cd firmware
+idf.py build
+idf.py -p /dev/cu.usbmodemXXXX flash
+```
+
+- It must write the bootloader (0x2000, where rollback lives), the partition table (0x8000), a
+  blank `otadata` (0xF000, so the bootloader boots `app0`) and the app (0x20000). That is exactly
+  what `idf.py flash` writes.
+- It must not touch NVS (0x9000 to 0xEFFF: Wi-Fi, the device key, the host-key pins, the saved
+  hosts, the settings and the Tailscale identity), the ESP32-C6 or any eFuse. The first three
+  partitions keep their offsets and sizes, so NVS is read in place.
+- **So don't use** `idf.py app-flash` (no bootloader or partition table: the first update would
+  find no second slot), `idf.py erase-flash`, `esptool erase-flash` or `erase-region` over 0x9000,
+  the merged full image from `tools/merge_flash.sh` (it fills the gaps with 0xFF, which erases
+  NVS: it is for a blank Tab5 only), or `espefuse.py`.
+- Recommended before it: read NVS out to a private file,
+  `python -m esptool --chip esp32p4 -p /dev/cu.usbmodemXXXX read-flash 0x9000 0x6000 nvs-backup.bin`.
+  It holds the device key and Wi-Fi passwords: keep it out of git, `chmod 600 nvs-backup.bin`, and
+  delete it once updates over Wi-Fi work. Writing it back is a restore of last resort only.
+
+**Stage a build on the Host.** After `idf.py build`, copy it to the staging path:
+
+```sh
+sh tools/stage_update.sh          # from firmware/; prints: staged <version>, <size> B, sha256 <prefix>…
+```
+
+It checks that the file is a Claude Companion app image, then copies it to
+`~/.local/share/claude-companion/claude_companion.bin` (atomically: a copy, then a rename) and
+writes nothing else. `STAGE_DIR` changes the directory. One alias does both steps:
+
+```sh
+alias tab5-build='(cd ~/src/claude-companion/firmware && idf.py build && sh tools/stage_update.sh)'
+```
+
+Settings › Host › **Firmware file on Host** is the path the Tab5 reads (the default is the staging
+path above; any path of letters, digits and `_ . / ~ -` up to 63 characters works, such as your
+`firmware/build/claude_companion.bin` if it fits).
+
+**Install it.** Settings › About › **Update firmware** shows the build on the Host ("1.6.1+3f2a9c1
+available", "Up to date", or why not). Tap it (or focus it and press Enter), then **Install**. A
+progress screen shows the download, the checks, the write and the check of what was written, in
+about a minute; Esc or Cancel stops it, and nothing changes until the restart. After the restart the
+Tab5 says "Updated to …" once it has reached the Host. It refuses an update on battery below 30 %,
+while a session is open full-screen, or while voice input is busy.
+
+**If the new build fails:**
+- If it crashes, hangs or can't reach the Host within 180 s, the Tab5 goes back to the previous
+  version by itself and says "The update to … didn't start properly…".
+- If it reached the Host but then keeps crashing early (three times in a row), it goes back and says
+  "The Tab5 kept restarting…".
+- If it works but you don't like it, Settings › About › **Previous version** › **Go back** restarts
+  into the version it ran before.
+
+**When USB is still needed:** a change to the bootloader or the partition table, the ESP32-C6, or a
+Tab5 whose two slots are both broken. Then `idf.py -p /dev/cu.usbmodemXXXX flash` (keeps NVS).
 
 ---
 
@@ -337,6 +405,9 @@ appear on the Sessions screen.
 
 ## 4. Daily use
 
+New firmware builds install from Settings › About › Update firmware (see
+[Update over Wi-Fi](#update-over-wi-fi)).
+
 ### The Sessions screen
 
 The left side lists the Host's sessions: **NEEDS YOU** first, then WORKING, IDLE, DONE and ENDED,
@@ -462,12 +533,12 @@ Ctrl+P (or the footer's **⌃P Settings**) opens Settings. It has six sections:
 
 | Section | What's in it |
 |---|---|
-| **Host** | Which saved SSH host is the Host, its address and sign-in (the host form), the link status, the fallback address, the Claude path, the Whisper path and model with **Check** (voice input), the pinned host key (with Forget; on first use, the key the Host presented, with Trust this key), and this device's public key (Show). |
+| **Host** | Which saved SSH host is the Host, its address and sign-in (the host form), the link status, the fallback address, the Claude path, the Whisper path and model with **Check** (voice input), the Firmware file on Host (where Update firmware reads new builds), the pinned host key (with Forget; on first use, the key the Host presented, with Trust this key), and this device's public key (Show). |
 | **Network** | Wi-Fi: the current network, Networks (saved, available, Join other…) and Advanced › Static address. Tailscale: the switch, status, auth key, device name, control server, connection mode, peers, and Forget this device on the tailnet. |
 | **Power** | Screen: Dim after, Screen off after, Sleep on USB power, Stay awake in Terminal. Wake: Wake when a session needs you. Battery saver: Radio off, Radio off after, Check in every, Deep idle after, Hibernate after, Hibernate check-in every. |
 | **Keyboard light** | Whether a keyboard is connected; its colour (Keyboard's own, or a swatch; Blue is the default) and brightness; Show needs-you on keyboard; Brightness when the screen is dark (2, 5 or 15 %). |
 | **Display & time** | Screen brightness, time zone, and the clock with Sync now. The clock also syncs each time Wi-Fi connects. |
-| **About** | Version, credits, Diagnostics (chip, memory, battery, Wi-Fi, Tailscale, keyboard, uptime, last reset), Reboot, and Reset settings. |
+| **About** | Version, Update firmware (the build on the Host, then Install), Previous version (Go back, when the other slot holds a runnable build), credits, Diagnostics (chip, memory, battery, Wi-Fi, Tailscale, keyboard, uptime, last reset), Reboot, and Reset settings. |
 
 **Reset settings** puts power, the keyboard light and display brightness back to their defaults.
 It keeps the Wi-Fi networks, the Host and the Terminal hosts, the host-key pins, the Tailscale
@@ -625,16 +696,21 @@ Type `help` for the full list. The useful commands:
 | `power checkins`, `power resets` | The last check-ins (time, path, duration, energy), and the reset-reason counts. |
 | `clock`, `clock tz <rule>` | The time, or set a custom POSIX time-zone rule. |
 | `ui home`, `ui settings [network]` | Shows Sessions, or Settings. |
+| `ota`, `ota status` | The firmware slots: the running version and slot, the other slot's version, whether a rollback is possible, whether the running build still waits to be marked valid, and the boot-loop count. |
+| `ota check` | Checks the build at the firmware path on the Host (read-only there): its version, size, SHA-256 prefix, and newer, older, other build or up to date. |
+| `ota path [<path>]` | Prints or sets the Firmware file on Host. |
 | `screenshot` | Dumps the screen as a JPEG frame. `python3 firmware/tools/screenshot.py --port /dev/cu.usbmodemXXXX --out shot.jpg` saves it (needs `pyserial`; close the monitor first). |
 | `reboot` | Restarts the Tab5, closing its SSH sessions first. |
 
 More commands exist for development and measurement (`key`, `power log`, `ui heapmin`,
-`ui timers`, `ota url` and others); `help` describes them. `key` injects key presses as if typed,
+`ui timers` and others); `help` describes them. `key` injects key presses as if typed,
 so it acts on whatever is on screen.
 
 Test-only commands that change state behind your back (`companion hostkey corrupt`, which
 overwrites the Host's host-key pin, `power bench`, `power sim`, `power go`, `power rail`,
-`voice test` and others) are built only with `CONFIG_COMPANION_DEBUG_COMMANDS=y`. It is off in
+`voice test`, and the firmware tests `ota update [corrupt-ram]` (an update without the confirm),
+`ota cancel`, `ota go-back` and `ota test-bootloop <1-3>`) are built only with
+`CONFIG_COMPANION_DEBUG_COMMANDS=y`. It is off in
 `sdkconfig.defaults`; turn it on in your own `sdkconfig` (`idf.py menuconfig` › Claude Companion)
 for a development device, never for a build you give away.
 
@@ -707,6 +783,28 @@ the Tab5 and a little louder. Nothing was sent to the Host. A recording under ha
 busy, or loading the model for the first time after a restart (several seconds). Try again. If it
 keeps happening, run the one-line test in
 [Set up voice input](#set-up-voice-input-optional) on the Host and see how long it takes.
+
+**"No firmware file on the Host at the firmware path (Settings › Host)."** Nothing is at the
+**Firmware file on Host** path, or it isn't a readable file. Run `sh tools/stage_update.sh` after
+the build, or point the setting at the build. `ota check` on the console shows the same.
+
+**"That file isn't Claude Companion firmware for the Tab5."** The file at the firmware path is
+another project's image, the bootloader, a text file, or a build for another chip. Stage
+`firmware/build/claude_companion.bin` with `tools/stage_update.sh`, which refuses anything else.
+
+**"The firmware file is damaged. Build it again on the Host."** The image's own checksum or SHA-256
+doesn't match: a damaged or half-written file. Nothing was written to the Tab5. Build and stage it
+again.
+
+**"The update to … didn't start properly, so the Tab5 went back to …"** The new build didn't reach
+the Host within 180 s of starting (or crashed first), so the bootloader went back to the previous
+version. Check the new build's log over USB (`idf.py monitor`), fix it and update again.
+
+**"The Tab5 kept restarting, so it went back to …"** The build crashed early three times in a row
+after it had been kept, so the Tab5 switched back to the other slot.
+
+**Both versions are broken.** Flash a good build over USB: `idf.py -p /dev/cu.usbmodemXXXX flash`.
+It keeps NVS (Wi-Fi, keys and settings). Don't use `erase-flash` or the merged full image.
 
 **Tailscale is slow.** The first connect after a boot can take about a minute, and the first
 connection to a peer 5 to 30 seconds. Relay only also adds some latency.
@@ -802,6 +900,14 @@ Use a Debug build: a Release build of the preview crashes in one case. The cases
   transcript is logged; logs show only lengths, durations, levels and exit codes. The microphone is
   on only while recording, and the Tab5 wipes its audio buffer whenever a recording ends, however
   it ends.
+- **Firmware updates come only from the Host, over the pinned link.** The Tab5 reads the file at
+  the firmware path with two fixed commands (`cc_cmd_fw_info`, `cc_cmd_fw_read`) on plain exec
+  channels; nothing is installed or left running on the Host. Before anything is written it checks
+  the image's project, chip, size, the Host's SHA-256 of the file and the image's own appended
+  hash, and it never writes the running version. A new build that doesn't reach the Host goes
+  back by itself. Images aren't signed: without secure boot, whoever controls the Host account or
+  holds the Tab5 with a USB cable can already run code on it, so the Host account and USB access
+  are the trust boundary.
 - **No secrets in logs.** The Tailscale auth key is never logged or shown, and the console's key
   log masks typed characters.
 
@@ -817,8 +923,9 @@ Tested on one Tab5 (the board support package reports board version 2) with a ma
 Claude Code 2.1.309, on a home network, with Tailscale both off and on. Not yet tried on the
 hardware with this build: a Terminal session to another machine, the microSD card paths (Load from
 SD card, key files, the host import), Forget this device on the tailnet, a USB keyboard, and
-battery life on the battery. The firmware-update (OTA) code is still in the tree, but it has no
-screen and isn't used.
+battery life on the battery. Plan 6 (firmware updates over Wi-Fi) is built and host-tested; its
+device gates (installs, refusals, rollbacks, the boot-loop guard, power holds and NVS through the
+migration) are pending.
 
 ## Known limitations
 
@@ -838,8 +945,8 @@ screen and isn't used.
 - **Voice input** has been tested only with synthesized speech, in English, with whisper.cpp's
   `base.en` model on an Apple Silicon Host.
 - **Battery life** hasn't been measured on the battery.
-- **No firmware updates over the air.** The OTA code is in the tree but has no screen; flash with
-  USB.
+- **The bootloader, the partition table and the C6 still need USB.** Updates over Wi-Fi replace
+  only the app. Images aren't signed (see [Security model](#12-security-model)).
 - **No screenshots** are in the repository yet.
 
 ## Roadmap
@@ -851,8 +958,9 @@ screen and isn't used.
 | 3 Local link | The Host link over the home LAN; Tailscale becomes an off-by-default switch; fast check-ins | done |
 | 4 UI overhaul | Sessions home, six-section Settings, Terminal hosts; music, camera, USB drive, files and the launcher removed | done |
 | 5 Voice input | Dictate answers with the mic: the Tab5 records, sends the audio over SSH to a local transcriber on the Host (whisper.cpp), and puts the text in the answer field (Ctrl+Space) | done |
-| 6 Camera | Take a photo, copy it to the Host, and ask the open session about it | next |
-| 7 Release | Final name, public release, firmware updates | later |
+| 6 Wireless updates | New builds install over Wi-Fi from the Host: two app slots, rollback, a boot-loop guard, Go back | built; device gates pending |
+| 7 Camera | Take a photo, copy it to the Host, and ask the open session about it | next |
+| 8 Release | Final name, public release | later |
 
 The full table is in the [design spec](docs/superpowers/specs/2026-10-22-claude-tab5-design.md).
 

@@ -46,6 +46,8 @@ fully take over those same sessions. No phone, no API key: it runs on your exist
   | Take over | `claude attach <id>` in a terminal (pty) channel. ← returns to agent view and Ctrl+Z to the shell; the session keeps running. |
   | Transcribe a recording (Plan 5) | `cc_cmd_transcribe`: a plain exec channel (no pty) that runs `whisper-cli -m <model> -l en -nt -np -otxt -of - -f -` with the WAV on stdin and the text on stdout; exit 120 = no whisper-cli at the path, 121 = no model. Nothing is stored on the Host. See `docs/superpowers/specs/2026-10-24-voice-input-design.md` §7.1. |
   | Check voice input (Plan 5) | `cc_cmd_voice_check`: the same two path tests, no audio; exits 0, 120 or 121 (§7.2). |
+  | Firmware info (Plan 6) | `cc_cmd_fw_info`: a plain exec channel that prints the size and SHA-256 of the file at the firmware path, then its first 288 bytes; exit 120 = no readable regular file, 121/122 = the Host's tools failed. See `docs/superpowers/specs/2026-10-25-wireless-updates-design.md` §9.1. |
+  | Firmware read (Plan 6) | `cc_cmd_fw_read`: a plain exec channel that `cat`s the file at the firmware path (binary stdout, read into PSRAM); exit 120 as above. Nothing is written or left running on the Host. |
   | Stop | `claude stop <id>` (verified on the Mac; the device has no Stop feature in Plan 1) |
 
 - **Nothing extra runs on the Mac:** no daemon, no helper, no port forwarding; the watch loop
@@ -194,8 +196,9 @@ Known issues:
 | **3 Local link** (`docs/superpowers/plans/2026-10-23-local-link.md`) | the Host link and every check-in run over the home LAN (the Host's `.local` name, with a fallback address); Tailscale becomes a sticky on/off switch, off by default, that never starts MicroLink while off; fast check-in; SSH closed before every link-down |
 | **4 UI overhaul** (`docs/superpowers/plans/2026-10-24-ui-overhaul.md`) | folds in the old "Home screen" and "Design pass" items: Music, Camera, USB drive, Files and the launcher removed; six screens (Sessions home, Take-over, Terminal, SSH session, Host form, Settings) on one token set and shared components; one tr() string table that says "Host". The typeface question (IBM Plex or the current pixel font) stays open for the user |
 | **5 Voice input** (`docs/superpowers/plans/2026-10-24-voice-input.md`, done) | dictate answers and session input with the mic instead of typing. Push-to-talk on the keyboard; the Tab5 records and sends the audio over the existing SSH link to a local transcriber on the Host (whisper.cpp, one `brew install`, chosen by the user 2026-10-23), and the text goes into the answer field. Claude Code's own `/voice` needs a mic on the machine running it and doesn't work over SSH, and the Claude API takes no audio input. The user offered an API key with monthly credit if a later need for one comes up. |
-| 6 Camera (last) | take a photo, copy it to the Host over SFTP, and ask the open session about it (lowest priority) |
-| 7 Release | final name, README, GitHub publish (visibility approved by the user), OTA manifest |
+| **6 Wireless updates** (`docs/superpowers/plans/2026-10-25-wireless-updates.md`, built; device gates pending) | after one wired flash, new builds install over Wi-Fi: the Tab5 pulls a staged build from the Host over the SSH link, verifies it in PSRAM, writes the other of two app slots, and keeps it only after it reaches the Host (bootloader rollback, a 180 s check, a boot-loop guard, Go back). The SD-card updater is removed |
+| 7 Camera (last) | take a photo, copy it to the Host over SFTP, and ask the open session about it (lowest priority) |
+| 8 Release | final name, README, GitHub publish (visibility approved by the user), a release channel beside the Host route (and image signing with it) |
 
 Write each later plan when the previous one ships, against this spec.
 
