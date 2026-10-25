@@ -422,7 +422,13 @@ void voice_stop(void) {
     s_voice_stop_calls++;
     if (s_pv_voice.phase == VOICE_STARTING || s_pv_voice.phase == VOICE_RECORDING) { s_pv_voice.phase = VOICE_TRANSCRIBING; s_pv_voice.transcribing_ms = 0; }
 }
-void voice_cancel(void) { s_voice_cancel_calls++; s_pv_voice.phase = VOICE_IDLE; }
+/* As the service does: a recording ends at once (near enough); a transcription stays TRANSCRIBING, cancel pending,
+   until the Host answers (review I1), and voice_start says BUSY meanwhile. */
+void voice_cancel(void) {
+    s_voice_cancel_calls++;
+    if (s_pv_voice.phase == VOICE_TRANSCRIBING) s_pv_voice.cancelled = true;
+    else s_pv_voice.phase = VOICE_IDLE;
+}
 void voice_status(voice_status_t *o) { *o = s_pv_voice; }
 bool voice_take_result(voice_result_t *o) {
     if (!s_pv_vres_ready) return false;
@@ -436,7 +442,7 @@ static void pv_voice_post(const char *key, vr_out_t out, const char *text, bool 
     snprintf(s_pv_vres.key, sizeof(s_pv_vres.key), "%s", key);
     snprintf(s_pv_vres.text, sizeof(s_pv_vres.text), "%s", text ? text : "");
     s_pv_vres_ready = true;
-    s_pv_voice.phase = VOICE_IDLE;
+    s_pv_voice.phase = VOICE_IDLE; s_pv_voice.cancelled = false;
 }
 esp_err_t cc_link_voice_check(int *rc) {
     s_voice_check_calls++;
@@ -1104,6 +1110,43 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         assert(s_voice_start_calls == starts && find_label(lv_layer_top(), "Still transcribing\xe2\x80\xa6", false));
         sink_text("q"); assert(sink_sk(SK_ENTER)); step(d, 400);
         assert(!strcmp(field_text(s), "") && s_paste_calls == 0);
+        return r;
+    }
+    if (!strcmp(v, "voice-cancel-busy")) {
+        /* review I1: Esc while transcribing gives control back at once, though the service stays TRANSCRIBING with
+           the cancel pending until the Host answers (a cold Host, DERP: up to 60 s) */
+        pv_record(d, 4000, 50);
+        pv_stop(d);
+        s_pv_voice.transcribing_ms = 5000; step(d, 400);
+        lv_obj_t *n = find_label(s, "Transcribing on the Host\xe2\x80\xa6 5 s", false);
+        assert(n && obj_shown(n));
+        assert(sink_sk(SK_ESC)); step(d, 400);
+        assert(s_voice_cancel_calls == 1 && s_pv_voice.phase == VOICE_TRANSCRIBING && s_pv_voice.cancelled);
+        s_pv_voice.transcribing_ms = 9000; step(d, 400);
+        n = find_label_has(s, "Transcribing on the Host", 0);
+        if (n && obj_shown(n)) { printf("check %s: FAIL the transcribing note outlived the cancel: \"%s\"\n", name, lv_label_get_text(n)); return 1; }
+        if (mic_ring_red(s) || timers_with_period(100) != 0) { printf("check %s: FAIL the mic isn't idle after the cancel\n", name); return 1; }
+        /* the keys pass again: typing reaches the draft, the arrows move the selection */
+        sink_text("q"); step(d, 400);
+        if (strcmp(field_text(s), "q")) { printf("check %s: FAIL keys still eaten after the cancel (draft \"%s\")\n", name, field_text(s)); return 1; }
+        int sel = selected_index(list);
+        assert(sink_sk(SK_DOWN)); step(d, 400);
+        if (selected_index(list) == sel) { printf("check %s: FAIL Down didn't move the selection after the cancel\n", name); return 1; }
+        assert(sink_sk(SK_UP)); step(d, 400);
+        assert(selected_index(list) == sel && !strcmp(field_text(s), "q"));
+        r |= pv_run_checks(d, s, name, true, 0);
+        /* Ctrl+Space while the old transcription is still in flight: voice_start says BUSY, the UI says so, nothing
+           records */
+        int starts = s_voice_start_calls;
+        assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
+        if (s_voice_start_calls != starts + 1 || s_pv_voice.phase != VOICE_TRANSCRIBING || !s_pv_voice.cancelled) {
+            printf("check %s: FAIL a second recording started over the cancelled transcription\n", name); return 1;
+        }
+        if (!find_label(lv_layer_top(), "Still transcribing\xe2\x80\xa6", false)) { printf("check %s: FAIL no busy toast\n", name); return 1; }
+        if (timers_with_period(100) != 0 || mic_ring_red(s)) { printf("check %s: FAIL the mic shows a recording\n", name); return 1; }
+        /* the Host answers; the service drops the result and goes idle: the draft is only what was typed */
+        s_pv_voice.phase = VOICE_IDLE; s_pv_voice.cancelled = false; step(d, 400); step(d, 400);
+        if (strcmp(field_text(s), "q") || s_paste_calls) { printf("check %s: FAIL draft \"%s\", %d pastes\n", name, field_text(s), s_paste_calls); return 1; }
         return r;
     }
     if (!strcmp(v, "voice-done")) {

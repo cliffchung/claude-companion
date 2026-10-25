@@ -112,8 +112,8 @@ static int cmd_status(void)
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     if (voice_stack_free() >= 0) printf("voice: last voice task stack free min %d B\n", voice_stack_free());
     if (st.phase != VOICE_IDLE)
-        printf("voice: elapsed %d ms, meter %d, at_limit %d, transcribing %d ms\n", st.elapsed_ms, st.meter,
-               st.at_limit, st.transcribing_ms);
+        printf("voice: elapsed %d ms, meter %d, at_limit %d, transcribing %d ms, cancelled %d\n", st.elapsed_ms,
+               st.meter, st.at_limit, st.transcribing_ms, st.cancelled);
     return 0;
 }
 

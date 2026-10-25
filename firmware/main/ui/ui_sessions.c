@@ -1037,6 +1037,15 @@ void ui_sessions_keys_overlay(bool show)
    when it arrives, and is never sent (Review Focus 1). */
 static bool voice_recording(const voice_status_t *v) { return v->phase == VOICE_STARTING || v->phase == VOICE_RECORDING; }
 
+/* The service's status as Sessions acts on it. A run the user cancelled is idle here (review I1): its result is
+   dropped, so the keys pass, the mic is idle and there is no transcribing note, even while a cancelled transcription
+   still waits for the Host. A Ctrl+Space then gets VR_OUT_BUSY from voice_start ("Still transcribing…"). */
+static void voice_get(voice_status_t *v)
+{
+    voice_status(v);
+    if (v->cancelled) v->phase = VOICE_IDLE;
+}
+
 static const cc_session_t *item_by_key(const char *key)
 {
     char k[SM_KEY_MAX];
@@ -1100,7 +1109,7 @@ static void voice_view(const voice_status_t *v)
 static void meter_cb(lv_timer_t *t)
 {
     voice_status_t v;
-    voice_status(&v);
+    voice_get(&v);
     if (!voice_recording(&v)) { lv_timer_delete(t); s_meter_timer = NULL; }
     voice_view(&v);
     if (!s_meter_timer) render();
@@ -1126,13 +1135,13 @@ static void voice_error(const cc_session_t *s, str_id_t id)
 static void voice_toggle(void)
 {
     voice_status_t v;
-    voice_status(&v);
+    voice_get(&v);
     vr_key_t a = vr_on_voice_key(&s_vkeys, voice_recording(&v), mono_ms());
     if (a == VR_KEY_IGNORE) return;   /* a key repeat, or a press too soon after the last start or stop */
     if (v.phase == VOICE_TRANSCRIBING) { ui_toast(tr(STR_VOICE_BUSY)); return; }
     if (a == VR_KEY_STOP) {
         voice_stop();
-        voice_status(&v);
+        voice_get(&v);
         voice_view(&v);
         return;
     }
@@ -1148,7 +1157,7 @@ static void voice_toggle(void)
     s_voice_mine = true;
     note_clear(s);   /* an older note must not come back when the strip goes */
     meter_ensure();
-    voice_status(&v);
+    voice_get(&v);
     voice_view(&v);
 }
 
@@ -1188,7 +1197,7 @@ static void apply_voice_result(const voice_result_t *r)
 static void voice_tick(void)
 {
     voice_status_t v;
-    voice_status(&v);
+    voice_get(&v);
     if (voice_recording(&v)) meter_ensure();   /* a recording started before this screen was built */
     voice_view(&v);
     if (!s_voice_mine || !s_vres) return;
@@ -1236,11 +1245,11 @@ static bool sessions_key(const key_event_t *ev, void *user)
        (key clicks would be recorded, and the draft must not change under the recording) except Esc, which cancels. */
     if (hk_dashboard(ev) == HK_D_VOICE) { voice_toggle(); render(); return true; }
     voice_status_t vs;
-    voice_status(&vs);
+    voice_get(&vs);
     if (vs.phase != VOICE_IDLE) {
         if (ev->type == KEY_EV_SPECIAL && ev->key == SK_ESC) {
             voice_cancel();
-            voice_status(&vs);
+            voice_get(&vs);
             voice_view(&vs);
             render();
         }
@@ -1756,7 +1765,7 @@ static void scr_delete_cb(lv_event_t *e)
     if (scr != s_scr) return;
     /* leaving Sessions while recording cancels it (spec 5.2); a transcription goes on, and its result waits 60 s */
     voice_status_t vs;
-    voice_status(&vs);
+    voice_get(&vs);
     if (voice_recording(&vs)) voice_cancel();
     if (s_meter_timer) { lv_timer_delete(s_meter_timer); s_meter_timer = NULL; }
     s_mic = s_mic_dot = s_vstrip = s_vtimer = s_vmeter = NULL;

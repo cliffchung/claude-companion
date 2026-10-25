@@ -52,6 +52,7 @@ static int s_stack_free = -1;     /* the last voice task's stack high-water mark
 static voice_result_t s_result;     /* the one slot (P5-3) */
 static bool s_result_pending;
 static uint32_t s_result_gen;
+static uint32_t s_result_run;       /* the run that posted s_result */
 static esp_timer_handle_t s_expire;
 
 /* Owned by the voice task between voice_start and wipe_buffer(). */
@@ -118,7 +119,7 @@ static void expire_cb(void *arg)
     taskEXIT_CRITICAL(&s_mux);
 }
 
-static void post_result(const voice_result_t *r)
+static void post_result(const voice_result_t *r, uint32_t run)
 {
     if (!s_expire) {
         const esp_timer_create_args_t a = { .callback = expire_cb, .name = "voice_res" };
@@ -128,6 +129,7 @@ static void post_result(const voice_result_t *r)
     taskENTER_CRITICAL(&s_mux);
     s_result = *r;
     s_result.gen = ++s_result_gen;
+    s_result_run = run;
     s_result_pending = true;
     taskEXIT_CRITICAL(&s_mux);
     if (s_expire) esp_timer_start_once(s_expire, RESULT_TTL_US);
@@ -169,6 +171,7 @@ void voice_status(voice_status_t *out)
     out->meter = s_meter;
     out->at_limit = s_at_limit;
     out->transcribing_ms = s_phase == VOICE_TRANSCRIBING ? (int)((now - s_trans_start_us) / 1000) : 0;
+    out->cancelled = s_phase != VOICE_IDLE && s_cancel_req;
     memcpy(out->key, s_key, sizeof(out->key));
     taskEXIT_CRITICAL(&s_mux);
 }
@@ -364,7 +367,7 @@ static void voice_task(void *arg)
         ESP_LOGI(TAG, "rec %d.%d s, loudest %d dBFS, no upload, %u chars, %s", rec_ms / 1000, (rec_ms % 1000) / 100,
                  loudest, (unsigned)len, voice_out_name(out));
 
-    if (out != VR_OUT_CANCELLED) post_result(&res);
+    if (out != VR_OUT_CANCELLED) post_result(&res, run);
     zero(&res, sizeof(res));
 
     int stack_free = (int)uxTaskGetStackHighWaterMark(NULL);
@@ -464,6 +467,13 @@ void voice_stop(void)
 void voice_cancel(void)
 {
     taskENTER_CRITICAL(&s_mux);
-    if (s_phase != VOICE_IDLE) s_cancel_req = true;
+    if (s_phase != VOICE_IDLE) {
+        s_cancel_req = true;
+        /* The task posts just before it goes idle: a result this run already posted is dropped too. */
+        if (s_result_pending && s_result_run == s_run) {
+            zero(&s_result, sizeof(s_result));
+            s_result_pending = false;
+        }
+    }
     taskEXIT_CRITICAL(&s_mux);
 }
