@@ -94,7 +94,9 @@ bool cc_cmd_logs(const char *claude, const char *id, char *out, size_t cap)
 {
     size_t n;
     if (!out || !cc_path_valid(claude) || !cc_id_valid(id)) return false;
-    return put(out, cap, &n, "%s logs %s | tail -n 40", claude, id);
+    /* the whole stream: the output pane renders it from its latest full clear on (cc_logview.h), and it has no line
+       structure to cut by (a `| tail -n 40` it once had kept everything only because the stream has no LFs) */
+    return put(out, cap, &n, "%s logs %s", claude, id);
 }
 
 /* Voice (spec §7.1, §7.2). Paths pass cc_path_valid, so the unquoted W=/M= assignments are safe;

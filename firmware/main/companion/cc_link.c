@@ -1,4 +1,5 @@
 #include "cc_link.h"
+#include "cc_tailbuf.h"
 #include "sys/boot_phase.h"
 #include "net/fast_rules.h"
 #include "cc_cmd.h"
@@ -68,6 +69,8 @@ typedef struct {
     const char *payload; size_t payload_len;   /* paste bytes (ends with CR); exec: written to stdin, then EOF */
     int64_t exec_us, eof_us;    /* exec with a payload: when the exec was requested and the EOF sent (0 = not) */
     bool keep_tail;             /* exec: on overflow keep the newest bytes, not the first */
+    bool from_clear;            /* exec, keep_tail: ...and only those since the latest ESC[2J */
+    cc_tailbuf_t tb;            /* exec, keep_tail: the ring the newest bytes go into */
     int64_t deadline_us;
     esp_err_t result;
     SemaphoreHandle_t done;
@@ -1003,17 +1006,14 @@ static void read_stderr(ssh_channel ch, char *err, size_t err_cap, size_t *elen)
 static void exec_take(req_t *r, char *tmp, size_t k, size_t *olen, bool *truncated)
 {
     if (!r->out || r->cap <= 1) return;
+    if (r->keep_tail) {   /* a ring: each byte is stored once, ordered once at the end (exec_tail_finish) */
+        cc_tailbuf_put(&r->tb, tmp, k);
+        return;
+    }
     size_t room = r->cap - 1;
-    if (r->keep_tail && k > room) { memmove(tmp, tmp + (k - room), room); k = room; *truncated = true; }
     if (*olen + k > room) {
         *truncated = true;
-        if (r->keep_tail) {
-            size_t drop = *olen + k - room;
-            memmove(r->out, r->out + drop, *olen - drop);
-            *olen -= drop;
-        } else {
-            k = room - *olen;
-        }
+        k = room - *olen;
     }
     memcpy(r->out + *olen, tmp, k);
     *olen += k;
@@ -1087,6 +1087,7 @@ static esp_err_t do_exec(req_t *r)
     size_t olen = 0, elen = 0;
     bool truncated = false, failed = false, timed_out = false, parked = false;
     char tmp[512];
+    if (r->keep_tail) cc_tailbuf_init(&r->tb, r->out, r->out ? r->cap : 0, r->from_clear);
     if (r->payload && r->payload_len > 0)
         exec_write_stdin(r, ch, &olen, &elen, &truncated, &failed, &timed_out, &parked);
     int64_t ka_us = now_us();
@@ -1099,6 +1100,10 @@ static esp_err_t do_exec(req_t *r)
         if (now_us() > r->deadline_us) { timed_out = true; break; }
         if (s_parked) { parked = true; break; }   /* I1: the link is going down: give up now */
         if (r->payload && now_us() - ka_us > 1000000) { watch_keepalive(); ka_us = now_us(); }
+    }
+    if (r->keep_tail && r->out && r->cap) {   /* every path from here on: the ring in order, NUL-terminated */
+        olen = cc_tailbuf_finish(&r->tb);
+        truncated = r->tb.dropped;
     }
     if (!failed && !timed_out && !parked && r->exit_status) {
         uint32_t code = 0;
@@ -1782,6 +1787,18 @@ esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *exit_st
     if (!cmd || timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
     req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = out, .cap = cap, .exit_status = exit_status,
                 .err = err, .err_cap = err_cap, .keep_tail = true,
+                .deadline_us = now_us() + (int64_t)timeout_ms * 1000 };
+    return submit(&r);
+}
+
+esp_err_t cc_link_exec_screen(const char *cmd, char *out, size_t cap, int *exit_status,
+                              char *err, size_t err_cap, int timeout_ms)
+{
+    if (out && cap) out[0] = 0;
+    if (err && err_cap) err[0] = 0;
+    if (!cmd || timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+    req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = out, .cap = cap, .exit_status = exit_status,
+                .err = err, .err_cap = err_cap, .keep_tail = true, .from_clear = true,
                 .deadline_us = now_us() + (int64_t)timeout_ms * 1000 };
     return submit(&r);
 }

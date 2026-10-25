@@ -77,7 +77,7 @@ static void test_cmd_exact(void)
     TEST_ASSERT_TRUE(cc_cmd_attach(CL, "aaaaaaa2", o, sizeof(o)));
     TEST_ASSERT_EQUAL_STRING(CL " attach aaaaaaa2", o);
     TEST_ASSERT_TRUE(cc_cmd_logs(CL, "aaaaaaa2", o, sizeof(o)));
-    TEST_ASSERT_EQUAL_STRING(CL " logs aaaaaaa2 | tail -n 40", o);
+    TEST_ASSERT_EQUAL_STRING(CL " logs aaaaaaa2", o);
 }
 
 static void test_cmd_rejects(void)
