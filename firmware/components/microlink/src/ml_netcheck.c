@@ -31,6 +31,16 @@ static const char *TAG = "ml_netcheck";
 #define NETCHECK_MAX_RETRIES   3     /* Initial send + up to 3 retries = 4 attempts/region */
 #define NETCHECK_PROBE_GAP_MS  50    /* Spread sendto() to avoid local NAT/UDP burst loss */
 #define NETCHECK_MAX_PROBES    ML_MAX_DERP_REGIONS
+/* LOCAL CHANGE (Claude Companion polish 2; listed in UPSTREAM.md): the netcheck runs on the coord task and took its
+ * whole 25 s budget even after microlink_stop() asked every task to exit. A stop during the first map (a quick
+ * switch-off while connecting) outlived microlink_stop()'s 15 s wait, so the stop reported the instance leaked and
+ * the free waited for the netcheck. It now looks at the shutdown bit before each region and at least every
+ * NETCHECK_STOP_POLL_MS while it waits, and returns no region (the caller keeps the control-plane default). */
+#define NETCHECK_STOP_POLL_MS  250
+
+static bool netcheck_stopping(microlink_t *ml) {
+    return (xEventGroupGetBits(ml->events) & ML_EVT_SHUTDOWN_REQUEST) != 0;
+}
 
 /* Build a 40-byte STUN Binding Request with SOFTWARE + FINGERPRINT.
  * SOFTWARE MUST be "tailnode" — the Tailscale DERP STUN servers reject
@@ -124,6 +134,7 @@ uint16_t ml_netcheck_pick_best_derp(microlink_t *ml) {
     int regions = ml->derp_region_count < NETCHECK_MAX_PROBES ?
                   ml->derp_region_count : NETCHECK_MAX_PROBES;
     for (int i = 0; i < regions; i++) {
+        if (netcheck_stopping(ml)) break;   /* local change: see NETCHECK_STOP_POLL_MS */
         ml_derp_region_t *r = &ml->derp_regions[i];
         if (r->region_id == 0) continue;
         const char *host = NULL;
@@ -169,6 +180,11 @@ uint16_t ml_netcheck_pick_best_derp(microlink_t *ml) {
     int retries_done = 0;
 
     while (esp_timer_get_time() < deadline) {
+        if (netcheck_stopping(ml)) {   /* local change: see NETCHECK_STOP_POLL_MS */
+            ESP_LOGI(TAG, "stop requested: netcheck ends early");
+            probe_count = 0;           /* no region: the caller keeps its default */
+            break;
+        }
         uint64_t now = esp_timer_get_time();
 
         /* Retry sweep: re-send to any region we haven't heard from yet.
@@ -202,6 +218,7 @@ uint16_t ml_netcheck_pick_best_derp(microlink_t *ml) {
         now = esp_timer_get_time();
         if (wait_until <= now) continue;
         uint64_t remain = wait_until - now;
+        if (remain > NETCHECK_STOP_POLL_MS * 1000ULL) remain = NETCHECK_STOP_POLL_MS * 1000ULL;   /* local change */
 
         fd_set rfds; FD_ZERO(&rfds); FD_SET(sock, &rfds);
         struct timeval tv;

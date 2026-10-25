@@ -521,6 +521,14 @@ esp_err_t ml_derp_queue_send(microlink_t *ml, const uint8_t *dest_key,
  * the writer task's heartbeat/status logs. File-scope so both tasks see it. */
 static volatile uint32_t s_derp_frames_rx = 0;
 
+/* LOCAL CHANGE (Claude Companion polish 2; listed in UPSTREAM.md): the connect retries below look at the shutdown
+ * bit before each attempt and after each backoff, so a stop while DERP is still connecting doesn't sit through up to
+ * three more connects (each a DNS lookup, a TCP connect and a TLS handshake that shutdown() can't reach: the socket
+ * isn't in derp.sockfd until the connect is done) past microlink_stop()'s 15 s wait. */
+static bool derp_stopping(microlink_t *ml) {
+    return (xEventGroupGetBits(ml->events) & ML_EVT_SHUTDOWN_REQUEST) != 0;
+}
+
 void ml_derp_tx_task(void *arg) {
     microlink_t *ml = (microlink_t *)arg;
     ESP_LOGI(TAG, "DERP I/O task started (Core %d)", xPortGetCoreID());
@@ -583,10 +591,11 @@ void ml_derp_tx_task(void *arg) {
                 xEventGroupClearBits(ml->events, ML_EVT_DERP_CONNECT_REQ);
                 derp_wanted = true;
                 /* Retry up to 3 times with 2s backoff */
-                for (int attempt = 0; attempt < 3 && !ml->derp.connected; attempt++) {
+                for (int attempt = 0; attempt < 3 && !ml->derp.connected && !derp_stopping(ml); attempt++) {
                     if (attempt > 0) {
                         ESP_LOGW(TAG, "DERP connect retry %d/3 in 2s...", attempt + 1);
                         vTaskDelay(pdMS_TO_TICKS(2000));
+                        if (derp_stopping(ml)) break;
                     } else {
                         ESP_LOGI(TAG, "DERP connect requested, connecting from I/O task");
                     }
@@ -616,10 +625,11 @@ void ml_derp_tx_task(void *arg) {
                  * (1s+3×2s ≈ 7s outage → 200ms+3×500ms) so a transient flap
                  * costs sub-second, not multi-second, of dropped relay traffic. */
                 vTaskDelay(pdMS_TO_TICKS(200));
-                for (int attempt = 0; attempt < 3 && !ml->derp.connected; attempt++) {
+                for (int attempt = 0; attempt < 3 && !ml->derp.connected && !derp_stopping(ml); attempt++) {
                     if (attempt > 0) {
                         ESP_LOGW(TAG, "DERP reconnect retry %d/3 in 500ms...", attempt + 1);
                         vTaskDelay(pdMS_TO_TICKS(500));
+                        if (derp_stopping(ml)) break;
                     }
                     if (ml_derp_connect(ml) == ESP_OK) {
                         connected_since_ms = ml_get_time_ms();

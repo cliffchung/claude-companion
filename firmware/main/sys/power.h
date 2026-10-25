@@ -30,6 +30,9 @@ bool power_take_key(void);
 /* Any task / an ISR. Wakes to Active when not Active; when Active it resets idle. */
 void power_wake(power_wake_t why);
 void power_wake_from_isr(power_wake_t why);
+/* Any task. Activity without input (a voice result landing): restarts the idle clock while Active
+   (pr_activity_input). Never a wake: Dim, Off and deeper stay as they are, and no key is swallowed. */
+void power_note_activity(void);
 /* v1 touch INT (display_ctl_touch_int_init) */
 void power_touch_isr(void *arg);
 

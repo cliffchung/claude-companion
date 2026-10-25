@@ -127,7 +127,7 @@ static int64_t s_req_at_ms;
 typedef enum { BODY_NONE, BODY_LIST, BODY_LOADING, BODY_NO_HOST, BODY_EMPTY } body_t;
 static lv_obj_t *s_scr, *s_needs, *s_banner, *s_list, *s_rows[MAX_ROWS], *s_skel, *s_nohost, *s_empty;
 static lv_obj_t *s_pane, *s_title, *s_pill, *s_meta, *s_logbox, *s_log, *s_info;
-static lv_obj_t *s_answer_row, *s_ta, *s_action_row, *s_send, *s_note;
+static lv_obj_t *s_answer_row, *s_ta, *s_action_row, *s_send, *s_open, *s_note;
 static int s_body_top = -1, s_body = -1, s_banner_shown = -1, s_inert = -1;
 static int s_cols, s_rows_fit;             /* the log block, measured */
 static bool s_dirty_rows, s_dirty_pane, s_dirty_log, s_scroll_sel;
@@ -140,6 +140,7 @@ static lv_timer_t *s_meter_timer;          /* P5-4: exists only while recording 
 static vr_keys_t s_vkeys;                  /* Ctrl+Space and the mic tap: the repeat and toggle guard */
 static bool s_voice_mine;                  /* a recording Sessions started may still post a result */
 static char s_vnote[64];                   /* "Transcribing on the Host… 5 s" while transcribing, else "" */
+static bool s_vrec;                        /* recording (the strip is up): the action row stays shown (M3) */
 static voice_result_t *s_vres;              /* PSRAM: the transcript is a secret like typed text; zeroed after use */
 typedef enum { MIC_IDLE, MIC_STARTING, MIC_RECORDING, MIC_TRANSCRIBING } mic_look_t;
 static int s_mic_look = -1;
@@ -735,8 +736,11 @@ static void pane_update(void)
     note_t *n = note_of(s);
     bool changed = set_shown(s_logbox, !interactive);
     changed |= set_shown(s_answer_row, field);
-    changed |= set_shown(s_action_row, open);
+    /* M3: while recording or transcribing, the action row stays for the strip or the note whatever is selected (a row
+       with no answer field and no Open too): the recording goes on, so the screen must say so */
+    changed |= set_shown(s_action_row, open || s_vrec || s_vnote[0]);
     set_shown(s_send, field);
+    set_shown(s_open, open);
     /* the info line: interactive sessions (B3), and background ones that can't be acted on */
     const char *info = NULL;
     tc_t ic = TC_MUTED;
@@ -770,7 +774,7 @@ static void pane_update(void)
         snprintf(b, sizeof(b), "1\xe2\x80\x93%d %s", s_options, tr(STR_SES_PICKS_OPTION));
         nt = b;
     }
-    if (s_vnote[0] && act) { nt = s_vnote; nc = TC_MUTED; }   /* transcribing: the one thing going on */
+    if (s_vnote[0]) { nt = s_vnote; nc = TC_MUTED; }   /* transcribing: the one thing going on */
     set_text(s_note, nt);
     set_colour(s_note, nc);
     if (measure_log() || changed) s_dirty_log = true;
@@ -1101,6 +1105,7 @@ static void voice_view(const voice_status_t *v)
              : v->phase == VOICE_TRANSCRIBING ? MIC_TRANSCRIBING : MIC_IDLE);
     set_shown(s_vstrip, rec);
     set_shown(s_note, !rec);   /* the strip takes the note's slot */
+    if (rec != s_vrec) { s_vrec = rec; s_dirty_pane = true; }
     if (rec && s_vtimer && s_vmeter) {
         int sec = v->elapsed_ms / 1000;
         if (sec < 0) sec = 0;
@@ -1140,12 +1145,19 @@ static void meter_ensure(void)
 lv_timer_t *ui_sessions_voice_meter(void) { return s_meter_timer; }
 
 /* A voice error: red in the session's note slot, which cuts the longer copy short, and whole in a toast (the README
-   pointer must be readable). */
+   pointer must be readable). The toast stays 6 s, long enough to read the longest copy, so it sits above the answer
+   field rather than at the bottom: the field, the mic, Send and Open stay in view (polish 2). */
 #define VOICE_ERROR_TOAST_MS 6000
+static void voice_toast(str_id_t id)
+{
+    lv_obj_t *above = s_answer_row && lv_obj_is_visible(s_answer_row) ? s_answer_row : s_action_row;
+    ui_toast_above_ms(tr(id), VOICE_ERROR_TOAST_MS, above);
+}
+
 static void voice_error(const cc_session_t *s, str_id_t id)
 {
     note_set(s, NOTE_ERROR, tr(id));
-    ui_toast_ms(tr(id), VOICE_ERROR_TOAST_MS);
+    voice_toast(id);
 }
 
 /* The one path for Ctrl+Space and the mic tap. */
@@ -1183,11 +1195,12 @@ static void apply_voice_result(const voice_result_t *r)
 {
     if (r->out == VR_OUT_CANCELLED || r->out == VR_OUT_STARTED) return;
     if (vr_key_is_term(r->key)) return;   /* a terminal screen's recording: its text never goes into a draft */
+    power_note_activity();   /* the text or the error is new on screen: the idle clock restarts (never a wake) */
     const cc_session_t *s = item_by_key(r->key);
     str_id_t id = vr_out_text(r->out);
     if (!s) {
         if (r->out == VR_OUT_TEXT) ui_toast(tr(STR_VOICE_SESSION_GONE));   /* the text is dropped */
-        else if (id != STR_COUNT) ui_toast_ms(tr(id), VOICE_ERROR_TOAST_MS);
+        else if (id != STR_COUNT) voice_toast(id);
         return;
     }
     if (r->out != VR_OUT_TEXT) {
@@ -1763,7 +1776,7 @@ static lv_obj_t *build_pane(lv_obj_t *scr, int W, int top, int h)
     lv_obj_set_style_pad_column(s_action_row, 12, 0);
     ui_comp_pass_hits(s_action_row);
     s_send = ui_btn(s_action_row, UI_BTN_PRIMARY, tr(STR_SES_SEND), chip_send_cb, NULL);
-    ui_btn(s_action_row, UI_BTN_SECONDARY, tr(STR_SES_OPEN), chip_open_cb, NULL);
+    s_open = ui_btn(s_action_row, UI_BTN_SECONDARY, tr(STR_SES_OPEN), chip_open_cb, NULL);
     s_note = text(s_action_row, "", &st_label, TC_MUTED);
     lv_obj_set_width(s_note, 1);
     lv_obj_set_flex_grow(s_note, 1);
@@ -1790,9 +1803,10 @@ static void scr_delete_cb(lv_event_t *e)
     memset(s_mic_glyph, 0, sizeof(s_mic_glyph));
     s_mic_look = -1;
     s_vnote[0] = 0;
+    s_vrec = false;
     s_scr = s_needs = s_banner = s_list = s_skel = s_nohost = s_empty = NULL;
     s_pane = s_title = s_pill = s_meta = s_logbox = s_log = s_info = NULL;
-    s_answer_row = s_ta = s_action_row = s_send = s_note = NULL;
+    s_answer_row = s_ta = s_action_row = s_send = s_open = s_note = NULL;
     s_keys_ov = NULL;
     memset(s_rows, 0, sizeof(s_rows));
     /* PT11: the rate stays 3 s on every other screen (Active/Dim); Off sets its floor */

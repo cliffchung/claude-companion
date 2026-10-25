@@ -99,3 +99,91 @@ The floor rises with the gain one for one, so it is acoustic (the room and the H
 - Log quirk, harmless: on a park, cc_link logs `up in -1 ms` (no EOF was sent), and the voice line reports the call's total (0.58 s) as `upload`.
 - A 20 s run of the phrase said 5 times came back as 47 chars, about one sentence. The text can't be inspected (rule 3), so whether whisper merged the repeats is not known.
 - Privacy: the captured serial logs hold no transcript text. Lengths and outcomes only.
+
+## Tasks 4, 7 and 9: device pass B (the Sessions loop, Settings › Host, the final gates)
+
+The Tab5 sat on the desk near the Host (`my-host.local`, LAN). HEAD be7ed4e was flashed with NVS kept. Speech came from `say`, run locally on the Host through its built-in speakers at the user's volume, which was not changed. As in pass A, the speech levels are a lower bound.
+
+Every device test used two Host sessions, `companion-test-voice` and `companion-test-voice2`, started with the favourite-colour prompt. Both were stopped and removed at the end. Each Enter, Ctrl+Space and text key came only after a screenshot showed a test row selected. All screenshots stayed in scratch storage.
+
+The whole serial output was captured through one broker, so the privacy grep covers everything. Rule 3 applies here: this note records only whether each required word was present, never what the transcript said.
+
+A testing gotcha, by design and not a bug: the 600 ms wake-swallow window (`PR_SWALLOW_MS`) also follows a console `power go active`, and every swallowed key extends it. A burst of keys sent right after a console wake is dropped entirely. The tests therefore wait 1 s after a wake.
+
+### Task 7: the Sessions loop
+| Step | Result |
+|---|---|
+| 3, the core loop | `key ctrl space`, `say` the colour answer, `key ctrl space`. The exact sentence appeared in the field 0.52 s after the mic closed, with the review note. `claude logs` showed nothing sent. Enter sent it, and the session answered. **Pass** |
+| 4, held key | 30 Ctrl+Space presses 60 ms apart, all 30 decoded: one start, no stop, still recording 1.2 s after the burst. A single press 1 s later stopped it. **Pass** |
+| 4, wake | `power go dim`, then Ctrl+Space: the key log shows `(wake key, swallowed)`, `voice status` is idle, and `power wakes` shows `key swallowed=1`. **Pass** |
+| 4, Esc | A typed draft, then Ctrl+Space, then Esc 2 s later: CANCELLED, no upload, no result, the draft unchanged, timers back at the idle count. **Pass** |
+| 5, touch | `power sim touch 1224 528` (the mic button's centre, from a screenshot) started recording, and a second touch stopped it. The text merged after the existing draft with one space. **Pass** |
+| 6, wrong-session guard | Started on `companion-test-voice`, tapped `companion-test-voice2`'s row while recording (the strip followed the selection), then stopped. The text landed only in `companion-test-voice`'s draft; `companion-test-voice2`'s draft stayed empty. **Pass** |
+| 7, leaving while recording | Tapped the footer's Settings chip: CANCELLED, mic closed, no result, `voice status` idle. **Pass** |
+| 7, leaving while transcribing | Tapped Settings 0.25 s after the stop, during the transcription. Coming back 25 s later, the text was in the draft. **Pass**. See the edge below. |
+| Edge: leaving 50 ms after a stop | The stop is a request that the voice task acts on at its next 100 ms block, so the phase is still RECORDING. The screen delete calls `voice_cancel`, and the run ends CANCELLED. The window is under 100 ms, which a person can't realistically hit (Ctrl+Space, then a tap). Not fixed; recorded as a minor. |
+| M7, a press just after the 30 s auto-stop | Ctrl+Space about 0.3 s after the auto-stop: no new recording; `voice status` read transcribing with `at_limit 1`. **Pass** |
+| M2, no dim before the result | A 30 s recording with no key at all, against the default 30 s dim: the state stayed `active` (`holds=voice`, then `voice,busy`), and the screen dimmed 1 ms after the result posted. **Pass** |
+| I1, Esc while transcribing | Esc 0.3 s after an auto-stop, then Ctrl+Space: the toast reads "Still transcribing…"; the late result ends CANCELLED with 0 chars; the draft unchanged; idle afterwards. **Pass** |
+
+### Task 4 step 3: Settings › Host
+- The three rows sit after "Claude path on Host", with the defaults. **Pass**.
+- Check toasts "Voice input is ready on the Host". **Pass**.
+- The model set to `~/nope.bin` in the prompt (saved with Enter): Check toasts the NO_MODEL copy naming README › Set up voice input. **Pass**. The default was then restored through the prompt, and `voice-check` gave rc 0.
+- `~/my model.bin` in the prompt is refused with the path copy, and the saved value is unchanged. **Pass**.
+
+### Today's earlier fixes, on the device
+- **Enter presses OK in a Settings prompt.** Claude path: typed `/usr/local/bin/claude` and pressed Enter, and the row showed the new value. The original `~/.local/bin/claude` was restored the same way. The Whisper model prompt behaves the same. **Pass**.
+- **First Down on an empty Terminal list.** The Terminal list is empty, and the first Down lands on "+ Add host". **Pass**.
+- **Settings › Network keeps focus across a refresh.** With the focus on Advanced, `ts on` (the toggle and Status updated) and then `ts off` both kept the focus on Advanced. **Pass**.
+- The host-key trust flow was not tested; it needs real pins and is on the visit list.
+
+### Task 9: the final table
+| Gate | Measured | Verdict |
+|---|---|---|
+| 1, sizes against main 3d99c07 (built the same way) | Image 7,257,451 → 7,342,673 B (**+85,222**). DIRAM 190,800 → 194,634 B (**+3,834**): `.text` (IRAM) +2,402, `.bss` +1,208, `.data` +224. Against the Plan 4 final (7,253,147 / 190,008 B): +89,526 / +4,626 B, which includes main's own growth since. | Flash: **pass**. Static internal RAM: **over the < 1 KB expectation**, see below |
+| 2, heap, Tailscale off | `ui heapmin` over a 30 s recording that hits the limit, plus its transcription on Sessions: internal min **111,899 B** (gate 40,960); PSRAM 23,537,060 → 23,537,016 B, 5 s after the result (−44 B); no ERR_BUF; connected afterwards | **Pass** |
+| 2, heap, Tailscale on (connected; the link stayed on the LAN, local-first) | Internal min **55,467 B** (gate 20,480); PSRAM 23,120,612 → 23,120,580 B (−32 B); no ERR_BUF; connected | **Pass** |
+| 3, phrase 1, "Please run the tests and then commit the change." | Tailscale off, 3 runs; Tailscale on, 1 run. "commit" present 4/4; "tests" heard as the singular "test" 4/4. Pass A's 47-char results were most likely the same. | **Strict substring fails** ("run the test", not "run the tests"). A whisper base.en accuracy point with `say`, not a firmware issue. Real voice is PENDING |
+| 3, phrase 2, "Yes, go ahead with option two." | 3 runs: "option" and "two" present in 2 of 3; one run heard both as near-homophones | **Pass 2/3** |
+| 3, phrase 3, "Rename the function to parse config…" | 3 runs: "rename" and "test" present in every run where the start could be seen (2 seen, 1 hidden by a merged draft) | **Pass** |
+| 3, end-to-end time on the LAN (6 runs at real lengths, 3.7 to 6 s of audio) | From the mic close to the posted result: 0.36 to 0.59 s (upload 0.15 to 0.27 s, Host 0.20 to 0.33 s). From the stop key to the result line, wall clock: 0.49 to 0.70 s. The field shows it on the next 300 ms tick, so the text is on screen within about 1.0 s. | **Pass** (≤ 3 s) |
+| 3, phrase 1 with Tailscale on | From the mic close to the result: 0.40 s; wall: 0.48 s | **Pass** |
+| 3, 30 s at the limit | 960,044 B up in 1.20 to 1.25 s, Host 0.6 to 0.7 s, 1.9 s from the mic close to the result | **Pass** |
+| 4, errors | `voice-path /nope`: NO_WHISPER 0.33 s after the start (check exit 120), a red note cut to fit, and a toast with the README pointer. `~/nope.bin`: NO_MODEL at 0.33 s (exit 121), the same. Both restored. `wifi leave`, then Ctrl+Space: a "Not connected to the Host" note and toast, no recording, the selection kept. `wifi join` reconnected in about 4 s. | **Pass** |
+| 5, a recording stopped while a `reply` is in flight | The console runs one command at a time, so only the 30 s auto-stop can land while a reply runs. The reply went to `companion-test-voice2` at 29.6 s, and the auto-stop came during it. The reply printed `sent`, and the session answered. The transcription queued behind the reply (5.3 s in all, of which the upload was 1.19 s) and returned TEXT. | **Pass** |
+| 5, `power go radio-off` 0.35 s into a 20 s upload | `ESP_ERR_INVALID_STATE` 30 ms after the park, then LINK_LOST, then the "Lost the connection to the Host" toast at the wake. After `power go active` the link reconnected in 4.4 s and the watch was back on. `pgrep whisper-cli` on the Host found nothing. | **Pass** |
+| 6, timers | Idle Sessions: 6 timers. After the first `power sim touch` it is 7, and stays 7: that verb creates an event-mode pointer indev with a paused 16 ms timer that never runs, and it is not voice. Recording: one 100 ms timer more. One second after a stop, an Esc cancel, an error (once the toast's 6 s timer is gone) and a leave: back to the idle count. | **Pass** |
+| 7, power | On USB the INA226 reads 1 to 2 mA (`src=usb-standby`) whether idle or recording, as pass A found. The draw and the before/after idle comparison can't be measured. `voice status` read idle and closed in every idle check, and no voice task, codec or I2S is created at boot. | **PENDING** (battery) |
+| 8, privacy | Over the whole 15,000-line capture (screenshot frames removed), no word of any phrase, the colour answers or the long text appears. Of the transcript, the logs carry only lengths, dBFS and outcomes. The only reply text is the console echoing my own `reply` command, which is outside voice. On the Host, the `find … -newer marker` for `*.wav`, `*.txt` and `*.raw` found nothing voice-related: only tmux-resurrect, other Claude projects' tool results and an Apple file. `pgrep -fl whisper-cli` found nothing. The NVS check was skipped: there is no `companion settings dump` verb. | **Pass** (NVS: skipped) |
+
+**Static internal RAM.** Of the DIRAM growth:
+- About 2.4 KB is ESP-IDF driver code that runs from IRAM, pulled in by the first GDMA/I2S user: `libesp_hw_support` +1,954 B, mostly `gdma.c` and `dw_gdma.c` under the default `CONFIG_GDMA_CTRL_FUNC_IN_IRAM=y` and `CONFIG_GDMA_ISR_HANDLER_IN_IRAM=y`, plus `i2s_common` +372 B.
+- `libmain` is +1,189 B, of which `voice.c`'s `.bss` is 806 B. Most of that is the one result slot `s_result` (`VR_KEY_MAX` 128 + `VR_TEXT_MAX` 480 + fields) in internal `.bss`.
+- FreeRTOS and esp_system add +224 B.
+
+Not changed here. Two options for the controller:
+- (a) Allocate the result slot in PSRAM at the first post. This saves about 0.6 KB of `.bss` and takes `.bss` + `.data` from +1.4 KB to about +0.8 KB.
+- (b) Set `CONFIG_GDMA_CTRL_FUNC_IN_IRAM=n`. This saves about 2 KB of IRAM, but it touches the display's DMA paths and needs an sdkconfig regeneration.
+
+The runtime gates pass by wide margins.
+
+**Other observations:**
+- A quick `ts on` then `ts off` (about 10 s apart, still connecting) logged `microlink: 1 task(s) still running 15000 ms after the stop request -- the instance will be leaked`, and internal free was about 2.5 KB lower afterwards (135.2 → 132.7 KB). This is Tailscale, not voice.
+- The status-bar clock doesn't redraw while the screen is off, so a screenshot taken then shows a stale time. That is expected.
+
+### Visit list (PENDING, for the user)
+1. **Real voice at a normal distance.** Speak from the couch and at arm's length, in an ordinary voice. Use the three phrases, plus something of your own. This is the real accuracy check. With `say` at 19 % volume, base.en heard "test" for "tests" every time and confused "option two" once. If real speech misses words too, a larger model (`ggml-small.en`, set in Settings › Host › Whisper model) is the lever; time it on the Host.
+2. **The −50 dBFS gate margin.** `say` speech peaks at −44 to −47 dBFS, only 3 to 6 dB above the gate. Check that a quiet voice across the desk isn't gated as "No speech heard", and that a noisy room's silence doesn't upload. Then decide whether to retune `VR_SILENCE_DBFS`.
+3. **Battery power.** On battery, 5 min idle on Sessions, five recordings, then 5 min idle. The second idle mean should be ≤ the first + 0.02 W and ≤ the Plan 4 final idle figure + 0.02 W. Record the recording's draw. With Hibernate check-ins on, a check-in boot should log no voice or mic line.
+4. **The mic button and the strip at arm's length.** Do the red ring, the red dot and the meter read clearly? The meter sat near empty between words with `say`. Is 30 s long enough?
+5. **The host-key trust flow** (polish-1), which needs real pins: Trust a first-run Host key on screen.
+6. **Static internal RAM:** choose between options (a) and (b) above, or accept the 1.4 KB as is.
+7. **Optional:** whether the error toast covering Send and Open for 6 s is acceptable, and whether the screen dimming right at the result (after a 30 s recording with no keys) should get a short extra hold. M2's "no extra hold" decision stands until then.
+
+At the end:
+- `voice status`: idle, mic closed, tasks 0, hold off, result none.
+- Whisper path, model and Claude path at their defaults (the user's values were the defaults).
+- Tailscale off; `companion status` connected with the watch on.
+- Power settings unchanged and the key log off.
+- Both `companion-test-*` sessions stopped and removed.
