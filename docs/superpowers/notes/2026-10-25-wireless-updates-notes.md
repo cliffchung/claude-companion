@@ -112,3 +112,22 @@ B, and the diet saved slightly more than estimated. `idf.py size`: External RAM 
 - Step 3 (flash, `settings v24 -> v25` on the first boot, none on the second, snapshot S, `help` without `ota url`)
   is a device step: waiting for Task 9.
 - FW build after Task 4 (sdkconfig deleted first): passes, image 6,290,784 B, headroom 2,032,288 B (24 %).
+
+## Task 5: the link: firmware info and the binary read
+
+- `req_t` gains `out_len`, `progress`, `cancel` and `direct`. `do_exec` with `direct` reads stdout straight into
+  `out` (16 KB per `ssh_channel_read_timeout`, no 512-byte bounce, no NUL), writes `*progress` after each read,
+  checks `*cancel` each loop, runs the watch keepalive every second, and once `cap` bytes are in, one more byte is an
+  oversize (`ESP_ERR_INVALID_SIZE`). A cancel (`CC_FW_CANCELLED`) or an oversize sets `s_drop`, as a timeout and a
+  channel error already did; a park returns `ESP_ERR_INVALID_STATE`. No exit status is read after a cut read.
+- `cc_link_fw_info` uses the ordinary exec path with `out_len` (binary-safe: `exec_take` copies with `memcpy`);
+  cap `CC_FW_INFO_MAX` 512, 10 s. Both functions build their command from `fw_path` (P5-2's rule), count as
+  link-busy, and log only sizes, times, the rate and the exit status. `cc_link_fw_read` logs `fw read: direct` at
+  the start (the plan's O1 check).
+- `ota/fw_console.c` (`fw_console_init`, registered in `app_main.c` after `voice_console_init`): `ota check`,
+  `ota path [<p>]`, debug `ota read-test [cancel-at <pct>]` (a helper task sets the cancel flag when the progress
+  passes the percent). The chip revision for the header check is `efuse_hal_chip_revision()` (major × 100 + minor).
+- Note for builders: the `main` glob is evaluated at configure time, so a new `.c` file needs `idf.py reconfigure`
+  (the first build after adding `fw_console.c` failed to link until then).
+- FW build passes: image 6,294,752 B. Steps 2–4 (check, read, cut-offs, Tailscale rate) are device steps: waiting
+  for Task 9.

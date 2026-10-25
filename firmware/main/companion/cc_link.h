@@ -181,6 +181,24 @@ esp_err_t cc_link_voice_check(int *exit_status);
    The only public way to run an exec with stdin (ruling P5-2): it builds its command itself from the settings. */
 esp_err_t cc_link_transcribe(const void *wav, size_t len, char *out, size_t cap, int *exit_status,
                              int *upload_ms, int timeout_ms);
+
+/* Plan 6 (spec §9, §12.5): the firmware update's two Host commands. */
+#define CC_FW_INFO_MAX        512
+#define CC_FW_INFO_TIMEOUT_MS 10000
+#define CC_FW_CANCELLED       ESP_ERR_NOT_FINISHED
+#define CC_FW_READ_TIMEOUT_MS(size) (20000 + (int)((uint64_t)(size) * 1000 / (64 * 1024)))
+/* cc_cmd_fw_info for the fw_path setting on a non-pty exec channel. out gets the raw output (binary: *len is its
+   length; out is NUL-terminated after it). ESP_OK with *exit_status; ESP_ERR_INVALID_STATE (not connected or
+   parked); ESP_ERR_TIMEOUT; ESP_ERR_INVALID_SIZE (over cap). Blocks: never from the LVGL task. Counts as link-busy. */
+esp_err_t cc_link_fw_info(uint8_t *out, size_t cap, size_t *len, int *exit_status);
+/* cc_cmd_fw_read for the fw_path setting on a non-pty exec channel, reading stdout straight into buf (up to 16 KB per
+   read), *progress updated after each read, *cancel checked each loop. ESP_OK with *len and *exit_status;
+   ESP_ERR_INVALID_SIZE (more than cap bytes: the read stops there); CC_FW_CANCELLED; ESP_ERR_INVALID_STATE (not
+   connected, or a park mid-read); ESP_FAIL (a channel error); ESP_ERR_TIMEOUT. A cancel, an error, an oversize or a
+   timeout drops the session (the link reconnects at once). The watch keepalive runs every second meanwhile. Counts as
+   link-busy. Logs only sizes, the duration, the rate and the exit status. Blocks: never from the LVGL task. */
+esp_err_t cc_link_fw_read(uint8_t *buf, size_t cap, size_t *len, volatile uint32_t *progress,
+                          volatile bool *cancel, int *exit_status, int timeout_ms);
 #define CC_TRANSCRIBE_TIMEOUT_MS 60000
 
 /* ---- Plan 2 Task 8: Radio off ---- */

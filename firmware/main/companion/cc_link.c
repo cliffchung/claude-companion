@@ -56,6 +56,7 @@ static const char *TAG = "cc_link";
    ("channel_write_common: Out of memory"); 8 KB plus the packet overhead does, for any cipher. */
 #define SSH_WRITE_MAX   (8 * 1024)
 #define VOICE_CHECK_MS  10000
+#define FW_DIRECT_READ  (16 * 1024)    /* cc_link_fw_read: bytes per ssh_channel_read_timeout, straight into the buffer */
 
 typedef enum { LS_NO_MAC, LS_CONNECTING, LS_WAITING, LS_CONNECTED } link_state_t;
 typedef enum { REQ_EXEC, REQ_PASTE, REQ_CHECK, REQ_POLL } req_type_t;
@@ -73,6 +74,12 @@ typedef struct {
     bool from_clear;            /* exec, keep_tail: ...and only those since the latest ESC[2J */
     cc_tailbuf_t tb;            /* exec, keep_tail: the ring the newest bytes go into */
     int64_t deadline_us;
+    /* Plan 6, binary reads: the stdout length out (exec); with direct, stdout goes straight into out (no NUL, up to
+       FW_DIRECT_READ per read), *progress is the byte count after each read and *cancel is checked each loop */
+    size_t *out_len;
+    volatile uint32_t *progress;
+    volatile bool *cancel;
+    bool direct;
     esp_err_t result;
     SemaphoreHandle_t done;
 } req_t;
@@ -1089,6 +1096,8 @@ static esp_err_t do_exec(req_t *r)
     if (r->out && r->cap) r->out[0] = 0;
     if (r->err && r->err_cap) r->err[0] = 0;
     if (r->exit_status) *r->exit_status = -1;
+    if (r->out_len) *r->out_len = 0;
+    if (r->progress) *r->progress = 0;
     r->exec_us = r->eof_us = 0;
     if (s_parked) return ESP_ERR_INVALID_STATE;   /* I1 */
     ssh_channel ch = open_channel();
@@ -1107,7 +1116,33 @@ static esp_err_t do_exec(req_t *r)
     if (r->payload && r->payload_len > 0)
         exec_write_stdin(r, ch, &olen, &elen, &truncated, &failed, &timed_out, &parked);
     int64_t ka_us = now_us();
-    while (!failed && !timed_out && !parked) {
+    bool cancelled = false;
+    if (r->direct) {
+        /* Plan 6 (spec §12.5): binary stdout straight into r->out, FW_DIRECT_READ at a time; one byte past cap is an
+           oversize (the read stops there). The watch keepalive runs every second, as during an upload. */
+        while (!failed && !timed_out && !parked) {
+            if (r->cancel && *r->cancel) { cancelled = true; break; }
+            int n;
+            if (olen < r->cap) {
+                size_t want = r->cap - olen > FW_DIRECT_READ ? FW_DIRECT_READ : r->cap - olen;
+                n = ssh_channel_read_timeout(ch, r->out + olen, (uint32_t)want, 0, 50);
+                if (n > 0) {
+                    olen += (size_t)n;
+                    if (r->progress) *r->progress = (uint32_t)olen;
+                }
+            } else {
+                n = ssh_channel_read_timeout(ch, tmp, sizeof(tmp), 0, 50);
+                if (n > 0) { truncated = true; break; }
+            }
+            if (n == SSH_ERROR) { failed = true; break; }
+            read_stderr(ch, r->err, r->err_cap, &elen);
+            if (n == 0 && ssh_channel_is_eof(ch)) break;
+            if (now_us() > r->deadline_us) { timed_out = true; break; }
+            if (s_parked) { parked = true; break; }
+            if (now_us() - ka_us > 1000000) { watch_keepalive(); ka_us = now_us(); }
+        }
+    }
+    while (!r->direct && !failed && !timed_out && !parked) {
         int n = ssh_channel_read_timeout(ch, tmp, sizeof(tmp), 0, 50);
         if (n == SSH_ERROR) { failed = true; break; }
         if (n > 0) exec_take(r, tmp, (size_t)n, &olen, &truncated);
@@ -1121,7 +1156,8 @@ static esp_err_t do_exec(req_t *r)
         olen = cc_tailbuf_finish(&r->tb);
         truncated = r->tb.dropped;
     }
-    if (!failed && !timed_out && !parked && r->exit_status) {
+    if (r->out_len) *r->out_len = olen;
+    if (!failed && !timed_out && !parked && !cancelled && !(r->direct && truncated) && r->exit_status) {
         uint32_t code = 0;
         char *sig = NULL;
         int core = 0;
@@ -1132,6 +1168,10 @@ static esp_err_t do_exec(req_t *r)
     if (r->err && r->err_cap) first_line(r->err);
     if (failed) { s_drop = true; return ESP_FAIL; }
     if (parked) return ESP_ERR_INVALID_STATE;   /* the park's teardown closes the session */
+    /* A firmware read cut short (a cancel or an oversize) leaves the remote mid-write: drop the session, so no
+       half-read channel stays in libssh (the link reconnects at once; cat ends on SIGPIPE). */
+    if (cancelled) { s_drop = true; return CC_FW_CANCELLED; }
+    if (r->direct && truncated) { s_drop = true; return ESP_ERR_INVALID_SIZE; }
     /* A channel that never finishes means the link is gone (Wi-Fi lost without an event)
        or wedged; start over either way. */
     if (timed_out) { s_drop = true; return ESP_ERR_TIMEOUT; }
@@ -1904,6 +1944,59 @@ esp_err_t cc_link_transcribe(const void *wav, size_t len, char *out, size_t cap,
     /* lengths, durations and the exit status only: never the transcript (Plan 5 rule 3) */
     ESP_LOGI(TAG, "transcribe: %u B up in %d ms, %d ms in all, %s, exit %d, %u B back", (unsigned)len, up,
              (int)((now_us() - t0) / 1000), esp_err_to_name(e), st, (unsigned)strlen(out));
+    return e;
+}
+
+/* ---------- Plan 6: firmware info and the binary read ---------- */
+
+esp_err_t cc_link_fw_info(uint8_t *out, size_t cap, size_t *len, int *exit_status)
+{
+    int st = -1;
+    if (len) *len = 0;
+    if (exit_status) *exit_status = -1;
+    if (!out || cap < 2) return ESP_ERR_INVALID_ARG;
+    out[0] = 0;
+    char cmd[400], path[64];
+    if (!cc_cmd_fw_info(cc_settings_fw_path(path, sizeof(path)), cmd, sizeof(cmd))) return ESP_ERR_INVALID_ARG;
+    size_t n = 0;
+    int64_t t0 = now_us();
+    req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = (char *)out, .cap = cap, .exit_status = &st, .out_len = &n,
+                .deadline_us = t0 + (int64_t)CC_FW_INFO_TIMEOUT_MS * 1000 };
+    busy(1);
+    esp_err_t e = submit(&r);
+    busy(-1);
+    if (len) *len = n;
+    if (exit_status) *exit_status = st;
+    ESP_LOGI(TAG, "fw info: %s, exit %d, %u B in %d ms", esp_err_to_name(e), st, (unsigned)n,
+             (int)((now_us() - t0) / 1000));
+    return e;
+}
+
+esp_err_t cc_link_fw_read(uint8_t *buf, size_t cap, size_t *len, volatile uint32_t *progress,
+                          volatile bool *cancel, int *exit_status, int timeout_ms)
+{
+    int st = -1;
+    if (len) *len = 0;
+    if (progress) *progress = 0;
+    if (exit_status) *exit_status = -1;
+    if (!buf || !cap || timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+    char cmd[200], path[64];
+    if (!cc_cmd_fw_read(cc_settings_fw_path(path, sizeof(path)), cmd, sizeof(cmd))) return ESP_ERR_INVALID_ARG;
+    size_t n = 0;
+    int64_t t0 = now_us();
+    req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = (char *)buf, .cap = cap, .exit_status = &st, .out_len = &n,
+                .progress = progress, .cancel = cancel, .direct = true,
+                .deadline_us = t0 + (int64_t)timeout_ms * 1000 };
+    ESP_LOGI(TAG, "fw read: direct, cap %u B, timeout %d ms", (unsigned)cap, timeout_ms);
+    busy(1);
+    esp_err_t e = submit(&r);
+    busy(-1);
+    if (len) *len = n;
+    if (exit_status) *exit_status = st;
+    int ms = (int)((now_us() - t0) / 1000);
+    /* sizes, the duration, the rate and the exit status only */
+    ESP_LOGI(TAG, "fw read: %s, exit %d, %u B in %d ms (%u KB/s)", esp_err_to_name(e), st, (unsigned)n, ms,
+             ms > 0 ? (unsigned)((uint64_t)n * 1000 / 1024 / (unsigned)ms) : 0u);
     return e;
 }
 
