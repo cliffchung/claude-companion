@@ -49,6 +49,10 @@ class LintTests(unittest.TestCase):
         self.assertIn("exec-outside-cc_cmd", self.rules(problems))
         self.assertTrue(all(p.startswith(os.path.join("ui", "y.c") + ":2:") for p in problems))
 
+    def test_stop_literal_flagged(self):
+        main = self.tree({"ui/y.c": "void f(void) {\n    run(\"claude stop aaaaaaa1\");\n    run(\"claude rm aaaaaaa1\");\n}\n"})
+        self.assertEqual(self.rules(ui_lint.lint(main)), ["exec-outside-cc_cmd", "exec-outside-cc_cmd"])
+
     def test_exec_without_cc_cmd_flagged(self):
         main = self.tree({"ui/y.c": "void f(const char *c) {\n    cc_link_exec_tail(c, o, 1, 0, 0, 0, 1);\n}\n"})
         self.assertEqual(self.rules(ui_lint.lint(main)), ["exec-outside-cc_cmd"])

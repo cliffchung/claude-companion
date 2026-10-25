@@ -15,6 +15,9 @@ bool cc_cmd_logs(const char *claude, const char *id, char *out, size_t cap);
    later reply to a stopped session (`claude -p --resume <sid> -- '<text>'`). */
 bool cc_cmd_reply(const char *claude, const char *sid, const char *text, char *out, size_t cap);
 bool cc_cmd_attach(const char *claude, const char *id, char *out, size_t cap);
+/* `<claude> stop <id>`: ends a background session's process. Its conversation is kept, and Open
+   (`claude attach`) starts it again. Never `claude rm`. */
+bool cc_cmd_stop(const char *claude, const char *id, char *out, size_t cap);
 /* The long-poll loop (spec "Long poll"): `exec /bin/sh -c '<loop>'` with fixed loop text; only
    the Claude path and the four integers vary. The loop runs `<claude> agents --json --all` every
    interval_s, prints it between @@CC-BEGIN <rc> / @@CC-END when it changed, @@CC-HB <s> after

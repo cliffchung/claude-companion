@@ -23,7 +23,7 @@ lists your Claude Code sessions, NEEDS YOU first, then WORKING, IDLE, DONE and E
 with its name, state, folder and how long ago it changed. A row that needs you has an amber edge, and the
 keyboard's backlight turns amber with it; nothing else on the device is ever amber. The right
 half shows the selected session: the last lines of its conversation, an answer field with a mic
-button, and **↵ Send** and **⌃O Open**.
+button, and **↵ Send**, **⌃O Open** and **⌃X Stop**.
 
 | | |
 |---|---|
@@ -341,7 +341,7 @@ appear on the Sessions screen.
 
 The left side lists the Host's sessions: **NEEDS YOU** first, then WORKING, IDLE, DONE and ENDED,
 the most recent first within each. The right side shows the selected session: its name, the tail
-of its output, an answer field, **↵ Send** and **⌃O Open**. The header shows "● N need you" in
+of its output, an answer field, **↵ Send**, **⌃O Open** and **⌃X Stop** (for a running session). The header shows "● N need you" in
 amber when any session needs you, then the vitals: battery, Wi-Fi, the Tailscale mark (only while
 Tailscale is on), the Host link dot and the clock.
 
@@ -375,6 +375,12 @@ YOU, and doesn't light anything.
   of the screen to bring it back. Its chips send Esc, Tab, ^C, ↑ and ↓, **Mic** dictates (as
   Ctrl+Space), and ⌨ opens the on-screen keyboard when no physical keyboard is attached.
 - **Scroll back in a take-over:** Shift+↑ / Shift+↓ (or Shift+PgUp / Shift+PgDn), or drag.
+- **Stop a session:** **Ctrl+X** (or tap **⌃X Stop** next to Open) asks "Stop <name>?" first; Cancel
+  is the first button, so Enter or Esc on the question does nothing. **Stop** runs `claude stop <id>`
+  on the Host for the session you asked about, even if the list moves meanwhile (if that session
+  ended or left the list first, nothing is stopped). Its conversation is kept: the row turns ENDED
+  and **Open** starts it again. Only running background sessions can be stopped; the button shows
+  only for them, and not while you dictate. A failure shows the command's exit status.
 
 **If the session is also attached at your desk,** both screens mirror the same session, and it is
 resized to the Tab5's width (about 106 columns). After you leave on the Tab5, the Host terminal
@@ -438,6 +444,7 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | ↑ / ↓ | Move between sessions |
 | Enter | Send the answer; on an empty field, open the session |
 | Ctrl+O | Open the selected session |
+| Ctrl+X | Stop the selected session (asks first; Open starts it again). By touch: ⌃X Stop |
 | Ctrl+T (or Ctrl+M) | Terminal (other SSH hosts) |
 | Ctrl+P | Settings |
 | Ctrl+K | The shortcuts list |

@@ -363,6 +363,21 @@ static void preview_resort_to_last(int i) {
     s_poll_gen++;
     if (s_poll_cb) s_poll_cb(s_preview_sessions, s_preview_n, s_poll_ctx);
 }
+/* A poll where session i is gone (it ended and left the list), or i stopped (no pid any more). */
+static void preview_drop(int i) {
+    assert(i >= 0 && i < s_preview_n);
+    memmove(&s_preview_sessions[i], &s_preview_sessions[i + 1], sizeof(cc_session_t) * (size_t)(s_preview_n - i - 1));
+    s_preview_n--;
+    s_poll_gen++;
+    if (s_poll_cb) s_poll_cb(s_preview_sessions, s_preview_n, s_poll_ctx);
+}
+static void preview_stopped(int i) {
+    assert(i >= 0 && i < s_preview_n);
+    s_preview_sessions[i].live = false;
+    s_preview_sessions[i].state = CC_ENDED;
+    s_poll_gen++;
+    if (s_poll_cb) s_poll_cb(s_preview_sessions, s_preview_n, s_poll_ctx);
+}
 int cc_poll_snapshot(cc_session_t *out, int cap) {
     if (s_preview_n < 0) return -1;
     int n = s_preview_n < cap ? s_preview_n : cap;
@@ -495,6 +510,20 @@ esp_err_t cc_link_exec_screen(const char *cmd, char *out, size_t cap, int *st, c
 esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; s_paste_calls++; if (cap) err[0] = 0; return ESP_OK; }
 static int s_check_calls;
 esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; s_check_calls++; if (cap) err[0] = 0; return ESP_OK; }
+/* Ctrl+X (the stop job): the only cc_link_exec on Sessions. It records the command line, answers with the exit status
+   s_pv_stop_rc and output that must never be shown, and the list refresh after a stop is counted. */
+static int s_stop_calls, s_poll_now_calls, s_pv_stop_rc;
+static char s_stop_cmd[192];
+#define PV_STOP_OUTPUT "secret-stop-output"
+esp_err_t cc_link_exec(const char *cmd, char *out, size_t cap, int *st, char *err, size_t ecap, int ms) {
+    (void)ms; s_stop_calls++;
+    snprintf(s_stop_cmd, sizeof(s_stop_cmd), "%s", cmd ? cmd : "");
+    if (cap) snprintf(out, cap, PV_STOP_OUTPUT);
+    if (ecap) snprintf(err, ecap, PV_STOP_OUTPUT);
+    if (st) *st = s_pv_stop_rc;
+    return ESP_OK;
+}
+esp_err_t cc_link_poll_now(int ms) { (void)ms; s_poll_now_calls++; return ESP_OK; }
 static int s_forget_calls;
 #define PREVIEW_FP "SHA256:Xq3v9yPreviewFingerprintOnly0123456789abcd"
 esp_err_t cc_link_forget_host_key(char *fp, size_t cap, int ms) {
@@ -1473,6 +1502,147 @@ static int shown_index(int raw)
     return n;
 }
 
+/* ------------------------------------------------------------ stop (Ctrl+X) */
+static void pv_key(key_event_t ev);   /* the device's routing: a dialog takes every key, else the sink */
+#define STOP_BODY "It stops running. Its conversation is kept; Open starts it again."
+#define STOP_CHIP "\xe2\x8c\x83X Stop"
+#define STOP_NOT_RUNNING "This session isn't running, so there is nothing to stop"
+#define STOP_GONE "Not stopped: that session changed before you confirmed"
+static bool stop_dialog_up(void) { return find_label(lv_layer_top(), STOP_BODY, false) != NULL; }
+static void pv_ctrl_x(lv_display_t *d) { pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'x', .mods = MOD_CTRL }); step(d, 100); }
+static void stop_answer(lv_display_t *d, const char *button) {
+    lv_obj_t *b = find_clickable_shown(lv_layer_top(), button);
+    assert(b);
+    lv_obj_send_event(b, LV_EVENT_CLICKED, NULL); step(d, 400);
+}
+static int raw_of(const char *id) {
+    for (int i = 0; i < s_preview_n; i++) if (!strcmp(s_preview_sessions[i].id, id)) return i;
+    return -1;
+}
+static bool stop_output_shown(lv_obj_t *s) {
+    return find_label_has(lv_layer_top(), PV_STOP_OUTPUT, 0) || find_label_has(s, PV_STOP_OUTPUT, 0);
+}
+static void stop_cmd_of(const char *id, char *out, size_t cap) { snprintf(out, cap, "~/.local/bin/claude stop %s", id); }
+
+/* sessions stop: Ctrl+X asks first (the session's name, Cancel first; Enter and Esc cancel), a confirmed stop runs
+   exactly `claude stop <id>` for the session the confirm named and not the one selected when it is answered, then
+   toasts and refreshes; a stopped session has nothing to stop; a failure shows the exit status only; the Stop button
+   is the touch path to the same confirm; Ctrl+X is inert while recording and while the rows are inert.
+   sessions stop-stale: the list changes under the confirm: a session that left the list or stopped is refused, and
+   one that a re-sort moved is still the one stopped. */
+static int stop_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *name, const char *v) {
+    int r = 0;
+    char want[96], cmd_a[96];
+    if (!strcmp(v, "stop")) {
+        const cc_session_t a = s_preview_sessions[0];   /* "needs input", selected */
+        assert(selected_index(list) == 0 && a.background && a.live);
+        stop_cmd_of(a.id, cmd_a, sizeof(cmd_a));
+        snprintf(want, sizeof(want), "Stop %s?", a.name);
+        lv_obj_t *chip = find_clickable_shown(s, STOP_CHIP);
+        if (!chip || !obj_shown(chip)) { printf("check %s: FAIL no Stop button for a running session\n", name); return 1; }
+        /* Ctrl+X: the confirm, named, Cancel first and the red Stop after it */
+        pv_ctrl_x(d);
+        if (!stop_dialog_up() || !find_label(lv_layer_top(), want, false)) { printf("check %s: FAIL no \"%s\" confirm\n", name, want); return 1; }
+        lv_obj_t *cancel = find_clickable_shown(lv_layer_top(), "Cancel"), *stop = find_clickable_shown(lv_layer_top(), "Stop");
+        assert(cancel && stop && lv_obj_get_parent(cancel) == lv_obj_get_parent(stop));
+        lv_area_t ca, sa; lv_obj_get_coords(cancel, &ca); lv_obj_get_coords(stop, &sa);
+        if (lv_obj_get_index(cancel) > lv_obj_get_index(stop) || ca.x2 >= sa.x1) { printf("check %s: FAIL Cancel isn't first\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);   /* the confirm over the rows (the scrim tints the amber) */
+        /* Enter on the dialog cancels: Cancel has the first focus */
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 100);
+        if (stop_dialog_up() || s_stop_calls) { printf("check %s: FAIL Enter on the confirm didn't cancel (%d stops)\n", name, s_stop_calls); return 1; }
+        /* Esc too, and Sessions stays */
+        pv_ctrl_x(d); assert(stop_dialog_up());
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ESC }); step(d, 100);
+        if (stop_dialog_up() || s_stop_calls || !ui_nav_is_top(ui_sessions_create)) { printf("check %s: FAIL Esc on the confirm\n", name); return 1; }
+        /* confirmed after the selection moved (a stand-in for anything that moves it while the confirm is up) */
+        pv_ctrl_x(d); assert(stop_dialog_up());
+        assert(sink_sk(SK_DOWN)); step(d, 400);
+        assert(selected_index(list) == 1);
+        stop_answer(d, "Stop");
+        if (s_stop_calls != 1 || strcmp(s_stop_cmd, cmd_a)) { printf("check %s: FAIL stop ran \"%s\" (%d), want \"%s\"\n", name, s_stop_cmd, s_stop_calls, cmd_a); return 1; }
+        if (s_poll_now_calls != 1 || !find_label(lv_layer_top(), "Stopped", false) || stop_output_shown(s)) { printf("check %s: FAIL no toast or refresh after the stop\n", name); return 1; }
+        assert(selected_index(list) == 1);
+        /* the refresh shows it stopped: no Stop button for it, and Ctrl+X says so without a confirm */
+        preview_stopped(raw_of(a.id)); step(d, 400);
+        assert(sink_sk(SK_UP)); step(d, 400);
+        assert(selected_index(list) == 0 && find_label_x(s, a.name, 440));
+        if (obj_shown(chip)) { printf("check %s: FAIL a Stop button for a stopped session\n", name); return 1; }
+        pv_ctrl_x(d);
+        if (stop_dialog_up() || s_stop_calls != 1 || !find_label(lv_layer_top(), STOP_NOT_RUNNING, false)) { printf("check %s: FAIL Ctrl+X on a stopped session\n", name); return 1; }
+        /* a failure: the exit status, never the output, and no refresh */
+        const cc_session_t b = s_preview_sessions[1];
+        assert(sink_sk(SK_DOWN)); step(d, 400);
+        assert(find_label_x(s, b.name, 440));
+        s_pv_stop_rc = 1;
+        pv_ctrl_x(d); stop_answer(d, "Stop");
+        s_pv_stop_rc = 0;
+        char cmd_b[96]; stop_cmd_of(b.id, cmd_b, sizeof(cmd_b));
+        if (s_stop_calls != 2 || strcmp(s_stop_cmd, cmd_b) || s_poll_now_calls != 1) { printf("check %s: FAIL the second stop ran \"%s\"\n", name, s_stop_cmd); return 1; }
+        if (!find_label(lv_layer_top(), "Stop failed (exit 1)", false) || stop_output_shown(s)) { printf("check %s: FAIL the failure toast\n", name); return 1; }
+        r |= pv_run_checks(d, s, "sessions-stop-failed", true, 0);
+        /* touch: the Stop button opens the same confirm */
+        lv_obj_send_event(chip, LV_EVENT_CLICKED, NULL); step(d, 100);
+        snprintf(want, sizeof(want), "Stop %s?", b.name);
+        if (!find_label(lv_layer_top(), want, false)) { printf("check %s: FAIL the Stop button's confirm\n", name); return 1; }
+        stop_answer(d, "Cancel");
+        assert(!stop_dialog_up() && s_stop_calls == 2);
+        /* recording: the Stop button hides and Ctrl+X does nothing (the keys are eaten) */
+        step(d, 4000);   /* the toasts go */
+        pv_record(d, 2000, 40);
+        pv_ctrl_x(d);
+        if (obj_shown(chip) || stop_dialog_up() || find_label(lv_layer_top(), STOP_NOT_RUNNING, false)) { printf("check %s: FAIL Ctrl+X or Stop while recording\n", name); return 1; }
+        assert(sink_sk(SK_ESC)); step(d, 400); step(d, 400);
+        if (!obj_shown(chip)) { printf("check %s: FAIL Stop didn't come back after the recording\n", name); return 1; }
+        /* inert rows (no Wi-Fi): Ctrl+X does nothing */
+        s_rc_preview = true; step(d, 400);
+        pv_ctrl_x(d);
+        bool acted = stop_dialog_up() || find_label(lv_layer_top(), STOP_NOT_RUNNING, false);
+        s_rc_preview = false; step(d, 400);
+        if (acted) { printf("check %s: FAIL Ctrl+X acted on inert rows\n", name); return 1; }
+        assert(s_stop_calls == 2);
+        r |= pv_run_checks(d, s, "sessions-stop-after", true, 0);
+        return r;
+    }
+    if (!strcmp(v, "stop-stale")) {
+        /* the confirmed session left the list before the answer: refused, whatever is selected now */
+        const cc_session_t a = s_preview_sessions[0];
+        pv_ctrl_x(d);
+        snprintf(want, sizeof(want), "Stop %s?", a.name);
+        assert(find_label(lv_layer_top(), want, false));
+        preview_drop(raw_of(a.id)); step(d, 400);
+        const cc_session_t b = s_preview_sessions[0];   /* "needs approval", now selected in a's place */
+        assert(selected_index(list) == 0 && find_label_x(s, b.name, 440));
+        stop_answer(d, "Stop");
+        if (s_stop_calls || !find_label(lv_layer_top(), STOP_GONE, false)) { printf("check %s: FAIL a stop for a session that left the list (\"%s\")\n", name, s_stop_cmd); return 1; }
+        /* a re-sort moves the confirmed session to the end: it is still the one stopped, not the row in its old place */
+        step(d, 3000);
+        pv_ctrl_x(d);
+        snprintf(want, sizeof(want), "Stop %s?", b.name);
+        assert(find_label(lv_layer_top(), want, false));
+        preview_resort_to_last(raw_of(b.id)); step(d, 400);
+        assert(selected_index(list) == shown_n() - 1);
+        stop_answer(d, "Stop");
+        char cmd_b[96]; stop_cmd_of(b.id, cmd_b, sizeof(cmd_b));
+        if (s_stop_calls != 1 || strcmp(s_stop_cmd, cmd_b)) { printf("check %s: FAIL after a re-sort it ran \"%s\", want \"%s\"\n", name, s_stop_cmd, cmd_b); return 1; }
+        /* the session stopped (lost its pid) before the answer: refused */
+        step(d, 3000);
+        assert(sink_sk(SK_HOME)); step(d, 400);
+        int c = raw_of(s_preview_sessions[0].background ? s_preview_sessions[0].id : s_preview_sessions[1].id);
+        const cc_session_t cs = s_preview_sessions[c];
+        assert(find_label_x(s, cs.name, 440) && cs.live);
+        pv_ctrl_x(d);
+        snprintf(want, sizeof(want), "Stop %s?", cs.name);
+        assert(find_label(lv_layer_top(), want, false));
+        preview_stopped(c); step(d, 400);
+        stop_answer(d, "Stop");
+        if (s_stop_calls != 1 || !find_label(lv_layer_top(), STOP_NOT_RUNNING, false)) { printf("check %s: FAIL a stop for a session that stopped first\n", name); return 1; }
+        return pv_run_checks(d, s, name, true, 0);
+    }
+    fprintf(stderr, "preview: unknown sessions case %s\n", v);
+    return 2;
+}
+
 static int sessions_case(lv_display_t *d, const char *v) {
     char name[64];
     snprintf(name, sizeof(name), !strcmp(v, "ctrlk") ? "ctrlk" : "sessions-%s", v);
@@ -1707,10 +1877,13 @@ static int sessions_case(lv_display_t *d, const char *v) {
         assert(ui_nav_is_top(ui_sessions_create) && !strcmp(field_text(s), "cd"));   /* the draft outlives the visit */
     } else if (!strncmp(v, "voice-", 6)) {
         return voice_case(d, s, list, name, v);
+    } else if (!strcmp(v, "stop") || !strcmp(v, "stop-stale")) {
+        return stop_case(d, s, list, name, v);
     } else if (!strcmp(v, "ctrlk")) {
         assert(sink_ch('k', MOD_CTRL) && ui_sessions_keys_overlay_shown());
         step(d, 100);
         assert(find_label(s, "voice input: press to start, again to stop", false));
+        assert(find_label(s, "Ctrl+X", false) && find_label(s, "stop the selected session", false));
         /* two columns, nothing wrapped */
         lv_obj_t *t = find_label(s, "Keyboard shortcuts", false);
         assert(t);

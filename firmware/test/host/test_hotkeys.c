@@ -93,9 +93,27 @@ static void test_dashboard_keys(void)
     e = ch('m', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_TERMINAL, hk_dashboard(&e));
     e = ch('k', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_KEYS, hk_dashboard(&e));
     e = ch('p', MOD_META); TEST_ASSERT_EQUAL(HK_D_SETTINGS, hk_dashboard(&e));
-    e = ch('x', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_LOCAL, hk_dashboard(&e));
+    e = ch('z', MOD_CTRL); TEST_ASSERT_EQUAL(HK_D_LOCAL, hk_dashboard(&e));
     e = ch('p', 0);        TEST_ASSERT_EQUAL(HK_D_NONE, hk_dashboard(&e));
     e = sk(SK_ENTER, 0);   TEST_ASSERT_EQUAL(HK_D_NONE, hk_dashboard(&e));
+}
+
+/* Ctrl+X stops the selected session (after a confirm): its own action, never the silent LOCAL fallback */
+static void test_dashboard_ctrl_x_is_stop(void)
+{
+    key_event_t e;
+    e = ch('x', MOD_CTRL);             TEST_ASSERT_EQUAL(HK_D_STOP, hk_dashboard(&e));
+    e = ch('X', MOD_CTRL);             TEST_ASSERT_EQUAL(HK_D_STOP, hk_dashboard(&e));
+    e = ch('X', MOD_CTRL | MOD_SHIFT); TEST_ASSERT_EQUAL(HK_D_STOP, hk_dashboard(&e));
+    e = ch('x', MOD_META);             TEST_ASSERT_EQUAL(HK_D_STOP, hk_dashboard(&e));
+    e = ch('x', 0);                    TEST_ASSERT_EQUAL(HK_D_NONE, hk_dashboard(&e));   /* a plain x is typed */
+    e = ch('x', MOD_SHIFT);            TEST_ASSERT_EQUAL(HK_D_NONE, hk_dashboard(&e));
+    /* only x: its neighbours stay LOCAL */
+    e = ch('z', MOD_CTRL);             TEST_ASSERT_EQUAL(HK_D_LOCAL, hk_dashboard(&e));
+    e = ch('c', MOD_CTRL);             TEST_ASSERT_EQUAL(HK_D_LOCAL, hk_dashboard(&e));
+    /* inside a take-over Ctrl+X goes to Claude Code */
+    e = ch('x', MOD_CTRL);             TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, true));
+    TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, false));
 }
 
 static void test_dashboard_ctrl_never_typed(void)
@@ -119,15 +137,19 @@ static void test_ctrl_m_is_not_enter(void)
 static void test_overlay_lists_every_shortcut(void)
 {
     const char *need[] = { "Up / Down", "Enter", "Ctrl+O", "Ctrl+T", "Ctrl+P", "Ctrl+K", "Ctrl+Space",
-                           "Esc", "Ctrl+\xe2\x86\x90", "Shift+Up / Down" };
+                           "Esc", "Ctrl+\xe2\x86\x90", "Shift+Up / Down", "Ctrl+X" };
     int n = hk_overlay_n;
-    TEST_ASSERT_EQUAL(10, n);
+    TEST_ASSERT_EQUAL(11, n);
     for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
         bool found = false;
         for (int k = 0; k < n; k++)
             if (strstr(tr(hk_overlay[k].keys), need[i]) && tr(hk_overlay[k].what)[0]) found = true;
         TEST_ASSERT_TRUE_MESSAGE(found, need[i]);
     }
+    bool stop = false;
+    for (int k = 0; k < n; k++)
+        if (!strcmp(tr(hk_overlay[k].keys), "Ctrl+X") && !strcmp(tr(hk_overlay[k].what), "stop the selected session")) stop = true;
+    TEST_ASSERT_TRUE(stop);
 }
 
 int main(void)
@@ -141,6 +163,7 @@ int main(void)
     RUN_TEST(test_takeover_scroll);
     RUN_TEST(test_terminal_ctrl_space_is_voice);
     RUN_TEST(test_dashboard_keys);
+    RUN_TEST(test_dashboard_ctrl_x_is_stop);
     RUN_TEST(test_dashboard_ctrl_never_typed);
     RUN_TEST(test_ctrl_m_is_not_enter);
     RUN_TEST(test_overlay_lists_every_shortcut);

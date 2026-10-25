@@ -57,6 +57,8 @@ static const struct { str_id_t id; const char *conv; } k_formats[] = {
     { STR_TERM_SESSION_ENDED, "d" },
     { STR_HF_DELETE_Q, "s" },
     { STR_SET_TRUST_BODY, "s" },
+    { STR_SES_STOP_Q, "s" },
+    { STR_SES_STOP_FAILED, "d" },
 };
 /* plain text with a literal percent sign: shown with "%s", never used as a format. Each one's conversion list is
    pinned too ("?" is its lone '%', which starts no conversion), so none can gain a stray "%s" (review M3). */

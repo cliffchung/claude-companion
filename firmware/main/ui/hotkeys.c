@@ -40,6 +40,7 @@ hk_dash_t hk_dashboard(const key_event_t *ev)
     case 't':
     case 'm': return HK_D_TERMINAL;
     case 'k': return HK_D_KEYS;
+    case 'x': return HK_D_STOP;
     default:  return HK_D_LOCAL;
     }
 }
@@ -50,6 +51,7 @@ const hk_line_t hk_overlay[] = {
     { STR_HK_K_CTRL_O, STR_HK_W_CTRL_O },
     { STR_HK_K_CTRL_T, STR_HK_W_CTRL_T },
     { STR_HK_K_CTRL_P, STR_HK_W_CTRL_P },
+    { STR_HK_K_CTRL_X, STR_HK_W_CTRL_X },
     { STR_HK_K_CTRL_K, STR_HK_W_CTRL_K },
     { STR_HK_K_CTRL_SPACE, STR_HK_W_CTRL_SPACE },
     { STR_HK_K_ESC, STR_HK_W_ESC },

@@ -2,7 +2,7 @@
  *
  * Data comes from cc_link's poll (a subscriber only bumps a counter; the 300 ms tick copies the
  * snapshot). Everything that talks to the Host -- log tails, answers, the live check before opening,
- * the forget-host-key job -- runs on a small worker task, never on the LVGL task, and every command
+ * a stop, the forget-host-key job -- runs on a small worker task, never on the LVGL task, and every command
  * line comes from cc_cmd_* (cc_link builds the paste and the check itself). Keys reach Sessions
  * through a keyboard sink while it is the active screen.
  *
@@ -71,6 +71,9 @@ static const char *TAG = "sessions";
 #define VOICE_METER_MS   100     /* P5-4: the meter's timer, only while recording */
 #define VOICE_SECS_AFTER_MS 3000 /* the transcribing note adds its seconds after this */
 #define VOICE_RED_LAST_S 5       /* the timer turns red for the last 5 s */
+#define STOP_TIMEOUT_MS  15000   /* `claude stop` waits for the session's process to end */
+#define STOP_POLL_MS     8000    /* the refresh after a stop: the row shows it stopped without waiting for the watch */
+#define STOP_TOAST_MS    4000
 
 /* The transcript goes into the draft of the session key the recording was started for (spec 5.3). */
 _Static_assert(VR_KEY_MAX == SM_KEY_MAX && VR_TEXT_MAX == SM_ANSWER_MAX, "voice keys and text must fit the drafts");
@@ -86,7 +89,7 @@ typedef struct {
     int64_t at_ms;
 } note_t;
 
-typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY, JOB_VOICE_CHECK } job_type_t;
+typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY, JOB_VOICE_CHECK, JOB_STOP } job_type_t;
 typedef struct {
     job_type_t type;
     unsigned token;        /* which request this is (actions only) */
@@ -95,7 +98,7 @@ typedef struct {
 } job_t;
 
 /* Worker results, read by the tick (guarded by res_lock). s_logs_text is PSRAM. */
-static struct { unsigned gen; unsigned token; job_type_t type; char id[16]; esp_err_t err; char msg[160]; } s_act;
+static struct { unsigned gen; unsigned token; job_type_t type; char id[16]; esp_err_t err; int rc; char msg[160]; } s_act;
 static struct { unsigned gen; char id[16]; bool ok; } s_logs;
 static char *s_logs_text;
 static volatile bool s_logs_pending, s_act_pending;
@@ -128,7 +131,7 @@ static int64_t s_req_at_ms;
 typedef enum { BODY_NONE, BODY_LIST, BODY_LOADING, BODY_NO_HOST, BODY_EMPTY } body_t;
 static lv_obj_t *s_scr, *s_needs, *s_banner, *s_list, *s_rows[MAX_ROWS], *s_skel, *s_nohost, *s_empty;
 static lv_obj_t *s_pane, *s_title, *s_pill, *s_meta, *s_logbox, *s_log, *s_info;
-static lv_obj_t *s_answer_row, *s_ta, *s_action_row, *s_send, *s_open, *s_note;
+static lv_obj_t *s_answer_row, *s_ta, *s_action_row, *s_send, *s_open, *s_stop, *s_note;
 static int s_body_top = -1, s_body = -1, s_banner_shown = -1, s_inert = -1;
 static int s_cols, s_rows_fit;             /* the log block, measured */
 static bool s_dirty_rows, s_dirty_pane, s_dirty_log, s_scroll_sel;
@@ -362,6 +365,36 @@ static void run_voice_check(void)
     ui_async(voice_check_toast_cb, (void *)(intptr_t)id);
 }
 
+/* Ctrl+X or the Stop button, after the confirm: `claude stop <id>` (cc_cmd_stop), for the session the confirm named.
+   Its output is not kept or shown: a failure shows the exit status only. A stop that worked refreshes the list at
+   once, so the row turns ENDED without waiting for the watch. */
+static void run_stop(const job_t *j, const char *claude)
+{
+    char cmd[192], out[64], err[64];
+    int status = -1;
+    esp_err_t e = ESP_ERR_INVALID_ARG;
+    if (cc_cmd_stop(claude, j->id, cmd, sizeof(cmd)))
+        e = cc_link_exec(cmd, out, sizeof(out), &status, err, sizeof(err), STOP_TIMEOUT_MS);
+    if (e == ESP_ERR_INVALID_SIZE) e = ESP_OK;   /* more output than out holds: it is dropped anyway */
+    ESP_LOGI(TAG, "stop %s: %s, exit %d", j->id, esp_err_to_name(e), status);
+    res_lock();
+    s_act.gen++;
+    s_act.token = j->token;
+    s_act.type = JOB_STOP;
+    strlcpy(s_act.id, j->id, sizeof(s_act.id));
+    s_act.err = e;
+    s_act.rc = status;
+    s_act.msg[0] = 0;
+    res_unlock();
+    s_act_pending = false;
+    if (e == ESP_OK && status == 0) {
+#ifndef UI_PREVIEW
+        vTaskDelay(pdMS_TO_TICKS(500));   /* the agents list drops the pid a moment after the process ends */
+#endif
+        cc_link_poll_now(STOP_POLL_MS);
+    }
+}
+
 static void run_job(const job_t *j)
 {
     char claude[64], cmd[192], msg[160] = "";
@@ -369,6 +402,7 @@ static void run_job(const job_t *j)
     if (j->type == JOB_TRUST_KEY) { run_trust(j->text); return; }
     if (j->type == JOB_VOICE_CHECK) { run_voice_check(); return; }
     cc_settings_claude_path(claude, sizeof(claude));
+    if (j->type == JOB_STOP) { run_stop(j, claude); return; }
     if (j->type == JOB_LOGS) {
         bool ok = false;
         int status = -1;
@@ -562,6 +596,9 @@ static bool actionable(const cc_session_t *s)
     return s && s->background && s->id[0] && s->live && s->state != CC_ENDED;
 }
 static bool openable(const cc_session_t *s) { return s && s->background && s->id[0]; }
+/* Ctrl+X and Stop: a background session whose process runs (any state: a DONE one may still be live). A stopped one
+   has nothing to stop, and an interactive one is never acted on. */
+static bool stoppable(const cc_session_t *s) { return s && s->background && s->id[0] && s->live; }
 
 static note_t *note_find(const char *key)
 {
@@ -743,6 +780,32 @@ static void rows_update(void)
     ui_header_needs_you_set(s_needs, needs);
 }
 
+/* A button's width as its text sets it (the action row's buttons are content-sized), laid out or not. */
+static int32_t btn_width(lv_obj_t *b)
+{
+    lv_obj_t *l = lv_obj_get_child(b, 0);
+    lv_point_t sz;
+    lv_text_get_size(&sz, lv_label_get_text(l), lv_obj_get_style_text_font(l, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    int32_t w = sz.x + lv_obj_get_style_pad_left(b, 0) + lv_obj_get_style_pad_right(b, 0) + 2 * lv_obj_get_style_border_width(b, 0);
+    int32_t mw = lv_obj_get_style_min_width(b, 0);
+    return w > mw ? w : mw;
+}
+
+/* Whether the action row has room for Stop beside Send and Open (as shown now) and the whole note: Stop gives way to a
+   note that would be cut, so a voice or error note is never shortened by it. */
+static bool stop_fits(const char *note)
+{
+    int32_t gap = lv_obj_get_style_pad_column(s_action_row, 0);
+    int32_t avail = lv_obj_get_style_width(s_pane, 0) - lv_obj_get_style_pad_left(s_pane, 0) - lv_obj_get_style_pad_right(s_pane, 0);
+    if (!lv_obj_has_flag(s_send, LV_OBJ_FLAG_HIDDEN)) avail -= btn_width(s_send) + gap;
+    if (!lv_obj_has_flag(s_open, LV_OBJ_FLAG_HIDDEN)) avail -= btn_width(s_open) + gap;
+    avail -= btn_width(s_stop) + gap;
+    if (!note || !note[0]) return avail >= 0;
+    lv_point_t sz;
+    lv_text_get_size(&sz, note, FONT_SMALL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x <= avail;
+}
+
 static void pane_update(void)
 {
     const cc_session_t *s = selected();
@@ -800,6 +863,9 @@ static void pane_update(void)
         nt = b;
     }
     if (s_vnote[0]) { nt = s_vnote; nc = TC_MUTED; }   /* transcribing: the one thing going on */
+    /* Stop (Ctrl+X by touch) only for a running session, never while recording or transcribing (the strip and Cancel
+       need the room, and the keys are eaten then too), and only while the note still fits beside it */
+    changed |= set_shown(s_stop, stoppable(s) && !s_vrec && !s_vnote[0] && stop_fits(nt));
     set_text(s_note, nt);
     set_colour(s_note, nc);
     if (measure_log() || changed) s_dirty_log = true;
@@ -888,7 +954,7 @@ static void post_action(job_type_t type, const cc_session_t *s, const char *t)
     strlcpy(j->id, s->id, sizeof(j->id));
     if (t) strlcpy(j->text, t, sizeof(j->text));
     s_act_pending = true;
-    note_set(s, NOTE_BUSY, type == JOB_PASTE ? tr(STR_SES_SENDING) : tr(STR_SES_OPENING));
+    note_set(s, NOTE_BUSY, tr(type == JOB_PASTE ? STR_SES_SENDING : type == JOB_STOP ? STR_SES_STOPPING : STR_SES_OPENING));
     if (!job_post(j)) {
         s_act_pending = false;
         note_set(s, NOTE_ERROR, tr(STR_SET_BUSY));
@@ -936,6 +1002,8 @@ static void enter_pressed(void)
     sessions_open_selected();   /* an empty field (or an open-to-answer note) opens it */
 }
 
+static void stop_result(const char *id, esp_err_t err, int rc);
+
 static void apply_action_result(void)
 {
     res_lock();
@@ -945,10 +1013,12 @@ static void apply_action_result(void)
     strlcpy(id, s_act.id, sizeof(id));
     strlcpy(msg, s_act.msg, sizeof(msg));
     esp_err_t err = s_act.err;
+    int rc = s_act.rc;
     res_unlock();
     if (gen == s_seen_act) return;
     s_seen_act = gen;
     if (token != s_req_token) return;   /* an answer to an older request */
+    if (type == JOB_STOP) { stop_result(id, err, rc); return; }   /* toasted even when the row is gone */
     const cc_session_t *s = NULL;
     for (int i = 0; i < s_n; i++)
         if (s_items[i].background && strcmp(s_items[i].id, id) == 0) { s = &s_items[i]; break; }
@@ -980,6 +1050,69 @@ static void apply_action_result(void)
     if (msg[0] >= 'a' && msg[0] <= 'z') msg[0] = (char)(msg[0] - 'a' + 'A');
     note_set(s, NOTE_ERROR, msg);
     if (s != selected()) ui_toast(msg);   /* the pane shows another session: say it here */
+}
+
+/* ------------------------------------------------------------------ stop (Ctrl+X) */
+
+/* The confirm is tied to the session selected when it opened, by key (and id), never to what is selected when it is
+   answered: a poll may re-sort the rows, move the selection or end the session meanwhile. The answer then stops that
+   same session if the newest list still has it running, and is refused otherwise. gen ties an answer to the latest
+   confirm. */
+static struct { char key[SM_KEY_MAX]; char id[16]; unsigned gen; } s_stop_ask;
+
+static const cc_session_t *item_by_key(const char *key);
+static void load_snapshot(void);
+
+static void stop_result(const char *id, esp_err_t err, int rc)
+{
+    const cc_session_t *s = NULL;
+    for (int i = 0; i < s_n; i++)
+        if (s_items[i].background && strcmp(s_items[i].id, id) == 0) { s = &s_items[i]; break; }
+    if (err == ESP_OK && rc == 0) {
+        if (s) note_clear(s);
+        ui_toast(tr(STR_SES_STOPPED));
+        s_logs_at_ms = 0;
+        return;
+    }
+    char m[96];
+    if (err == ESP_ERR_INVALID_STATE) strlcpy(m, tr(STR_SES_NOT_CONNECTED), sizeof(m));
+    else if (err == ESP_ERR_TIMEOUT) strlcpy(m, tr(STR_SES_STOP_TIMEOUT), sizeof(m));
+    else if (err == ESP_OK) snprintf(m, sizeof(m), tr(STR_SES_STOP_FAILED), rc);   /* the exit status, never the output */
+    else strlcpy(m, tr(STR_SES_STOP_ERROR), sizeof(m));
+    if (s) note_set(s, NOTE_ERROR, m);
+    ui_toast_ms(m, STOP_TOAST_MS);
+}
+
+static void stop_yes(bool yes, void *ud)
+{
+    unsigned gen = (unsigned)(uintptr_t)ud;
+    if (!yes || gen != s_stop_ask.gen) return;   /* Cancel, Esc, or an older confirm */
+    s_stop_ask.gen = 0;
+    if (!s_scr) return;   /* Sessions is gone: nothing would show the result */
+    load_snapshot();      /* judge it against the newest list */
+    const cc_session_t *s = item_by_key(s_stop_ask.key);
+    if (!s || strcmp(s->id, s_stop_ask.id) != 0) { ui_toast(tr(STR_SES_STOP_GONE)); render(); return; }
+    if (!stoppable(s)) { ui_toast(tr(STR_SES_STOP_NOT_RUNNING)); render(); return; }
+    if (voice_busy()) return;
+    post_action(JOB_STOP, s, NULL);   /* s, not selected(): the session the confirm named */
+    render();
+}
+
+/* Ctrl+X and the Stop button: asks first, Cancel first (Enter on the dialog cancels). */
+static void stop_ask(void)
+{
+    const cc_session_t *s = selected();
+    if (!s || s_inert == 1) return;
+    if (!stoppable(s)) { ui_toast(tr(STR_SES_STOP_NOT_RUNNING)); return; }
+    if (s_act_pending) { ui_toast(tr(STR_SES_STILL_WORKING)); return; }
+    sm_key(s, s_stop_ask.key, sizeof(s_stop_ask.key));
+    strlcpy(s_stop_ask.id, s->id, sizeof(s_stop_ask.id));
+    static unsigned gens;
+    if (++gens == 0) gens = 1;   /* 0 means no confirm is open */
+    s_stop_ask.gen = gens;
+    char title[160];
+    snprintf(title, sizeof(title), tr(STR_SES_STOP_Q), s->name);
+    ui_confirm_ex(title, tr(STR_SES_STOP_BODY), tr(STR_SES_STOP_ACTION), true, stop_yes, (void *)(uintptr_t)gens);
 }
 
 /* ------------------------------------------------------------------ Ctrl+K overlay */
@@ -1332,6 +1465,7 @@ static bool sessions_key(const key_event_t *ev, void *user)
     case HK_D_TERMINAL: ui_nav_push(ui_hosts_create, NULL); return true;
     case HK_D_KEYS:     ui_sessions_keys_overlay(true); return true;
     case HK_D_VOICE:    return true;   /* taken above */
+    case HK_D_STOP:     if (s_inert != 1 && s_n > 0) { stop_ask(); render(); } return true;   /* dimmed or no rows: inert */
     case HK_D_LOCAL:    return true;
     case HK_D_NONE:     break;
     }
@@ -1661,6 +1795,7 @@ static void chip_select_cb(lv_event_t *e)
 }
 static void chip_send_cb(lv_event_t *e) { (void)e; if (voice_busy()) return; enter_pressed(); render(); }
 static void chip_open_cb(lv_event_t *e) { (void)e; if (voice_busy()) return; sessions_open_selected(); render(); }
+static void chip_stop_cb(lv_event_t *e) { (void)e; if (voice_busy() || s_inert == 1) return; stop_ask(); render(); }
 static void chip_terminal_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_hosts_create, NULL); }
 static void chip_settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }
 static void chip_keys_cb(lv_event_t *e) { (void)e; ui_sessions_keys_overlay(true); }
@@ -1847,7 +1982,7 @@ static lv_obj_t *build_pane(lv_obj_t *scr, int W, int top, int h)
     lv_obj_add_state(s_ta, LV_STATE_FOCUSED);   /* keys come from the sink; the field is their target */
     s_mic = mic_button(s_answer_row);
 
-    /* 4. the action row: Send and Open, and a note on the right */
+    /* 4. the action row: Send, Open and Stop, and a note on the right */
     s_action_row = box(p);
     lv_obj_set_size(s_action_row, LV_PCT(100), UI_TK_TARGET);
     lv_obj_set_flex_flow(s_action_row, LV_FLEX_FLOW_ROW);
@@ -1856,6 +1991,9 @@ static lv_obj_t *build_pane(lv_obj_t *scr, int W, int top, int h)
     ui_comp_pass_hits(s_action_row);
     s_send = ui_btn(s_action_row, UI_BTN_PRIMARY, tr(STR_SES_SEND), chip_send_cb, NULL);
     s_open = ui_btn(s_action_row, UI_BTN_SECONDARY, tr(STR_SES_OPEN), chip_open_cb, NULL);
+    /* Stop (Ctrl+X): secondary like Open; the confirm's button is the red one */
+    s_stop = ui_btn(s_action_row, UI_BTN_SECONDARY, tr(STR_SES_STOP), chip_stop_cb, NULL);
+    lv_obj_add_flag(s_stop, LV_OBJ_FLAG_HIDDEN);
     s_note = text(s_action_row, "", &st_label, TC_MUTED);
     lv_obj_set_width(s_note, 1);
     lv_obj_set_flex_grow(s_note, 1);
@@ -1885,7 +2023,7 @@ static void scr_delete_cb(lv_event_t *e)
     s_vrec = false;
     s_scr = s_needs = s_banner = s_list = s_skel = s_nohost = s_empty = NULL;
     s_pane = s_title = s_pill = s_meta = s_logbox = s_log = s_info = NULL;
-    s_answer_row = s_ta = s_action_row = s_send = s_open = s_note = NULL;
+    s_answer_row = s_ta = s_action_row = s_send = s_open = s_stop = s_note = NULL;
     s_keys_ov = s_footer = NULL;
     memset(s_rows, 0, sizeof(s_rows));
     /* PT11: the rate stays 3 s on every other screen (Active/Dim); Off sets its floor */
