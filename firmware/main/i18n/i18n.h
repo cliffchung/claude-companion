@@ -367,7 +367,7 @@ X(SES_KEYS_CLOSE, "Any key or a touch closes this") \
 X(HK_K_UPDOWN, "Up / Down") \
 X(HK_W_UPDOWN, "move between sessions") \
 X(HK_K_ENTER, "Enter") \
-X(HK_W_ENTER, "send the answer") \
+X(HK_W_ENTER, "send the answer (empty: open)") \
 X(HK_K_CTRL_O, "Ctrl+O") \
 X(HK_W_CTRL_O, "open the session") \
 X(HK_K_CTRL_T, "Ctrl+T") \
@@ -379,7 +379,7 @@ X(HK_W_CTRL_K, "this list") \
 X(HK_K_CTRL_SPACE, "Ctrl+Space") \
 X(HK_W_CTRL_SPACE, "voice input: press to start, again to stop") \
 X(HK_K_ESC, "Esc") \
-X(HK_W_ESC, "clear the answer, or go back") \
+X(HK_W_ESC, "clear the answer (cancels a recording)") \
 X(HK_K_CTRL_BRACKET, "Ctrl+\xe2\x86\x90") \
 X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
