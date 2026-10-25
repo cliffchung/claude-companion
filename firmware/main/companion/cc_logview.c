@@ -17,10 +17,13 @@
 #define RULE_CELLS   10    /* a row that starts with this many box-drawing cells is a rule */
 #define RIGHT_MIN_X  24    /* a row starting past this column and reaching the right edge is right-aligned status */
 #define WRAP_SLACK   4     /* a row this close to the width, with the next word not fitting, was wrapped */
+#define FEED_CHUNK   4096  /* the replay is fed this much at a time, checking its budget in between */
+#define RULE_NEAR    8     /* with no input box or dialog, a rule this close to the last drawn row ends the view */
+#define HINT_SPAN    40    /* a dialog's options lie this close above its "Esc to cancel" hint */
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-void cc_logview_size(const char *raw, size_t len, int *cols, int *rows, size_t *start, bool *cleared)
+bool cc_logview_size(const char *raw, size_t len, int *cols, int *rows, size_t *start, bool *cleared)
 {
     const unsigned char *b = (const unsigned char *)raw;
     size_t from = 0;
@@ -61,26 +64,36 @@ void cc_logview_size(const char *raw, size_t len, int *cols, int *rows, size_t *
     }
     int c = best_run >= RULE_MIN ? best_run : COLS_NO_RULE;
     if (max_col > c) c = max_col;
+    bool fits = c + COLS_MARGIN <= COLS_MAX && max_row <= ROWS_MAX;
     if (cols) *cols = clampi(c + COLS_MARGIN, COLS_MIN, COLS_MAX);
     if (rows) *rows = max_row ? clampi(max_row, ROWS_MIN, ROWS_MAX) : ROWS_DEFAULT;
     if (start) *start = from;
     if (cleared) *cleared = clr;
+    return fits;
 }
 
 /* ------------------------------------------------------------ row classes */
 typedef struct {
     vt_t *vt;
     int cols, rows;
+    char *buf;            /* one row's text */
+    size_t buf_cap;
 } scr_t;
 
 static const vt_cell_t *row_at(const scr_t *s, int y) { return vt_view_row(s->vt, y); }
-static bool blank_cp(uint32_t cp) { return cp == ' ' || cp == 0 || cp == 0xa0; }
+
+/* a blank cell: a space, NBSP or never written; a wide character's second cell is not blank */
+static bool cell_blank(const vt_cell_t *c)
+{
+    if (c->attr & VT_ATTR_WIDE_CONT) return false;
+    return c->cp == ' ' || c->cp == 0 || c->cp == 0xa0;
+}
 
 static int first_x(const scr_t *s, int y)
 {
     const vt_cell_t *r = row_at(s, y);
     for (int x = 0; x < s->cols; x++)
-        if (!blank_cp(r[x].cp) && !(r[x].attr & VT_ATTR_WIDE_CONT)) return x;
+        if (!cell_blank(&r[x])) return x;
     return -1;
 }
 
@@ -89,8 +102,14 @@ static int row_width(const scr_t *s, int y)
 {
     const vt_cell_t *r = row_at(s, y);
     for (int x = s->cols - 1; x >= 0; x--)
-        if (!blank_cp(r[x].cp)) return x + 1;
+        if (!cell_blank(&r[x])) return x + 1;
     return 0;
+}
+
+static const char *row_text(const scr_t *s, int y)
+{
+    vt_row_text(s->vt, y, s->buf, s->buf_cap);
+    return s->buf;
 }
 
 static bool box_cp(uint32_t cp) { return cp >= 0x2500 && cp <= 0x257f; }
@@ -115,12 +134,34 @@ static bool is_banner(const scr_t *s, int y)   /* the welcome logo: block elemen
     return cp >= 0x2580 && cp <= 0x259f;
 }
 
+/* Claude Code's spinner line, at column 0: a spinner glyph, a space, a verb, then either "…" and an optional
+   "(…)" tail ("✽ Pollinating… (2s · thinking)", "· Computing…") or " for " and a time ("✻ Baked for 5s · done").
+   A reply's own "* Item" or "· note" doesn't match. */
 static bool is_spinner(const scr_t *s, int y)
 {
-    const vt_cell_t *r = row_at(s, y);
-    uint32_t c = r[0].cp, l = s->cols > 2 ? r[2].cp : 0;
-    bool glyph = c == 0xb7 || c == 0x2722 || c == 0x2733 || c == 0x2736 || c == 0x273b || c == 0x273d || c == '*';
-    return glyph && r[1].cp == ' ' && ((l >= 'A' && l <= 'Z') || (l >= 'a' && l <= 'z'));
+    uint32_t c = row_at(s, y)[0].cp;
+    if (!(c == 0xb7 || c == 0x2722 || c == 0x2733 || c == 0x2736 || c == 0x273b || c == 0x273d || c == '*')) return false;
+    const unsigned char *t = (const unsigned char *)row_text(s, y);
+    t += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;   /* the glyph */
+    if (*t++ != ' ') return false;
+    const unsigned char *w = t;
+    for (;;) {
+        if ((*t >= 'A' && *t <= 'Z') || (*t >= 'a' && *t <= 'z')) { t++; continue; }
+        if (t[0] >= 0xc3 && t[0] <= 0xc5 && (t[1] & 0xc0) == 0x80) { t += 2; continue; }   /* é and other Latin letters */
+        break;
+    }
+    if (t == w) return false;
+    if (t[0] == 0xe2 && t[1] == 0x80 && t[2] == 0xa6) {   /* … */
+        t += 3;
+        while (*t == ' ') t++;
+        if (!*t) return true;
+        if (*t != '(') return false;
+        const unsigned char *close = (const unsigned char *)strrchr((const char *)t, ')');
+        if (!close) return false;
+        for (t = close + 1; *t == ' '; t++) {}
+        return !*t;
+    }
+    return !strncmp((const char *)t, " for ", 5) && t[5] >= '0' && t[5] <= '9';
 }
 
 static bool is_tip(const scr_t *s, int y)   /* "  ⎿  Tip: …" under the spinner */
@@ -134,11 +175,11 @@ static int first_word_width(const scr_t *s, int y)
     const vt_cell_t *r = row_at(s, y);
     int x0 = first_x(s, y), x = x0;
     if (x0 < 0) return 0;
-    while (x < s->cols && !blank_cp(r[x].cp)) x++;
+    while (x < s->cols && !cell_blank(&r[x])) x++;
     return x - x0;
 }
 
-/* A numbered option ("1. Yes", "❯ 2. No"): the column of its number, else -1. */
+/* A numbered option or list item ("1. Yes", "❯ 2. No"): the column of its number, else -1. */
 static int option_x(const scr_t *s, int y)
 {
     const vt_cell_t *r = row_at(s, y);
@@ -150,51 +191,108 @@ static int option_x(const scr_t *s, int y)
     return x > d && x < s->cols && r[x].cp == '.' ? d : -1;
 }
 
-/* The input box's top rule: a rule, the "❯" input line under it, and another rule a few rows further down. */
+/* A row that starts a new item, never a wrapped continuation: a numbered item, a bullet, a marker. */
+static bool starts_item(const scr_t *s, int y)
+{
+    if (option_x(s, y) >= 0) return true;
+    int x0 = first_x(s, y);
+    if (x0 < 0) return false;
+    const vt_cell_t *r = row_at(s, y);
+    uint32_t c = r[x0].cp;
+    bool spaced = x0 + 1 < s->cols && r[x0 + 1].cp == ' ';
+    if (c == 0x23fa || c == 0x276f || c == 0x23bf) return true;   /* ⏺ ❯ ⎿ */
+    return spaced && (c == '-' || c == '*' || c == '+' || c == '>' || c == 0x2022 || c == 0xb7 || c == 0x25cf);
+}
+
+static bool wide_at(const scr_t *s, int y, int x)
+{
+    if (x < 0 || x >= s->cols) return false;
+    return (row_at(s, y)[x].attr & (VT_ATTR_WIDE | VT_ATTR_WIDE_CONT)) != 0;
+}
+
+/* The input box's top rule: a rule, the "❯" input line under it (not a numbered option: a selector's own
+   "❯ 1." under its frame), and another rule anywhere below (a draft may be tall). */
 static int input_box_top(const scr_t *s)
 {
     for (int y = s->rows - 2; y >= 0; y--) {
-        if (!is_rule(s, y) || !is_prompt(s, y + 1)) continue;
-        for (int k = y + 2; k < s->rows && k <= y + 16; k++)
+        if (!is_rule(s, y) || !is_prompt(s, y + 1) || option_x(s, y + 1) >= 0) continue;
+        for (int k = y + 2; k < s->rows; k++)
             if (is_rule(s, k)) return y;
     }
     return -1;
 }
 
-/* ------------------------------------------------------------ the tail */
-static void *ps_alloc(size_t n)
+/* A dialog: the lowest drawn row (below it only blanks and rules) is its "Esc to cancel" hint, with at least two
+   numbered options, one selected with ❯, above it. Returns the hint's row, else -1. */
+static int dialog_hint(const scr_t *s)
 {
-    void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
-    return p;
+    int y = s->rows - 1;
+    while (y >= 0 && (first_x(s, y) < 0 || is_rule(s, y))) y--;
+    if (y < 0) return -1;
+    const char *t = row_text(s, y);
+    if (!strstr(t, "Esc to cancel") && !strstr(t, "esc to cancel")) return -1;
+    int options = 0;
+    bool selected = false;
+    for (int k = y - 1; k >= 0 && k >= y - HINT_SPAN; k--) {
+        if (option_x(s, k) < 0) continue;
+        options++;
+        if (row_at(s, k)[first_x(s, k)].cp == 0x276f) selected = true;
+    }
+    return options >= 2 && selected ? y : -1;
 }
 
-int cc_logview_tail(const char *raw, size_t len, int max_lines, char *out, size_t cap)
+/* The lowest rule within RULE_NEAR rows of the last drawn row, else -1. */
+static int rule_near_bottom(const scr_t *s)
 {
-    if (!out || !cap) return 0;
+    int last = s->rows - 1;
+    while (last >= 0 && first_x(s, last) < 0) last--;
+    for (int y = last; y >= 0 && y >= last - RULE_NEAR; y--)
+        if (is_rule(s, y)) return y;
+    return -1;
+}
+
+/* ------------------------------------------------------------ the tail */
+static int replay(vt_t *vt, const char *p, size_t n)
+{
+    for (size_t off = 0; off < n;) {
+        size_t k = n - off > FEED_CHUNK ? FEED_CHUNK : n - off;
+        vt_feed(vt, (const uint8_t *)p + off, k);
+        off += k;
+        if (vt_work(vt) > CC_LOGVIEW_WORK_MAX) return CC_LV_TOO_COSTLY;
+    }
+    return 0;
+}
+
+int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, char *out, size_t cap)
+{
+    if (!out || !cap) return CC_LV_NONE;
     out[0] = 0;
-    if (!raw || !len || max_lines <= 0) return 0;
+    if (!raw || !len || max_lines <= 0) return CC_LV_NONE;
     int cols, rows;
     size_t start;
     bool cleared;
-    cc_logview_size(raw, len, &cols, &rows, &start, &cleared);
-    scr_t s = { vt_create(cols, rows, 0), cols, rows };
+    if (!cc_logview_size(raw, len, &cols, &rows, &start, &cleared)) return CC_LV_TOO_BIG;
+    if (!cleared && !complete) return CC_LV_PARTIAL;   /* the front is gone and no clear since: sparse */
     size_t row_cap = (size_t)cols * 4 + 2, all_cap = (size_t)rows * (row_cap + 1) + 1;
-    char *rowbuf = ps_alloc(row_cap), *all = ps_alloc(all_cap);
-    int kept = 0;
-    if (!s.vt || !rowbuf || !all) goto done;
-    vt_feed(s.vt, (const uint8_t *)raw + start, len - start);
+    scr_t s = { vt_create(cols, rows, 0), cols, rows, heap_caps_malloc(row_cap, MALLOC_CAP_SPIRAM), row_cap };
+    char *all = heap_caps_malloc(all_cap, MALLOC_CAP_SPIRAM);
+    int kept = CC_LV_NO_MEMORY;
+    if (!s.vt || !s.buf || !all) goto done;
+    kept = replay(s.vt, raw + start, len - start);
+    if (kept) goto done;
 
-    int top = 0, end = input_box_top(&s);
-    bool dialog = end < 0;
-    if (dialog) {
-        if (!cleared) goto done;   /* a partial render with no input box: maybe only chrome */
-        end = rows;
-        while (end > 0 && (first_x(&s, end - 1) < 0 || is_rule(&s, end - 1))) end--;
+    /* where the conversation ends: the input box, else a dialog's hint, else a rule near the bottom */
+    int top = 0, hint = -1, end = input_box_top(&s);
+    bool dialog = false;
+    if (end < 0) {
+        hint = dialog_hint(&s);
+        if (hint >= 0) { dialog = true; end = hint + 1; }
+        else end = rule_near_bottom(&s);
     }
+    kept = CC_LV_NO_LAYOUT;
+    if (end < 0) goto done;
     while (top < end && top < 4 && first_x(&s, top) < 0) top++;
-    if (top < end && is_banner(&s, top)) {
-        while (top < end && is_banner(&s, top)) top++;
-    }
+    while (top < end && is_banner(&s, top)) top++;
     /* the screen's width, for telling a wrapped row: the widest frame rule, else the virtual width */
     int width = 0;
     for (int y = 0; y < rows; y++)
@@ -205,27 +303,30 @@ int cc_logview_tail(const char *raw, size_t len, int max_lines, char *out, size_
     int prev = -2;            /* the last kept row */
     bool after_spinner = false;
     int opt = -1;             /* a dialog's last option: the column of its number */
+    kept = 0;
     for (int y = top; y < end; y++) {
         int x0 = first_x(&s, y);
         if (x0 < 0 || is_rule(&s, y)) { after_spinner = false; continue; }
-        if (x0 > RIGHT_MIN_X && (x0 > width / 2 || row_width(&s, y) >= width - WRAP_SLACK))
-            continue;   /* right-aligned status: the effort, a usage notice, the update check */
+        if (x0 > RIGHT_MIN_X && row_width(&s, y) >= width - WRAP_SLACK)
+            continue;   /* right-aligned status, nothing at its left: the effort, a usage notice, the update check */
         if (is_spinner(&s, y)) { after_spinner = true; continue; }
         if (after_spinner && is_tip(&s, y)) continue;
         after_spinner = false;
-        size_t n = vt_row_text(s.vt, y, rowbuf, row_cap);
-        bool join = prev == y - 1 && x0 >= 1 && !is_tip(&s, y) &&
+        bool join = prev == y - 1 && x0 >= 1 && !starts_item(&s, y) &&
                     row_width(&s, prev) + 1 + first_word_width(&s, y) > width - WRAP_SLACK;
         int ox = option_x(&s, y);
-        if (dialog && !join && ox < 0 && opt >= 0 && x0 > opt) continue;   /* an option's description: the options fit */
+        if (dialog && y != hint && !join && ox < 0 && opt >= 0 && x0 > opt)
+            continue;   /* an option's description: the question and options fit the pane */
         if (!join) opt = ox;
-        const char *t = rowbuf;
+        bool space = !join || (!wide_at(&s, prev, row_width(&s, prev) - 1) && !wide_at(&s, y, x0));   /* CJK: none */
+        size_t n = strlen(row_text(&s, y));
+        const char *t = s.buf;
         if (join) {
             while (*t == ' ') t++;
-            n -= (size_t)(t - rowbuf);
+            n -= (size_t)(t - s.buf);
         }
         if (o + n + 2 >= all_cap) break;
-        if (join) all[o++] = ' ';
+        if (join) { if (space) all[o++] = ' '; }
         else if (kept++) all[o++] = '\n';
         memcpy(all + o, t, n);
         o += n;
@@ -256,10 +357,10 @@ int cc_logview_tail(const char *raw, size_t len, int max_lines, char *out, size_
     }
     memcpy(out, p, rest);
     out[rest] = 0;
-    kept = rest ? lines : 0;
+    kept = rest ? lines : CC_LV_NONE;
 done:
     vt_destroy(s.vt);
-    heap_caps_free(rowbuf);
+    heap_caps_free(s.buf);
     heap_caps_free(all);
     return kept;
 }

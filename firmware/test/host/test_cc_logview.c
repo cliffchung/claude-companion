@@ -7,6 +7,8 @@
 #include "unity.h"
 #include "companion/cc_logview.h"
 #include "companion/cc_cmd.h"
+#include "companion/cc_tailbuf.h"
+#include "term/vt.h"
 #include "ui/sessions_model.h"
 
 #define OUT_CAP 4096
@@ -35,7 +37,7 @@ static size_t load(const char *name)
 static int render(const char *name, int max_lines)
 {
     size_t n = load(name);
-    return cc_logview_tail(s_raw, n, max_lines, s_out, sizeof(s_out));
+    return cc_logview_tail(s_raw, n, true, max_lines, s_out, sizeof(s_out));
 }
 
 static void has(const char *needle)
@@ -73,13 +75,13 @@ static void test_size(void)
     int cols = 0, rows = 0;
     size_t start = 99;
     bool cleared = false;
-    cc_logview_size(s_raw, n, &cols, &rows, &start, &cleared);
+    TEST_ASSERT_TRUE(cc_logview_size(s_raw, n, &cols, &rows, &start, &cleared));
     TEST_ASSERT_EQUAL(208, cols);   /* the 200-column rules + 8 */
     TEST_ASSERT_EQUAL(50, rows);    /* ESC[50;1H parks the cursor on the last row */
     TEST_ASSERT_TRUE(cleared);
     TEST_ASSERT_EQUAL(0, memcmp(s_raw + start, "\x1b[2J", 4));
     /* nothing to go by: the defaults */
-    cc_logview_size("plain", 5, &cols, &rows, &start, &cleared);
+    TEST_ASSERT_TRUE(cc_logview_size("plain", 5, &cols, &rows, &start, &cleared));
     TEST_ASSERT_EQUAL(264, cols);
     TEST_ASSERT_EQUAL(60, rows);
     TEST_ASSERT_FALSE(cleared);
@@ -195,47 +197,300 @@ static void test_update_check_hidden(void)
     size_t n = load("logs_short.bin");
     const char frame[] = "\x1b[H\r\x1b[44B\x1b[176C\x1b[38;2;153;153;153mChecking for updates\xe2\x80\xa6\x1b[39m\x1b[50;1H\x1b[47;3H";
     memcpy(s_raw + n, frame, sizeof(frame));
-    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_raw, n + sizeof(frame) - 1, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_raw, n + sizeof(frame) - 1, true, 40, s_out, sizeof(s_out)));
     no_chrome();
     has(DOT " The short test reply is here.");
-    /* a short notice past the middle goes too */
-    const char frame2[] = "\x1b[H\r\x1b[43B\x1b[150CChecking for updates\xe2\x80\xa6";
+    /* as a live 155-column session draws it: ending 2 cells short of the rule (measured, positions only) */
+    const char frame2[] = "\x1b[H\r\x1b[43B\x1b[178CChecking for updates\xe2\x80\xa6";
     memcpy(s_raw + n, frame2, sizeof(frame2));
-    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_raw, n + sizeof(frame2) - 1, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_raw, n + sizeof(frame2) - 1, true, 40, s_out, sizeof(s_out)));
     no_chrome();
 }
 
-/* Without the full clear the screen is only what was redrawn since: with the input box found it is still read;
-   with neither (only footer redraws) it's 0, and the caller falls back. */
+/* Without the full clear the screen is only what was redrawn since: a stream whose front was cut is refused (the
+   caller falls back), however much of it is left; the same bytes from the session's start render. */
 static void test_partial(void)
 {
     size_t n = load("logs_short.bin");
+    TEST_ASSERT_EQUAL(0, memcmp(s_raw + 4, "\x1b[2J", 4));
+    TEST_ASSERT_EQUAL(CC_LV_PARTIAL, cc_logview_tail(s_raw + 8, n - 8, false, 40, s_out, sizeof(s_out)));   /* past it */
+    TEST_ASSERT_EQUAL_STRING("", s_out);
     const char *footer = strstr(s_raw + 100, "\x1b[50;1H\x1b[47;3H");   /* after the first full frame */
     TEST_ASSERT_NOT_NULL(footer);
     size_t at = (size_t)(footer - s_raw);
-    TEST_ASSERT_EQUAL(0, cc_logview_tail(s_raw + at, n - at, 40, s_out, sizeof(s_out)));
-    TEST_ASSERT_EQUAL_STRING("", s_out);
-    /* the first bytes cut away (as a 256 KB tail of a longer stream would): no clear, but the input box is there */
-    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_raw + 4, n - 4, 40, s_out, sizeof(s_out)));
-    no_chrome();
+    TEST_ASSERT_EQUAL(CC_LV_PARTIAL, cc_logview_tail(s_raw + at, n - at, false, 40, s_out, sizeof(s_out)));
+    /* a cut front but a clear inside: everything after it is there */
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_raw, n, false, 40, s_out, sizeof(s_out)));
 }
 
 static void test_cap_and_args(void)
 {
     size_t n = load("logs_long.bin");
     char small[64];
-    int k = cc_logview_tail(s_raw, n, 40, small, sizeof(small));
+    int k = cc_logview_tail(s_raw, n, true, 40, small, sizeof(small));
     TEST_ASSERT_EQUAL(1, k);   /* the end of the last paragraph, from a character start */
     TEST_ASSERT_TRUE(strlen(small) <= 63 && strlen(small) > 40);
     TEST_ASSERT_TRUE(((unsigned char)small[0] & 0xc0) != 0x80);
     TEST_ASSERT_EQUAL_STRING("remarkable accuracy.", small + strlen(small) - 20);
-    TEST_ASSERT_EQUAL(0, cc_logview_tail(NULL, 5, 40, small, sizeof(small)));
+    TEST_ASSERT_EQUAL(0, cc_logview_tail(NULL, 5, true, 40, small, sizeof(small)));
     TEST_ASSERT_EQUAL_STRING("", small);
-    TEST_ASSERT_EQUAL(0, cc_logview_tail(s_raw, 0, 40, small, sizeof(small)));
-    TEST_ASSERT_EQUAL(0, cc_logview_tail(s_raw, n, 0, small, sizeof(small)));
-    TEST_ASSERT_EQUAL(0, cc_logview_tail(s_raw, n, 40, NULL, 10));
-    TEST_ASSERT_EQUAL(0, cc_logview_tail("\x1b[2J\x1b[H", 7, 40, small, sizeof(small)));   /* an empty screen */
-    TEST_ASSERT_EQUAL(0, cc_logview_tail("\xe2\x94\x80\xe2", 4, 40, small, sizeof(small)));   /* cut mid-character */
+    TEST_ASSERT_EQUAL(0, cc_logview_tail(s_raw, 0, true, 40, small, sizeof(small)));
+    TEST_ASSERT_EQUAL(0, cc_logview_tail(s_raw, n, true, 0, small, sizeof(small)));
+    TEST_ASSERT_EQUAL(0, cc_logview_tail(s_raw, n, true, 40, NULL, 10));
+    TEST_ASSERT_EQUAL(CC_LV_NO_LAYOUT, cc_logview_tail("\x1b[2J\x1b[H", 7, true, 40, small, sizeof(small)));   /* empty */
+    TEST_ASSERT_TRUE(cc_logview_tail("\xe2\x94\x80\xe2", 4, true, 40, small, sizeof(small)) <= 0);   /* cut mid-character */
+}
+
+/* ------------------------------------------------------------ the stream since its latest clear (I1, I2) */
+static char s_ring[512 * 1024];
+static char s_big[2 * 1024 * 1024];
+
+/* Feeds n bytes of p into a tail buffer in chunks of `chunk` (512 as cc_link reads them; 3 splits every clear). */
+static size_t tb_run(cc_tailbuf_t *t, const char *p, size_t n, size_t chunk)
+{
+    for (size_t off = 0; off < n; off += chunk) cc_tailbuf_put(t, p + off, n - off < chunk ? n - off : chunk);
+    return cc_tailbuf_finish(t);
+}
+
+/* 1.5 MB of older frames (no clear) before the fixture's clear: only the fixture's bytes are left, and they render. */
+static void test_tailbuf_padding_before_clear(void)
+{
+    size_t n = load("logs_short.bin");
+    size_t pad = 1536 * 1024;
+    for (size_t i = 0; i < pad; i++) s_big[i] = (i % 64 == 63) ? '\r' : (char)('a' + i % 26);
+    memcpy(s_big + pad, s_raw, n);
+    for (size_t chunk = 3; chunk <= 512; chunk += 509) {
+        cc_tailbuf_t t;
+        cc_tailbuf_init(&t, s_ring, sizeof(s_ring), true);
+        size_t len = tb_run(&t, s_big, pad + n, chunk);
+        TEST_ASSERT_FALSE(t.dropped);   /* nothing since the clear was lost */
+        TEST_ASSERT_TRUE(t.cleared);
+        size_t clr = (size_t)(strstr(s_raw, "\x1b[2J") - s_raw);
+        TEST_ASSERT_EQUAL(n - clr, len);
+        TEST_ASSERT_EQUAL(0, memcmp(s_ring, s_raw + clr, len));
+        TEST_ASSERT_EQUAL(2, cc_logview_tail(s_ring, len, !t.dropped, 40, s_out, sizeof(s_out)));
+        has(DOT " The short test reply is here.");
+    }
+}
+
+/* A clear, then more frames than the buffer holds: the front since the clear is gone, so the screen is refused. */
+static void test_tailbuf_clear_then_overflow(void)
+{
+    size_t n = load("logs_short.bin");
+    memcpy(s_big, s_raw, n);
+    /* footer-only redraws, as a long-running session's spinner adds them */
+    const char frame[] = "\x1b[H\r\x1b[43B\x1b[38;2;215;119;87m\xe2\x9c\xbb\x1b[39m\x1b[50;1H\x1b[47;3H";
+    size_t o = n;
+    while (o + sizeof(frame) < 1024 * 1024) { memcpy(s_big + o, frame, sizeof(frame) - 1); o += sizeof(frame) - 1; }
+    cc_tailbuf_t t;
+    cc_tailbuf_init(&t, s_ring, sizeof(s_ring), true);
+    size_t len = tb_run(&t, s_big, o, 512);
+    TEST_ASSERT_TRUE(t.dropped);
+    TEST_ASSERT_EQUAL(sizeof(s_ring) - 1, len);
+    TEST_ASSERT_NULL(strstr(s_ring, "\x1b[2J"));
+    TEST_ASSERT_EQUAL(0, memcmp(s_ring + len - (sizeof(frame) - 1), frame, sizeof(frame) - 1));   /* the newest, in order */
+    TEST_ASSERT_EQUAL(CC_LV_PARTIAL, cc_logview_tail(s_ring, len, !t.dropped, 40, s_out, sizeof(s_out)));
+    /* a later clear starts it again: complete once more */
+    cc_tailbuf_put(&t, s_raw, n);
+    len = cc_tailbuf_finish(&t);
+    TEST_ASSERT_FALSE(t.dropped);
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_ring, len, !t.dropped, 40, s_out, sizeof(s_out)));
+}
+
+/* No clear at all and the front cut (or the plain newest-bytes mode): dropped, refused. Whole and short: renders. */
+static void test_tailbuf_no_clear(void)
+{
+    size_t n = load("logs_short.bin");
+    char *body = strstr(s_raw, "\x1b[2J") + 4;   /* the fixture without its clear */
+    size_t bn = n - (size_t)(body - s_raw);
+    cc_tailbuf_t t;
+    char small[4096];
+    cc_tailbuf_init(&t, small, sizeof(small), true);
+    size_t len = tb_run(&t, body, bn, 512);
+    TEST_ASSERT_TRUE(t.dropped && !t.cleared);
+    TEST_ASSERT_EQUAL(sizeof(small) - 1, len);
+    TEST_ASSERT_EQUAL(0, memcmp(small, body + bn - len, len));
+    TEST_ASSERT_EQUAL(CC_LV_PARTIAL, cc_logview_tail(small, len, !t.dropped, 40, s_out, sizeof(s_out)));
+    cc_tailbuf_init(&t, s_ring, sizeof(s_ring), true);
+    len = tb_run(&t, body, bn, 512);
+    TEST_ASSERT_FALSE(t.dropped);   /* the whole stream: from its start */
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(s_ring, len, !t.dropped, 40, s_out, sizeof(s_out)));
+    /* the plain mode ignores clears: the newest bytes, in order */
+    cc_tailbuf_init(&t, small, sizeof(small), false);
+    len = tb_run(&t, s_raw, n, 7);
+    TEST_ASSERT_TRUE(t.dropped);
+    TEST_ASSERT_EQUAL(0, memcmp(small, s_raw + n - len, len));
+    TEST_ASSERT_EQUAL(0, small[len]);
+    cc_tailbuf_init(&t, small, 1, true);   /* no room: nothing kept, still terminated */
+    TEST_ASSERT_EQUAL(0, tb_run(&t, "abc", 3, 1));
+    TEST_ASSERT_TRUE(t.dropped);
+}
+
+/* ------------------------------------------------------------ synthetic screens (M2-M6) */
+/* A 100-column screen: rows of text at given rows, an input box (rule, "❯", rule) and a footer under it. */
+static size_t synth(char *buf, const char *const *rows, int n, bool box, int box_row)
+{
+    size_t o = (size_t)sprintf(buf, "\x1b[2J\x1b[H");
+    for (int i = 0; i < n; i++)
+        if (rows[i]) o += (size_t)sprintf(buf + o, "\x1b[%d;1H%s", i + 1, rows[i]);
+    if (box) {
+        o += (size_t)sprintf(buf + o, "\x1b[%d;1H", box_row + 1);
+        for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+        o += (size_t)sprintf(buf + o, "\x1b[%d;1H" SEL " ", box_row + 2);
+        o += (size_t)sprintf(buf + o, "\x1b[%d;1H", box_row + 3);
+        for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+        o += (size_t)sprintf(buf + o, "\x1b[%d;3H12k tokens | Opus\x1b[%d;3Hauto mode on (shift+tab to cycle)", box_row + 4, box_row + 5);
+    }
+    return o;
+}
+
+static char s_line[400];
+static const char *full_line(void)   /* "  " + words to column 98 of 100 */
+{
+    strcpy(s_line, "  ");
+    while (strlen(s_line) < 92) strcat(s_line, "word ");
+    strcat(s_line, "endof");   /* 97 cells */
+    return s_line;
+}
+
+/* M2: a full-width row followed by a list item, a bullet or a marker isn't joined; a continuation is. */
+static void test_join_rules(void)
+{
+    char buf[8192];
+    const char *rows[] = { NULL, full_line(), "  1. Apple", "  2. Pear", NULL, full_line(), "  - a bullet",
+                           NULL, full_line(), "  continued here" };
+    size_t n = synth(buf, rows, 10, true, 14);
+    TEST_ASSERT_GREATER_THAN(0, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    has("endof\n  1. Apple\n  2. Pear\n");
+    has("endof\n  - a bullet\n");
+    has("endof continued here");
+    /* the reply ending in its list: the options line sees both */
+    const char *rows2[] = { NULL, DOT " Pick one, said in a sentence long enough to fill the whole row of this screen: here",
+                            "  1. Apple", "  2. Pear" };
+    n = synth(buf, rows2, 4, true, 10);
+    TEST_ASSERT_GREATER_THAN(0, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL(2, sm_tail_options(s_out));
+}
+
+/* M2: a CJK paragraph the TUI wrapped joins without a space. */
+static void test_join_cjk(void)
+{
+    char buf[8192], a[400] = "  ", b[64];
+    for (int i = 0; i < 48; i++) strcat(a, "\xe6\x97\xa5");   /* 日 x 48 = 96 cells + 2 */
+    snprintf(b, sizeof(b), "  \xe6\x9c\xac\xe8\xaa\x9e\xe3\x80\x82");   /* 本語。 */
+    const char *rows[] = { NULL, a, b };
+    size_t n = synth(buf, rows, 3, true, 6);
+    TEST_ASSERT_EQUAL(1, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    has("\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x80\x82");   /* 日本語。 */
+}
+
+/* M3: a draft taller than the old 16-row window still finds the input box; its rows don't show. */
+static void test_tall_draft(void)
+{
+    char buf[16384];
+    size_t o = synth(buf, (const char *const[]){ NULL, DOT " The reply above the draft." }, 2, false, 0);
+    o += (size_t)sprintf(buf + o, "\x1b[5;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[6;1H" SEL " draft line 0");
+    for (int r = 7; r < 30; r++) o += (size_t)sprintf(buf + o, "\x1b[%d;3Hdraft line %d", r, r - 6);
+    o += (size_t)sprintf(buf + o, "\x1b[30;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[31;3H12k tokens | Opus\x1b[32;3Hauto mode on");
+    TEST_ASSERT_EQUAL(1, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING(DOT " The reply above the draft.", s_out);
+}
+
+/* M3: no input box and no dialog: a rule near the bottom ends the view; with no such rule, no layout. */
+static void test_no_box(void)
+{
+    char buf[8192];
+    size_t o = synth(buf, (const char *const[]){ NULL, DOT " A reply.", NULL, "  More of it." }, 4, false, 0);
+    o += (size_t)sprintf(buf + o, "\x1b[10;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[11;1H> a changed prompt glyph\x1b[12;3H12k tokens | Opus");
+    TEST_ASSERT_EQUAL(2, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING(DOT " A reply.\n  More of it.", s_out);
+    o = synth(buf, (const char *const[]){ NULL, DOT " A reply.", "  12k tokens | Opus" }, 3, false, 0);
+    TEST_ASSERT_EQUAL(CC_LV_NO_LAYOUT, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    /* a selector whose "❯ 1." sits right under its own frame rule is a dialog, not an input box */
+    o = synth(buf, (const char *const[]){ NULL, DOT " Asking.", "Pick a fruit?" }, 3, false, 0);
+    o += (size_t)sprintf(buf + o, "\x1b[4;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[5;1H" SEL " 1. Apple\x1b[6;3H2. Pear\x1b[7;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[8;3H    Esc to cancel");
+    TEST_ASSERT_EQUAL(5, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    has("Pick a fruit?\n" SEL " 1. Apple\n  2. Pear\n      Esc to cancel");   /* the indented hint stays */
+    TEST_ASSERT_EQUAL(0, sm_tail_options(s_out));
+}
+
+/* M4: a reply's "* ", "· " or "✻ " rows and indented rows that don't reach the right edge survive. */
+static void test_lookalikes_survive(void)
+{
+    char buf[8192];
+    const char *rows[] = { NULL, "* Item one", "\xc2\xb7 a middle dot note", "\xe2\x9c\xbb Starred thought here",
+                           "\xe2\x9c\xbb Baked for 5s \xc2\xb7 done 8:29 PM", "\xc2\xb7 Computing\xe2\x80\xa6 (3s \xc2\xb7 esc to interrupt)",
+                           "                                        centred code, column 40" };
+    size_t n = synth(buf, rows, 7, true, 10);
+    TEST_ASSERT_EQUAL(4, cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING("* Item one\n\xc2\xb7 a middle dot note\n\xe2\x9c\xbb Starred thought here\n"
+                             "                                        centred code, column 40", s_out);
+}
+
+/* M5: a recording wider than 312 columns or taller than 160 rows is refused, not clamped. */
+static void test_too_big(void)
+{
+    char buf[8192];
+    size_t o = (size_t)sprintf(buf, "\x1b[2J\x1b[H\x1b[2;1H");
+    for (int i = 0; i < 313; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    TEST_ASSERT_FALSE(cc_logview_size(buf, o, NULL, NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL(CC_LV_TOO_BIG, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    o = (size_t)sprintf(buf, "\x1b[2J\x1b[H\x1b[161;1Hx");
+    TEST_ASSERT_EQUAL(CC_LV_TOO_BIG, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    o = (size_t)sprintf(buf, "\x1b[2J\x1b[H\x1b[160;312Hx");
+    TEST_ASSERT_TRUE(cc_logview_size(buf, o, NULL, NULL, NULL, NULL));
+}
+
+/* M6: a stream of scrolls costs a screen per sequence: the replay stops at its budget. Real streams are far below. */
+static void test_replay_budget(void)
+{
+    size_t o = (size_t)sprintf(s_big, "\x1b[2J\x1b[H\x1b[160;300H");
+    while (o + 8 < 512 * 1024) o += (size_t)sprintf(s_big + o, "\x1b[9S");
+    TEST_ASSERT_EQUAL(CC_LV_TOO_COSTLY, cc_logview_tail(s_big, o, true, 40, s_out, sizeof(s_out)));
+    o = (size_t)sprintf(s_big, "\x1b[2J\x1b[H\x1b[160;300H");
+    while (o + 8 < 512 * 1024) o += (size_t)sprintf(s_big + o, "\x1b[H\x1b[J");   /* erase below, from home */
+    TEST_ASSERT_EQUAL(CC_LV_TOO_COSTLY, cc_logview_tail(s_big, o, true, 40, s_out, sizeof(s_out)));
+    static const char *fx[] = { "logs_short.bin", "logs_long.bin", "logs_overflow.bin", "logs_perm.bin" };
+    for (size_t i = 0; i < 4; i++) {
+        size_t n = load(fx[i]);
+        int cols, rows;
+        size_t st;
+        cc_logview_size(s_raw, n, &cols, &rows, &st, NULL);
+        vt_t *vt = vt_create(cols, rows, 0);
+        vt_feed(vt, (const uint8_t *)s_raw + st, n - st);
+        TEST_ASSERT_TRUE(vt_work(vt) < 5 * (n - st));   /* at most 4 cells a byte on the live captures */
+        vt_destroy(vt);
+    }
+}
+
+/* M7: the alternate screen is made on its first use; a resize keeps it; both still work. */
+static void test_vt_lazy_alt(void)
+{
+    vt_t *vt = vt_create(20, 4, 0);
+    TEST_ASSERT_NOT_NULL(vt);
+    char t[256];
+    vt_feed(vt, (const uint8_t *)"main", 4);
+    vt_feed(vt, (const uint8_t *)"\x1b[?1049h\x1b[Halt", 14);
+    vt_screen_text(vt, t, sizeof(t));
+    TEST_ASSERT_EQUAL(0, strncmp(t, "alt\n", 4));
+    TEST_ASSERT_TRUE(vt_resize(vt, 30, 5));
+    vt_feed(vt, (const uint8_t *)"\x1b[?1049l", 8);
+    vt_screen_text(vt, t, sizeof(t));
+    TEST_ASSERT_EQUAL(0, strncmp(t, "main\n", 5));
+    TEST_ASSERT_FALSE(vt_resize(vt, 1, 1));   /* a bad size: the old screen stays */
+    TEST_ASSERT_EQUAL(30, vt_cols(vt));
+    TEST_ASSERT_FALSE(vt_resize(NULL, 30, 5));
+    vt_destroy(vt);
 }
 
 int main(void)
@@ -254,5 +509,16 @@ int main(void)
     RUN_TEST(test_update_check_hidden);
     RUN_TEST(test_partial);
     RUN_TEST(test_cap_and_args);
+    RUN_TEST(test_tailbuf_padding_before_clear);
+    RUN_TEST(test_tailbuf_clear_then_overflow);
+    RUN_TEST(test_tailbuf_no_clear);
+    RUN_TEST(test_join_rules);
+    RUN_TEST(test_join_cjk);
+    RUN_TEST(test_tall_draft);
+    RUN_TEST(test_no_box);
+    RUN_TEST(test_lookalikes_survive);
+    RUN_TEST(test_too_big);
+    RUN_TEST(test_replay_budget);
+    RUN_TEST(test_vt_lazy_alt);
     return UNITY_END();
 }

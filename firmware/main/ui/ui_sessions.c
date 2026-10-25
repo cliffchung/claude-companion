@@ -52,7 +52,7 @@ static const char *TAG = "sessions";
 #define SNAP_CAP         128
 #define MAX_ROWS         16
 #define TAIL_LINES       40      /* cc_logview_tail (or cc_log_tail) keeps this many lines; the wrap keeps what fits */
-#define LOGS_CAP         (256 * 1024)   /* `claude logs` output, newest bytes: PSRAM, only while a log job runs */
+#define LOGS_CAP         (512 * 1024)   /* `claude logs` since its latest clear: PSRAM, only while a log job runs */
 #define LOG_TEXT_CAP     4096
 #define WRAP_CAP         4096
 #define STATUS_CAP       512
@@ -371,13 +371,21 @@ static void run_job(const job_t *j)
         /* PSRAM, and only for this job: the raw output, and the conversation read off its rendered screen */
         char *raw = heap_caps_malloc(LOGS_CAP, MALLOC_CAP_SPIRAM), *view = heap_caps_malloc(LOG_TEXT_CAP, MALLOC_CAP_SPIRAM);
         const char *src = msg;
+        static int last_view = 1;   /* the last cc_logview_tail result logged: one line per change, never text */
+        if (!raw || !view) ESP_LOGW(TAG, "logs: no PSRAM for %u + %u bytes", (unsigned)LOGS_CAP, (unsigned)LOG_TEXT_CAP);
         if (raw && view && cc_cmd_logs(claude, j->id, cmd, sizeof(cmd))) {
-            esp_err_t e = cc_link_exec_tail(cmd, raw, LOGS_CAP, &status, msg, sizeof(msg), 10000);
+            /* the bytes since the stream's latest full clear: what its screen needs (cc_logview.h) */
+            esp_err_t e = cc_link_exec_screen(cmd, raw, LOGS_CAP, &status, msg, sizeof(msg), 10000);
             ok = (e == ESP_OK || e == ESP_ERR_INVALID_SIZE) && status == 0;
             if (ok) {
-                if (cc_logview_tail(raw, strlen(raw), TAIL_LINES, view, LOG_TEXT_CAP) > 0) {
+                size_t rl = strlen(raw);
+                int v = cc_logview_tail(raw, rl, e == ESP_OK, TAIL_LINES, view, LOG_TEXT_CAP);
+                if (v <= 0 && rl && v != last_view)
+                    ESP_LOGW(TAG, "logs: screen view %d (%u bytes%s)", v, (unsigned)rl, e == ESP_OK ? "" : ", front cut");
+                last_view = v;
+                if (v > 0) {
                     src = view;
-                } else {   /* no screen to read (a partial stream, no memory): the escape-stripping heuristic */
+                } else {   /* no screen to read (a cut stream, no memory, an unknown screen): the escape-stripping heuristic */
                     char *start = raw;
                     while ((*start & 0xC0) == 0x80) start++;   /* the tail may start mid-character */
                     cc_log_tail(start, TAIL_LINES);

@@ -489,6 +489,9 @@ esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, cha
              "  1. Amber\r\n  2. Green\r\n  3. Blue\r\n");
     return ESP_OK;
 }
+esp_err_t cc_link_exec_screen(const char *cmd, char *out, size_t cap, int *st, char *err, size_t ecap, int ms) {
+    return cc_link_exec_tail(cmd, out, cap, st, err, ecap, ms);   /* the stubs' streams fit: all of them is the tail */
+}
 esp_err_t cc_link_paste(const char *id, const char *t, char *err, size_t cap) { (void)id; (void)t; s_paste_calls++; if (cap) err[0] = 0; return ESP_OK; }
 static int s_check_calls;
 esp_err_t cc_link_check_live(const char *id, char *err, size_t cap) { (void)id; s_check_calls++; if (cap) err[0] = 0; return ESP_OK; }
@@ -689,6 +692,7 @@ static void terminal_spacing_check(void) {
     lv_obj_t *scr=ui_screen_base(); lv_screen_load(scr);
     fonts_set_term_line_height(32);
     vt_t *vt=vt_create(80,16,10);
+    assert(vt);
     term_view_t *tv=term_view_create(scr,vt,&g_term_font);
     lv_obj_set_size(term_view_obj(tv),960,512);
     int cols,rows;
@@ -761,6 +765,7 @@ static void terminal_art_check(void) {
     lv_obj_t *scr=ui_screen_base(); lv_screen_load(scr);
     fonts_set_term_line_height(32);
     vt_t *vt=vt_create(60,12,0);
+    assert(vt);
     term_view_t *tv=term_view_create(scr,vt,&g_term_font);
     lv_obj_set_size(term_view_obj(tv),720,408);
     const char *art="[⏵⏵] ASCII 日本語\r\n  ▐▛███▜▌\r\n ▝▜█████▛▘\r\n   ▘▘ ▝▝\r\n█████\r\n█████\r\n";
