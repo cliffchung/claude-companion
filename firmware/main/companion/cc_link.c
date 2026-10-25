@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "cc_link.h"
 #include "cc_tailbuf.h"
 #include "sys/boot_phase.h"
@@ -2169,6 +2170,7 @@ bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap)
     return false;
 }
 
+#if CONFIG_COMPANION_DEBUG_COMMANDS
 esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)
 {
     if (host_out && host_cap) host_out[0] = 0;
@@ -2182,6 +2184,7 @@ esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap)
     kick();
     return ESP_OK;
 }
+#endif
 
 /* Applies a change to s_park; logs and wakes the task when the parked state flips. */
 static void park_apply(void (*change)(cc_park_t *p, void *arg), void *arg, const char *why)

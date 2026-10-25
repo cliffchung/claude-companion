@@ -73,7 +73,7 @@ hf_deny_read_t ssh_host_keys_load(uint8_t out[HF_HOSTKEYS_MAX][32], int *n);
 void ssh_host_keys_add(const uint8_t hash[32]);
 void ssh_host_key_type_note(ssh_session session);
 /* Debug: overwrites the pin for host:port with a wrong hash, so the next connect sees a
-   changed key (`companion hostkey corrupt`). */
+   changed key (`companion hostkey corrupt`). Built only with CONFIG_COMPANION_DEBUG_COMMANDS. */
 bool ssh_known_host_set_debug(const char *host, int port);
 
 #ifdef __cplusplus

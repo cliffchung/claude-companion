@@ -181,3 +181,9 @@ CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y
 # assumes the router doesn't ACK an address that another device holds; many routers ACK a restored lease
 # without checking, so a device set statically to that address would go unnoticed (L32, review m1).
 CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y
+
+# ---- Claude Companion ----
+# Test-only console commands (companion hostkey corrupt, power bench, voice test, ...).
+# Off for anything you share. A development device can set
+# CONFIG_COMPANION_DEBUG_COMMANDS=y in its local sdkconfig (git-ignored).
+# CONFIG_COMPANION_DEBUG_COMMANDS is not set

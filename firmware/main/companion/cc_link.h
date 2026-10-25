@@ -74,7 +74,8 @@ esp_err_t cc_link_trust_host_key(const char *fp, char *fp_out, size_t fp_cap, in
    NVS: fine from the LVGL task, but not every frame. */
 bool cc_link_pinned_fingerprint(char *fp_out, size_t fp_cap);
 /* Debug (`companion hostkey corrupt`): overwrites the link's own pin with a wrong value and
-   reconnects, so the changed-key path shows without touching the Host. host_out gets host:port. */
+   reconnects, so the changed-key path shows without touching the Host. host_out gets host:port.
+   Built only with CONFIG_COMPANION_DEBUG_COMMANDS. */
 esp_err_t cc_link_debug_corrupt_host_key(char *host_out, size_t host_cap);
 /* Failed polls in a row while connected (0 when not connected); *too_big (may be NULL) is
    set when the last one failed because `agents` output didn't fit the poll buffer. */

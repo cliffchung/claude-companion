@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "hibernate.h"
 #include "sys/boot_phase.h"
 #include "sys/link_guard.h"
@@ -575,6 +576,7 @@ static void rails_print(void)
     }
 }
 
+#if CONFIG_COMPANION_DEBUG_COMMANDS
 static int rail_cmd(const char *name, const char *how)
 {
     bool on = strcmp(how, "on") == 0;
@@ -608,6 +610,7 @@ static bool parse_u32(const char *s, uint32_t *out)
     *out = (uint32_t)v;
     return true;
 }
+#endif
 
 int hibernate_console(int argc, char **argv)
 {
@@ -626,7 +629,9 @@ int hibernate_console(int argc, char **argv)
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "rails") == 0) { rails_print(); return 0; }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     if (argc == 4 && strcmp(argv[1], "rail") == 0) return rail_cmd(argv[2], argv[3]);
+#endif
     if (argc == 2 && strcmp(argv[1], "imu") == 0) {
         uint8_t id = 0, ctrl = 0, conf = 0;
         bool ok = imu_chip_id(&id) == ESP_OK && imu_reg_read(0x7D, &ctrl, 1) == ESP_OK && imu_reg_read(0x7C, &conf, 1) == ESP_OK;
@@ -635,10 +640,12 @@ int hibernate_console(int argc, char **argv)
                ctrl == 0 && (conf & 0x01) ? "yes" : "no", ctrl, conf);
         return 0;
     }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     if (argc == 3 && strcmp(argv[1], "imu") == 0 && strcmp(argv[2], "suspend") == 0) {
         printf("imu suspend: %s\n", esp_err_to_name(imu_suspend()));
         return 0;
     }
+#endif
     if (argc < 2 || strcmp(argv[1], "hib") != 0) return -1;
     if (argc == 2) {
         char b[48];
@@ -649,6 +656,7 @@ int hibernate_console(int argc, char **argv)
                (unsigned)(probe_s() ? probe_s() : HIB_POWER_PROBE_S));
         return 0;
     }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     if (argc == 5 && strcmp(argv[2], "probe") == 0) {
         uint32_t ps, pn;
         if (!parse_u32(argv[3], &ps) || !parse_u32(argv[4], &pn)) return 1;
@@ -657,11 +665,13 @@ int hibernate_console(int argc, char **argv)
         else printf("hib probe: every %u s (the default)\n", (unsigned)HIB_POWER_PROBE_S);
         return 0;
     }
+#endif
     if (argc == 3 && strcmp(argv[2], "backstop") == 0) {
         if (backstop_armed()) printf("hib backstop: %u s on each of the next %u hibernates\n", (unsigned)s_backstop.s, (unsigned)s_backstop.n);
         else printf("hib backstop: off\n");
         return 0;
     }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     if (argc == 5 && strcmp(argv[2], "backstop") == 0) {
         uint32_t bs, bn;
         if (!parse_u32(argv[3], &bs) || !parse_u32(argv[4], &bn) || (bn && !bs)) return 1;
@@ -713,5 +723,6 @@ int hibernate_console(int argc, char **argv)
         printf("hib test: still awake (the sleep failed)\n");
         return 1;
     }
+#endif
     return 1;
 }

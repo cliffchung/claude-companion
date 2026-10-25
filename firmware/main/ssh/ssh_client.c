@@ -221,6 +221,7 @@ bool ssh_known_host_forget(const char *host, int port)
     return had;
 }
 
+#if CONFIG_COMPANION_DEBUG_COMMANDS
 bool ssh_known_host_set_debug(const char *host, int port)
 {
     if (!host || !host[0]) return false;
@@ -231,6 +232,7 @@ bool ssh_known_host_set_debug(const char *host, int port)
     ESP_LOGW(TAG, "debug: host key pin for %s:%d set to a wrong value", host, port);
     return ok;
 }
+#endif
 
 /* ---- P4C-10: every key the companion link ever pinned (NVS "cc"/"hostkeys", n x 32 bytes, FIFO of 8) ----
    The read has three results (I-new-2): no list yet, a list, or an error (the namespace won't open, the blob is

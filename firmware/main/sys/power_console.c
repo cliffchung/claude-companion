@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "power_console.h"
 #include "sys/url_mask.h"
 #include <stdio.h>
@@ -33,14 +34,19 @@ static const char *src_name(power_src_t s)
 
 static int usage(void)
 {
-    printf("usage: power | power log on|off|status|dump|clear | power resets [clear] | "
-           "power bench start [fast]|status|report|abort | power light [test bind|user|reprobe | raw <mode> <bright> <r> <g> <b>] | "
-           "power go active|dim|off|radio-off|deep-idle|hibernate | "
+    printf("usage: power | power log on|off|status|dump|clear | power resets [clear] | power light | "
            "power set dim|off|sleep-usb|needs-wake|deep-idle|hibernate|radio-off|radio-after|checkin|hib-checkin <n> | "
-           "power checkin [rebind] | power checkin hibernate [keep|nokeep] [usb] [chain <n>] [exp <mask>] | power checkins | power phases [clear] | "
-           "power set defaults | power settings | power sim battery <pct|off> | power sim idle <s> | power sim touch [<x> <y>] | "
-           "power touch | power wakes | power hib [test timer|rtc|off|light [s] | test-wake <s> | backstop [<s> <n>] | probe <s> <n>] | power boot | "
-           "power rails | power rail speaker|camera|usb|ext5v on|off | power imu [suspend]\n");
+           "power checkin [rebind] | power checkins | power phases [clear] | "
+           "power set defaults | power settings | power touch | power wakes | power hib | power hib backstop | power boot | "
+           "power rails | power imu\n");
+#if CONFIG_COMPANION_DEBUG_COMMANDS
+    printf("debug: power bench start [fast]|status|report|abort | power light test bind|user|reprobe | "
+           "power light raw <mode> <bright> <r> <g> <b> | power go active|dim|off|radio-off|deep-idle|hibernate | "
+           "power checkin hibernate [keep|nokeep] [usb] [chain <n>] [exp <mask>] | "
+           "power sim battery <pct|off> | power sim idle <s> | power sim touch [<x> <y>] | "
+           "power hib test timer|rtc|off|light [s] | power hib test-wake <s> | power hib backstop <s> <n> | power hib probe <s> <n> | "
+           "power rail speaker|camera|usb|ext5v on|off | power imu suspend\n");
+#endif
     return 1;
 }
 
@@ -54,6 +60,7 @@ static bool parse_int(const char *s, int *out)
     return true;
 }
 
+#if CONFIG_COMPANION_DEBUG_COMMANDS
 static int cmd_go(const char *name)
 {
     static const struct { const char *n; power_state_t s; } k[] = {
@@ -70,6 +77,7 @@ static int cmd_go(const char *name)
     }
     return usage();
 }
+#endif
 
 /* The radio and the check-ins (Task 8): in Radio off and Deep idle, next-checkin=<s> and period=<min>. */
 static void radio_line(void)
@@ -88,6 +96,7 @@ static int cmd_checkin(int argc, char **argv)
 {
     if (argc == 2) { checkin_force(false); printf("checkin: one check-in now\n"); }
     else if (argc == 3 && strcmp(argv[2], "rebind") == 0) { checkin_force(true); printf("checkin: one check-in now, rebind forced\n"); }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     else if (argc >= 3 && argc <= 9 && strcmp(argv[2], "hibernate") == 0) {
         int force = 0;
         uint32_t chain = 0;
@@ -107,7 +116,9 @@ static int cmd_checkin(int argc, char **argv)
         boot_phase_chain_set(chain);
         checkin_hibernate_test(force);
         return 1;   /* only if the hibernate failed */
-    } else return usage();
+    }
+#endif
+    else return usage();
     power_state_t st = power_state();
     if (!(st == PS_RADIO_OFF || (st == PS_DEEP_IDLE && power_cfg(PCFG_RADIO_OFF))))
         printf("checkin: it runs once the radio is parked (radio-off, or deep-idle with radio-off 1); state=%s\n",
@@ -167,6 +178,7 @@ static int cmd_power(int argc, char **argv)
             else printf("a164: no answer\n");
             return 0;
         }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
         if (argc == 8 && strcmp(argv[2], "raw") == 0) {
             int v[5];
             for (int i = 0; i < 5; i++)
@@ -186,6 +198,7 @@ static int cmd_power(int argc, char **argv)
             printf("ok\n");
             return 0;
         }
+#endif
     } else if (strcmp(argv[1], "checkin") == 0) {
         return cmd_checkin(argc, argv);
     } else if (strcmp(argv[1], "phases") == 0 && argc <= 3) {
@@ -195,8 +208,10 @@ static int cmd_power(int argc, char **argv)
     } else if (strcmp(argv[1], "checkins") == 0 && argc == 2) {
         checkin_print();
         return 0;
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     } else if (strcmp(argv[1], "go") == 0 && argc == 3) {
         return cmd_go(argv[2]);
+#endif
     } else if (strcmp(argv[1], "set") == 0 && argc == 3 && strcmp(argv[2], "defaults") == 0) {
         power_settings_defaults();
         char b[320];
@@ -217,6 +232,7 @@ static int cmd_power(int argc, char **argv)
         power_settings_text(b, sizeof(b));
         printf("%s\n", b);
         return 0;
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     } else if (strcmp(argv[1], "sim") == 0 && argc >= 3) {
         int n;
         if (strcmp(argv[2], "touch") == 0 && argc == 3) {
@@ -249,6 +265,7 @@ static int cmd_power(int argc, char **argv)
             printf("sim idle: +%ds\n", n);
             return 0;
         }
+#endif
     } else if (strcmp(argv[1], "touch") == 0 && argc == 2) {
         char b[160];
         power_touch_text(b, sizeof(b));
@@ -257,6 +274,7 @@ static int cmd_power(int argc, char **argv)
     } else if (strcmp(argv[1], "wakes") == 0 && argc == 2) {
         power_wakes_print();
         return 0;
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     } else if (strcmp(argv[1], "bench") == 0 && argc >= 3) {
         if (strcmp(argv[2], "start") == 0 && argc <= 4) {
             if (argc == 4 && strcmp(argv[3], "fast") != 0) return usage();
@@ -266,6 +284,7 @@ static int cmd_power(int argc, char **argv)
         if (argc == 3 && strcmp(argv[2], "status") == 0) { power_bench_status(); return 0; }
         if (argc == 3 && strcmp(argv[2], "report") == 0) { power_bench_report(); return 0; }
         if (argc == 3 && strcmp(argv[2], "abort") == 0) { power_bench_abort(); return 0; }
+#endif
     }
     return usage();
 }
@@ -348,10 +367,13 @@ void power_console_init(void)
     debug_console_register(&clk);
     const esp_console_cmd_t cmd = {
         .command = "power",
-        .help = "power | log on|off|status|dump|clear | resets [clear] | bench start [fast]|status|report|abort | "
-                "light [test bind|user|reprobe|raw m b r g b] | go <state> | set <name> <n> | set defaults | settings | "
-                "checkin [rebind] | checkin hibernate [keep|nokeep] | checkins | "
-                "sim battery <pct|off> | sim idle <s> | sim touch [x y] | touch | wakes | hib ... | boot | rails | rail <n> on|off | imu",
+        .help = "power | log on|off|status|dump|clear | resets [clear] | light | set <name> <n> | set defaults | settings | "
+                "checkin [rebind] | checkins | phases [clear] | touch | wakes | hib | hib backstop | boot | rails | imu"
+#if CONFIG_COMPANION_DEBUG_COMMANDS
+                " | debug: bench start [fast]|status|report|abort | light test|raw | go <state> | checkin hibernate | "
+                "sim battery|idle|touch | hib test|test-wake|backstop <s> <n>|probe | rail <n> on|off | imu suspend"
+#endif
+                ,
         .func = cmd_power,
     };
     debug_console_register(&cmd);

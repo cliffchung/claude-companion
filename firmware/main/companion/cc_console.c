@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "cc_link.h"
 #include "cc_cmd.h"
 #include "cc_sessions.h"
@@ -26,6 +27,18 @@
  * Everything that reaches the Host goes through cc_link and a cc_cmd_* builder. */
 
 #define SNAP_CAP 128
+
+#if CONFIG_COMPANION_DEBUG_COMMANDS
+#define DBG_WATCH "|test-fallback"
+#define DBG_WIFI "wifi test drop | "
+#define DBG_WIFI_HELP " | debug: wifi test drop"
+#define DBG_COMPANION " | debug: takeover <id> | hostcache set <ip> | watch test-fallback | hostkey corrupt | kick on|off | voice-upload-test <kb> [delay-ms]"
+#else
+#define DBG_WATCH ""
+#define DBG_WIFI ""
+#define DBG_WIFI_HELP ""
+#define DBG_COMPANION ""
+#endif
 #define LOGS_CAP (16 * 1024)
 
 static const char *state_name(cc_state_t s)
@@ -54,6 +67,9 @@ static char *join_args(int argc, char **argv, int from)
     return s;
 }
 
+#if CONFIG_COMPANION_DEBUG_COMMANDS
+/* Test-only commands (CONFIG_COMPANION_DEBUG_COMMANDS, off by default): takeover, voice-upload-test,
+   hostcache set, watch test-fallback, hostkey corrupt, kick, wifi test drop. */
 static char s_takeover_id[16];
 static void takeover_async(void *arg)
 {
@@ -111,6 +127,7 @@ static int voice_upload_test(int argc, char **argv)
     printf("voice-upload-test: %d KB started\n", kb);
     return 0;
 }
+#endif
 
 static int cmd_companion(int argc, char **argv)
 {
@@ -135,7 +152,9 @@ static int cmd_companion(int argc, char **argv)
         printf("whisper %s, model %s\n", cc_settings_whisper_path(w, sizeof(w)), cc_settings_whisper_model(m, sizeof(m)));
         return 0;
     }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "voice-upload-test") == 0) return voice_upload_test(argc, argv);
+#endif
     if (argc >= 3 && strcmp(argv[1], "host") == 0) {
         char *name = join_args(argc, argv, 2);
         if (!name) return 1;
@@ -170,6 +189,7 @@ static int cmd_companion(int argc, char **argv)
                ts[0] ? ts : "none", tailscale_enabled() ? "on" : "off");
         return 0;
     }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     if (argc == 3 && strcmp(argv[1], "takeover") == 0) {
         /* debug: open a companion-test-* session's take-over the way Ctrl+O does, for the timing */
         if (!cc_id_valid(argv[2])) { printf("takeover: bad id\n"); return 1; }
@@ -182,6 +202,7 @@ static int cmd_companion(int argc, char **argv)
         printf("hostcache: %s\n", cc_link_host_cache_test_set(argv[3]) ? "set (RAM only; reconnect to use it)" : "refused");
         return 0;
     }
+#endif
     if ((argc == 2 || argc == 3) && strcmp(argv[1], "hostcache") == 0) {
         if (argc == 3 && strcmp(argv[2], "on") == 0) cc_link_host_cache_enable(true);
         else if (argc == 3 && strcmp(argv[2], "off") == 0) cc_link_host_cache_enable(false);
@@ -217,12 +238,15 @@ static int cmd_companion(int argc, char **argv)
         char st[CC_STATUS_MAX];
         if (strcmp(argv[2], "on") == 0) cc_link_watch_enable(true);
         else if (strcmp(argv[2], "off") == 0) cc_link_watch_enable(false);
+#if CONFIG_COMPANION_DEBUG_COMMANDS
         else if (strcmp(argv[2], "test-fallback") == 0) {
             cc_link_watch_test_fallback();
             printf("watch: the next start gives up on its banner after 1 ms\n");
             return 0;
-        } else if (strcmp(argv[2], "status") != 0) {
-            printf("usage: companion watch on|off|status|test-fallback\n");
+        }
+#endif
+        else if (strcmp(argv[2], "status") != 0) {
+            printf("usage: companion watch on|off|status" DBG_WATCH "\n");
             return 1;
         }
         printf("%s\n", cc_watch_status_text(st, sizeof(st)));
@@ -236,6 +260,7 @@ static int cmd_companion(int argc, char **argv)
         else printf("No Host set up\n");
         return e == ESP_OK || e == ESP_ERR_TIMEOUT ? 0 : 1;
     }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     if (argc == 3 && strcmp(argv[1], "hostkey") == 0 && strcmp(argv[2], "corrupt") == 0) {
         /* debug: shows the changed-key path without touching the Host */
         char hp[160];
@@ -248,6 +273,7 @@ static int cmd_companion(int argc, char **argv)
         printf("companion: kick a handshake after a failed connect: %s\n", cc_link_kick_on() ? "on" : "off");
         return 0;
     }
+#endif
     if (argc == 2 && strcmp(argv[1], "reconnect-log") == 0) {
         char *b = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
         if (!b) return 1;
@@ -257,9 +283,14 @@ static int cmd_companion(int argc, char **argv)
     }
     printf("usage: companion host <server name> | companion claude-path <path> | companion status |\n"
            "       companion server-host <host> [fallback-ip|none] | companion resolve <host> |\n"
-           "       companion watch on|off|status|test-fallback | companion hostkey forget|corrupt |\n"
-           "       companion kick on|off | companion reconnect-log | companion voice-check |\n"
-           "       companion voice-path|voice-model <path> | companion voice-paths | companion voice-upload-test <kb> [delay-ms]\n");
+           "       companion hostcache [on|off|clear] | companion watch on|off|status | companion hostkey forget |\n"
+           "       companion reconnect-log | companion voice-check |\n"
+           "       companion voice-path|voice-model <path> | companion voice-paths\n"
+#if CONFIG_COMPANION_DEBUG_COMMANDS
+           "debug: companion takeover <id> | companion hostcache set <ip> | companion watch test-fallback |\n"
+           "       companion hostkey corrupt | companion kick on|off | companion voice-upload-test <kb> [delay-ms]\n"
+#endif
+           );
     return 1;
 }
 
@@ -380,12 +411,14 @@ static int cmd_wifi(int argc, char **argv)
         printf("wifi: no saved network%s%s\n", want[0] ? " named " : "", want);
         return 1;
     }
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     if (argc == 3 && strcmp(argv[1], "test") == 0 && strcmp(argv[2], "drop") == 0) {
         /* debug: a drop the user didn't ask for, so the background reconnect takes it */
         wifi_mgr_test_drop();
         printf("wifi: test drop\n");
         return 0;
     }
+#endif
     if (argc == 2 && strcmp(argv[1], "status") == 0) {
         char rc[96], ip[20];
         wifi_mgr_reconnect_text(rc, sizeof(rc));
@@ -423,7 +456,7 @@ static int cmd_wifi(int argc, char **argv)
         printf("wifi static: %s\n", ok ? "off (from the next join)" : "not saved (still on)");
         return ok ? 0 : 1;
     }
-    printf("usage: wifi leave | wifi join [ssid] | wifi status | wifi test drop | "
+    printf("usage: wifi leave | wifi join [ssid] | wifi status | " DBG_WIFI
            "wifi static [off | <ip/prefix> <gw> [dns]]   (join uses the saved password)\n");
     return 1;
 }
@@ -470,11 +503,11 @@ static int cmd_ts(int argc, char **argv)
 void cc_console_init(void)
 {
     const esp_console_cmd_t cmds[] = {
-        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | server-host <host> [fallback-ip|none] | resolve <host> | hostcache [on|off|clear|set <ip>] | watch on|off|status|test-fallback | hostkey forget | hostkey corrupt (debug) | kick on|off | reconnect-log | voice-check | voice-path|voice-model <path> | voice-paths | voice-upload-test <kb> [delay-ms]", .func = cmd_companion },
+        { .command = "companion", .help = "companion host <server name> | claude-path <path> | status | server-host <host> [fallback-ip|none] | resolve <host> | hostcache [on|off|clear] | watch on|off|status | hostkey forget | reconnect-log | voice-check | voice-path|voice-model <path> | voice-paths" DBG_COMPANION, .func = cmd_companion },
         { .command = "sessions", .help = "List Claude sessions from the last poll: <STATE> <id> <repo> <name>", .func = cmd_sessions },
         { .command = "reply", .help = "reply <id> <text...>: type a quick answer into a running background session", .func = cmd_reply },
         { .command = "logs", .help = "logs <id>: recent output of a session, ANSI stripped", .func = cmd_logs },
-        { .command = "wifi", .help = "wifi leave | wifi join [ssid] | wifi status | wifi test drop (debug)", .func = cmd_wifi },
+        { .command = "wifi", .help = "wifi leave | wifi join [ssid] | wifi status | wifi static [off | <ip/prefix> <gw> [dns]]" DBG_WIFI_HELP, .func = cmd_wifi },
         { .command = "ts", .help = "ts on | ts off | ts [status] | ts term-test <host>: the Tailscale switch (saved; sticky across boots and wakes)", .func = cmd_ts },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) debug_console_register(&cmds[i]);

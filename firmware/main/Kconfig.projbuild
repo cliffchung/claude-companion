@@ -1,0 +1,26 @@
+menu "Claude Companion"
+
+    config COMPANION_DEBUG_COMMANDS
+        bool "Test-only serial console commands"
+        default n
+        help
+            Adds console commands that exist only for testing on the bench. Some of
+            them change state in ways a normal user never should:
+
+              companion hostkey corrupt      overwrites the Host's host-key pin
+              companion takeover | kick | hostcache set | watch test-fallback
+              companion voice-upload-test
+              wifi test drop
+              power bench | sim | go | light test|raw | checkin hibernate
+              power hib test|test-wake|probe|backstop <s> <n> | rail <n> on|off | imu suspend
+              voice rec | test | test-bg | test-short | test-cancel
+
+            The everyday commands (help, sshkey, companion status and the Host
+            settings, sessions, logs, reply, wifi, ts, power status and settings,
+            clock, ui, key, screenshot, reboot) are always built.
+
+            Leave this off for a build you give to someone else. Turn it on in
+            your local sdkconfig (idf.py menuconfig, or CONFIG_COMPANION_DEBUG_COMMANDS=y)
+            for a development device.
+
+endmenu

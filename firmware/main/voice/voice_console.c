@@ -1,5 +1,6 @@
 /* The `voice` console command (Plan 5 Tasks 5 and 6). Prints levels, lengths, durations and outcomes only: no
    sample and no transcript text reaches the console (rule 3 as Plan 5 extends it). */
+#include "sdkconfig.h"
 #include "voice/voice_console.h"
 #include <stdio.h>
 #include <string.h>
@@ -23,10 +24,33 @@
 
 static int usage(void)
 {
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     printf("usage: voice rec <1-10 s> [gain_db] | voice status | voice test <1-30 s> | voice test-short | "
            "voice test-cancel <s> | voice test-bg <1-30 s>\n");
+#else
+    printf("usage: voice status\n");
+#endif
     return 1;
 }
+
+static int cmd_status(void)
+{
+    voice_status_t st;
+    voice_status(&st);
+    printf("voice: %s, mic %s, tasks %d, hold %s, result %s\n", voice_phase_name(st.phase),
+           mic_is_open() ? "open" : "closed", voice_task_count(), voice_hold_on() ? "on" : "off",
+           voice_result_pending() ? "pending" : "none");
+    printf("voice: psram free %u B, internal free %u B\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    if (voice_stack_free() >= 0) printf("voice: last voice task stack free min %d B\n", voice_stack_free());
+    if (st.phase != VOICE_IDLE)
+        printf("voice: elapsed %d ms, meter %d, at_limit %d, transcribing %d ms, cancelled %d\n", st.elapsed_ms,
+               st.meter, st.at_limit, st.transcribing_ms, st.cancelled);
+    return 0;
+}
+
+#if CONFIG_COMPANION_DEBUG_COMMANDS
+/* The recording tests below are test-only (CONFIG_COMPANION_DEBUG_COMMANDS, off by default). */
 
 static bool parse_int(const char *s, int lo, int hi, int *out)
 {
@@ -99,22 +123,6 @@ static int cmd_rec(int secs, int gain)
     printf("rec peak=%d dBFS, clipped %u samples\n", peak ? vr_rms_dbfs(&pk, 1) : -96, clipped);
     printf("mic: closed\n");
     return ok;
-}
-
-static int cmd_status(void)
-{
-    voice_status_t st;
-    voice_status(&st);
-    printf("voice: %s, mic %s, tasks %d, hold %s, result %s\n", voice_phase_name(st.phase),
-           mic_is_open() ? "open" : "closed", voice_task_count(), voice_hold_on() ? "on" : "off",
-           voice_result_pending() ? "pending" : "none");
-    printf("voice: psram free %u B, internal free %u B\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    if (voice_stack_free() >= 0) printf("voice: last voice task stack free min %d B\n", voice_stack_free());
-    if (st.phase != VOICE_IDLE)
-        printf("voice: elapsed %d ms, meter %d, at_limit %d, transcribing %d ms, cancelled %d\n", st.elapsed_ms,
-               st.meter, st.at_limit, st.transcribing_ms, st.cancelled);
-    return 0;
 }
 
 /* Waits for the result (or for the voice task to end without one), prints the outcome and its length, zeroes it. */
@@ -215,21 +223,25 @@ static int cmd_test_cancel(int secs)
     return rc;
 }
 
+#endif
+
 static int cmd_voice(int argc, char **argv)
 {
     if (argc < 2) return usage();
     const char *v = argv[1];
+    if (strcmp(v, "status") == 0 && argc == 2) return cmd_status();
+#if CONFIG_COMPANION_DEBUG_COMMANDS
     int n = 0, g = MIC_GAIN_DB;
     if (strcmp(v, "rec") == 0) {
         if (argc < 3 || argc > 4 || !parse_int(argv[2], 1, 10, &n)) return usage();
         if (argc == 4 && !parse_int(argv[3], 0, 37, &g)) return usage();
         return cmd_rec(n, g);
     }
-    if (strcmp(v, "status") == 0 && argc == 2) return cmd_status();
     if (strcmp(v, "test") == 0 && argc == 3 && parse_int(argv[2], 1, VR_MAX_S, &n)) return cmd_test(n);
     if (strcmp(v, "test-bg") == 0 && argc == 3 && parse_int(argv[2], 1, VR_MAX_S, &n)) return cmd_test_bg(n);
     if (strcmp(v, "test-short") == 0 && argc == 2) return cmd_test_short();
     if (strcmp(v, "test-cancel") == 0 && argc == 3 && parse_int(argv[2], 0, VR_MAX_S, &n)) return cmd_test_cancel(n);
+#endif
     return usage();
 }
 
@@ -237,8 +249,12 @@ void voice_console_init(void)
 {
     const esp_console_cmd_t cmd = {
         .command = "voice",
-        .help = "voice rec <1-10 s> [gain_db] | status | test <1-30 s> | test-short | test-cancel <s> | test-bg <1-30 s> "
+#if CONFIG_COMPANION_DEBUG_COMMANDS
+        .help = "voice status | debug: rec <1-10 s> [gain_db] | test <1-30 s> | test-short | test-cancel <s> | test-bg <1-30 s> "
                 "(levels, lengths and outcomes only)",
+#else
+        .help = "voice status: the voice input state",
+#endif
         .func = cmd_voice,
     };
     debug_console_register(&cmd);
