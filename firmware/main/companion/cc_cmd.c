@@ -374,7 +374,7 @@ static size_t utf8_seq(const unsigned char *p, unsigned long *cp)
     return n;
 }
 
-size_t cc_voice_type_build(const char *text, bool bracketed, char *out, size_t cap)
+size_t cc_voice_type_build_ex(const char *text, bool bracketed, bool join, char *out, size_t cap)
 {
     static const char start[] = "\x1b[200~", end[] = "\x1b[201~";
     const size_t pre = bracketed ? sizeof(start) - 1 : 0, post = bracketed ? sizeof(end) - 1 : 0;
@@ -394,6 +394,8 @@ size_t cc_voice_type_build(const char *text, bool bracketed, char *out, size_t c
             continue;
         }
         if (cp < 0x20 || cp == 0x7f || (cp >= 0x80 && cp <= 0x9f)) { p += len; continue; }   /* C0, DEL, C1 */
+        if (o == pre && join && ((cp >= '0' && cp <= '9') || (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')))
+            space = true;   /* joins an earlier dictation */
         size_t need = (space ? 1 : 0) + len;
         if (o + need + post + 1 > cap) { out[0] = 0; return 0; }
         if (space) out[o++] = ' ';
@@ -410,6 +412,11 @@ size_t cc_voice_type_build(const char *text, bool bracketed, char *out, size_t c
     }
     out[o] = 0;
     return o;
+}
+
+size_t cc_voice_type_build(const char *text, bool bracketed, char *out, size_t cap)
+{
+    return cc_voice_type_build_ex(text, bracketed, false, out, cap);
 }
 
 static char lower(char c)

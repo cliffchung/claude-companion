@@ -358,6 +358,53 @@ static void test_voice_type_empty_and_cap(void)
     TEST_ASSERT_EQUAL_UINT8(0, o[0]);
 }
 
+/* Review M5: every UTF-8 C1 (U+0080..U+009F, NEL included) is dropped, not turned into a space; so is anything past
+   U+10FFFF. */
+static void test_voice_type_utf8_c1_and_range(void)
+{
+    char o[64], in[16];
+    for (int cp = 0x80; cp <= 0x9f; cp++) {
+        snprintf(in, sizeof(in), "a%c%cb", (char)0xc2, (char)cp);
+        size_t n = cc_voice_type_build(in, true, o, sizeof(o));
+        TEST_ASSERT_EQUAL_UINT(14, n);
+        TEST_ASSERT_EQUAL_MEMORY(PS "ab" PE, o, n);
+        assert_typed_safe(o, n, true);
+        for (size_t i = 0; i < n; i++) TEST_ASSERT_FALSE((unsigned char)o[i] == 0xc2);
+    }
+    TEST_ASSERT_EQUAL_UINT(2, cc_voice_type_build("a\xc2\x85" "b", false, o, sizeof(o)));   /* NEL: no space */
+    TEST_ASSERT_EQUAL_STRING("ab", o);
+    TEST_ASSERT_EQUAL_UINT(2, cc_voice_type_build("a\xf4\x90\x80\x80" "b", false, o, sizeof(o)));   /* U+110000 */
+    TEST_ASSERT_EQUAL_STRING("ab", o);
+    TEST_ASSERT_EQUAL_UINT(2, cc_voice_type_build("a\xf7\xbf\xbf\xbf" "b", false, o, sizeof(o)));   /* U+1FFFFF */
+    TEST_ASSERT_EQUAL_STRING("ab", o);
+    TEST_ASSERT_EQUAL_UINT(6, cc_voice_type_build("a\xf4\x8f\xbf\xbf" "b", false, o, sizeof(o)));   /* U+10FFFF kept */
+    TEST_ASSERT_EQUAL_STRING("a\xf4\x8f\xbf\xbf" "b", o);
+    TEST_ASSERT_EQUAL_UINT(4, cc_voice_type_build("a\xc2\xa0" "b", false, o, sizeof(o)));   /* U+00A0 is no C1 */
+}
+
+/* Joining an earlier dictation: one leading space before a letter or digit, none before punctuation. */
+static void test_voice_type_join(void)
+{
+    char o[64];
+    size_t n = cc_voice_type_build_ex("next one", true, true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_MEMORY(PS " next one" PE, o, n);
+    TEST_ASSERT_EQUAL_UINT(21, n);
+    TEST_ASSERT_EQUAL_UINT(3, cc_voice_type_build_ex("\n 42", false, true, o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING(" 42", o);
+    cc_voice_type_build_ex("Xy", false, true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING(" Xy", o);
+    cc_voice_type_build_ex(", and then", false, true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING(", and then", o);
+    cc_voice_type_build_ex("\xc3\xbc" "ber", false, true, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING("\xc3\xbc" "ber", o);
+    cc_voice_type_build_ex("next", false, false, o, sizeof(o));
+    TEST_ASSERT_EQUAL_STRING("next", o);
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build_ex(" \r\n", true, true, o, sizeof(o)));   /* empty stays empty */
+    /* the cap counts the leading space: " ab" wrapped is 15 bytes plus the NUL */
+    TEST_ASSERT_EQUAL_UINT(15, cc_voice_type_build_ex("ab", true, true, o, 16));
+    TEST_ASSERT_EQUAL_UINT(0, cc_voice_type_build_ex("ab", true, true, o, 15));
+}
+
 /* Synthetic screens, ANSI already stripped. "\xe2\x9d\xaf" is the TUI's selection/input glyph,
    "\xe2\x94\x80" a frame rule. A dialog ends the screen with a numbered option list plus an esc hint;
    an input prompt ends with an empty "\xe2\x9d\xaf " line inside the input box. */
@@ -575,6 +622,8 @@ int main(void)
     RUN_TEST(test_voice_type_strips_controls);
     RUN_TEST(test_voice_type_whitespace);
     RUN_TEST(test_voice_type_empty_and_cap);
+    RUN_TEST(test_voice_type_utf8_c1_and_range);
+    RUN_TEST(test_voice_type_join);
     RUN_TEST(test_screen_permission_prompt);
     RUN_TEST(test_screen_input_prompt_is_not_permission);
     RUN_TEST(test_screen_real_input_after_question);
