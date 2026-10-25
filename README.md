@@ -14,6 +14,8 @@ personal project that works day to day, not a finished product: see [Status](#st
 
 ## What it looks like
 
+![Sessions: the list on the left, the selected session's conversation and answer field on the right](docs/images/sessions.png)
+
 The Tab5 sits landscape on its keyboard, with a dark 1280 × 720 screen in a pixel font. The home
 screen, **Sessions**, has a header bar along the top: "● 2 need you" in amber when something is
 waiting, then the battery, Wi-Fi, a link dot for the Host and the clock. Below it, the left half
@@ -21,10 +23,22 @@ lists your Claude Code sessions, NEEDS YOU first, then WORKING, IDLE, DONE and E
 with its name, state, folder and how long ago it changed. A row that needs you has an amber edge, and the
 keyboard's backlight turns amber with it; nothing else on the device is ever amber. The right
 half shows the selected session: the last lines of its conversation, an answer field with a mic
-button, and **↵ Send** and **⌃O Open**. Open fills the screen with Claude Code's own terminal for
-that session, with a thin bar on top to leave. Settings and the Terminal (plain SSH to other
-machines) are lists of large touch rows in the same style. There are no screenshots in the
-repository yet.
+button, and **↵ Send** and **⌃O Open**.
+
+| | |
+|---|---|
+| ![Dictating an answer: a red dot, a timer and a level meter](docs/images/voice-recording.png) | ![Open: Claude Code's own terminal for the session, with a thin bar to leave](docs/images/take-over.png) |
+| Press Ctrl+Space (or tap the mic) to dictate. | **Open** takes the session over full screen. |
+| ![Settings › Host](docs/images/settings-host.png) | ![Settings › Network, with Tailscale](docs/images/settings-network.png) |
+| Settings are lists of large touch rows. | Wi-Fi and the optional Tailscale switch. |
+
+Ctrl+K on Sessions lists the keyboard shortcuts:
+
+![The keyboard shortcuts list](docs/images/keyboard-shortcuts.png)
+
+These images are renders of the real UI code on a computer, using made-up sample data (the host
+preview in `firmware/tools/ui_preview/`), not photographs of the device. Real photographs are
+welcome.
 
 ## What you need
 
