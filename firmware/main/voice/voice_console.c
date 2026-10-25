@@ -24,7 +24,7 @@
 static int usage(void)
 {
     printf("usage: voice rec <1-10 s> [gain_db] | voice status | voice test <1-30 s> | voice test-short | "
-           "voice test-cancel <s>\n");
+           "voice test-cancel <s> | voice test-bg <1-30 s>\n");
     return 1;
 }
 
@@ -108,18 +108,13 @@ static int cmd_status(void)
     printf("voice: %s, mic %s, tasks %d, hold %s, result %s\n", voice_phase_name(st.phase),
            mic_is_open() ? "open" : "closed", voice_task_count(), voice_hold_on() ? "on" : "off",
            voice_result_pending() ? "pending" : "none");
+    printf("voice: psram free %u B, internal free %u B\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     if (voice_stack_free() >= 0) printf("voice: last voice task stack free min %d B\n", voice_stack_free());
     if (st.phase != VOICE_IDLE)
         printf("voice: elapsed %d ms, meter %d, at_limit %d, transcribing %d ms\n", st.elapsed_ms, st.meter,
                st.at_limit, st.transcribing_ms);
     return 0;
-}
-
-static bool recording(void)
-{
-    voice_status_t st;
-    voice_status(&st);
-    return st.phase == VOICE_STARTING || st.phase == VOICE_RECORDING;
 }
 
 /* Waits for the result (or for the voice task to end without one), prints the outcome and its length, zeroes it. */
@@ -151,13 +146,46 @@ static bool start(void)
     return true;
 }
 
+/* Counts recorded time, not wall time (the mic open and its 250 ms settle come first). At VR_MAX_S it never
+   stops the recording itself, so the 30 s limit ends it and the result says at limit. */
 static int cmd_test(int secs)
 {
     if (!start()) return 1;
-    int64_t end = now_ms() + (int64_t)secs * 1000;
-    while (now_ms() < end && recording()) vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+    int64_t end = now_ms() + (int64_t)secs * 1000 + 5000;   /* a backstop: a stuck mic still ends the test */
+    for (;;) {
+        voice_status_t st;
+        voice_status(&st);
+        if (!(st.phase == VOICE_STARTING || st.phase == VOICE_RECORDING) || now_ms() >= end) break;
+        if (secs < VR_MAX_S && st.elapsed_ms >= secs * 1000) break;
+        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+    }
     voice_stop();
     return finish();
+}
+
+/* voice test-bg: the same as voice test on a short-lived task, so the console stays free for `power go radio-off`,
+   `power sim idle`, `power` or `voice status` while it records and transcribes (Task 6 steps 3 and 4). */
+#define BG_STACK 4096
+static volatile bool s_bg;
+
+static void bg_task(void *arg)
+{
+    (void)cmd_test((int)(intptr_t)arg);
+    s_bg = false;
+    vTaskDelete(NULL);
+}
+
+static int cmd_test_bg(int secs)
+{
+    if (s_bg) { printf("voice test: busy\n"); return 1; }
+    s_bg = true;
+    if (xTaskCreate(bg_task, "vtest", BG_STACK, (void *)(intptr_t)secs, 2, NULL) != pdPASS) {
+        s_bg = false;
+        printf("voice test: no memory\n");
+        return 1;
+    }
+    printf("voice test-bg: started, %d s\n", secs);
+    return 0;
 }
 
 static int cmd_test_short(void)
@@ -199,6 +227,7 @@ static int cmd_voice(int argc, char **argv)
     }
     if (strcmp(v, "status") == 0 && argc == 2) return cmd_status();
     if (strcmp(v, "test") == 0 && argc == 3 && parse_int(argv[2], 1, VR_MAX_S, &n)) return cmd_test(n);
+    if (strcmp(v, "test-bg") == 0 && argc == 3 && parse_int(argv[2], 1, VR_MAX_S, &n)) return cmd_test_bg(n);
     if (strcmp(v, "test-short") == 0 && argc == 2) return cmd_test_short();
     if (strcmp(v, "test-cancel") == 0 && argc == 3 && parse_int(argv[2], 0, VR_MAX_S, &n)) return cmd_test_cancel(n);
     return usage();
@@ -208,7 +237,7 @@ void voice_console_init(void)
 {
     const esp_console_cmd_t cmd = {
         .command = "voice",
-        .help = "voice rec <1-10 s> [gain_db] | status | test <1-30 s> | test-short | test-cancel <s> "
+        .help = "voice rec <1-10 s> [gain_db] | status | test <1-30 s> | test-short | test-cancel <s> | test-bg <1-30 s> "
                 "(levels, lengths and outcomes only)",
         .func = cmd_voice,
     };
