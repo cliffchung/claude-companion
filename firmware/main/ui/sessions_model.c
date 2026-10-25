@@ -131,6 +131,7 @@ int sm_hide_finished_tests(cc_session_t *s, int n)
     for (int i = 0; i < n; i++) {
         bool finished = s[i].state == CC_DONE || s[i].state == CC_ENDED;
         if (finished && !strncmp(s[i].name, SM_TEST_PREFIX, strlen(SM_TEST_PREFIX))) continue;
+        if (!s[i].background) continue;   /* a plain `claude` in a terminal: the Tab5 can't open it (user, 2026-10-24) */
         if (k != i) s[k] = s[i];
         k++;
     }

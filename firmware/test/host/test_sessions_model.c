@@ -403,6 +403,19 @@ static void test_hide_finished_tests(void)
     TEST_ASSERT_EQUAL(0, sm_hide_finished_tests(NULL, 3));
 }
 
+/* interactive sessions (a plain `claude` in a terminal) can't be opened from the Tab5, so they aren't listed */
+static void test_hide_interactive(void)
+{
+    cc_session_t a[3];
+    a[0] = bg("b1", CC_WORKING, true);
+    a[1] = bg("i1", CC_WORKING, true); a[1].background = false; a[1].id[0] = 0;
+    a[2] = bg("b2", CC_IDLE, true);
+    int n = sm_hide_finished_tests(a, 3);
+    TEST_ASSERT_EQUAL(2, n);
+    TEST_ASSERT_EQUAL_STRING("n-b1", a[0].name);
+    TEST_ASSERT_EQUAL_STRING("n-b2", a[1].name);
+}
+
 /* P4C-11 (a): an interactive session's row meta says it is on the Host (it can't be opened here) */
 static void test_meta_marks_interactive(void)
 {
@@ -451,6 +464,7 @@ int main(void)
     RUN_TEST(test_wrap_crlf);
     RUN_TEST(test_tail_options);
     RUN_TEST(test_hide_finished_tests);
+    RUN_TEST(test_hide_interactive);
     RUN_TEST(test_meta_marks_interactive);
     return UNITY_END();
 }
