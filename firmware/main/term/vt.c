@@ -37,7 +37,8 @@ struct vt {
     vt_bell_cb_t bell_cb; void *bell_user;
     vt_title_cb_t title_cb; void *title_user;
     uint8_t tabs[512 / 8];
-    size_t work;             /* cells written, cleared or moved so far (vt_work) */
+    size_t work;             /* input bytes, and cells written, cleared or moved, so far (vt_work) */
+    size_t work_limit;       /* vt_feed ignores the rest of its input once work passes this (0: none) */
 };
 
 static void *big_alloc(size_t n);
@@ -274,7 +275,10 @@ static void do_csi(vt_t *v, char final)
     case 'F': set_cursor(v, 0, v->cy - P(0, 1)); break;
     case 'G': case '`': set_cursor(v, P(0, 1) - 1, v->cy); break;
     case 'H': case 'f': { int row = P(0, 1) - 1, col = P(1, 1) - 1; if (v->origin_mode) row += v->scroll_top; set_cursor(v, col, row); break; }
-    case 'I': for (n = P(0, 1); n > 0; n--) { int x = v->cx + 1; while (x < v->cols - 1 && !(v->tabs[x >> 3] & (1 << (x & 7)))) x++; v->cx = x; } mark_dirty(v, v->cy); break;
+    case 'I':   /* the count clamped to the width: more tab stops than columns move nothing further */
+        n = P(0, 1); if (n > v->cols) n = v->cols;
+        for (; n > 0; n--) { int x = v->cx + 1; while (x < v->cols - 1 && !(v->tabs[x >> 3] & (1 << (x & 7)))) { x++; v->work++; } v->cx = x; v->work++; }
+        mark_dirty(v, v->cy); break;
     case 'J': n = (v->nparams ? v->params[0] : 0);
         if (n == 0) { clear_cells(v, v->cy, v->cx, v->cols); clear_rows(v, v->cy + 1, v->rows); }
         else if (n == 1) { clear_rows(v, 0, v->cy); clear_cells(v, v->cy, 0, v->cx + 1); }
@@ -294,7 +298,10 @@ static void do_csi(vt_t *v, char final)
     case 'S': scroll_up(v, v->scroll_top, v->scroll_bot, P(0, 1)); break;
     case 'T': scroll_down(v, v->scroll_top, v->scroll_bot, P(0, 1)); break;
     case 'X': n = P(0, 1); clear_cells(v, v->cy, v->cx, v->cx + n); break;
-    case 'Z': for (n = P(0, 1); n > 0; n--) { int x = v->cx - 1; while (x > 0 && !(v->tabs[x >> 3] & (1 << (x & 7)))) x--; v->cx = x < 0 ? 0 : x; } mark_dirty(v, v->cy); break;
+    case 'Z':
+        n = P(0, 1); if (n > v->cols) n = v->cols;
+        for (; n > 0; n--) { int x = v->cx - 1; while (x > 0 && !(v->tabs[x >> 3] & (1 << (x & 7)))) { x--; v->work++; } v->cx = x < 0 ? 0 : x; v->work++; }
+        mark_dirty(v, v->cy); break;
     case 'c': if (!v->priv) respond(v, "\x1b[?62;22c"); break;
     case 'd': set_cursor(v, v->cx, P(0, 1) - 1); break;
     case 'g': if (v->nparams && v->params[0] == 3) memset(v->tabs, 0, sizeof(v->tabs)); else v->tabs[v->cx >> 3] &= ~(1 << (v->cx & 7)); break;
@@ -377,7 +384,7 @@ static void process(vt_t *v, uint32_t c)
         v->state = ST_GROUND;
         return;
     case ST_ESC_HASH:
-        if (c == '8') { for (int y = 0; y < v->rows; y++) for (int x = 0; x < v->cols; x++) { vt_cell_t *ce = cell(v, x, y); ce->cp = 'E'; ce->fg = ce->bg = VT_COLOR_DEFAULT; ce->attr = 0; } mark_all(v); }
+        if (c == '8') { v->work += (size_t)v->rows * v->cols; for (int y = 0; y < v->rows; y++) for (int x = 0; x < v->cols; x++) { vt_cell_t *ce = cell(v, x, y); ce->cp = 'E'; ce->fg = ce->bg = VT_COLOR_DEFAULT; ce->attr = 0; } mark_all(v); }
         v->state = ST_GROUND;
         return;
     case ST_CSI:
@@ -411,6 +418,8 @@ static void process(vt_t *v, uint32_t c)
 void vt_feed(vt_t *v, const uint8_t *data, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
+        if (v->work_limit && v->work > v->work_limit) return;   /* over budget: one sequence's cost past it at most */
+        v->work++;
         uint8_t b = data[i];
         if (v->utf8_left) {
             if ((b & 0xC0) == 0x80) {
@@ -522,6 +531,7 @@ bool vt_resize(vt_t *v, int cols, int rows)
 
 int vt_cols(const vt_t *v) { return v->cols; }
 size_t vt_work(const vt_t *v) { return v ? v->work : 0; }
+void vt_set_work_limit(vt_t *v, size_t limit) { if (v) v->work_limit = limit; }
 int vt_rows(const vt_t *v) { return v->rows; }
 
 const vt_cell_t *vt_view_row(vt_t *v, int row)

@@ -44,8 +44,12 @@ void vt_feed(vt_t *vt, const uint8_t *data, size_t len);
 void vt_reset(vt_t *vt);
 
 int vt_cols(const vt_t *vt);
-/* Cells written, cleared or moved since vt_create: the replay's cost, for a budget. */
+/* The replay's cost since vt_create: one per input byte, plus the cells written, cleared, moved or stepped over
+   (scrolls, erases, DECALN, insert and delete, tab moves). */
 size_t vt_work(const vt_t *vt);
+/* With a limit (0: none), vt_feed drops the rest of its input once vt_work passes it, so the overshoot is at most one
+   sequence's cost (a full-screen scroll, erase or DECALN: rows * cols). */
+void vt_set_work_limit(vt_t *vt, size_t limit);
 int vt_rows(const vt_t *vt);
 /* Row as currently displayed (taking the scrollback view offset into account). */
 const vt_cell_t *vt_view_row(vt_t *vt, int row);
