@@ -1172,6 +1172,20 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
     return 2;
 }
 
+/* The list hides interactive sessions: these map the stub's raw sessions to list rows. */
+static int shown_n(void)
+{
+    int n = 0;
+    for (int i = 0; i < s_preview_n; i++) n += s_preview_sessions[i].background;
+    return n;
+}
+static int shown_index(int raw)
+{
+    int n = 0;
+    for (int i = 0; i < raw; i++) n += s_preview_sessions[i].background;
+    return n;
+}
+
 static int sessions_case(lv_display_t *d, const char *v) {
     char name[64];
     snprintf(name, sizeof(name), !strcmp(v, "ctrlk") ? "ctrlk" : "sessions-%s", v);
@@ -1247,19 +1261,12 @@ static int sessions_case(lv_display_t *d, const char *v) {
     } else if (!strcmp(v, "empty")) {
         assert(find_label(s, "No sessions on this Host. Start one with `claude --bg`.", false));
     } else if (!strcmp(v, "interactive")) {
-        /* select the interactive blocked session */
-        int k = -1;
-        for (int i = 0; i < s_preview_n; i++) if (!s_preview_sessions[i].background && s_preview_sessions[i].state == CC_NEEDS_YOU) k = i;
-        assert(k >= 0);
-        for (int i = 0; i < k; i++) { assert(sink_sk(SK_DOWN)); step(d, 400); }
-        assert(selected_index(list) == k);
-        /* P4C-11 (a): the pane says why it can't be opened here (wrapped, fit-checked below); the rows say "on Host" */
-        lv_obj_t *info = find_label(s, "Running in a terminal on the Host. Start sessions with claude --bg to open them here.", false);
-        assert(info && obj_shown(info) && lv_label_get_long_mode(info) == LV_LABEL_LONG_MODE_WRAP);
-        assert(find_label_has(list, "on Host \xc2\xb7 ", 0) && find_label_has(s, "on Host \xc2\xb7 desk", 0));   /* the row and the pane */
-        assert(!find_shown(s, &lv_textarea_class));
-        assert(find_label(s, "waiting on Host", false));
-        if (pv_amber_pixels(s)) { printf("check %s: FAIL amber on a session that can't need you\n", name); return 1; }
+        /* a plain `claude` in a terminal can't be opened from the Tab5, so it isn't listed at all */
+        int raw = 0;
+        for (int i = 0; i < s_preview_n; i++) raw += !s_preview_sessions[i].background;
+        assert(raw > 0);   /* the fixture has one */
+        assert(!find_label_has(list, "on Host \xc2\xb7 ", 0));
+        assert(!find_label(s, "Running in a terminal on the Host. Start sessions with claude --bg to open them here.", false));
     } else if (!strcmp(v, "sent")) {
         assert(sink_ch('2', 0)); step(d, 400);
         assert(!strcmp(field_text(s), "2"));
@@ -1284,7 +1291,7 @@ static int sessions_case(lv_display_t *d, const char *v) {
         int k = -1;
         for (int i = 0; i < s_preview_n; i++) if (strlen(s_preview_sessions[i].name) == 95) k = i;
         assert(k >= 0);
-        for (int i = 0; i < k; i++) { assert(sink_sk(SK_DOWN)); step(d, 400); }
+        for (int i = 0; i < shown_index(k); i++) { assert(sink_sk(SK_DOWN)); step(d, 400); }
         lv_obj_t *t = find_label_x(s, s_preview_sessions[k].name, 440);
         assert(t && lv_obj_get_height(t) > lv_font_get_line_height(FONT_BODY));   /* wrapped */
         assert(!find_label_x(s, s_preview_sessions[k].name, 0) || find_label_x(s, s_preview_sessions[k].name, 0) == t);
@@ -1333,12 +1340,12 @@ static int sessions_case(lv_display_t *d, const char *v) {
         lv_obj_update_layout(s);
         assert(find_label_x(s, bname, 440));
         assert(!strcmp(field_text(s), "abc"));
-        assert(row_selected(row_named(s, bname)) && selected_index(list) == s_preview_n - 1);
+        assert(row_selected(row_named(s, bname)) && selected_index(list) == shown_n() - 1);
     } else if (!strcmp(v, "tap-resort")) {
         /* review I1: a tap belongs to the session under the finger at the press. Press the last row, then a
            poll moves the selected session (row 0) into that slot before the release: nothing opens, and the
            selection stays on the session it was on. */
-        int last = s_preview_n - 1;
+        int last = shown_n() - 1;
         char sel[96]; snprintf(sel, sizeof(sel), "%s", s_preview_sessions[0].name);
         lv_obj_t *r = lv_obj_get_child(list, last);
         lv_obj_send_event(r, LV_EVENT_PRESSED, NULL);

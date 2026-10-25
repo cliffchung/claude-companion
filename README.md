@@ -139,8 +139,9 @@ resolve, also give the Host a fixed address on your router (a DHCP reservation, 
 ### Run sessions in the background
 
 The Tab5 can open and answer only **background** sessions: ones you start with `claude --bg` or
-dispatch from agent view (`claude agents`). A plain interactive `claude` in a terminal window shows
-on the Tab5 read-only, marked **on Host**.
+dispatch from agent view (`claude agents`). A plain interactive `claude` in a terminal window can't
+be opened from anywhere else, so the Tab5 doesn't list it. To move one to the background, quit it
+(`/exit`) and run `claude --continue --bg` in the same folder (or `claude --resume <id> --bg`).
 
 ```sh
 claude --bg "tidy up the imports in this repo"   # start a background session
@@ -285,9 +286,8 @@ live background session with a question on screen (Claude Code reports `status: 
 session that has finished its turn and is only waiting for your next message is IDLE, not NEEDS
 YOU, and doesn't light anything.
 
-- **Interactive sessions** (a plain `claude` in a terminal) show a muted **on Host** marker. Their
-  detail pane reads "Running in a terminal on the Host. Start sessions with claude --bg to open
-  them here." They have no answer field and can't be opened.
+- **Interactive sessions** (a plain `claude` in a terminal) aren't listed: nothing outside that
+  terminal can open them.
 - **Stopped and finished sessions** can be opened: Open starts them again with their history, as
   agent view does. Quick answers need a running session.
 
@@ -541,8 +541,9 @@ one. If you know why (a reinstall, a new machine), compare the fingerprint with
 **"Can't load sessions from the Host…".** The link is up but listing sessions keeps failing. The
 usual cause is a wrong **Claude path on Host**: compare it with `command -v claude` on the Host.
 
-**Sessions show but can't be opened.** They're interactive sessions (marked **on Host**). Start the
-work with `claude --bg` instead, or dispatch it from `claude agents`.
+**A session is missing from the list.** Sessions started with a plain `claude` in a terminal aren't
+listed, because the Tab5 can't open them. Start the work with `claude --bg` instead, or dispatch it
+from `claude agents`.
 
 **The Host terminal is narrow after using the Tab5.** Opening a session on the Tab5 while it is
 also attached at your desk resizes it to the Tab5's width. Resize the Host terminal window (by any
