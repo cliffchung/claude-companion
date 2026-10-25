@@ -305,7 +305,6 @@ static void voice_task(void *arg)
         zero(blk, BLOCK_BYTES);
     }
     mic_close();
-    set_hold(false);
     const int rec_ms = (int)(pcm * 1000 / (VR_RATE * sizeof(int16_t)));
     taskENTER_CRITICAL(&s_mux);
     s_at_limit = at_limit;
@@ -346,6 +345,9 @@ static void voice_task(void *arg)
 
     /* ---- the one exit: every path above lands here ---- */
     wipe_buffer();
+    /* Only now: cc_link_transcribe held link-busy until it returned, so the screen never had a moment with neither
+       hold (at a 30 s auto-stop the user is already past the dim timeout). */
+    set_hold(false);
 
     taskENTER_CRITICAL(&s_mux);
     if (s_cancel_req) out = VR_OUT_CANCELLED;   /* a cancel while transcribing drops the result */
