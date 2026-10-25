@@ -11,6 +11,11 @@
  * unchanged row, so a stream cut after its clear leaves a sparse screen. cc_link_exec_screen keeps exactly those
  * bytes (cc_tailbuf); a cut stream is refused here and the caller falls back to cc_log_tail.
  *
+ * The limit (accepted, fix round 2): the bytes since the latest clear must fit 512 KB (LOGS_CAP in ui_sessions.c).
+ * Claude Code clears on start, attach and resize, so a long-running session that nobody attaches to can pass that;
+ * its pane then shows the old escape-stripped tail. A stateful streaming replay (a persistent vt per session fed
+ * only the new bytes, `claude logs <id> | tail -c +<offset>`) would lift the limit; it isn't built.
+ *
  * Pure C (vt and wcwidth only): built by the host tests. The screen lives in PSRAM and only during the call. */
 #include <stdbool.h>
 #include <stddef.h>
@@ -23,9 +28,11 @@
 #define CC_LV_TOO_COSTLY (-4)  /* the replay passed CC_LOGVIEW_WORK_MAX */
 #define CC_LV_NO_LAYOUT  (-5)  /* no input box, no dialog and no rule near the bottom: not a screen it knows */
 
-/* The replay's budget, in cells written, cleared or moved (vt_work). Claude Code's own streams cost 1-4 cells per
-   byte (measured on 21 live streams), so a full 512 KB buffer needs at most about 2 M; a stream of scrolls or full
-   clears costs a whole screen per sequence and stops here: at 16 B a cell, at most 64 MB of PSRAM traffic a job. */
+/* The replay's budget in vt_work units: one per input byte plus every cell written, cleared, moved or stepped over.
+   Claude Code's own streams cost 2-5 units a byte (measured on 21 live streams), so a full 512 KB buffer needs at
+   most about 2.6 M. vt_feed stops once past the budget, so a stream of scrolls, erases, DECALN or tab moves ends
+   within one sequence of it: at most about 4.2 M cells (a full-screen sequence is ≤ 320 x 160 = 51 K cells, or
+   320 x 320 steps for a clamped tab move), i.e. about 67 MB of 16-byte cell writes, twice that for a move. */
 #define CC_LOGVIEW_WORK_MAX ((size_t)4 * 1024 * 1024)
 
 /* The virtual screen a stream needs, from the bytes after its last full clear (ESC[2J), or all of them:
@@ -41,11 +48,11 @@ bool cc_logview_size(const char *raw, size_t len, int *cols, int *rows, size_t *
    complete: raw holds the stream from its start, or from a full clear in it (cc_link_exec_screen returned ESP_OK);
    with complete false only a clear inside raw makes it renderable.
    - from the top it drops the welcome banner (rows starting with block-element logo glyphs);
-   - the conversation ends at the input box's top rule (a rule, "❯" at column 0 that isn't a numbered option, and a
-     rule anywhere below: the input, its bottom rule and the footer and status rows under it go: tokens, mode,
-     agents, hooks); with no input box, at a dialog's "Esc to cancel" hint when that is the lowest row with two or
-     more numbered options and a ❯ above it (the hint stays); else at a rule within 8 rows of the last drawn row;
-     else CC_LV_NO_LAYOUT;
+   - the conversation ends at a dialog's "Esc to cancel" hint when that is the lowest drawn row with two or more
+     numbered options and a ❯ above it (the hint stays); else at the input box's top rule (a rule with "❯" at
+     column 0 under it, above the lowest rule within 8 rows of the last drawn row: the input, however tall or
+     numbered, its bottom rule and the footer and status rows under it go: tokens, mode, agents, hooks); else at a
+     rule within 8 rows of the last drawn row; else CC_LV_NO_LAYOUT;
    - in between it drops frame rules, blank rows, right-aligned status (starting past column 24 and ending at the
      right edge: the effort, usage notices, the update check), the spinner's line (a spinner glyph at column 0, a
      verb and "…" with an optional "(…)", or "<verb> for <time>": "✻ Baked for 5s", "· Computing…") with a "⎿" tip

@@ -17,7 +17,6 @@
 #define RULE_CELLS   10    /* a row that starts with this many box-drawing cells is a rule */
 #define RIGHT_MIN_X  24    /* a row starting past this column and reaching the right edge is right-aligned status */
 #define WRAP_SLACK   4     /* a row this close to the width, with the next word not fitting, was wrapped */
-#define FEED_CHUNK   4096  /* the replay is fed this much at a time, checking its budget in between */
 #define RULE_NEAR    8     /* with no input box or dialog, a rule this close to the last drawn row ends the view */
 #define HINT_SPAN    40    /* a dialog's options lie this close above its "Esc to cancel" hint */
 
@@ -210,15 +209,23 @@ static bool wide_at(const scr_t *s, int y, int x)
     return (row_at(s, y)[x].attr & (VT_ATTR_WIDE | VT_ATTR_WIDE_CONT)) != 0;
 }
 
-/* The input box's top rule: a rule, the "❯" input line under it (not a numbered option: a selector's own
-   "❯ 1." under its frame), and another rule anywhere below (a draft may be tall). */
+static int last_drawn(const scr_t *s)
+{
+    int last = s->rows - 1;
+    while (last >= 0 && first_x(s, last) < 0) last--;
+    return last;
+}
+
+/* The input box's top rule: a rule, the "❯" input line under it (a draft may start "1."), and the box's bottom rule
+   further down within RULE_NEAR rows of the last drawn row (only the footer is under it; a draft may be tall).
+   Asked only when no dialog is up (dialog_hint), so a selector's "❯ 1." under its frame isn't taken for it. */
 static int input_box_top(const scr_t *s)
 {
-    for (int y = s->rows - 2; y >= 0; y--) {
-        if (!is_rule(s, y) || !is_prompt(s, y + 1) || option_x(s, y + 1) >= 0) continue;
-        for (int k = y + 2; k < s->rows; k++)
-            if (is_rule(s, k)) return y;
-    }
+    int last = last_drawn(s), bottom = -1;
+    for (int k = last; k >= 0 && k >= last - RULE_NEAR; k--)
+        if (is_rule(s, k)) { bottom = k; break; }
+    for (int y = bottom - 2; y >= 0; y--)
+        if (is_rule(s, y) && is_prompt(s, y + 1)) return y;
     return -1;
 }
 
@@ -244,8 +251,7 @@ static int dialog_hint(const scr_t *s)
 /* The lowest rule within RULE_NEAR rows of the last drawn row, else -1. */
 static int rule_near_bottom(const scr_t *s)
 {
-    int last = s->rows - 1;
-    while (last >= 0 && first_x(s, last) < 0) last--;
+    int last = last_drawn(s);
     for (int y = last; y >= 0 && y >= last - RULE_NEAR; y--)
         if (is_rule(s, y)) return y;
     return -1;
@@ -254,13 +260,9 @@ static int rule_near_bottom(const scr_t *s)
 /* ------------------------------------------------------------ the tail */
 static int replay(vt_t *vt, const char *p, size_t n)
 {
-    for (size_t off = 0; off < n;) {
-        size_t k = n - off > FEED_CHUNK ? FEED_CHUNK : n - off;
-        vt_feed(vt, (const uint8_t *)p + off, k);
-        off += k;
-        if (vt_work(vt) > CC_LOGVIEW_WORK_MAX) return CC_LV_TOO_COSTLY;
-    }
-    return 0;
+    vt_set_work_limit(vt, CC_LOGVIEW_WORK_MAX);   /* checked per byte inside vt_feed */
+    vt_feed(vt, (const uint8_t *)p, n);
+    return vt_work(vt) > CC_LOGVIEW_WORK_MAX ? CC_LV_TOO_COSTLY : 0;
 }
 
 int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, char *out, size_t cap)
@@ -281,14 +283,12 @@ int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, c
     kept = replay(s.vt, raw + start, len - start);
     if (kept) goto done;
 
-    /* where the conversation ends: the input box, else a dialog's hint, else a rule near the bottom */
-    int top = 0, hint = -1, end = input_box_top(&s);
-    bool dialog = false;
-    if (end < 0) {
-        hint = dialog_hint(&s);
-        if (hint >= 0) { dialog = true; end = hint + 1; }
-        else end = rule_near_bottom(&s);
-    }
+    /* where the conversation ends: a dialog's hint (first: a numbered draft is no dialog, a selector's "❯ 1." under
+       its frame is no input box), else the input box, else a rule near the bottom */
+    int top = 0, hint = dialog_hint(&s), end;
+    bool dialog = hint >= 0;
+    if (dialog) end = hint + 1;
+    else if ((end = input_box_top(&s)) < 0) end = rule_near_bottom(&s);
     kept = CC_LV_NO_LAYOUT;
     if (end < 0) goto done;
     while (top < end && top < 4 && first_x(&s, top) < 0) top++;

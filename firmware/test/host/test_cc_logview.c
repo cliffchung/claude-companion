@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "unity.h"
 #include "companion/cc_logview.h"
 #include "companion/cc_cmd.h"
@@ -468,7 +469,7 @@ static void test_replay_budget(void)
         cc_logview_size(s_raw, n, &cols, &rows, &st, NULL);
         vt_t *vt = vt_create(cols, rows, 0);
         vt_feed(vt, (const uint8_t *)s_raw + st, n - st);
-        TEST_ASSERT_TRUE(vt_work(vt) < 5 * (n - st));   /* at most 4 cells a byte on the live captures */
+        TEST_ASSERT_TRUE(vt_work(vt) < 6 * (n - st));   /* at most 5 units a byte on the live captures */
         vt_destroy(vt);
     }
 }
@@ -490,6 +491,61 @@ static void test_vt_lazy_alt(void)
     TEST_ASSERT_FALSE(vt_resize(vt, 1, 1));   /* a bad size: the old screen stays */
     TEST_ASSERT_EQUAL(30, vt_cols(vt));
     TEST_ASSERT_FALSE(vt_resize(NULL, 30, 5));
+    vt_destroy(vt);
+}
+
+/* N1: a draft that starts with a number is still the input box: it doesn't show, and no picks line. */
+static void test_numbered_draft(void)
+{
+    char buf[8192];
+    size_t o = synth(buf, (const char *const[]){ NULL, DOT " Tell me your list." }, 2, false, 0);
+    o += (size_t)sprintf(buf + o, "\x1b[5;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[6;1H" SEL " 1. buy apples\x1b[7;3H2. buy pears\x1b[8;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[9;3H12k tokens | Opus\x1b[10;3Hauto mode on");
+    TEST_ASSERT_EQUAL(1, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    TEST_ASSERT_EQUAL_STRING(DOT " Tell me your list.", s_out);
+    TEST_ASSERT_EQUAL(0, sm_tail_options(s_out));
+}
+
+/* N2: with a dialog up, a rule right above an earlier "❯ prompt" row isn't taken for the input box. */
+static void test_dialog_over_old_prompt(void)
+{
+    char buf[8192];
+    size_t o = (size_t)sprintf(buf, "\x1b[2J\x1b[H\x1b[3;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[4;1H" SEL " an earlier prompt\x1b[6;1H" DOT " Running a command\x1b[8;1H");
+    for (int i = 0; i < 100; i++) o += (size_t)sprintf(buf + o, "\xe2\x94\x80");
+    o += (size_t)sprintf(buf + o, "\x1b[9;2HDo you want to proceed?\x1b[10;2H" SEL " 1. Yes\x1b[11;4H2. No\x1b[13;2HEsc to cancel");
+    TEST_ASSERT_EQUAL(6, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
+    has(SEL " an earlier prompt\n" DOT " Running a command\n Do you want to proceed?\n " SEL " 1. Yes\n   2. No\n Esc to cancel");
+}
+
+/* N3: sequences that cost a screen or a line each (DECALN, tab moves clamped to the width, scrolls) stop at the
+   budget, and fast: the check is inside vt_feed, not per 4 KB chunk. */
+static void test_replay_budget_sequences(void)
+{
+    static const char *seqs[] = { "\x1b#8", "\x1b[32767I", "\x1b[32767Z", "\x1b[S" };
+    for (size_t i = 0; i < 4; i++) {
+        size_t o = (size_t)sprintf(s_big, "\x1b[2J\x1b[H\x1b[160;300H\x1b[80;150H");
+        size_t k = strlen(seqs[i]);
+        while (o + k < 512 * 1024) { memcpy(s_big + o, seqs[i], k); o += k; }
+        clock_t t0 = clock();
+        int r = cc_logview_tail(s_big, o, true, 40, s_out, sizeof(s_out));
+        double ms = (double)(clock() - t0) * 1000.0 / CLOCKS_PER_SEC;
+        printf("budget %zu: %d in %.1f ms\n", i, r, ms);
+        TEST_ASSERT_EQUAL(CC_LV_TOO_COSTLY, r);
+        TEST_ASSERT_TRUE(ms < 100.0);
+    }
+    /* the overshoot is at most one sequence: a single 4 KB chunk of scrolls stops within a screen of the budget */
+    vt_t *vt = vt_create(308, 160, 0);
+    size_t o = 0;
+    while (o + 3 < 4096) { memcpy(s_big + o, "\x1b[S", 3); o += 3; }
+    vt_set_work_limit(vt, CC_LOGVIEW_WORK_MAX);
+    for (int i = 0; i < 64; i++) vt_feed(vt, (const uint8_t *)s_big, o);
+    TEST_ASSERT_TRUE(vt_work(vt) > CC_LOGVIEW_WORK_MAX);
+    TEST_ASSERT_TRUE(vt_work(vt) <= CC_LOGVIEW_WORK_MAX + 2 * 308 * 160);
     vt_destroy(vt);
 }
 
@@ -520,5 +576,8 @@ int main(void)
     RUN_TEST(test_too_big);
     RUN_TEST(test_replay_budget);
     RUN_TEST(test_vt_lazy_alt);
+    RUN_TEST(test_numbered_draft);
+    RUN_TEST(test_dialog_over_old_prompt);
+    RUN_TEST(test_replay_budget_sequences);
     return UNITY_END();
 }
