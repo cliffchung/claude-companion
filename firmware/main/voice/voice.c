@@ -8,6 +8,7 @@
 
    Privacy (rule 3 as Plan 5 extends it): no sample and no transcript text goes to a log, the console or NVS. The
    one log line per recording holds durations, dBFS, the exit code, a length and the outcome. */
+#include "ota/fw_update.h"
 #include "voice/voice.h"
 #include "voice/voice_debug.h"
 #include "voice/mic.h"
@@ -406,7 +407,7 @@ vr_out_t voice_start(const char *key)
 {
     /* Claim the service first (STARTING), so two callers can't both pass the idle check. */
     taskENTER_CRITICAL(&s_mux);
-    bool busy = s_phase != VOICE_IDLE || s_voice_alive;
+    bool busy = s_phase != VOICE_IDLE || s_voice_alive || fwu_busy();   /* no recording during an update (Plan 6) */
     if (!busy) s_phase = VOICE_STARTING;
     taskEXIT_CRITICAL(&s_mux);
     if (busy) return VR_OUT_BUSY;

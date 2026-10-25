@@ -14,6 +14,7 @@ menu "Claude Companion"
               power bench | sim | go | light test|raw | checkin hibernate
               power hib test|test-wake|probe|backstop <s> <n> | rail <n> on|off | imu suspend
               voice rec | test | test-bg | test-short | test-cancel
+              ota read-test | update [corrupt-ram] | cancel | go-back | test-bootloop <1-3>
 
             The everyday commands (help, sshkey, companion status and the Host
             settings, sessions, logs, reply, wifi, ts, power status and settings,
@@ -22,5 +23,12 @@ menu "Claude Companion"
             Leave this off for a build you give to someone else. Turn it on in
             your local sdkconfig (idf.py menuconfig, or CONFIG_COMPANION_DEBUG_COMMANDS=y)
             for a development device.
+
+    config COMPANION_OTA_TEST_NO_VALIDATE
+        bool "Test build: never mark the image valid (rollback test)"
+        default n
+        depends on COMPANION_DEBUG_COMMANDS
+        help
+            Builds an image that never marks itself valid, for the rollback test. Never for a build you keep.
 
 endmenu

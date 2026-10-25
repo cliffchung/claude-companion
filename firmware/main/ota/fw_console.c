@@ -1,5 +1,5 @@
-/* The `ota` console command (Plan 6 Task 5): `ota check` and `ota path` (read-only on the Host), and the debug
-   `ota read-test`. Prints sizes, versions, SHA-256 prefixes, durations and exit codes only. */
+/* The `ota` console command (Plan 6 Tasks 5 and 6, spec §8.7): `ota status`, `ota check` and `ota path` (read-only on
+   the Host), and the debug `ota read-test`, `update [corrupt-ram]`, `cancel`, `go-back`, `test-bootloop <n>`. Prints sizes, versions, SHA-256 prefixes, durations and exit codes only. */
 #include "sdkconfig.h"
 #include "ota/fw_console.h"
 #include <stdio.h>
@@ -16,31 +16,44 @@
 #include "companion/cc_link.h"
 #include "companion/cc_cmd.h"
 #include "ota/fw_rules.h"
+#include "ota/fw_update.h"
 #include "i18n/i18n.h"
 
 static void hex12(const char *sha, char out[13]) { memcpy(out, sha, 12); out[12] = 0; }
 
+static const char *offer_name(fw_offer_t o)
+{
+    switch (o) {
+    case FW_OFFER_UP_TO_DATE: return "up to date";
+    case FW_OFFER_NEWER:      return "newer";
+    case FW_OFFER_OLDER:      return "older";
+    default:                  return "other build";
+    }
+}
+
+/* `ota check` (Task 6): the same check as About, read-only on the Host */
 static int cmd_check(void)
 {
-    uint8_t buf[CC_FW_INFO_MAX];
-    size_t len = 0;
-    int rc = -1;
-    esp_err_t e = cc_link_fw_info(buf, sizeof(buf), &len, &rc);
-    if (e != ESP_OK) { printf("ota check: %s, rc %d\n", esp_err_to_name(e), rc); return 1; }
-    uint32_t size = 0;
-    char sha[65] = "", p[13];
-    const uint8_t *hdr = NULL;
-    size_t hl = 0;
-    if (rc != 0 || !fw_parse_info(buf, len, &size, sha, &hdr, &hl)) {
-        printf("ota check: rc %d, %u B of output, not an info line\n", rc, (unsigned)len);
-        return 1;
-    }
-    fw_desc_t d;
-    memset(&d, 0, sizeof d);
-    fw_hdr_t h = fw_check_header(hdr, hl, size, FW_SLOT_SIZE, (uint16_t)efuse_hal_chip_revision(), &d);
-    hex12(sha, p);
-    printf("ota check: rc %d, %u B, sha256 %s\xe2\x80\xa6, header %s, version %s\n", rc, (unsigned)size, p,
-           fw_hdr_name(h), d.version);
+    fwu_check_t c;
+    fwu_check(&c);
+    if (c.out != FW_OUT_OK) { printf("ota check: %s, rc %d\n", tr(fw_out_text(c.out)), c.rc); return 1; }
+    char p[13];
+    hex12(c.sha, p);
+    printf("ota check: host %s, %u B, sha256 %s\xe2\x80\xa6, %s\n", c.desc.version, (unsigned)c.size, p,
+           offer_name(c.offer));
+    return 0;
+}
+
+static int cmd_status(void)
+{
+    fwu_info_t i;
+    fwu_info(&i);
+    fw_desc_t prev;
+    bool has_prev = fwu_previous(&prev);
+    printf("ota: running %s (%s, %s), other %s (%s, %s), rollback possible: %s, pending: %s, bootloop %d\n",
+           fwu_running_version(), i.running_label, fwu_state_name(i.running_state), has_prev ? prev.version : "none",
+           i.other_label, fwu_state_name(i.other_state), i.rollback_possible ? "yes" : "no", i.pending ? "yes" : "no",
+           i.bootloop);
     return 0;
 }
 
@@ -114,17 +127,81 @@ static int cmd_read_test(int argc, char **argv)
            got == size && strcmp(hx, sha) == 0 ? "match" : "MISMATCH");
     return e == ESP_OK ? 0 : 1;
 }
+
+/* `ota update [corrupt-ram]`: the UI's service without the confirm. Returns at once (so `ota cancel` can follow on
+   the next console line); a printer task prints each phase change, every 10 %, and the end. */
+static void printer_task(void *arg)
+{
+    (void)arg;
+    fwu_phase_t last = FWU_IDLE;
+    int last_pct = -1;
+    for (;;) {
+        fwu_status_t st;
+        fwu_status(&st);
+        int pct = fw_pct(st.done, st.total);
+        if (st.phase != last || pct / 10 != last_pct / 10) {
+            if (st.phase != FWU_IDLE) printf("ota update: %s %d %%\n", fwu_phase_name(st.phase), pct);
+            last = st.phase;
+            last_pct = pct;
+        }
+        if (st.phase == FWU_RESTARTING) { printf("ota update: restarting\n"); break; }
+        fwu_note_t n;
+        if (st.phase == FWU_IDLE && !fwu_busy()) {
+            if (fwu_take_note(&n) && n.kind == FWU_NOTE_RESULT) printf("ota update: %s\n", tr(fw_out_text(n.out)));
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    vTaskDelete(NULL);
+}
+
+static int cmd_update(int argc, char **argv)
+{
+    bool corrupt = argc == 3 && strcmp(argv[2], "corrupt-ram") == 0;
+    if (argc > 3 || (argc == 3 && !corrupt)) { printf("usage: ota update [corrupt-ram]\n"); return 1; }
+    fwu_check_t c;
+    fwu_check(&c);
+    if (c.out != FW_OUT_OK) { printf("ota update: %s\n", tr(fw_out_text(c.out))); return 1; }
+    if (c.offer == FW_OFFER_UP_TO_DATE) { printf("ota update: up to date (same build)\n"); return 1; }
+    fwu_debug_corrupt_ram(corrupt);
+    fw_out_t o = fwu_start();
+    if (o != FW_OUT_OK) { fwu_debug_corrupt_ram(false); printf("ota update: %s\n", tr(fw_out_text(o))); return 1; }
+    printf("ota update: started, %s -> %s, %u B\n", fwu_running_version(), c.desc.version, (unsigned)c.size);
+    if (xTaskCreate(printer_task, "ota_print", 3072, NULL, 4, NULL) != pdPASS) printf("ota update: no printer task\n");
+    return 0;
+}
+
+static int cmd_go_back(void)
+{
+    esp_err_t e = fwu_go_back();   /* returns only on a failure */
+    printf("ota go-back: %s\n", e == ESP_ERR_NOT_FOUND ? "the other slot holds no runnable image" : esp_err_to_name(e));
+    return 1;
+}
+
+static int cmd_test_bootloop(int argc, char **argv)
+{
+    int n = argc == 3 ? atoi(argv[2]) : 0;
+    if (n < 1 || n > 3) { printf("usage: ota test-bootloop <1-3>\n"); return 1; }
+    printf("ota test-bootloop: the next %d boot(s) panic 5 s after boot; restarting\n", n);
+    fwu_debug_test_bootloop(n);
+}
 #endif
 
 static int cmd_ota(int argc, char **argv)
 {
+    if (argc == 1 || (argc == 2 && strcmp(argv[1], "status") == 0)) return cmd_status();
     if (argc == 2 && strcmp(argv[1], "check") == 0) return cmd_check();
     if ((argc == 2 || argc == 3) && strcmp(argv[1], "path") == 0) return cmd_path(argc, argv);
 #if CONFIG_COMPANION_DEBUG_COMMANDS
     if (argc >= 2 && strcmp(argv[1], "read-test") == 0) return cmd_read_test(argc, argv);
-    printf("usage: ota check | ota path [<path>] | ota read-test [cancel-at <pct>]\n");
+    if (argc >= 2 && strcmp(argv[1], "update") == 0) return cmd_update(argc, argv);
+    if (argc == 2 && strcmp(argv[1], "cancel") == 0) { fwu_cancel(); printf("ota cancel: asked\n"); return 0; }
+    if (argc == 2 && strcmp(argv[1], "go-back") == 0) return cmd_go_back();
+    if (argc >= 2 && strcmp(argv[1], "test-bootloop") == 0) return cmd_test_bootloop(argc, argv);
+    printf("usage: ota [status] | ota check | ota path [<path>] | ota read-test [cancel-at <pct>] |\n"
+           "       ota update [corrupt-ram] | ota cancel | ota go-back | ota test-bootloop <1-3>\n");
 #else
-    printf("usage: ota check | ota path [<path>]\n");
+    printf("usage: ota [status] | ota check | ota path [<path>]\n");
 #endif
     return 1;
 }
@@ -133,7 +210,7 @@ void fw_console_init(void)
 {
     const esp_console_cmd_t c = {
         .command = "ota",
-        .help = "ota check | ota path [<path>]: the firmware image on the Host (Plan 6)",
+        .help = "ota [status] | check | path [<path>]: firmware updates from the Host (Plan 6)",
         .func = cmd_ota,
     };
     debug_console_register(&c);

@@ -131,3 +131,43 @@ B, and the diet saved slightly more than estimated. `idf.py size`: External RAM 
   (the first build after adding `fw_console.c` failed to link until then).
 - FW build passes: image 6,294,752 B. Steps 2–4 (check, read, cut-offs, Tailscale rate) are device steps: waiting
   for Task 9.
+
+## Task 6: the update service, the boot check and the console verbs
+
+- `ota/fw_update.c` follows spec §12.2 and §12.3. `_Static_assert`s pin every `FW_OFF_*` offset to
+  `esp_image_header_t` / `esp_app_desc_t` (+ 32), and `sizeof(esp_app_desc_t) + 32 == FW_HDR_LEN`. At boot the other
+  slot's size is compared with `FW_SLOT_SIZE`; a mismatch logs an error and `fwu_start` returns `FW_OUT_WRITE`.
+- Checks in order: byte count (5), SHA-256 of the buffer in 64 KB steps with the cancel between them (6), the header
+  again on the downloaded bytes (7), the layout walk plus the appended SHA-256 (8; an image without an appended hash
+  is refused as damaged), then `esp_ota_begin` (logged `fw: writing <label>`), 16 KB writes with the cancel between
+  them, `esp_ota_end` (9), the 16 KB read-back into one PSRAM block (10), `fw/attempt`, `esp_ota_set_boot_partition`
+  (11). One `release()` frees both PSRAM blocks, aborts an open handle, ends the hold and clears busy (P6-15). The
+  summary line and `fw: heapmin <N> B` (the internal minimum: the open `ui heapmin` window's, else since boot) are
+  logged; then 1 s, then `link_down_restart("firmware update")`.
+- **Deviation: `fwu_link_started()`.** `cc_poll_subscribe` does nothing before `cc_link_start` (no lock yet), and
+  `fwu_boot_init` runs before Wi-Fi, so a pending image subscribes from a second call, made in `app_main.c` right
+  after `cc_link_start`. With it there are 4 subscribers (Sessions, hibernate, power, this): exactly `MAX_SUBS`.
+- **Deviation: `FWU_NOTE_ROLLING_BACK`.** The 3 s notice ("can't reach the Host. Going back to …") is a boot note
+  kind of its own. The 180 s timer is one `esp_timer`: it fires at 177 s of uptime, posts the notice and re-arms for
+  the remainder; at 180 s `fw_validity` says ROLLBACK and it calls
+  `esp_ota_mark_app_invalid_rollback_and_reboot()`.
+- **Addition: `fwu_take_boot_note`.** Sessions' tick takes only boot notes, so it can't take a RESULT that belongs
+  to the progress screen or the console.
+- `fwu_previous` treats "no otadata entry" (`esp_ota_get_state_partition` fails: a slot written by a wired flash)
+  like UNDEFINED, so after the first wireless update the USB-flashed `app0` is offered as Previous version and is a
+  boot-loop target. The old updater's bytes left in `app1` by the migration aren't, because their descriptor's
+  project isn't `claude_companion`.
+- The boot-loop guard: an `RTC_NOINIT` record with a magic (reset on a bad magic or a power-on reset), the count, the
+  early flag (cleared with the count by a 60 s timer), a note flag and the test counter. A trip switches with
+  `esp_image_verify` + `esp_ota_set_boot_partition` and calls `esp_restart()` directly: it runs before
+  `link_down_init` and Wi-Fi, so no SSH session exists to close. The next boot posts `FWU_NOTE_BOOTLOOP`.
+- Gates: `session_open` is the TAKEOVER or SSH hold's bit (`power_hold_is_on`, new), `voice_active` is
+  `voice_status().phase != VOICE_IDLE`, the source and percent from `power_source` (so `power sim battery` drives it),
+  memory from `heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)`. `voice_start` returns `VR_OUT_BUSY` while
+  `fwu_busy()`. `POWER_HOLD_UPDATE` counts in `holds_active` and prints `update`.
+- `ota update` returns at once and a printer task prints the phases, every 10 % and the end, so `ota cancel` can be
+  typed on the next console line (the REPL runs one command at a time).
+- `main/CMakeLists.txt` gains `bootloader_support` (for `esp_image_verify`).
+- Builds: the default build passes (6,307,872 B); a scratch build with `CONFIG_COMPANION_DEBUG_COMMANDS=y`,
+  `CONFIG_COMPANION_OTA_TEST_NO_VALIDATE=y` and `-D PROJECT_VER=1.6.0+novalid` passes (6,335,648 B, version
+  `1.6.0+novalid`: the command-line `PROJECT_VER` wins). Steps 2–7 are device steps: waiting for Task 9.

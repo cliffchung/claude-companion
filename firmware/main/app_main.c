@@ -27,6 +27,7 @@
 #include "sys/power_console.h"
 #include "voice/voice_console.h"
 #include "ota/fw_console.h"
+#include "ota/fw_update.h"
 #include "sys/power.h"
 #include "sys/hibernate.h"
 #include "sys/checkin.h"
@@ -168,6 +169,7 @@ void app_main(void)
 
     /* Everything below runs while the already-rendered logo remains visible. */
     settings_init();
+    fwu_boot_init();   /* Plan 6: the boot-loop guard, a pending image's check, a rollback note; before Wi-Fi */
     power_log_boot();
     display_apply_settings();
     secure_store_init();
@@ -205,6 +207,7 @@ void app_main(void)
     fw_console_init();         /* the `ota` verbs (Plan 6) */
     if (s_dark_boot && (boot_phase_exp() & BPX_NO_HOSTCACHE)) cc_link_host_cache_enable(false);
     if (cc_link_start() != ESP_OK) ESP_LOGE(TAG, "companion link failed to start");
+    fwu_link_started();      /* a pending image marks itself valid on the first result from the Host */
     hibernate_init();        /* boot-to-live after a hibernate */
     power_bench_boot();      /* a probe run that just finished */
     display_ctl_touch_int_init(power_touch_isr);   /* v1 only; v2 and v3 poll the touch in Off */
