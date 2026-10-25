@@ -457,10 +457,21 @@ esp_err_t cc_link_voice_check(int *rc) {
     *rc = v;
     return ESP_OK;
 }
-/* PREVIEW_LOG=long: a 300-character line with no spaces, CJK and a numbered list (Review Focus 3). */
+/* PREVIEW_LOG=long: a 300-character line with no spaces, CJK and a numbered list (Review Focus 3).
+   PREVIEW_LOG=screen:<fixture>: a captured `claude logs` stream from the host-test fixtures (output-pane fix). */
 static int s_paste_calls;
 esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, char *err, size_t ecap, int ms) {
     (void)cmd; (void)ms; if (ecap) err[0] = 0; if (st) *st = 0;
+    const char *lg = env_str("PREVIEW_LOG", "");
+    if (!strncmp(lg, "screen:", 7)) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", FIXTURE_DIR, lg + 7);
+        FILE *f = fopen(path, "rb");
+        size_t n = f ? fread(out, 1, cap - 1, f) : 0;
+        if (f) fclose(f);
+        out[n] = 0;
+        return f ? ESP_OK : ESP_FAIL;
+    }
     if (!strcmp(env_str("PREVIEW_LOG", ""), "long")) {
         char line[301];
         for (int i = 0; i < 300; i++) line[i] = (char)('a' + i % 26);
@@ -1338,6 +1349,8 @@ static int sessions_case(lv_display_t *d, const char *v) {
     if (!strcmp(v, "empty")) setenv("PREVIEW_FIXTURE", "none", 1);
     if (!strcmp(v, "16") || !strcmp(v, "resort-scroll")) setenv("PREVIEW_FIXTURE", "agents_16.json", 1);
     if (!strcmp(v, "long") || !strcmp(v, "interactive")) { setenv("PREVIEW_FIXTURE", "agents_long.json", 1); setenv("PREVIEW_LOG", "long", 1); }
+    if (!strcmp(v, "screen-log")) setenv("PREVIEW_LOG", "screen:logs_numbered.bin", 1);
+    if (!strcmp(v, "screen-dialog")) setenv("PREVIEW_LOG", "screen:logs_question.bin", 1);
     if (!strcmp(v, "no-wifi")) setenv("PREVIEW_WIFI", "0", 1);
     if (!strcmp(v, "no-host")) setenv("PREVIEW_HOST", "0", 1);
     if (!strcmp(v, "not-found")) setenv("PREVIEW_FAIL", "notfound", 1);
@@ -1417,6 +1430,20 @@ static int sessions_case(lv_display_t *d, const char *v) {
         assert(s_paste_calls == 1);
         assert(find_label(s, "Sent \xe2\x9c\x93", false));
         assert(!strcmp(field_text(s), ""));   /* the draft is cleared after a send */
+    } else if (!strcmp(v, "screen-log") || !strcmp(v, "screen-dialog")) {
+        /* the pane shows the conversation read off the rendered screen, never the footer or the status line */
+        static const char *chrome[] = { "tokens |", "auto mode on", "shift+tab", "agents", "/effort", "Claude Code v",
+                                        "Cogitated", "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80" };
+        for (size_t i = 0; i < sizeof(chrome) / sizeof(chrome[0]); i++)
+            if (find_label_has(s, chrome[i], 0)) { printf("check %s: FAIL the pane shows \"%s\"\n", name, chrome[i]); return 1; }
+        bool dialog = !strcmp(v, "screen-dialog");
+        const char *want = dialog ? "Which colour do you prefer for the test banner?" : "Which test fruit do you want?";
+        if (!find_label_has(s, want, 440) || !find_label_has(s, dialog ? "5. Chat about this" : "3. Plum", 440)) {
+            printf("check %s: FAIL the pane lacks the conversation\n", name); return 1;
+        }
+        /* a typed answer picks from a plain-text list; a selector dialog can't be answered by typing */
+        bool picks = find_label(s, "1\xe2\x80\x93" "3 picks an option", false) != NULL;
+        if (picks == dialog) { printf("check %s: FAIL the options line\n", name); return 1; }
     } else if (!strcmp(v, "low-battery")) {
         assert(find_label(s, "Battery 14 %. The Tab5 sleeps at 10 %.", false));
     } else if (!strcmp(v, "16")) {

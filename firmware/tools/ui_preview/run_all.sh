@@ -64,7 +64,7 @@ run net-sub-open
 runv "PREVIEW_HOST=0" settings-sub networks   # join a saved network with no Host set (the device gate's no-Host leg)
 run keyboard-settings
 for v in live selected-needs-you working loading stale reconnecting no-wifi not-found no-host empty \
-         interactive sent low-battery 16 long resort tap-resort resort-scroll keys idle forget new-key \
+         interactive sent low-battery 16 long screen-log screen-dialog resort tap-resort resort-scroll keys idle forget new-key \
          voice-rec voice-rec-limit voice-busy voice-cancel-busy voice-auto-stop voice-done voice-gone voice-error voice-nofield voice-norow; do run sessions "$v"; done
 run ctrlk
 run keyboard

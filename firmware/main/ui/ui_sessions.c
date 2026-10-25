@@ -23,6 +23,7 @@
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "companion/cc_cmd.h"
+#include "companion/cc_logview.h"
 #include "net/wifi_mgr.h"
 #include "net/tailscale.h"
 #include "net/ts_host.h"
@@ -50,8 +51,8 @@ static const char *TAG = "sessions";
 
 #define SNAP_CAP         128
 #define MAX_ROWS         16
-#define TAIL_LINES       40      /* cc_log_tail keeps this many lines; the wrap keeps what fits */
-#define LOGS_CAP         (16 * 1024)
+#define TAIL_LINES       40      /* cc_logview_tail (or cc_log_tail) keeps this many lines; the wrap keeps what fits */
+#define LOGS_CAP         (256 * 1024)   /* `claude logs` output, newest bytes: PSRAM, only while a log job runs */
 #define LOG_TEXT_CAP     4096
 #define WRAP_CAP         4096
 #define STATUS_CAP       512
@@ -276,7 +277,7 @@ static bool set_shown(lv_obj_t *o, bool on)
 
 /* ------------------------------------------------------------------ worker */
 
-static char *s_logs_buf;   /* worker only */
+
 
 static void res_lock(void);
 static void res_unlock(void);
@@ -367,18 +368,24 @@ static void run_job(const job_t *j)
     if (j->type == JOB_LOGS) {
         bool ok = false;
         int status = -1;
-        if (s_logs_buf && cc_cmd_logs(claude, j->id, cmd, sizeof(cmd))) {
-            esp_err_t e = cc_link_exec_tail(cmd, s_logs_buf, LOGS_CAP, &status, msg, sizeof(msg), 10000);
+        /* PSRAM, and only for this job: the raw output, and the conversation read off its rendered screen */
+        char *raw = heap_caps_malloc(LOGS_CAP, MALLOC_CAP_SPIRAM), *view = heap_caps_malloc(LOG_TEXT_CAP, MALLOC_CAP_SPIRAM);
+        const char *src = msg;
+        if (raw && view && cc_cmd_logs(claude, j->id, cmd, sizeof(cmd))) {
+            esp_err_t e = cc_link_exec_tail(cmd, raw, LOGS_CAP, &status, msg, sizeof(msg), 10000);
             ok = (e == ESP_OK || e == ESP_ERR_INVALID_SIZE) && status == 0;
             if (ok) {
-                char *start = s_logs_buf;
-                while ((*start & 0xC0) == 0x80) start++;   /* the tail may start mid-character */
-                memmove(s_logs_buf, start, strlen(start) + 1);
-                cc_log_tail(s_logs_buf, TAIL_LINES);
+                if (cc_logview_tail(raw, strlen(raw), TAIL_LINES, view, LOG_TEXT_CAP) > 0) {
+                    src = view;
+                } else {   /* no screen to read (a partial stream, no memory): the escape-stripping heuristic */
+                    char *start = raw;
+                    while ((*start & 0xC0) == 0x80) start++;   /* the tail may start mid-character */
+                    cc_log_tail(start, TAIL_LINES);
+                    src = start;
+                }
             }
         }
         /* keep the end of a tail longer than the result buffer, from a line start */
-        const char *src = ok ? s_logs_buf : msg;
         size_t len = strlen(src);
         if (len >= LOG_TEXT_CAP) {
             src += len - (LOG_TEXT_CAP - 1);
@@ -392,6 +399,8 @@ static void run_job(const job_t *j)
         s_logs.ok = ok;
         if (s_logs_text) strlcpy(s_logs_text, src, LOG_TEXT_CAP);
         res_unlock();
+        heap_caps_free(raw);
+        heap_caps_free(view);
         s_logs_pending = false;
         return;
     }
@@ -471,7 +480,6 @@ static void init_once(void)
     s_items = heap_caps_calloc(MAX_ROWS, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
     s_drafts = heap_caps_calloc(1, sizeof(sm_drafts_t), MALLOC_CAP_SPIRAM);
     s_notes = heap_caps_calloc(NOTES_MAX, sizeof(note_t), MALLOC_CAP_SPIRAM);
-    s_logs_buf = heap_caps_calloc(1, LOGS_CAP, MALLOC_CAP_SPIRAM);
     s_logs_text = heap_caps_calloc(1, LOG_TEXT_CAP, MALLOC_CAP_SPIRAM);
     s_tail = heap_caps_calloc(1, LOG_TEXT_CAP, MALLOC_CAP_SPIRAM);
     s_wrapped = heap_caps_calloc(1, WRAP_CAP, MALLOC_CAP_SPIRAM);
