@@ -1,6 +1,7 @@
 /* Full-screen terminal: the take-over of a Claude session on the Host, or an SSH session to another box
  * (spec §5.2, §5.4). One session bar over the top of the terminal; every key goes to the remote side except
- * Ctrl+] / Ctrl+Q / Ctrl+← (Leave), the Shift scroll keys and Ctrl+Space (voice input, follow-up 2026-10-24). */
+ * Ctrl+] / Ctrl+Q / Ctrl+← (Leave), the Shift scroll keys and Ctrl+Space (voice input, follow-up 2026-10-24; Esc
+ * too while this screen's dictation is recording or transcribing). */
 #include "ui.h"
 #include "ui_comp.h"
 #include "ui_softkbd.h"
@@ -33,7 +34,8 @@ static const char *TAG = "term_ui";
 #define BAR_SHOW_MS 3000        /* the session bar shows this long, then hides */
 #define BAR_TAP_ZONE 80         /* a tap this near the top shows the bar again */
 #define VOICE_ERROR_TOAST_MS 6000   /* as Sessions: the README pointer must be readable */
-#define VOICE_TYPE_CAP (VR_TEXT_MAX + 13)   /* cc_voice_type_build: the two 6-byte markers and the NUL */
+#define VOICE_TYPE_CAP (VR_TEXT_MAX + 14)   /* cc_voice_type_build_ex: the two 6-byte markers, a join space, the NUL */
+#define VOICE_HOLD_MS 60000         /* a transcript that couldn't be typed waits this long for a Ctrl+Space */
 
 /* Command mode (ui_terminal_open_command): one remote command on a pty, full screen.
  * Ctrl+] (and the old Ctrl+Q) is taken here and never sent (hotkeys.c); leaving, or the
@@ -94,6 +96,9 @@ typedef struct {
     voice_phase_t voice_shown;  /* what the bar shows: VOICE_IDLE is the session's own state */
     int voice_sec_shown;
     voice_result_t *vres;       /* PSRAM, from the start to the end of a run; zeroed after use */
+    char *held;                 /* PSRAM: a transcript the screen wasn't ready for; zeroed and freed when typed or old */
+    int64_t held_ms;
+    bool typed_once;            /* a dictation was typed in this session: the next one joins it with a space */
 } term_ctx_t;
 
 static term_ctx_t *s_ctx = NULL;
@@ -308,7 +313,8 @@ static void leave(term_ctx_t *c)
 /* Ctrl+Space toggles a recording in a take-over and in an SSH session. While recording, every key but Ctrl+Space, Esc
    (cancel) and the leave keys (which cancel, then leave) is eaten: key clicks stay off the Host and typing doesn't mix
    with the transcript. While transcribing, keys pass. The text is typed into this screen's pty with no Enter
-   (cc_voice_type_build); leaving the screen cancels the run and drops its result. Nothing is built in internal RAM:
+   (cc_voice_type_build_ex), and only when the screen is ready for it (term_voice_blocked); leaving the screen
+   cancels the run and drops its result. Nothing is built in internal RAM:
    the indicator is the bar's own dot and state label, and the result and the bytes live in PSRAM. */
 /* As Sessions' mono_ms: esp_timer on the device; the preview has none and drives lv_tick itself. */
 #ifdef UI_PREVIEW
@@ -368,6 +374,57 @@ static void voice_end_run(term_ctx_t *c)
     if (c->vres) { memset(c->vres, 0, sizeof(*c->vres)); heap_caps_free(c->vres); c->vres = NULL; }
 }
 
+static void held_wipe(term_ctx_t *c)
+{
+    if (!c->held) return;
+    memset(c->held, 0, VR_TEXT_MAX + 1);
+    heap_caps_free(c->held);
+    c->held = NULL;
+}
+
+/* Why the text can't be typed now, or STR_COUNT when it can (review I1, M3). Fails closed. Any session: the link or the
+   session is down, or a modal (the Disconnect confirm, a host-key question) or Ctrl+Tab's terminal UI owns the keys.
+   A take-over also needs Claude Code at its empty input line, judged as Sessions' paste gate does
+   (cc_screen_input_ready, with the permission-dialog matcher as a second opinion) on the live screen: a selector, a
+   dialog, a draft or a screen it doesn't know all say no, because typed letters and digits act there. An SSH shell
+   can't be judged; there the user dictates at a prompt (README). */
+static str_id_t term_voice_blocked(term_ctx_t *c)
+{
+    if (c->closing || !c->connected || !c->ssh || c->link_lost || link_down(c) || ui_keyboard_owns_input())
+        return STR_VOICE_NOT_READY;
+    if (!c->cmd_mode) return STR_COUNT;
+    size_t cap = (size_t)vt_rows(c->vt) * ((size_t)vt_cols(c->vt) * 4 + 1) + 1;
+    char *t = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    if (!t) return STR_VOICE_NOT_READY;
+    vt_screen_text(c->vt, t, cap);
+    bool ready = cc_screen_input_ready(t) && !cc_screen_is_permission_prompt(t);
+    heap_caps_free(t);
+    return ready ? STR_COUNT : STR_VOICE_NOT_AT_PROMPT;
+}
+
+/* Types text into the pty when the screen is ready: bracketed always in a take-over (Claude Code takes pastes; a fresh
+   vt may not have seen its DECSET 2004), in an SSH session only when the remote turned it on. No Enter. False, with a
+   toast, when it isn't ready. */
+static bool term_voice_type(term_ctx_t *c, const char *text)
+{
+    str_id_t why = term_voice_blocked(c);
+    if (why != STR_COUNT) { ui_toast_ms(tr(why), VOICE_ERROR_TOAST_MS); return false; }
+    char *buf = heap_caps_malloc(VOICE_TYPE_CAP, MALLOC_CAP_SPIRAM);
+    if (!buf) { ui_toast_ms(tr(STR_VOICE_NO_MEMORY), VOICE_ERROR_TOAST_MS); return false; }
+    size_t n = cc_voice_type_build_ex(text, c->cmd_mode || vt_bracketed_paste(c->vt), c->typed_once, buf, VOICE_TYPE_CAP);
+    if (n) { ssh_client_send(c->ssh, (const uint8_t *)buf, n); vt_scroll_view_reset(c->vt); c->typed_once = true; }
+    ESP_LOGI(TAG, "voice: typed %u bytes into the session", (unsigned)n);   /* a length only, never the text */
+    memset(buf, 0, VOICE_TYPE_CAP);
+    heap_caps_free(buf);
+    return true;
+}
+
+/* A held transcript older than VOICE_HOLD_MS is wiped: it never comes back late. */
+static void held_expire(term_ctx_t *c)
+{
+    if (c->held && voice_now_ms() - c->held_ms >= VOICE_HOLD_MS) held_wipe(c);
+}
+
 static void term_voice_cancel(term_ctx_t *c)
 {
     voice_cancel();
@@ -384,6 +441,11 @@ static void term_voice_toggle(term_ctx_t *c)
     vr_key_t a = vr_on_voice_key(&c->vkeys, voice_rec(&v), voice_now_ms());
     if (a == VR_KEY_IGNORE) return;   /* a key repeat, or a press too soon after the last start or stop */
     if (v.phase == VOICE_TRANSCRIBING) { ui_toast(tr(STR_VOICE_BUSY)); return; }
+    held_expire(c);
+    if (c->held && a == VR_KEY_START) {   /* a held transcript: this press types it if the screen is ready now */
+        if (term_voice_type(c, c->held)) held_wipe(c);
+        return;
+    }
     if (a == VR_KEY_STOP) {
         voice_stop();
         term_voice_get(c, &v);
@@ -414,21 +476,23 @@ static void term_voice_apply(term_ctx_t *c, const voice_result_t *r)
         if (id != STR_COUNT) ui_toast_ms(tr(id), VOICE_ERROR_TOAST_MS);
         return;
     }
-    if (c->closing || !c->connected || !c->ssh) return;   /* the session went: the text is dropped */
-    char *buf = heap_caps_malloc(VOICE_TYPE_CAP, MALLOC_CAP_SPIRAM);
-    if (!buf) { ui_toast_ms(tr(STR_VOICE_NO_MEMORY), VOICE_ERROR_TOAST_MS); return; }
-    size_t n = cc_voice_type_build(r->text, vt_bracketed_paste(c->vt), buf, VOICE_TYPE_CAP);
-    if (n) { ssh_client_send(c->ssh, (const uint8_t *)buf, n); vt_scroll_view_reset(c->vt); }
-    ESP_LOGI(TAG, "voice: typed %u bytes into the session", (unsigned)n);   /* a length only, never the text */
-    memset(buf, 0, VOICE_TYPE_CAP);
-    heap_caps_free(buf);
-    if (r->at_limit) ui_toast(tr(STR_VOICE_AT_LIMIT));
+    if (term_voice_type(c, r->text)) {
+        if (r->at_limit) ui_toast(tr(STR_VOICE_AT_LIMIT));
+        return;
+    }
+    /* not ready (it toasted why): held for the next Ctrl+Space, at most VOICE_HOLD_MS (a newer one replaces it) */
+    held_wipe(c);
+    c->held = heap_caps_calloc(1, VR_TEXT_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!c->held) return;
+    strlcpy(c->held, r->text, VR_TEXT_MAX + 1);
+    c->held_ms = voice_now_ms();
 }
 
 /* From the pump: the indicator, then a waiting result. The service posts before it goes idle, so idle after the take
    means nothing more comes. */
 static void term_voice_tick(term_ctx_t *c)
 {
+    held_expire(c);
     if (!c->voice_mine) return;
     voice_status_t v;
     term_voice_get(c, &v);
@@ -444,6 +508,7 @@ static void term_voice_tick(term_ctx_t *c)
    dropped now rather than held 60 s. */
 static void term_voice_leave(term_ctx_t *c)
 {
+    held_wipe(c);
     if (!c->voice_mine) return;
     voice_status_t v;
     voice_status(&v);
@@ -452,16 +517,19 @@ static void term_voice_leave(term_ctx_t *c)
     voice_end_run(c);
 }
 
-/* While recording: Esc cancels, the leave keys cancel and leave, everything else is eaten. True when it took ev
-   (or c may be gone: a leave). */
+/* While recording: Esc cancels, the leave keys cancel and leave, everything else is eaten. While this screen's
+   transcription is pending, Esc cancels it and isn't sent (review M1: the habit Sessions teaches; a second Esc, with
+   nothing pending, goes to the Host as usual); other keys pass. True when it took ev (or c may be gone: a leave). */
 static bool voice_gate(term_ctx_t *c, const key_event_t *ev, hk_term_t hk)
 {
     if (!c->voice_mine) return false;
     voice_status_t v;
     term_voice_get(c, &v);
+    bool esc = ev->type == KEY_EV_SPECIAL && ev->key == SK_ESC;
+    if (v.phase == VOICE_TRANSCRIBING && esc) { term_voice_cancel(c); return true; }
     if (!voice_rec(&v)) return false;
     if (hk == HK_T_LEAVE) { term_voice_cancel(c); leave(c); return true; }
-    if (ev->type == KEY_EV_SPECIAL && ev->key == SK_ESC) term_voice_cancel(c);
+    if (esc) term_voice_cancel(c);
     return true;
 }
 

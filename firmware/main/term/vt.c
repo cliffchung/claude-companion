@@ -544,9 +544,9 @@ void vt_set_bell_cb(vt_t *v, vt_bell_cb_t cb, void *user) { v->bell_cb = cb; v->
 void vt_set_title_cb(vt_t *v, vt_title_cb_t cb, void *user) { v->title_cb = cb; v->title_user = user; }
 const char *vt_title(const vt_t *v) { return v->title; }
 
-size_t vt_row_text(vt_t *v, int row, char *buf, size_t cap)
+static size_t cells_text(const vt_t *v, const vt_cell_t *r, char *buf, size_t cap)
 {
-    const vt_cell_t *r = vt_view_row(v, row);
+    if (!cap) return 0;
     size_t o = 0;
     for (int x = 0; x < v->cols && o + 5 < cap; x++) {
         uint32_t c = r[x].cp;
@@ -559,6 +559,25 @@ size_t vt_row_text(vt_t *v, int row, char *buf, size_t cap)
     }
     while (o > 0 && buf[o - 1] == ' ') o--;
     buf[o] = 0;
+    return o;
+}
+
+size_t vt_row_text(vt_t *v, int row, char *buf, size_t cap)
+{
+    return cells_text(v, vt_view_row(v, row), buf, cap);
+}
+
+size_t vt_screen_text(const vt_t *v, char *buf, size_t cap)
+{
+    if (!buf || !cap) return 0;
+    size_t o = 0;
+    buf[0] = 0;
+    for (int y = 0; y < v->rows; y++) {
+        if (o + 2 >= cap) break;
+        o += cells_text(v, &v->screen[y * v->cols], buf + o, cap - o - 1);
+        buf[o++] = '\n';
+        buf[o] = 0;
+    }
     return o;
 }
 
