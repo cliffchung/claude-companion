@@ -354,7 +354,8 @@ YOU, and doesn't light anything.
 - **Interactive sessions** (a plain `claude` in a terminal) aren't listed: nothing outside that
   terminal can open them.
 - **Stopped and finished sessions** can be opened: Open starts them again with their history, as
-  agent view does. Quick answers need a running session.
+  agent view does. Quick answers need a running session. A session with no process left (it was
+  stopped, even while it waited for you) shows as ENDED, and like DONE only the 4 newest are listed.
 
 ### Answering and opening
 

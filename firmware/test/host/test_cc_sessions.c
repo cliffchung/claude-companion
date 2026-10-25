@@ -150,7 +150,8 @@ static void test_parse_waiting_is_the_only_needs_you(void)
     TEST_ASSERT_EQUAL(CC_IDLE, by[2]->state);        /* blocked + idle: the turn ended, no question */
     TEST_ASSERT_FALSE(cc_session_needs_you(by[2]));
     TEST_ASSERT_EQUAL(CC_DONE, by[3]->state);
-    TEST_ASSERT_EQUAL(CC_IDLE, by[4]->state);        /* blocked, no pid, no status: stopped mid-wait */
+    TEST_ASSERT_EQUAL(CC_ENDED, by[4]->state);       /* blocked, no pid, no status: stopped mid-wait */
+    TEST_ASSERT_FALSE(cc_session_needs_you(by[4]));
     TEST_ASSERT_EQUAL(CC_WORKING, by[5]->state);
     TEST_ASSERT_EQUAL(CC_IDLE, by[6]->state);        /* state working, status idle: the process is idle */
     char out[64];
@@ -256,6 +257,75 @@ static void test_parse_live_from_pid(void)
     TEST_ASSERT_TRUE(find(r, m, "d0000001")->live);
 }
 
+/* The two real shapes of state "blocked" (Claude Code 2.1.310): with a pid and status "idle" the turn ended and
+   the session waits for your next message (IDLE); with no pid and no status it stopped while it waited (ENDED, so
+   it sorts and is limited with the finished ones, not the IDLE ones). */
+static void test_parse_blocked_live_idle_vs_stopped(void)
+{
+    const char *j =
+        "[{\"id\":\"aaaaaaa1\",\"sessionId\":\"11111111-1111-4111-8111-111111111111\",\"kind\":\"background\","
+        "\"cwd\":\"/Users/you/repo\",\"name\":\"companion-test-stopped\",\"startedAt\":3000,\"state\":\"blocked\"},"
+        "{\"pid\":4242,\"id\":\"aaaaaaa2\",\"sessionId\":\"22222222-2222-4222-8222-222222222222\",\"kind\":\"background\","
+        "\"cwd\":\"/Users/you/repo\",\"name\":\"companion-test-idle\",\"startedAt\":1000,"
+        "\"state\":\"blocked\",\"status\":\"idle\"},"
+        "{\"id\":\"aaaaaaa3\",\"sessionId\":\"33333333-3333-4333-8333-333333333333\",\"kind\":\"background\","
+        "\"cwd\":\"/Users/you/repo\",\"name\":\"companion-test-done\",\"startedAt\":2000,\"state\":\"done\"},"
+        "{\"id\":\"aaaaaaa4\",\"sessionId\":\"44444444-4444-4444-8444-444444444444\",\"kind\":\"background\","
+        "\"cwd\":\"/Users/you/repo\",\"name\":\"companion-test-asked\",\"startedAt\":500,"
+        "\"state\":\"blocked\",\"waitingFor\":\"input needed\"}]";
+    cc_session_t s[8];
+    int n = cc_sessions_parse(j, s, 8);
+    TEST_ASSERT_EQUAL(4, n);
+    const cc_session_t *stopped = find(s, n, "aaaaaaa1"), *idle = find(s, n, "aaaaaaa2");
+    TEST_ASSERT_FALSE(stopped->live);
+    TEST_ASSERT_EQUAL(CC_ENDED, stopped->state);
+    TEST_ASSERT_FALSE(cc_session_needs_you(stopped));
+    TEST_ASSERT_TRUE(idle->live);
+    TEST_ASSERT_EQUAL(CC_IDLE, idle->state);
+    TEST_ASSERT_FALSE(cc_session_needs_you(idle));
+    /* a question on screen is still NEEDS YOU, even without a pid (counted only when live) */
+    TEST_ASSERT_EQUAL(CC_NEEDS_YOU, find(s, n, "aaaaaaa4")->state);
+    TEST_ASSERT_FALSE(cc_session_needs_you(find(s, n, "aaaaaaa4")));
+    /* order: NEEDS_YOU, IDLE, DONE, ENDED; the stopped one is after DONE although it is the newest */
+    const char *want[] = { "aaaaaaa4", "aaaaaaa2", "aaaaaaa3", "aaaaaaa1" };
+    for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_STRING(want[i], s[i].id);
+    char out[64];
+    cc_summary(s, n, out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("All quiet", out);
+    /* it counts toward the finished limit: with 1 finished kept, the newest finished (the stopped one) stays */
+    TEST_ASSERT_EQUAL(3, cc_sessions_visible(s, n, 1));
+    TEST_ASSERT_EQUAL_STRING("aaaaaaa4", s[0].id);
+    TEST_ASSERT_EQUAL_STRING("aaaaaaa2", s[1].id);
+    TEST_ASSERT_EQUAL_STRING("aaaaaaa1", s[2].id);
+}
+
+/* Many stopped blocked sessions no longer crowd the list as IDLE: only the 4 newest finished ones are kept. */
+static void test_visible_limits_stopped_blocked(void)
+{
+    char j[4096];
+    size_t o = 0;
+    o += (size_t)snprintf(j + o, sizeof(j) - o, "[");
+    for (int i = 0; i < 6; i++) {
+        o += (size_t)snprintf(j + o, sizeof(j) - o,
+                              "%s{\"id\":\"bbbbbbb%d\",\"sessionId\":\"%d1111111-1111-4111-8111-111111111111\","
+                              "\"kind\":\"background\",\"name\":\"companion-test-%d\",\"startedAt\":%d,\"state\":\"blocked\"}",
+                              i ? "," : "", i, i, i, 1000 + i);
+    }
+    o += (size_t)snprintf(j + o, sizeof(j) - o,
+                          ",{\"pid\":7,\"id\":\"ccccccc1\",\"sessionId\":\"c1111111-1111-4111-8111-111111111111\","
+                          "\"kind\":\"background\",\"startedAt\":1,\"state\":\"blocked\",\"status\":\"idle\"}]");
+    cc_session_t s[16];
+    int n = cc_sessions_parse(j, s, 16);
+    TEST_ASSERT_EQUAL(7, n);
+    TEST_ASSERT_EQUAL_STRING("ccccccc1", s[0].id);   /* the live idle one leads */
+    TEST_ASSERT_EQUAL(CC_IDLE, s[0].state);
+    for (int i = 1; i < n; i++) TEST_ASSERT_EQUAL(CC_ENDED, s[i].state);
+    n = cc_sessions_visible(s, n, 4);
+    TEST_ASSERT_EQUAL(5, n);
+    const char *want[] = { "ccccccc1", "bbbbbbb5", "bbbbbbb4", "bbbbbbb3", "bbbbbbb2" };
+    for (int i = 0; i < 5; i++) TEST_ASSERT_EQUAL_STRING(want[i], s[i].id);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -271,5 +341,7 @@ int main(void)
     RUN_TEST(test_summary_stopped_blocked_not_counted);
     RUN_TEST(test_age_format);
     RUN_TEST(test_parse_live_from_pid);
+    RUN_TEST(test_parse_blocked_live_idle_vs_stopped);
+    RUN_TEST(test_visible_limits_stopped_blocked);
     return UNITY_END();
 }
