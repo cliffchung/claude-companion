@@ -116,6 +116,21 @@ static void test_clean_keeps_utf8_and_unclosed(void)
     clean_is("caf\xc3\xa9 [unclosed ", "caf\xc3\xa9 [unclosed");
 }
 
+/* spec 9.3 step 4: symbols are not letters, so whisper's music notes, ellipses, dashes and curly quotes alone empty
+   it (Task 2 review minor); a real letter beside them keeps everything, and non-Latin letters still count */
+static void test_clean_symbols_only(void)
+{
+    clean_is("\xe2\x99\xaa\n", "");                            /* ♪ */
+    clean_is(" \xe2\x99\xaa \xe2\x99\xab ", "");               /* ♪ ♫ */
+    clean_is("\xe2\x80\xa6", "");                               /* … */
+    clean_is("\xe2\x80\x93 \xe2\x80\x94", "");                 /* – — */
+    clean_is("\xe2\x80\x9c\xe2\x80\x9d \xe2\x80\x98\xe2\x80\x99", "");   /* “” ‘’ */
+    clean_is("\xe2\x99\xaa Hello \xe2\x99\xaa", "\xe2\x99\xaa Hello \xe2\x99\xaa");
+    clean_is("\xe2\x80\x9c" "7\xe2\x80\x9d", "\xe2\x80\x9c" "7\xe2\x80\x9d");
+    clean_is("\xc3\xa9", "\xc3\xa9");                            /* é */
+    clean_is("\xe6\x97\xa5\xe6\x9c\xac", "\xe6\x97\xa5\xe6\x9c\xac");     /* 日本 */
+}
+
 static void test_merge_spacing(void)
 {
     char o[64];
@@ -186,6 +201,7 @@ int main(void)
     RUN_TEST(test_toggle_hold_after_stop_does_not_restart);
     RUN_TEST(test_clean_leading_space); RUN_TEST(test_clean_tags);
     RUN_TEST(test_clean_multiline_and_controls); RUN_TEST(test_clean_keeps_utf8_and_unclosed);
+    RUN_TEST(test_clean_symbols_only);
     RUN_TEST(test_merge_spacing); RUN_TEST(test_merge_cut_at_word); RUN_TEST(test_merge_cut_utf8_boundary);
     RUN_TEST(test_host_result_map); RUN_TEST(test_out_text_ids);
     return UNITY_END();

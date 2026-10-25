@@ -61,6 +61,13 @@ X(SET_FALLBACK_BAD, "Use a home network address like 192.168.1.50, or leave it e
 X(SET_CLAUDE_PATH, "Claude path on Host") \
 X(SET_CLAUDE_PATH_PH, "~/.local/bin/claude") \
 X(SET_CLAUDE_PATH_BAD, "Use only letters, digits and _ . / ~ - (1 to 63 characters)") \
+X(SET_WHISPER_PATH, "Whisper path on Host") \
+X(SET_WHISPER_PATH_PH, "/opt/homebrew/bin/whisper-cli") \
+X(SET_WHISPER_MODEL, "Whisper model on Host") \
+X(SET_WHISPER_MODEL_PH, "~/.local/share/whisper/ggml-base.en.bin") \
+X(SET_VOICE, "Voice input") \
+X(SET_VOICE_CHECK, "Check") \
+X(SET_VOICE_READY, "Voice input is ready on the Host") \
 X(SET_HOST_KEY, "Host key") \
 X(SET_NO_PIN, "No key pinned yet") \
 X(SET_NEW_KEY_SEEN, "The key the Host presented. It isn't trusted until you check it on the Host and trust it.") \
@@ -79,7 +86,7 @@ X(SET_SHOW, "Show") \
 X(SET_HIDE, "Hide") \
 X(SET_KEY_UNREADABLE, "The device key can't be read") \
 X(SET_DEVICE_KEY_NOTE, "Add this line to ~/.ssh/authorized_keys on each host this Tab5 signs in to.") \
-X(SET_HOST_NOTE, "The Host is one of your SSH hosts. The Tab5 lists its Claude Code sessions and runs claude from this path.") \
+X(SET_HOST_NOTE, "The Host is one of your SSH hosts. The Tab5 lists its Claude Code sessions, runs claude from this path, and runs whisper-cli for voice input.") \
 X(SET_PW_SCREEN, "Screen") \
 X(SET_PW_DIM, "Dim after") \
 X(SET_PW_OFF, "Screen off after") \
@@ -370,14 +377,13 @@ X(HK_W_CTRL_P, "settings") \
 X(HK_K_CTRL_K, "Ctrl+K") \
 X(HK_W_CTRL_K, "this list") \
 X(HK_K_CTRL_SPACE, "Ctrl+Space") \
-X(HK_W_CTRL_SPACE, "voice input (coming later)") \
+X(HK_W_CTRL_SPACE, "voice input: press to start, again to stop") \
 X(HK_K_ESC, "Esc") \
 X(HK_W_ESC, "clear the answer, or go back") \
 X(HK_K_CTRL_BRACKET, "Ctrl+\xe2\x86\x90") \
 X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
 X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
-X(HK_VOICE, "Voice input comes in a later update") \
 X(TERM_KEEPS_RUNNING, "The session keeps running on the Host.") \
 X(SSH_NO_SESSION, "Couldn't start SSH. Try again.") \
 X(SSH_CANT_CONNECT, "Couldn't connect:") \
@@ -431,6 +437,13 @@ X(HF_ERR_NO_ADDRESS, "Enter the host's address") \
 X(HF_ERR_NO_USER, "Enter a user") \
 X(HF_ERR_BAD_PORT, "The port is a number from 1 to 65535") \
 X(HF_ERR_IS_HOST, "That's the Host: its sessions are on the Sessions screen.") \
+X(VOICE_RECORDING, "Recording") \
+X(VOICE_HINT, "Ctrl+Space stops \xc2\xb7 Esc cancels") \
+X(VOICE_TRANSCRIBING, "Transcribing on the Host\xe2\x80\xa6") \
+X(VOICE_REVIEW, "Check the text, then press Enter to send") \
+X(VOICE_CUT, "The text was cut to fit the answer field") \
+X(VOICE_AT_LIMIT, "Stopped at the 30 s limit") \
+X(VOICE_SESSION_GONE, "That session is gone, so the text was dropped") \
 X(VOICE_TOO_SHORT, "Too short. Press Ctrl+Space, speak, then press it again.") \
 X(VOICE_NO_SPEECH, "No speech heard. Try again closer to the Tab5.") \
 X(VOICE_BUSY, "Still transcribing\xe2\x80\xa6") \

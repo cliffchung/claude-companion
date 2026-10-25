@@ -25,6 +25,8 @@
 #include "net/ts_host.h"
 #include "sys/power.h"
 #include "sys/checkin.h"
+#include "voice/voice.h"
+#include "ui/sessions_model.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -397,6 +399,52 @@ int cc_settings_server(void) { return pv_host() ? 0 : -1; }
 static int s_set_server_calls; static char s_set_server_name[48];
 void cc_link_set_server(const char *n) { s_set_server_calls++; snprintf(s_set_server_name, sizeof(s_set_server_name), "%s", n ? n : ""); }
 bool cc_link_set_claude_path(const char *p) { (void)p; return true; }
+/* Plan 5 Task 3: the whisper settings (validated as the device does) and the check (PREVIEW_VOICE_RC; -1: not connected) */
+static char s_pv_whisper_path[64] = CC_WHISPER_DEFAULT, s_pv_whisper_model[64] = CC_WHISPER_MODEL_DEFAULT;
+static int s_voice_check_calls;
+const char *cc_settings_whisper_path(char *o, size_t cap) { snprintf(o, cap, "%s", s_pv_whisper_path); return o; }
+const char *cc_settings_whisper_model(char *o, size_t cap) { snprintf(o, cap, "%s", s_pv_whisper_model); return o; }
+bool cc_link_set_whisper_path(const char *p) { if (!cc_path_valid(p)) return false; snprintf(s_pv_whisper_path, sizeof(s_pv_whisper_path), "%s", p); return true; }
+bool cc_link_set_whisper_model(const char *p) { if (!cc_path_valid(p)) return false; snprintf(s_pv_whisper_model, sizeof(s_pv_whisper_model), "%s", p); return true; }
+/* Plan 5 Task 6: a scriptable voice service. A case sets the phase, elapsed time and meter, and posts a result. */
+static voice_status_t s_pv_voice;
+static voice_result_t s_pv_vres; static bool s_pv_vres_ready;
+static int s_voice_start_calls, s_voice_stop_calls, s_voice_cancel_calls;
+vr_out_t voice_start(const char *key) {
+    s_voice_start_calls++;
+    if (s_pv_voice.phase != VOICE_IDLE) return VR_OUT_BUSY;
+    memset(&s_pv_voice, 0, sizeof(s_pv_voice));
+    s_pv_voice.phase = VOICE_STARTING;
+    snprintf(s_pv_voice.key, sizeof(s_pv_voice.key), "%s", key);
+    return VR_OUT_STARTED;
+}
+void voice_stop(void) {
+    s_voice_stop_calls++;
+    if (s_pv_voice.phase == VOICE_STARTING || s_pv_voice.phase == VOICE_RECORDING) { s_pv_voice.phase = VOICE_TRANSCRIBING; s_pv_voice.transcribing_ms = 0; }
+}
+void voice_cancel(void) { s_voice_cancel_calls++; s_pv_voice.phase = VOICE_IDLE; }
+void voice_status(voice_status_t *o) { *o = s_pv_voice; }
+bool voice_take_result(voice_result_t *o) {
+    if (!s_pv_vres_ready) return false;
+    *o = s_pv_vres; memset(&s_pv_vres, 0, sizeof(s_pv_vres)); s_pv_vres_ready = false;
+    return true;
+}
+/* The service's end: a result for key, then idle. */
+static void pv_voice_post(const char *key, vr_out_t out, const char *text, bool at_limit) {
+    memset(&s_pv_vres, 0, sizeof(s_pv_vres));
+    s_pv_vres.gen++; s_pv_vres.out = out; s_pv_vres.at_limit = at_limit;
+    snprintf(s_pv_vres.key, sizeof(s_pv_vres.key), "%s", key);
+    snprintf(s_pv_vres.text, sizeof(s_pv_vres.text), "%s", text ? text : "");
+    s_pv_vres_ready = true;
+    s_pv_voice.phase = VOICE_IDLE;
+}
+esp_err_t cc_link_voice_check(int *rc) {
+    s_voice_check_calls++;
+    int v = env_int("PREVIEW_VOICE_RC", 0);
+    if (v < 0) return ESP_ERR_INVALID_STATE;
+    *rc = v;
+    return ESP_OK;
+}
 /* PREVIEW_LOG=long: a 300-character line with no spaces, CJK and a numbered list (Review Focus 3). */
 static int s_paste_calls;
 esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *st, char *err, size_t ecap, int ms) {
@@ -964,6 +1012,166 @@ static int selected_index(lv_obj_t *list) {
     return -1;
 }
 
+/* ------------------------------------------------------------ voice input on Sessions (Plan 5 Task 7) */
+static int timers_with_period(uint32_t ms);
+/* The shown 64 x 64 button in the detail pane: the mic. */
+static lv_obj_t *mic_button_of(lv_obj_t *o) {
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return NULL;
+    if (lv_obj_check_type(o, &lv_button_class) && lv_obj_get_width(o) == UI_TK_TARGET && lv_obj_get_height(o) == UI_TK_TARGET) {
+        lv_area_t a; lv_obj_get_coords(o, &a);
+        if (a.x1 >= 440) return o;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *r = mic_button_of(lv_obj_get_child(o, i));
+        if (r) return r;
+    }
+    return NULL;
+}
+static bool label_red(lv_obj_t *l) { return l && lv_color_eq(lv_obj_get_style_text_color(l, 0), lv_color_hex(UI_TK_RED)); }
+static bool mic_ring_red(lv_obj_t *scr) {
+    lv_obj_t *m = mic_button_of(scr);
+    return m && lv_obj_get_style_border_width(m, 0) == 2 && lv_color_eq(lv_obj_get_style_border_color(m, 0), lv_color_hex(UI_TK_RED));
+}
+/* Ctrl+Space starts a recording on the selected session; the stub then records for ms at meter m. */
+static void pv_record(lv_display_t *d, int ms, int m) {
+    int calls = s_voice_start_calls;
+    assert(sink_ch(' ', MOD_CTRL) && s_voice_start_calls == calls + 1);
+    s_pv_voice.phase = VOICE_RECORDING; s_pv_voice.elapsed_ms = ms; s_pv_voice.meter = m;
+    step(d, 400); step(d, 400);   /* the 100 ms meter and the 300 ms tick; past the 700 ms toggle guard */
+}
+/* A second Ctrl+Space stops it: transcribing. */
+static void pv_stop(lv_display_t *d) {
+    int calls = s_voice_stop_calls;
+    assert(sink_ch(' ', MOD_CTRL) && s_voice_stop_calls == calls + 1);
+    assert(s_pv_voice.phase == VOICE_TRANSCRIBING);
+    step(d, 400); step(d, 400);
+}
+static char *key_of(int i, char *k) { sm_key(&s_preview_sessions[i], k, SM_KEY_MAX); return k; }
+
+static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *name, const char *v) {
+    char why[256], k0[SM_KEY_MAX];
+    int r = 0;
+    if (!strcmp(v, "voice-rec")) {
+        sink_text("ab"); step(d, 400);
+        pv_record(d, 7000, 60);
+        lv_obj_t *t = find_label(s, "0:07 / 0:30", false);
+        if (!t || !obj_shown(t)) { printf("check %s: FAIL no timer 0:07 / 0:30\n", name); return 1; }
+        assert(!label_red(t) && find_label(s, "Recording", false) && find_label(s, "Ctrl+Space stops \xc2\xb7 Esc cancels", false));
+        lv_obj_t *bar = find_shown(s, &lv_bar_class);
+        assert(bar && lv_bar_get_value(bar) == 60 && lv_obj_get_width(bar) == 160 && lv_obj_get_height(bar) == 8);
+        if (!mic_ring_red(s)) { printf("check %s: FAIL the mic has no 2 px red border\n", name); return 1; }
+        if (timers_with_period(100) != 1 || !ui_sessions_voice_meter()) { printf("check %s: FAIL %d 100 ms timers\n", name, timers_with_period(100)); return 1; }
+        r |= pv_run_checks(d, s, name, true, 0);   /* the amber scan, the fit, the targets, the timers (the meter exempt) */
+        /* every key but Ctrl+Space and Esc is eaten: the draft, the paste and the selection stay */
+        int sel = selected_index(list);
+        sink_text("x"); assert(sink_sk(SK_ENTER)); assert(sink_sk(SK_DOWN)); assert(sink_sk(SK_BACKSPACE)); step(d, 400);
+        if (strcmp(field_text(s), "ab") || s_paste_calls || selected_index(list) != sel) {
+            printf("check %s: FAIL keys acted while recording (draft \"%s\", %d pastes, row %d)\n", name, field_text(s), s_paste_calls, selected_index(list));
+            return 1;
+        }
+        /* Esc cancels (and keeps the draft) */
+        assert(sink_sk(SK_ESC)); step(d, 400);
+        if (s_voice_cancel_calls != 1 || strcmp(field_text(s), "ab")) { printf("check %s: FAIL Esc: %d cancels, draft \"%s\"\n", name, s_voice_cancel_calls, field_text(s)); return 1; }
+        step(d, 400);
+        if (timers_with_period(100) != 0 || ui_sessions_voice_meter()) { printf("check %s: FAIL the meter outlived the cancel\n", name); return 1; }
+        if (find_label(s, "0:07 / 0:30", false) && obj_shown(find_label(s, "0:07 / 0:30", false))) { printf("check %s: FAIL the strip outlived the cancel\n", name); return 1; }
+        /* a new recording; Ctrl+Space past the 700 ms guard stops it */
+        pv_record(d, 2000, 40);
+        pv_stop(d);
+        if (s_voice_stop_calls != 1) { printf("check %s: FAIL %d stops\n", name, s_voice_stop_calls); return 1; }
+        assert(s_paste_calls == 0);
+        return r;
+    }
+    if (!strcmp(v, "voice-rec-limit")) {
+        pv_record(d, 27000, 80);
+        lv_obj_t *t = find_label(s, "0:27 / 0:30", false);
+        if (!label_red(t)) { printf("check %s: FAIL the timer at 0:27 is not red\n", name); return 1; }
+        return pv_run_checks(d, s, name, true, 0);
+    }
+    if (!strcmp(v, "voice-busy")) {
+        pv_record(d, 4000, 50);
+        pv_stop(d);
+        s_pv_voice.transcribing_ms = 5000; step(d, 400);
+        lv_obj_t *n = find_label(s, "Transcribing on the Host\xe2\x80\xa6 5 s", false);
+        if (!n || !obj_shown(n)) { printf("check %s: FAIL no transcribing note with its seconds\n", name); return 1; }
+        if (timers_with_period(100) != 0) { printf("check %s: FAIL a 100 ms timer while transcribing\n", name); return 1; }
+        if (mic_ring_red(s)) { printf("check %s: FAIL the mic is still red\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, true, 0);
+        /* Ctrl+Space while transcribing says so and starts nothing; Enter is eaten */
+        int starts = s_voice_start_calls;
+        assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
+        assert(s_voice_start_calls == starts && find_label(lv_layer_top(), "Still transcribing\xe2\x80\xa6", false));
+        sink_text("q"); assert(sink_sk(SK_ENTER)); step(d, 400);
+        assert(!strcmp(field_text(s), "") && s_paste_calls == 0);
+        return r;
+    }
+    if (!strcmp(v, "voice-done")) {
+        /* record for the first session; while transcribing, select the second by touch and re-sort the list */
+        char first[96]; snprintf(first, sizeof(first), "%s", s_preview_sessions[0].name);
+        key_of(0, k0);
+        sink_text("old"); step(d, 400);
+        pv_record(d, 3000, 50);
+        pv_stop(d);
+        lv_obj_send_event(lv_obj_get_child(list, 1), LV_EVENT_CLICKED, NULL); step(d, 400);
+        assert(selected_index(list) == 1);
+        char second[96]; snprintf(second, sizeof(second), "%s", s_preview_sessions[1].name);
+        preview_resort_to_last(0); step(d, 400);
+        assert(find_label_x(s, second, 440));
+        pv_voice_post(k0, VR_OUT_TEXT, "Please run the tests.", false); step(d, 400);
+        if (strcmp(field_text(s), "")) { printf("check %s: FAIL the second session's draft is \"%s\"\n", name, field_text(s)); return 1; }
+        /* select the first session again (now the last row): its draft has the text, and the review note */
+        lv_obj_t *row = row_named(s, first);
+        assert(row);
+        lv_obj_send_event(row, LV_EVENT_PRESSED, NULL);
+        lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 400);
+        assert(find_label_x(s, first, 440));
+        if (strcmp(field_text(s), "old Please run the tests.")) { printf("check %s: FAIL the first session's draft is \"%s\"\n", name, field_text(s)); return 1; }
+        lv_obj_t *n = find_label(s, "Check the text, then press Enter to send", false);
+        if (!n || !obj_shown(n)) { printf("check %s: FAIL no review note\n", name); return 1; }
+        if (s_paste_calls) { printf("check %s: FAIL cc_link_paste was called\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, true, 0);
+        step(d, 5200);   /* the review note goes after 5 s; the text stays */
+        assert(!find_label(s, "Check the text, then press Enter to send", false) || !obj_shown(find_label(s, "Check the text, then press Enter to send", false)));
+        assert(!strcmp(field_text(s), "old Please run the tests.") && s_paste_calls == 0);
+        return r;
+    }
+    if (!strcmp(v, "voice-gone")) {
+        pv_record(d, 3000, 50);
+        pv_stop(d);
+        pv_voice_post("gone:no-such-session", VR_OUT_TEXT, "Lost words.", false); step(d, 400);
+        if (!find_label(lv_layer_top(), "That session is gone, so the text was dropped", false)) { printf("check %s: FAIL no gone toast\n", name); return 1; }
+        assert(!strcmp(field_text(s), "") && s_paste_calls == 0);
+        for (int i = 0; i < s_preview_n; i++) assert(!find_label_has(s, "Lost words", 0));
+        return pv_run_checks(d, s, name, true, 0);
+    }
+    if (!strcmp(v, "voice-error")) {
+        key_of(0, k0);
+        pv_record(d, 3000, 50);
+        pv_stop(d);
+        pv_voice_post(k0, VR_OUT_NO_MODEL, "", false); step(d, 400);
+        lv_obj_t *n = find_label_has(s, "The whisper model isn't on the Host", 440);   /* dotted to its slot */
+        if (!n || !obj_shown(n) || !label_red(n)) { printf("check %s: FAIL no red NO_MODEL note\n", name); return 1; }
+        printf("sessions voice-error: note \"%s\"\n", lv_label_get_text(n));
+        if (!find_label(lv_layer_top(), tr(STR_VOICE_NO_MODEL), false)) { printf("check %s: FAIL no toast with the whole copy\n", name); return 1; }
+        assert(!strcmp(field_text(s), ""));
+        return pv_run_checks(d, s, name, true, 0);   /* the note dots inside its slot */
+    }
+    if (!strcmp(v, "voice-nofield")) {
+        int k = -1;
+        for (int i = 0; i < s_preview_n; i++) if (s_preview_sessions[i].background && s_preview_sessions[i].state == CC_DONE) k = i;
+        assert(k >= 0);
+        for (int i = 0; i < k; i++) { assert(sink_sk(SK_DOWN)); step(d, 400); }
+        assert(selected_index(list) == k && !field_text(s));
+        assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
+        if (s_voice_start_calls) { printf("check %s: FAIL voice_start called\n", name); return 1; }
+        if (!find_label(lv_layer_top(), "Voice input works in a session's answer field", false)) { printf("check %s: FAIL no needs-field toast\n", name); return 1; }
+        return pv_run_checks(d, s, name, true, 0);
+    }
+    (void)why;
+    fprintf(stderr, "preview: unknown sessions case %s\n", v);
+    return 2;
+}
+
 static int sessions_case(lv_display_t *d, const char *v) {
     char name[64];
     snprintf(name, sizeof(name), !strcmp(v, "ctrlk") ? "ctrlk" : "sessions-%s", v);
@@ -989,7 +1197,7 @@ static int sessions_case(lv_display_t *d, const char *v) {
     lv_obj_t *row0 = s_preview_n > 0 ? row_named(s, s_preview_sessions[0].name) : NULL;
     lv_obj_t *list = row0 ? lv_obj_get_parent(row0) : NULL;
     if (!strcmp(v, "live") || !strcmp(v, "selected-needs-you") || !strcmp(v, "resort") || !strcmp(v, "16") ||
-        !strcmp(v, "tap-resort") || !strcmp(v, "resort-scroll")) needs = true;
+        !strcmp(v, "tap-resort") || !strcmp(v, "resort-scroll") || !strncmp(v, "voice-", 6)) needs = true;
     if (!strcmp(v, "live")) {
         assert(find_label(s, "\xe2\x97\x8f 2 need you", false));
         assert(list && selected_index(list) == 0);
@@ -1176,16 +1384,21 @@ static int sessions_case(lv_display_t *d, const char *v) {
         sink_text("cd");
         assert(sink_ch(' ', MOD_CTRL)); step(d, 100);
         assert(!strcmp(field_text(s), "cd"));   /* no space reaches the field */
-        assert(find_label(lv_layer_top(), tr(STR_HK_VOICE), false));
+        assert(s_voice_start_calls == 1);       /* Plan 5: it starts voice input */
+        assert(sink_sk(SK_ESC) && s_voice_cancel_calls == 1);
+        assert(!strcmp(field_text(s), "cd"));   /* Esc while recording cancels it and keeps the draft */
         step(d, 3100);
         assert(sink_ch('p', MOD_CTRL)); step(d, 400);
         assert(ui_nav_is_top(ui_settings_create));
         ui_nav_back(); step(d, 400);
         s = lv_screen_active();
         assert(ui_nav_is_top(ui_sessions_create) && !strcmp(field_text(s), "cd"));   /* the draft outlives the visit */
+    } else if (!strncmp(v, "voice-", 6)) {
+        return voice_case(d, s, list, name, v);
     } else if (!strcmp(v, "ctrlk")) {
         assert(sink_ch('k', MOD_CTRL) && ui_sessions_keys_overlay_shown());
         step(d, 100);
+        assert(find_label(s, "voice input: press to start, again to stop", false));
         /* two columns, nothing wrapped */
         lv_obj_t *t = find_label(s, "Keyboard shortcuts", false);
         assert(t);
@@ -1722,6 +1935,7 @@ static int settings_case(lv_display_t *d, int section) {
     else snprintf(name, sizeof(name), "settings-%d", section);
     if (env_int("PREVIEW_TS", 2) != 2) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-ts%d", env_int("PREVIEW_TS", 2));
     if (!env_int("PREVIEW_KEY", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-nokey");
+    if (env_int("PREVIEW_VOICE_RC", 0)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-rc%d", env_int("PREVIEW_VOICE_RC", 0));
     preview_sessions_load();
     ui_nav_home(); step(d,200);
     ui_nav_push(ui_settings_create, NULL); step(d,200);
@@ -1906,8 +2120,44 @@ static int settings_case(lv_display_t *d, int section) {
                    lv_label_get_text(find_label_has(panel, "Mac", 0) ? find_label_has(panel, "Mac", 0) : find_label_has(panel, "retry in", 0)));
             return 1;
         }
+    } else if (section == UI_SET_HOST && !strcmp(click, "Voice input")) {
+        /* P5-5: the check runs once on the worker and toasts its result (PREVIEW_VOICE_RC picks it) */
+        step(d, 100);
+        const char *want = env_int("PREVIEW_VOICE_RC", 0) == 121 ? tr(STR_VOICE_NO_MODEL) : tr(STR_SET_VOICE_READY);
+        if (s_voice_check_calls != 1) { printf("check %s: FAIL voice check called %d times\n", name, s_voice_check_calls); return 1; }
+        if (!find_label(top, want, false)) { printf("check %s: FAIL no toast \"%s\"\n", name, want); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);   /* the long error toast wraps inside the screen */
+        lv_obj_clean(top);
+        return r;
+    } else if (section == UI_SET_HOST && !strcmp(click, "Whisper model on Host")) {
+        /* the prompt shows the default; a path with a space is refused with the path copy and not saved */
+        lv_obj_t *ta = find_shown(top, &lv_textarea_class);
+        assert(ta && !strcmp(lv_textarea_get_text(ta), CC_WHISPER_MODEL_DEFAULT));
+        prompt_answer(d, "~/my models/base.bin");
+        assert(find_label(top, tr(STR_SET_CLAUDE_PATH_BAD), false));
+        assert(!strcmp(s_pv_whisper_model, CC_WHISPER_MODEL_DEFAULT));
+        lv_obj_clean(top); step(d, 200);
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Whisper model on Host"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        prompt_answer(d, "~/models/ggml-small.en.bin");
+        assert(!strcmp(s_pv_whisper_model, "~/models/ggml-small.en.bin"));
+        assert(find_label(settings_panel(s), "~/models/ggml-small.en.bin", false));
+        snprintf(s_pv_whisper_model, sizeof(s_pv_whisper_model), "%s", CC_WHISPER_MODEL_DEFAULT);
+        panel = settings_panel(s);
     } else if (section == UI_SET_HOST && !click[0]) {
         assert(!find_label(s, "(macOS)", true));
+        /* Plan 5 (spec 6.5): Whisper path, Whisper model and Voice input follow Claude path, with the defaults */
+        static const char *const order[] = { "Claude path on Host", "Whisper path on Host", "Whisper model on Host", "Voice input" };
+        int32_t prev = -1;
+        for (unsigned i = 0; i < 4; i++) {
+            int32_t y = label_y(panel, order[i]);
+            if (y <= prev) { printf("check %s: FAIL \"%s\" at y %d, not below the row before it\n", name, order[i], (int)y); return 1; }
+            prev = y;
+        }
+        lv_obj_t *wp = row_labeled(panel, "Whisper path on Host"), *wm = row_labeled(panel, "Whisper model on Host");
+        assert(wp && wm && row_labeled(panel, "Voice input"));
+        assert(find_label(wp, CC_WHISPER_DEFAULT, false) && find_label(wm, CC_WHISPER_MODEL_DEFAULT, false));
+        assert(find_label(row_labeled(panel, "Voice input"), "Check", false));
+        assert(find_label(panel, tr(STR_SET_HOST_NOTE), false));
         assert(find_label(panel, "\xe2\x97\x8f connected over home Wi-Fi", false));
         assert(find_label(panel, "ssh-ed25519 \xe2\x80\xa6 claude-companion \xc2\xb7 Show", false));
         for (lv_obj_t *o = rail_row(s, 0); o; o = NULL) assert(lv_obj_get_height(o) == UI_TK_RAIL_ROW_H);

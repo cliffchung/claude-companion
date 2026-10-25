@@ -18,6 +18,8 @@
 #include "ui_softkbd.h"
 #include "ui/sessions_model.h"
 #include "ui/hotkeys.h"
+#include "voice/voice_rules.h"
+#include "voice/voice.h"
 #include "companion/cc_link.h"
 #include "companion/cc_sessions.h"
 #include "companion/cc_cmd.h"
@@ -64,10 +66,17 @@ static const char *TAG = "sessions";
 #define LIST_PAD_R       UI_TK_GAP_S
 #define BODY_PAD_V       UI_TK_GAP_M
 #define CELL_W           12      /* FONT_MONO's cell */
+#define VOICE_NOTE_MS    5000    /* "Check the text, then press Enter to send" shows this long */
+#define VOICE_METER_MS   100     /* P5-4: the meter's timer, only while recording */
+#define VOICE_SECS_AFTER_MS 3000 /* the transcribing note adds its seconds after this */
+#define VOICE_RED_LAST_S 5       /* the timer turns red for the last 5 s */
+
+/* The transcript goes into the draft of the session key the recording was started for (spec 5.3). */
+_Static_assert(VR_KEY_MAX == SM_KEY_MAX && VR_TEXT_MAX == SM_ANSWER_MAX, "voice keys and text must fit the drafts");
 
 /* ------------------------------------------------------------------ state */
 
-typedef enum { NOTE_NONE, NOTE_BUSY, NOTE_SENT, NOTE_APPROVE, NOTE_OPEN_TO_ANSWER, NOTE_ERROR } note_kind_t;
+typedef enum { NOTE_NONE, NOTE_BUSY, NOTE_SENT, NOTE_APPROVE, NOTE_OPEN_TO_ANSWER, NOTE_ERROR, NOTE_VOICE } note_kind_t;
 typedef struct {
     char key[SM_KEY_MAX];
     note_kind_t kind;
@@ -76,7 +85,7 @@ typedef struct {
     int64_t at_ms;
 } note_t;
 
-typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY } job_type_t;
+typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY, JOB_VOICE_CHECK } job_type_t;
 typedef struct {
     job_type_t type;
     unsigned token;        /* which request this is (actions only) */
@@ -124,6 +133,16 @@ static int s_cols, s_rows_fit;             /* the log block, measured */
 static bool s_dirty_rows, s_dirty_pane, s_dirty_log, s_scroll_sel;
 static unsigned s_ticks;
 static bool s_kbd_attached;                /* the soft keyboard is attached to this screen's field */
+/* Voice input (Plan 5, spec 5-6): the mic button and its glyph, the voice strip in the action row's note slot */
+static lv_obj_t *s_mic, *s_mic_glyph[3], *s_mic_dot;
+static lv_obj_t *s_vstrip, *s_vtimer, *s_vmeter;
+static lv_timer_t *s_meter_timer;          /* P5-4: exists only while recording */
+static vr_keys_t s_vkeys;                  /* Ctrl+Space and the mic tap: the repeat and toggle guard */
+static bool s_voice_mine;                  /* a recording Sessions started may still post a result */
+static char s_vnote[64];                   /* "Transcribing on the Host… 5 s" while transcribing, else "" */
+static voice_result_t *s_vres;              /* PSRAM: the transcript is a secret like typed text; zeroed after use */
+typedef enum { MIC_IDLE, MIC_STARTING, MIC_RECORDING, MIC_TRANSCRIBING } mic_look_t;
+static int s_mic_look = -1;
 
 /* LVGL's tick stops in Off (lvgl_port_stop), so TTLs and the open-check age use esp_timer on the
    device. The preview has no esp_timer and drives lv_tick itself. */
@@ -139,14 +158,16 @@ static int64_t mono_ms(void) { return esp_timer_get_time() / 1000; }
    field's focus border and steady cursor, the mic slot's dashes and the shortcuts sheet. */
 static bool s_styles_ready;
 static lv_style_t st_fg, st_muted, st_green, st_red, st_body, st_label, st_mono;
-static lv_style_t st_list, st_logbox, st_field, st_field_focus, st_cursor, st_mic, st_dash, st_mic_line, st_capsule;
+static lv_style_t st_list, st_logbox, st_field, st_field_focus, st_cursor, st_mic, st_mic_rec, st_mic_line, st_capsule;
+static lv_style_t st_glyph_fg, st_glyph_muted, st_glyph_red, st_dot, st_meter, st_meter_ind;
 
 static void styles_init(void)
 {
     if (s_styles_ready) return;
     s_styles_ready = true;
     lv_style_t *all[] = { &st_list, &st_fg, &st_muted, &st_green, &st_red, &st_body, &st_label, &st_mono, &st_logbox,
-                          &st_field, &st_field_focus, &st_cursor, &st_mic, &st_dash, &st_mic_line, &st_capsule };
+                          &st_field, &st_field_focus, &st_cursor, &st_mic, &st_mic_rec, &st_mic_line, &st_capsule,
+                          &st_glyph_fg, &st_glyph_muted, &st_glyph_red, &st_dot, &st_meter, &st_meter_ind };
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
     lv_style_set_text_color(&st_fg, HEX(UI_TK_FG));
     lv_style_set_text_color(&st_muted, HEX(UI_TK_MUTED));
@@ -178,21 +199,33 @@ static void styles_init(void)
     lv_style_set_border_color(&st_cursor, HEX(UI_TK_FG));
     lv_style_set_border_width(&st_cursor, 2);
     lv_style_set_border_side(&st_cursor, LV_BORDER_SIDE_LEFT);
-    /* mic slot: panel-2, no solid border (the dashes are drawn) */
+    /* the mic button (spec 6.1): panel-2, a solid 1 px line border; 2 px red while recording */
     lv_style_set_bg_color(&st_mic, HEX(UI_TK_PANEL2));
     lv_style_set_bg_opa(&st_mic, LV_OPA_COVER);
     lv_style_set_radius(&st_mic, UI_TK_RADIUS);
-    lv_style_set_border_width(&st_mic, 0);
-    lv_style_set_line_color(&st_dash, HEX(UI_TK_LINE));
-    lv_style_set_line_width(&st_dash, 1);
-    lv_style_set_line_dash_width(&st_dash, 6);
-    lv_style_set_line_dash_gap(&st_dash, 4);
-    lv_style_set_line_color(&st_mic_line, HEX(UI_TK_MUTED));
+    lv_style_set_border_color(&st_mic, HEX(UI_TK_LINE));
+    lv_style_set_border_width(&st_mic, 1);
+    lv_style_set_border_color(&st_mic_rec, HEX(UI_TK_RED));
+    lv_style_set_border_width(&st_mic_rec, 2);
     lv_style_set_line_width(&st_mic_line, 2);
     lv_style_set_line_rounded(&st_mic_line, true);
-    lv_style_set_border_color(&st_capsule, HEX(UI_TK_MUTED));
     lv_style_set_border_width(&st_capsule, 2);
     lv_style_set_radius(&st_capsule, LV_RADIUS_CIRCLE);
+    /* the glyph's colour: lines take line_color, the capsule border_color */
+    lv_style_t *gl[] = { &st_glyph_fg, &st_glyph_muted, &st_glyph_red };
+    const uint32_t gc[] = { UI_TK_FG, UI_TK_MUTED, UI_TK_RED };
+    for (int i = 0; i < 3; i++) { lv_style_set_line_color(gl[i], HEX(gc[i])); lv_style_set_border_color(gl[i], HEX(gc[i])); }
+    /* the recording dot (12 px, red) and the level meter (160 x 8: fg on line, radius 4) */
+    lv_style_set_bg_color(&st_dot, HEX(UI_TK_RED));
+    lv_style_set_bg_opa(&st_dot, LV_OPA_COVER);
+    lv_style_set_radius(&st_dot, LV_RADIUS_CIRCLE);
+    lv_style_set_bg_color(&st_meter, HEX(UI_TK_LINE));
+    lv_style_set_bg_opa(&st_meter, LV_OPA_COVER);
+    lv_style_set_radius(&st_meter, 4);
+    lv_style_set_bg_color(&st_meter_ind, HEX(UI_TK_FG));
+    lv_style_set_bg_opa(&st_meter_ind, LV_OPA_COVER);
+    lv_style_set_radius(&st_meter_ind, 4);
+    lv_style_set_anim_duration(&st_meter_ind, 0);
 }
 
 typedef enum { TC_FG, TC_MUTED, TC_GREEN, TC_RED } tc_t;
@@ -303,11 +336,32 @@ static void run_trust(const char *want)
                                                  : e == ESP_ERR_INVALID_RESPONSE ? TRUST_ENDED : FORGET_NO_HOST));
 }
 
+/* Settings › Host › Voice input · Check (P5-5). The worker passes the string id to the LVGL task. */
+static volatile bool s_voice_check_pending;
+
+static void voice_check_toast_cb(void *arg) { ui_toast_ms(tr((str_id_t)(intptr_t)arg), 5000); }
+
+static void run_voice_check(void)
+{
+    int rc = -1;
+    esp_err_t e = cc_link_voice_check(&rc);
+    ESP_LOGI(TAG, "voice check: %s rc %d", esp_err_to_name(e), rc);
+    str_id_t id;
+    if (e == ESP_ERR_INVALID_STATE) id = STR_SES_NOT_CONNECTED;
+    else if (e == ESP_ERR_TIMEOUT) id = STR_VOICE_TIMEOUT;
+    else if (e != ESP_OK) id = vr_out_text(VR_OUT_FAILED);
+    else if (rc == 0) id = STR_SET_VOICE_READY;
+    else id = vr_out_text(vr_host_result(rc));
+    s_voice_check_pending = false;
+    ui_async(voice_check_toast_cb, (void *)(intptr_t)id);
+}
+
 static void run_job(const job_t *j)
 {
     char claude[64], cmd[192], msg[160] = "";
     if (j->type == JOB_FORGET_KEY) { run_forget(); return; }
     if (j->type == JOB_TRUST_KEY) { run_trust(j->text); return; }
+    if (j->type == JOB_VOICE_CHECK) { run_voice_check(); return; }
     cc_settings_claude_path(claude, sizeof(claude));
     if (j->type == JOB_LOGS) {
         bool ok = false;
@@ -421,6 +475,7 @@ static void init_once(void)
     s_tail = heap_caps_calloc(1, LOG_TEXT_CAP, MALLOC_CAP_SPIRAM);
     s_wrapped = heap_caps_calloc(1, WRAP_CAP, MALLOC_CAP_SPIRAM);
     s_status = heap_caps_calloc(1, STATUS_CAP, MALLOC_CAP_SPIRAM);
+    s_vres = heap_caps_calloc(1, sizeof(voice_result_t), MALLOC_CAP_SPIRAM);
     char fp[80];
     s_forget_seen = cc_link_forget_done(fp, sizeof(fp));   /* only forgets from now on are toasted */
     worker_start();
@@ -455,6 +510,19 @@ bool ui_sessions_trust_host_key(const char *fp)
     if (!j) return false;
     strlcpy(j->text, fp, sizeof(j->text));
     bool ok = job_post(j);
+    heap_caps_free(j);
+    return ok;
+}
+
+bool ui_sessions_voice_check(void)
+{
+    init_once();
+    if (s_voice_check_pending) return false;
+    job_t *j = job_new(JOB_VOICE_CHECK);
+    if (!j) return false;
+    s_voice_check_pending = true;
+    bool ok = job_post(j);
+    if (!ok) s_voice_check_pending = false;
     heap_caps_free(j);
     return ok;
 }
@@ -695,12 +763,14 @@ static void pane_update(void)
         case NOTE_APPROVE:        nt = tr(STR_SES_OPEN_TO_APPROVE); break;
         case NOTE_OPEN_TO_ANSWER: nt = tr(STR_SES_OPEN_TO_ANSWER); break;
         case NOTE_ERROR:          nt = n->text; nc = TC_RED; break;
+        case NOTE_VOICE:          nt = n->text; break;
         default: break;
         }
     } else if (act && s_options >= 2) {
         snprintf(b, sizeof(b), "1\xe2\x80\x93%d %s", s_options, tr(STR_SES_PICKS_OPTION));
         nt = b;
     }
+    if (s_vnote[0] && act) { nt = s_vnote; nc = TC_MUTED; }   /* transcribing: the one thing going on */
     set_text(s_note, nt);
     set_colour(s_note, nc);
     if (measure_log() || changed) s_dirty_log = true;
@@ -960,9 +1030,176 @@ void ui_sessions_keys_overlay(bool show)
     s_keys_ov = o;
 }
 
-/* ------------------------------------------------------------------ keys */
+/* ------------------------------------------------------------------ voice input (Plan 5) */
 
-static void voice_toast(void) { ui_toast_ms(tr(STR_HK_VOICE), 3000); }
+/* The voice service owns the recording; Sessions shows it and routes the keys (spec 5.2). A recording is tied to
+   the session key selected at its start: the transcript goes into that session's draft, whatever is selected
+   when it arrives, and is never sent (Review Focus 1). */
+static bool voice_recording(const voice_status_t *v) { return v->phase == VOICE_STARTING || v->phase == VOICE_RECORDING; }
+
+static const cc_session_t *item_by_key(const char *key)
+{
+    char k[SM_KEY_MAX];
+    for (int i = 0; i < s_n; i++) {
+        sm_key(&s_items[i], k, sizeof(k));
+        if (strcmp(k, key) == 0) return &s_items[i];
+    }
+    return NULL;
+}
+
+/* The mic button (spec 6.1): idle a fg glyph; starting a red ring and a red glyph; recording a red ring and a red
+   dot; transcribing a muted glyph. Only on a change: a static screen must not redraw. */
+static void mic_look(mic_look_t look)
+{
+    if (!s_mic || (int)look == s_mic_look) return;
+    s_mic_look = look;
+    bool ring = look == MIC_STARTING || look == MIC_RECORDING;
+    if (ring) lv_obj_add_style(s_mic, &st_mic_rec, 0);
+    else lv_obj_remove_style(s_mic, &st_mic_rec, 0);
+    lv_style_t *c = look == MIC_STARTING ? &st_glyph_red : look == MIC_TRANSCRIBING ? &st_glyph_muted : &st_glyph_fg;
+    for (int i = 0; i < 3; i++) {
+        lv_obj_remove_style(s_mic_glyph[i], &st_glyph_fg, 0);
+        lv_obj_remove_style(s_mic_glyph[i], &st_glyph_muted, 0);
+        lv_obj_remove_style(s_mic_glyph[i], &st_glyph_red, 0);
+        lv_obj_add_style(s_mic_glyph[i], c, 0);
+        set_shown(s_mic_glyph[i], look != MIC_RECORDING);
+    }
+    set_shown(s_mic_dot, look == MIC_RECORDING);
+}
+
+/* The mic, the voice strip (while recording) and the transcribing note, from the service's status. */
+static void voice_view(const voice_status_t *v)
+{
+    bool rec = voice_recording(v);
+    mic_look(v->phase == VOICE_STARTING ? MIC_STARTING : v->phase == VOICE_RECORDING ? MIC_RECORDING
+             : v->phase == VOICE_TRANSCRIBING ? MIC_TRANSCRIBING : MIC_IDLE);
+    set_shown(s_vstrip, rec);
+    set_shown(s_note, !rec);   /* the strip takes the note's slot */
+    if (rec && s_vtimer && s_vmeter) {
+        int sec = v->elapsed_ms / 1000;
+        if (sec < 0) sec = 0;
+        if (sec > VR_MAX_S) sec = VR_MAX_S;
+        char t[24];
+        snprintf(t, sizeof(t), "%d:%02d / %d:%02d", sec / 60, sec % 60, VR_MAX_S / 60, VR_MAX_S % 60);
+        set_text(s_vtimer, t);
+        set_colour(s_vtimer, sec >= VR_MAX_S - VOICE_RED_LAST_S ? TC_RED : TC_FG);
+        int m = v->phase == VOICE_RECORDING ? v->meter : 0;
+        m = m < 0 ? 0 : m > 100 ? 100 : m;
+        if (lv_bar_get_value(s_vmeter) != m) lv_bar_set_value(s_vmeter, m, LV_ANIM_OFF);
+    }
+    char n[sizeof(s_vnote)] = "";
+    if (v->phase == VOICE_TRANSCRIBING) {
+        if (v->transcribing_ms >= VOICE_SECS_AFTER_MS)
+            snprintf(n, sizeof(n), "%s %d %s", tr(STR_VOICE_TRANSCRIBING), v->transcribing_ms / 1000, tr(STR_UNIT_S));
+        else strlcpy(n, tr(STR_VOICE_TRANSCRIBING), sizeof(n));
+    }
+    if (strcmp(n, s_vnote)) { strlcpy(s_vnote, n, sizeof(s_vnote)); s_dirty_pane = true; }
+}
+
+/* P5-4: the 100 ms timer updates the timer label and the meter while recording, and deletes itself after. */
+static void meter_cb(lv_timer_t *t)
+{
+    voice_status_t v;
+    voice_status(&v);
+    if (!voice_recording(&v)) { lv_timer_delete(t); s_meter_timer = NULL; }
+    voice_view(&v);
+    if (!s_meter_timer) render();
+}
+
+static void meter_ensure(void)
+{
+    if (!s_meter_timer && s_scr) s_meter_timer = lv_timer_create(meter_cb, VOICE_METER_MS, NULL);
+}
+
+lv_timer_t *ui_sessions_voice_meter(void) { return s_meter_timer; }
+
+/* A voice error: red in the session's note slot, which cuts the longer copy short, and whole in a toast (the README
+   pointer must be readable). */
+#define VOICE_ERROR_TOAST_MS 6000
+static void voice_error(const cc_session_t *s, str_id_t id)
+{
+    note_set(s, NOTE_ERROR, tr(id));
+    ui_toast_ms(tr(id), VOICE_ERROR_TOAST_MS);
+}
+
+/* The one path for Ctrl+Space and the mic tap. */
+static void voice_toggle(void)
+{
+    voice_status_t v;
+    voice_status(&v);
+    vr_key_t a = vr_on_voice_key(&s_vkeys, voice_recording(&v), mono_ms());
+    if (a == VR_KEY_IGNORE) return;   /* a key repeat, or a press too soon after the last start or stop */
+    if (v.phase == VOICE_TRANSCRIBING) { ui_toast(tr(STR_VOICE_BUSY)); return; }
+    if (a == VR_KEY_STOP) {
+        voice_stop();
+        voice_status(&v);
+        voice_view(&v);
+        return;
+    }
+    const cc_session_t *s = selected();
+    if (!field_visible(s)) { ui_toast(tr(STR_VOICE_NEEDS_FIELD)); return; }
+    vr_out_t o = voice_start(s_sel_key);
+    if (o != VR_OUT_STARTED) {
+        str_id_t id = vr_out_text(o);
+        if (o == VR_OUT_BUSY) ui_toast(tr(id));
+        else if (id != STR_COUNT) voice_error(s, id);
+        return;
+    }
+    s_voice_mine = true;
+    note_clear(s);   /* an older note must not come back when the strip goes */
+    meter_ensure();
+    voice_status(&v);
+    voice_view(&v);
+}
+
+/* A result from the voice service: into the draft of the session it was recorded for, never sent. */
+static void apply_voice_result(const voice_result_t *r)
+{
+    if (r->out == VR_OUT_CANCELLED || r->out == VR_OUT_STARTED) return;
+    const cc_session_t *s = item_by_key(r->key);
+    str_id_t id = vr_out_text(r->out);
+    if (!s) {
+        if (r->out == VR_OUT_TEXT) ui_toast(tr(STR_VOICE_SESSION_GONE));   /* the text is dropped */
+        else if (id != STR_COUNT) ui_toast_ms(tr(id), VOICE_ERROR_TOAST_MS);
+        return;
+    }
+    if (r->out != VR_OUT_TEXT) {
+        if (id != STR_COUNT) voice_error(s, id);
+        return;
+    }
+    if (!s_drafts) return;
+    char *buf = heap_caps_malloc(SM_ANSWER_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!buf) return;
+    vr_merge_t m = vr_merge_draft(sm_draft_get(s_drafts, r->key), r->text, buf, SM_ANSWER_MAX);
+    if (m != VR_MERGE_EMPTY) sm_draft_set(s_drafts, r->key, buf);
+    memset(buf, 0, SM_ANSWER_MAX + 1);
+    heap_caps_free(buf);
+    const char *what = tr(m == VR_MERGE_CUT ? STR_VOICE_CUT : STR_VOICE_REVIEW);
+    char n[160];
+    if (r->at_limit) snprintf(n, sizeof(n), "%s. %s", tr(STR_VOICE_AT_LIMIT), what);
+    else strlcpy(n, what, sizeof(n));
+    note_set(s, NOTE_VOICE, n);
+    field_sync();
+    if (s_ta) lv_obj_add_state(s_ta, LV_STATE_FOCUSED);
+}
+
+/* The 300 ms tick's part: the strip and the notes, then a waiting result. A result is taken only while a recording
+   Sessions started may still post one, so a console `voice test` keeps its own. */
+static void voice_tick(void)
+{
+    voice_status_t v;
+    voice_status(&v);
+    if (voice_recording(&v)) meter_ensure();   /* a recording started before this screen was built */
+    voice_view(&v);
+    if (!s_voice_mine || !s_vres) return;
+    if (voice_take_result(s_vres)) {
+        apply_voice_result(s_vres);
+        memset(s_vres, 0, sizeof(*s_vres));
+    }
+    if (v.phase == VOICE_IDLE) s_voice_mine = false;   /* the service posts before it goes idle: nothing more comes */
+}
+
+/* ------------------------------------------------------------------ keys */
 
 static void type_cp(uint32_t c)
 {
@@ -995,13 +1232,27 @@ static bool sessions_key(const key_event_t *ev, void *user)
 {
     (void)user;
     if (s_keys_ov) { ui_sessions_keys_overlay(false); return true; }   /* any key closes it, eaten */
+    /* Voice (spec 5.2): Ctrl+Space toggles in every state. While recording or transcribing every other key is eaten
+       (key clicks would be recorded, and the draft must not change under the recording) except Esc, which cancels. */
+    if (hk_dashboard(ev) == HK_D_VOICE) { voice_toggle(); render(); return true; }
+    voice_status_t vs;
+    voice_status(&vs);
+    if (vs.phase != VOICE_IDLE) {
+        if (ev->type == KEY_EV_SPECIAL && ev->key == SK_ESC) {
+            voice_cancel();
+            voice_status(&vs);
+            voice_view(&vs);
+            render();
+        }
+        return true;
+    }
     /* Local shortcuts first: they work with no rows on screen and never reach the draft. */
     switch (hk_dashboard(ev)) {
     case HK_D_OPEN:     sessions_open_selected(); render(); return true;
     case HK_D_SETTINGS: ui_nav_push(ui_settings_create, NULL); return true;
     case HK_D_TERMINAL: ui_nav_push(ui_hosts_create, NULL); return true;
     case HK_D_KEYS:     ui_sessions_keys_overlay(true); return true;
-    case HK_D_VOICE:    voice_toast(); return true;   /* reserved for voice: no space is typed */
+    case HK_D_VOICE:    return true;   /* taken above */
     case HK_D_LOCAL:    return true;
     case HK_D_NONE:     break;
     }
@@ -1067,7 +1318,7 @@ static void load_snapshot(void)
             sm_key(&s_items[i], k, sizeof(k));
             if (strcmp(k, nt->key) == 0) { keep = s_items[i].state == nt->state; break; }
         }
-        if (nt->kind == NOTE_ERROR || nt->kind == NOTE_SENT) keep = true;   /* these outlive the state change they explain */
+        if (nt->kind == NOTE_ERROR || nt->kind == NOTE_SENT || nt->kind == NOTE_VOICE) keep = true;   /* these outlive the state change they explain */
         if (!keep || now - nt->at_ms > NOTE_TTL_MS) nt->kind = NOTE_NONE;
     }
     s_dirty_rows = s_dirty_pane = true;
@@ -1246,6 +1497,7 @@ static void notes_expire(void)
     for (int k = 0; s_notes && k < NOTES_MAX; k++) {
         note_t *n = &s_notes[k];
         if (n->kind == NOTE_SENT && now - n->at_ms >= SENT_MS) { n->kind = NOTE_NONE; s_dirty_pane = true; }
+        if (n->kind == NOTE_VOICE && now - n->at_ms >= VOICE_NOTE_MS) { n->kind = NOTE_NONE; s_dirty_pane = true; }
         /* a request whose result matched no session leaves a BUSY note behind */
         if (n->kind == NOTE_BUSY && !s_act_pending) { n->kind = NOTE_NONE; s_dirty_pane = true; }
     }
@@ -1259,6 +1511,7 @@ static void tick_cb(lv_timer_t *t)
     apply_action_result();
     if (!s_scr) return;   /* opening a session replaced the screen */
     forget_check();       /* P4-3: a forget finished by a later connect */
+    voice_tick();
     notes_expire();
     res_lock();
     unsigned lg = s_logs.gen;
@@ -1318,7 +1571,7 @@ static void chip_terminal_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_hosts_crea
 static void chip_settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_create, NULL); }
 static void chip_keys_cb(lv_event_t *e) { (void)e; ui_sessions_keys_overlay(true); }
 static void set_up_host_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_HOST); }
-static void mic_cb(lv_event_t *e) { (void)e; voice_toast(); }
+static void mic_cb(lv_event_t *e) { (void)e; voice_toggle(); render(); }
 
 /* A tap focuses the field; the soft keyboard is only a fallback with no physical keyboard. Its keys
    come back through keyboard_inject to the sink, like the physical ones. */
@@ -1334,11 +1587,10 @@ static void field_clicked_cb(lv_event_t *e)
     }
 }
 
-/* The mic slot (reserved for voice): 64 × 64, a dashed line border and a muted mic, drawn disabled. */
-static lv_obj_t *mic_slot(lv_obj_t *parent)
+/* The mic button (spec 6.1): 64 x 64 with an 80 px hit area, a solid line border and a mic glyph; mic_look
+   restyles it by the voice state. */
+static lv_obj_t *mic_button(lv_obj_t *parent)
 {
-    static const lv_point_precise_t top[] = { { 6, 0 }, { 58, 0 } }, bottom[] = { { 6, 63 }, { 58, 63 } };
-    static const lv_point_precise_t left[] = { { 0, 6 }, { 0, 58 } }, right[] = { { 63, 6 }, { 63, 58 } };
     static const lv_point_precise_t cup[] = { { 0, 0 }, { 0, 4 }, { 3, 9 }, { 9, 11 }, { 15, 9 }, { 18, 4 }, { 18, 0 } };
     static const lv_point_precise_t stem[] = { { 9, 0 }, { 9, 5 } };
     lv_obj_t *m = lv_button_create(parent);
@@ -1348,13 +1600,6 @@ static lv_obj_t *mic_slot(lv_obj_t *parent)
     lv_obj_remove_flag(m, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_ext_click_area(m, (UI_TK_HIT - UI_TK_TARGET) / 2);
     lv_obj_add_event_cb(m, mic_cb, LV_EVENT_CLICKED, NULL);
-    const lv_point_precise_t *sides[] = { top, bottom, left, right };
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *l = lv_line_create(m);
-        lv_obj_add_style(l, &st_dash, 0);
-        lv_line_set_points(l, sides[i], 2);
-        lv_obj_remove_flag(l, LV_OBJ_FLAG_CLICKABLE);
-    }
     lv_obj_t *cap = box(m);
     lv_obj_add_style(cap, &st_capsule, 0);
     lv_obj_set_size(cap, 12, 20);
@@ -1363,11 +1608,57 @@ static lv_obj_t *mic_slot(lv_obj_t *parent)
     lv_obj_add_style(c, &st_mic_line, 0);
     lv_line_set_points(c, cup, sizeof(cup) / sizeof(cup[0]));
     lv_obj_set_pos(c, 23, 28);
-    lv_obj_t *s = lv_line_create(m);
-    lv_obj_add_style(s, &st_mic_line, 0);
-    lv_line_set_points(s, stem, 2);
-    lv_obj_set_pos(s, 23, 39);
+    lv_obj_remove_flag(c, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *st = lv_line_create(m);
+    lv_obj_add_style(st, &st_mic_line, 0);
+    lv_line_set_points(st, stem, 2);
+    lv_obj_set_pos(st, 23, 39);
+    lv_obj_remove_flag(st, LV_OBJ_FLAG_CLICKABLE);
+    s_mic_glyph[0] = cap;
+    s_mic_glyph[1] = c;
+    s_mic_glyph[2] = st;
+    for (int i = 0; i < 3; i++) lv_obj_add_style(s_mic_glyph[i], &st_glyph_fg, 0);
+    s_mic_dot = box(m);
+    lv_obj_add_style(s_mic_dot, &st_dot, 0);
+    lv_obj_set_size(s_mic_dot, 12, 12);
+    lv_obj_center(s_mic_dot);
+    lv_obj_add_flag(s_mic_dot, LV_OBJ_FLAG_HIDDEN);
+    s_mic_look = MIC_IDLE;
     return m;
+}
+
+/* The voice strip (spec 6.2), built once with the pane and hidden: shown only while recording, in the note's slot.
+   Two lines, right-aligned: the dot, "Recording", the timer and the meter; the hint under them. */
+static void build_voice_strip(lv_obj_t *row)
+{
+    s_vstrip = box(row);
+    lv_obj_set_width(s_vstrip, 1);
+    lv_obj_set_flex_grow(s_vstrip, 1);
+    lv_obj_set_height(s_vstrip, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_vstrip, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_vstrip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_row(s_vstrip, 2, 0);
+    lv_obj_t *top = box(s_vstrip);
+    lv_obj_set_size(top, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(top, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(top, 12, 0);
+    lv_obj_t *dot = box(top);
+    lv_obj_add_style(dot, &st_dot, 0);
+    lv_obj_set_size(dot, 12, 12);
+    text(top, tr(STR_VOICE_RECORDING), &st_label, TC_RED);
+    s_vtimer = text(top, "", &st_label, TC_FG);
+    s_vmeter = lv_bar_create(top);
+    lv_obj_remove_style_all(s_vmeter);
+    lv_obj_add_style(s_vmeter, &st_meter, LV_PART_MAIN);
+    lv_obj_add_style(s_vmeter, &st_meter_ind, LV_PART_INDICATOR);
+    lv_obj_set_size(s_vmeter, 160, 8);
+    lv_bar_set_range(s_vmeter, 0, 100);
+    lv_obj_remove_flag(s_vmeter, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *hint = text(s_vstrip, tr(STR_VOICE_HINT), &st_label, TC_MUTED);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_max_width(hint, LV_PCT(100), 0);
+    lv_obj_add_flag(s_vstrip, LV_OBJ_FLAG_HIDDEN);
 }
 
 static lv_obj_t *build_pane(lv_obj_t *scr, int W, int top, int h)
@@ -1435,7 +1726,7 @@ static lv_obj_t *build_pane(lv_obj_t *scr, int W, int top, int h)
     lv_obj_set_ext_click_area(s_ta, (UI_TK_HIT - UI_TK_TARGET) / 2);
     lv_obj_add_event_cb(s_ta, field_clicked_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_state(s_ta, LV_STATE_FOCUSED);   /* keys come from the sink; the field is their target */
-    mic_slot(s_answer_row);
+    s_mic = mic_button(s_answer_row);
 
     /* 4. the action row: Send and Open, and a note on the right */
     s_action_row = box(p);
@@ -1452,6 +1743,7 @@ static lv_obj_t *build_pane(lv_obj_t *scr, int W, int top, int h)
     lv_obj_set_style_text_align(s_note, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_long_mode(s_note, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_height(s_note, lv_font_get_line_height(FONT_SMALL));
+    build_voice_strip(s_action_row);
     return p;
 }
 
@@ -1462,6 +1754,15 @@ static void scr_delete_cb(lv_event_t *e)
     lv_obj_t *scr = lv_event_get_target_obj(e);
     keyboard_clear_sink(scr);   /* only if it is still this screen's sink */
     if (scr != s_scr) return;
+    /* leaving Sessions while recording cancels it (spec 5.2); a transcription goes on, and its result waits 60 s */
+    voice_status_t vs;
+    voice_status(&vs);
+    if (voice_recording(&vs)) voice_cancel();
+    if (s_meter_timer) { lv_timer_delete(s_meter_timer); s_meter_timer = NULL; }
+    s_mic = s_mic_dot = s_vstrip = s_vtimer = s_vmeter = NULL;
+    memset(s_mic_glyph, 0, sizeof(s_mic_glyph));
+    s_mic_look = -1;
+    s_vnote[0] = 0;
     s_scr = s_needs = s_banner = s_list = s_skel = s_nohost = s_empty = NULL;
     s_pane = s_title = s_pill = s_meta = s_logbox = s_log = s_info = NULL;
     s_answer_row = s_ta = s_action_row = s_send = s_note = NULL;
