@@ -36,6 +36,13 @@ int cc_log_tail(char *s, int max_lines);
    early or inject keys. Returns the byte count (without the NUL), or 0 for empty text
    (also after sanitizing) or when it doesn't fit cap. */
 size_t cc_paste_build(const char *text, char *out, size_t cap);
+/* Voice in a session (follow-up 2026-10-24): a transcript typed into a take-over's or an SSH session's pty as
+   input, never sent. bracketed (the remote side turned on DECSET 2004): ESC[200~ + text + ESC[201~; otherwise the
+   bare text. No Ctrl+U clear, no Enter, no newline. From text it drops every C0 control (\n, \r and \t become a
+   space), DEL, ESC, invalid UTF-8 and C1 controls (U+0080..U+009F), collapses whitespace runs to one space and
+   trims both ends, so the text can't run anything or end the paste early. NUL-terminated; returns the byte count
+   (without the NUL), or 0 (out = "") for empty text (also after sanitizing) or when it doesn't fit cap. */
+size_t cc_voice_type_build(const char *text, bool bracketed, char *out, size_t cap);
 /* True when ANSI-stripped TUI output ends in a permission dialog: the last selected numbered
    option ("❯ 1.") comes after the last empty input line ("❯ " + rule or line end), with at
    least two numbered options and an esc/cancel hint. History text doesn't count. A CR there

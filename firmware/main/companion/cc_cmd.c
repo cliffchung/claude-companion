@@ -353,6 +353,65 @@ size_t cc_paste_build(const char *text, char *out, size_t cap)
     return o + sizeof(end) - 1;
 }
 
+/* The length of the valid UTF-8 sequence at p (1..4) and its code point, or 0 (overlong, surrogate, past U+10FFFF,
+   a stray continuation or a truncated sequence). */
+static size_t utf8_seq(const unsigned char *p, unsigned long *cp)
+{
+    unsigned char c = p[0];
+    size_t n;
+    unsigned long v, min;
+    if (c < 0x80) { *cp = c; return 1; }
+    if ((c & 0xE0) == 0xC0) { n = 2; v = c & 0x1F; min = 0x80; }
+    else if ((c & 0xF0) == 0xE0) { n = 3; v = c & 0x0F; min = 0x800; }
+    else if ((c & 0xF8) == 0xF0) { n = 4; v = c & 0x07; min = 0x10000; }
+    else return 0;
+    for (size_t i = 1; i < n; i++) {
+        if ((p[i] & 0xC0) != 0x80) return 0;   /* also stops at the NUL */
+        v = (v << 6) | (p[i] & 0x3F);
+    }
+    if (v < min || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return 0;
+    *cp = v;
+    return n;
+}
+
+size_t cc_voice_type_build(const char *text, bool bracketed, char *out, size_t cap)
+{
+    static const char start[] = "\x1b[200~", end[] = "\x1b[201~";
+    const size_t pre = bracketed ? sizeof(start) - 1 : 0, post = bracketed ? sizeof(end) - 1 : 0;
+    if (!out || cap == 0) return 0;
+    out[0] = 0;
+    if (!text) return 0;
+    size_t o = pre;
+    bool space = false;   /* a whitespace run waits here: written only before the next kept character */
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        unsigned long cp = 0;
+        size_t len = utf8_seq(p, &cp);
+        if (len == 0) { p++; continue; }   /* invalid UTF-8: dropped byte by byte */
+        if (cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == '\v' || cp == '\f') {
+            space = o > pre;   /* none at the start */
+            p += len;
+            continue;
+        }
+        if (cp < 0x20 || cp == 0x7f || (cp >= 0x80 && cp <= 0x9f)) { p += len; continue; }   /* C0, DEL, C1 */
+        size_t need = (space ? 1 : 0) + len;
+        if (o + need + post + 1 > cap) { out[0] = 0; return 0; }
+        if (space) out[o++] = ' ';
+        space = false;
+        memcpy(out + o, p, len);
+        o += len;
+        p += len;
+    }
+    if (o == pre) { out[0] = 0; return 0; }
+    if (bracketed) {
+        memcpy(out, start, pre);
+        memcpy(out + o, end, post);
+        o += post;
+    }
+    out[o] = 0;
+    return o;
+}
+
 static char lower(char c)
 {
     return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
