@@ -187,3 +187,60 @@ At the end:
 - Tailscale off; `companion status` connected with the watch on.
 - Power settings unchanged and the key log off.
 - Both `companion-test-*` sessions stopped and removed.
+
+## Device pass C: voice in a take-over (§14) and the polish-2 fixes
+
+The Tab5 sat on the desk near the Host (`my-host.local`, LAN, watch on). The polish-2 merge was flashed with NVS
+kept, then the fix below. Speech came from `say`, rendered to a file and played locally on the Host with
+`afplay -v 6`, at the user's system volume, which was not changed. Played directly at that volume, `say` peaked at −52 to −54 dBFS
+from where the Tab5 sat this time, under the −50 gate ("No speech heard" twice). With the per-playback gain it
+peaked at −43 to −46 dBFS. Only `companion-test-*` sessions were opened, typed into or recorded on. Each was opened
+with `companion takeover <id>`, and they were stopped and removed at the end. A finished test session (DONE) is
+hidden on Sessions, so the debug verb can't reach it: the test prompts end on a question, which leaves the session
+IDLE. With the screen off, Sessions doesn't reload the list, so `power go active` came first.
+
+| Gate | Result |
+|---|---|
+| 1. Take-over dictation: Ctrl+Space shows the red dot and "Recording 0:00 / 0:30" in the bar, and the bar stays up | **Pass** |
+| 1. The text lands in Claude Code's input line with no Enter, so the gate reads Claude Code 2.1.310's real empty prompt as ready | **Pass.** `cc_screen_input_ready` needed no change |
+| 1. Enter, pressed by hand on the test session, sends it, and Claude answers | **Pass** |
+| 2. AskUserQuestion dialog (numbered options and "Type something"): the dictation "two more tests" isn't typed, "Not typed: the session isn't at an empty prompt…" toasts, and the dialog is unchanged (still waiting, option 1 selected) | **Pass.** Whisper returned a transcript with a digit in it, so holding it mattered |
+| 2. After Esc dismissed the dialog, Ctrl+Space at the empty prompt typed the held text and opened no mic | **Pass** |
+| Extra: the Esc-Esc rewind selector holds the text the same way. Ctrl+Space over it toasts again and keeps the text; after Esc, Ctrl+Space types it | **Pass** |
+| 3. While recording, typed keys, Enter and Tab don't reach the session | **Pass** (input line empty, no new turn) |
+| 3. Esc cancels a recording | **Pass** (`CANCELLED`, no upload) |
+| 3. Esc while transcribing cancels it, and the Esc isn't sent | **Pass.** Upload and Host ran, then `CANCELLED`, nothing typed. Cancel-Esc then one more Esc didn't open the rewind menu; two plain Escs did (the control) |
+| 3. Ctrl+← while recording leaves and cancels; `voice status` reads idle and mic closed | **Pass** |
+| 3. Ctrl+@ still goes to the session as NUL: no recording starts and nothing breaks | **Pass** |
+| 4. RAM: `ui heapmin` across a take-over recording and transcription, with Tailscale on and connected | **Pass: 54,939 B** internal min (≥ 20,480). A second run, with the upload while Claude streamed 800 lines, gave 70,363 B. No `ERR_BUF` in the log, and the link stayed up |
+| 5. `ts on`, then `ts off` 10 s later while connecting: no "leaked" | **Fail on the polish-2 build, pass after `fix(microlink)`.** See below |
+| 5. Internal free 30 s after the stop vs before `ts on` | First cycle after boot −5.4 KB (one-time allocations). Then a clean cycle 133,035 → 133,071 B at 30 s → 133,099 B at 150 s: **no loss per cycle** |
+| 6. Sessions, default dim (30 s), no keys, 30 s auto-stop: the screen stays bright as the text lands, `power wakes` shows no new wake, and the first key types | **Pass** (`state=active idle=0s` right after, `holds=voice` while recording, swallowed=0, and the injected key landed in the field) |
+| 6. `voice-model ~/nope.bin`: the toast sits above the answer field with Send and Open visible | **Pass** (the check failed at the start: NO_MODEL, then restored) |
+| 6. `voice status` before and after a recording | **Pass** (idle, mic closed, tasks 0, hold off, result none) |
+| Voice slot in PSRAM | **Pass** (static check: `s_slot` is a 4-byte pointer in `.bss`, and the slot is calloc'ed with `MALLOC_CAP_SPIRAM`) |
+| The voice row stays up while busy, whatever is selected (M3) | **PENDING on the device.** It needs a selected row with no answer field. Every such test row (stopped or finished) is hidden on Sessions, and a real row may not be selected. The preview's `voice-norow` case passes |
+| SSH-shell leg | **PENDING** (the user's visit) |
+
+**The fix (step 5).** On the polish-2 build the netcheck ended early as intended (`stop requested: netcheck ends
+early`). But the coord task went straight on to "Waiting for DERP I/O task to connect...", a 15 s
+`xEventGroupWaitBits` on `ML_EVT_DERP_CONNECTED`. Since polish 2 the DERP task stops retrying on a stop, so that bit
+never came. The wait sat out its whole 15 s, which is also `microlink_stop()`'s wait, so the stop still logged the
+instance as leaked. The wait now also wakes on `ML_EVT_SHUTDOWN_REQUEST` and skips the long-poll (UPSTREAM.md). On
+the device the stop finished 300 ms after `ts off`, with no "leaked", in all four cycles.
+
+**Observations:**
+- **Typing during a running turn.** While Claude Code works, its input line is empty, so the gate passes. A
+  dictation that arrives then is typed into the input line during the turn and not submitted (seen in the step 4
+  run). That is harmless, but it is a type-ahead, not "at the prompt".
+- **The join space.** The join space also applies after the earlier dictation was sent with Enter. A second
+  dictation in the same take-over then starts with a space at an otherwise empty prompt. It's harmless.
+- **Lost serial lines during screenshots.** While a screenshot's JPEG streams over the USB console, log lines (and
+  some frame bytes) can be lost. So the RAM and MicroLink windows were run with no screenshots.
+- **Privacy.** The serial capture of this pass contains none of the spoken phrases. Only lengths were logged.
+
+At the end:
+- `voice status`: idle, mic closed, tasks 0, hold off, result none.
+- The Whisper path and model are at their defaults. The Claude path was never changed.
+- Tailscale off; `companion status` connected with the watch on.
+- Every `companion-test-*` session (three) stopped and removed.
