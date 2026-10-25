@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 #include "unity.h"
 #include "companion/cc_logview.h"
 #include "companion/cc_cmd.h"
@@ -59,23 +60,27 @@ static const char *const s_chrome[] = {
     "tokens)", "thinking with", "Deliberating", "Actualizing", "ctrl+b", "Region/Example_Zone", "hook \xc2\xb7",
 };
 
-/* none of the chrome strings in t. The fallback may keep a stray piece that is also a sentence: "3 agents", or a bare
-   verb redrawn without its glyph ("Pollinating…", as a reply's "Thinking…" would be). */
-static void no_chrome_in_as(const char *t, bool fallback)
+/* none of the chrome strings in t, nor a line that is a known redraw piece */
+static void no_chrome_in(const char *t)
 {
-    static const char *const strays[] = { "agents", "Pollinating", "Computing", "Deliberating", "Actualizing" };
+    static const char *const pieces[] = { "ify", "Honk", "Galliva ting\xe2\x80\xa6", "ought for 1s)", "Pollinating\xe2\x80\xa6",
+                                          "Transmogrifying\xe2\x80\xa6", "Deliberating\xe2\x80\xa6", "Beboppin'\xe2\x80\xa6" };
     for (size_t i = 0; i < sizeof(s_chrome) / sizeof(s_chrome[0]); i++) {
-        bool stray = false;
-        for (size_t k = 0; fallback && k < sizeof(strays) / sizeof(strays[0]); k++) stray |= !strcmp(s_chrome[i], strays[k]);
-        if (stray) continue;
         if (strstr(t, s_chrome[i])) {
             printf("chrome \"%s\" in:\n%s\n", s_chrome[i], t);
             TEST_FAIL_MESSAGE(s_chrome[i]);
         }
     }
+    for (size_t i = 0; i < sizeof(pieces) / sizeof(pieces[0]); i++) {
+        size_t k = strlen(pieces[i]);
+        for (const char *p = t; p; p = strchr(p, '\n'), p = p ? p + 1 : NULL)
+            if (!strncmp(p, pieces[i], k) && (p[k] == '\n' || !p[k])) {
+                printf("piece \"%s\" in:\n%s\n", pieces[i], t);
+                TEST_FAIL_MESSAGE(pieces[i]);
+            }
+    }
 }
 
-static void no_chrome_in(const char *t) { no_chrome_in_as(t, false); }
 
 /* The footer, the status line, the spinner, the input box, the banner and the update check: none of it shows. */
 static void no_chrome(void)
@@ -123,7 +128,7 @@ static void test_fallback_drops_chrome(void)
     for (size_t i = 0; i < sizeof(fx) / sizeof(fx[0]); i++) {
         load(fx[i]);
         TEST_ASSERT_GREATER_THAN(0, cc_logview_fallback(s_raw, 40));
-        no_chrome_in_as(s_raw, true);
+        no_chrome_in(s_raw);
     }
     load("logs_short.bin");
     cc_logview_fallback(s_raw, 40);
@@ -230,6 +235,12 @@ static void test_working(void)
     no_chrome();
     has("  60  Breadfruit\n" DOT " Running 1 shell command \xc2\xb7 44s\xe2\x80\xa6\n");
     has("Passionfruit\n");
+    /* the known holes (M5): cells a cell-diff redraw skipped because the row above had the same character there. They
+       are pinned so a change in the replay or the anchor shows up here. */
+    has("   3   omegranate\n");
+    has("\n   5  Raspb rry\n");
+    has("\n   8  W termelon\n");
+    has("\n   6  Mand rin\n");
     const char *last = "  \xe2\x8e\xbf  $ for i in $(seq 1 120); do echo tick $i; sleep 1; done (42s \xc2\xb7 43 lines)";
     TEST_ASSERT_EQUAL_STRING(last, s_out + strlen(s_out) - strlen(last));
     TEST_ASSERT_EQUAL(2, cc_logview_tail(s_raw, n, true, 2, s_out, sizeof(s_out)));
@@ -523,7 +534,27 @@ static const char *const s_prose[] = {
     "\xe4\xbd\xa0\xe5\xa5\xbd\xe2\x80\xa6", "\xe4\xbd\xa0\xe5\xa5\xbd\xe5\x90\x97", "(ctrl+c stops the server)",
     "Error: prompt is too long: 210000 tokens > 200000 maximum", "API Error: usage limit reached",
     "error: Claude Code v2.1 requires a newer Node", "esc to interrupt the build, then retry",
+    /* the re-review's probe (round 2) */
+    "Here's the plan for the refactor:", "| Model | Tokens | Cost |", "|-------|--------|------|", "| Opus  | 200k   | $15  |",
+    "for i in range(10):", "    print(i)", "const x = await fetch(url);", "\xe2\x94\x82   \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 util.h",
+    "https://github.com/anthropics/claude-code/issues/123", "TypeError: Cannot read properties of undefined (reading 'map')",
+    "npm ERR! code ENOENT", "Done", "Yes", "7", "100%", "Max tokens: 4096", "Used 12k tokens (out of 200k)",
+    "The agents finished in 12s \xc2\xb7 3 failed", "Add a pre-commit hook \xc2\xb7 it runs lint",
+    "Stop hooks run when Claude finishes a turn.", "PreToolUse hook can block a tool call",
+    "Notification hook sends a desktop alert", "SessionStart hook loads the project context",
+    "Running the lint hook\xe2\x80\xa6 done", "You've used 80% of your disk quota", "Hit esc to stop, or ctrl+c to quit",
+    "I thought about it (for 2s)", "\xe4\xbd\xa0\xe5\xa5\xbd\xef\xbc\x8c\xe4\xb8\x96\xe7\x95\x8c\xef\xbc\x81",
+    "\xe3\x81\x93\xe3\x82\x8c\xe3\x81\xaf\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\xe3\x81\xa7\xe3\x81\x99\xe3\x80\x82",
+    "\xec\xa4\x91\xec\x9a\x94: \xec\x9d\xb4 \xed\x8c\x8c\xec\x9d\xbc\xec\x9d\x84 \xec\x82\xad\xec\xa0\x9c\xed\x95\x98\xec\xa7\x80 \xeb\xa7\x88\xec\x84\xb8\xec\x9a\x94",
+    "Use the \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e locale \xc2\xb7 ja_JP", "Waiting\xe2\x80\xa6 10s", "0.8s \xc2\xb7 1,024 tokens",
+    "* Ran for 12m", "\xe2\x86\x91 1.2%", DOT " 42", "\xe2\x8e\xbf  12",
+    "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Summary \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
+    "Thought for a while, then wrote 3 agents", "(12 lines)", "Total: 12 files (3 new)", "Running 2 agents\xe2\x80\xa6",
+    "Caf\xc3\xa9\xe2\x80\xa6 tr\xc3\xa8s bien",
 };
+/* Not chrome either, but a redraw fragment's shape (no word, a "·" or "…"): the fallback and the sparse pane drop
+   them, as cc_log_tail always did; the idle pane keeps them. */
+static const char *const s_fragment_shaped[] = { "a \xc2\xb7 b = c", "  // \xe2\x80\xa6", "\xc2\xb7 \xc2\xb7 \xc2\xb7" };
 #define N_PROSE (sizeof(s_prose) / sizeof(s_prose[0]))
 
 /* Chrome as the TUI's redraws leave it in the escape-stripped tail: each goes. */
@@ -535,13 +566,14 @@ static const char *const s_chrome_lines[] = {
     "12s \xc2\xb7 \xe2\x86\x93 312 tokens)", "2 0s \xc2\xb7 1 8 lines)", "5 thinking)",
     "12k tokens | Opus 5.5", "46k tokens | [\xe2\x96\x88\xe2\x96\x88\xe2\x96\x91\xe2\x96\x91] 7% reset | 51% 3d 14h weekly reset",
     "\xe2\x8f\xb5\xe2\x8f\xb5 auto mode on (shift+tab to cycle) \xc2\xb7 2 agents", "\xe2\x8f\xb8 manual mode on \xc2\xb7 \xe2\x86\x90 for agents",
-    "auto mode on (shift+tab to cycle)", "? for shortcuts", "Checking for updates\xe2\x80\xa6", "running stop hooks\xe2\x80\xa6 1/2",
+    "auto mode on (shift+tab to cycle)", "? for shortcuts", "Checking for updates\xe2\x80\xa6", "(running SessionStart hooks\xe2\x80\xa6 0/2 \xc2\xb7 0s)", "running Stop hook \xc2\xb7 5s \xc2\xb7 \xe2\x86\x93 10 tokens)",
+    "running Stop h ok \xc2\xb7 17s \xc2\xb7 \xe2\x86\x93 1.1k tokens)", "ought for 1s)", "3 agents", "12 shells",
     "UserPromptSubmit hook \xc2\xb7 0s)", "SessionStart:startup hook succeeded",
     "\xe2\x8e\xbf  Tip: Use /statusline to set up a custom status line", "\xe2\x97\x90 medium \xc2\xb7 /effort",
     "You've used 89% of your weekly limit \xc2\xb7 resets Oct 27 at 7pm (Region/Example_Zone)", "(ctrl+b to run in background)",
     "(ctrl+b to  run in background)", "\xe2\x96\x90\xe2\x96\x9b\xe2\x96\x88\xe2\x96\x88 Claude Code v2.1.310",
     "\xe2\x96\x9d\xe2\x96\x9c\xe2\x96\x88\xe2\x96\x88 Opus 5.5 with medium effort \xc2\xb7 Plan label",
-    "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 companion-test-busy \xe2\x94\x80", "/rc", "3  12s\xe2\x80\xa6", "\xc2\xb7 4",
+    "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 companion-test-busy \xe2\x94\x80", "/rc", "3  12s\xe2\x80\xa6", "\xc2\xb7 4",
 };
 #define N_CHROME (sizeof(s_chrome_lines) / sizeof(s_chrome_lines[0]))
 
@@ -575,7 +607,7 @@ static void test_fallback_chrome_shapes(void)
 static void test_prose_survives(void)
 {
     char buf[512];
-    int kept = 0;
+    int kept = 0, base_kept = 0;
     for (size_t i = 0; i < N_PROSE; i++) {
         TEST_ASSERT_FALSE_MESSAGE(cc_logview_chrome_line(s_prose[i]), s_prose[i]);
         snprintf(buf, sizeof(buf), "%s\r\n", s_prose[i]);
@@ -584,10 +616,15 @@ static void test_prose_survives(void)
         int base = cc_log_tail(plain, 40);   /* what the plain heuristic keeps (it drops two CJK characters alone) */
         int got = cc_logview_fallback(buf, 40);
         if (got != base) { printf("fallback dropped: %s\n", s_prose[i]); TEST_FAIL(); }
+        if (!base) printf("cc_log_tail itself drops: %s\n", s_prose[i]);
         kept += got;
+        base_kept += base;
     }
-    printf("prose kept by the fallback: %d of %d\n", kept, (int)N_PROSE);
-    TEST_ASSERT_EQUAL((int)N_PROSE, kept);
+    for (size_t i = 0; i < sizeof(s_fragment_shaped) / sizeof(s_fragment_shaped[0]); i++)
+        TEST_ASSERT_FALSE(cc_logview_chrome_line(s_fragment_shaped[i]));
+    printf("prose kept by the fallback: %d of %d (cc_log_tail keeps %d)\n", kept, (int)N_PROSE, base_kept);
+    TEST_ASSERT_EQUAL(base_kept, kept);
+    TEST_ASSERT_EQUAL((int)N_PROSE - 3, kept);   /* "7", "⏺ 42", "⎿  12": cc_log_tail's own has_word, as on main */
     /* the pane: an idle screen with its input box, then the same rows on a busy sparse screen */
     static char screen[16384];
     const char *rows[N_PROSE + 1];
@@ -601,7 +638,7 @@ static void test_prose_survives(void)
             n += (size_t)sprintf(screen + n, "\x1b[%d;1H\xe2\x9c\xa2 Actualizing\xe2\x80\xa6\x1b[%d;1H\x1b[%d;3H",
                                  (int)N_PROSE + 3, (int)N_PROSE + 9, (int)N_PROSE + 6);
         }
-        TEST_ASSERT_EQUAL_MESSAGE((int)N_PROSE, cc_logview_tail(screen, n, true, 80, s_out, sizeof(s_out)),
+        TEST_ASSERT_EQUAL_MESSAGE((int)N_PROSE, cc_logview_tail(screen, n, true, 200, s_out, sizeof(s_out)),
                                   sparse ? "sparse" : "idle");
         for (size_t i = 0; i < N_PROSE; i++) has(s_prose[i]);
     }
@@ -672,6 +709,45 @@ static void test_sparse_anchor(void)
     o += (size_t)sprintf(buf + o, "\x1b[33;1H\x1b[30;3H");
     TEST_ASSERT_EQUAL(1, cc_logview_tail(buf, o, true, 40, s_out, sizeof(s_out)));
     TEST_ASSERT_EQUAL_STRING(DOT " Planning.", s_out);
+}
+
+/* C1 (round 2): a row of repeated spinner glyphs ("· · · …", 200 and 1000 pairs) is matched by a loop, with no
+   recursion and no copy of the row: the matcher, the fallback and the sparse pane all run inside a thread with a
+   small stack (32 KB here; the guard is the thread: a recursive matcher with a 1 KB frame needed ~1 KB per pair). */
+static char s_glyph_row[4096];
+static int s_glyph_ok;
+static void *glyph_rows(void *arg)
+{
+    (void)arg;
+    static const int reps[] = { 200, 1000 };
+    static char buf[8192];
+    s_glyph_ok = 0;
+    for (int r = 0; r < 2; r++) {
+        size_t o = 0;
+        for (int i = 0; i < reps[r] && o + 3 < sizeof(s_glyph_row); i++) { memcpy(s_glyph_row + o, "\xc2\xb7 ", 3); o += 3; }
+        s_glyph_row[o] = 0;
+        bool c1 = cc_logview_chrome_line(s_glyph_row);
+        strcpy(s_glyph_row + o, "the end");
+        bool c2 = cc_logview_chrome_line(s_glyph_row);
+        snprintf(buf, sizeof(buf), "%s\r\n", s_glyph_row);
+        int f = cc_logview_fallback(buf, 5);
+        size_t n = (size_t)snprintf(buf, sizeof(buf), "\x1b[30;1H%.900s\x1b[34;1H\xe2\x9c\xa2 Actualizing\xe2\x80\xa6\x1b[40;1H\x1b[37;3H",
+                                    s_glyph_row);
+        int v = cc_logview_tail(buf, n, true, 40, s_out, sizeof(s_out));
+        if (!c1 && !c2 && f == 1 && v >= 0) s_glyph_ok++;
+    }
+    return NULL;
+}
+
+static void test_glyph_rows_small_stack(void)
+{
+    pthread_attr_t at;
+    pthread_t t;
+    TEST_ASSERT_EQUAL(0, pthread_attr_init(&at));
+    TEST_ASSERT_EQUAL(0, pthread_attr_setstacksize(&at, 32 * 1024));
+    TEST_ASSERT_EQUAL(0, pthread_create(&t, &at, glyph_rows, NULL));
+    TEST_ASSERT_EQUAL(0, pthread_join(t, NULL));
+    TEST_ASSERT_EQUAL(2, s_glyph_ok);
 }
 
 /* M5: a recording wider than 312 columns or taller than 160 rows is refused, not clamped. */
@@ -796,6 +872,7 @@ int main(void)
     RUN_TEST(test_sparse_rows);
     RUN_TEST(test_sparse_join);
     RUN_TEST(test_sparse_anchor);
+    RUN_TEST(test_glyph_rows_small_stack);
     RUN_TEST(test_long_reply);
     RUN_TEST(test_tool_call);
     RUN_TEST(test_numbered_question);

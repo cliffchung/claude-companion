@@ -77,25 +77,33 @@ bool cc_logview_size(const char *raw, size_t len, int *cols, int *rows, size_t *
      and ".", a bullet, ⏺, ❯, ⎿) is joined to the previous one, with a space unless either side is a wide (CJK)
      character, so the pane can wrap it to its own width. On a sparse screen (no rule: the width is the widest row)
      only prose joins: the row above ran to within 4 cells of the widest row (80 or more), doesn't end a sentence or
-     a code line (. ! ? : ; brackets, a box character) and has no " = ", and this row starts lowercase at that row's
-     text column; a table, a code block or short rows stay as they are.
+     a code line (. ! ? : ; brackets, quotes, a box character), neither row looks like code or a listing (" = ", a
+     2-space column gap, "name(", a leading path, flag, "$" or "#"), and this row starts lowercase or with a CJK
+     character at that row's text column ("⎿  " is 3 cells); a table, a code block or short rows stay as they are.
    Returns the number of lines written, or one of the CC_LV_ results above (out = "" then). */
 int cc_logview_tail(const char *raw, size_t len, bool complete, int max_lines, char *out, size_t cap);
 
 /* True when line (one line, NUL-terminated; leading and trailing blanks ignored) is Claude Code's chrome, matched by
-   its whole shape or anchored at its start, never a word inside a sentence: the spinner ("✽ Swirling… (12s · ↓ 3k
-   tokens)", "✻ Baked for 5s", "✢ 5 thinking") and its counter or a stale piece of it ("10s · 11 lines)"), the footer's
-   meter ("12k tokens | …"), the mode line (⏵⏵, ⏸, "auto mode on (shift+tab …"), "? for shortcuts", "Checking for
-   updates…", hooks ("running stop hooks…", "UserPromptSubmit hook · 0s)"), a "⎿  Tip:", the effort ("◐ … /effort"),
-   usage notices ("You've used 89% of your …"), the banner, the frame rule with the session's name, "/rc" and the
-   TUI's own key hints ("(ctrl+b to run in background)"). Anything unclear is not chrome. */
+   its whole shape or anchored at its start, never a word inside a sentence:
+   - the spinner: glyphs (any number of "· " in front are skipped by a loop), a verb and "…" ("✽ Swirling… (12s · ↓ 3k
+     tokens)"), "<verb> for <duration>" ("✻ Baked for 5s · …"; never after "*"), a counter after a glyph ("✢ 5
+     thinking"), a bare verb with its counter ("Honking… 39 thinking with medium effort"; not "Waiting… 10s");
+   - a counter, whole and parenthesised with a "·" or an arrow, or a stale tail whose "(" was never redrawn ("10s · 11
+     lines)", "ought for 1s)", "running Stop h ok · 17s · ↓ 1.1k tokens)"); not "0.8s · 1,024 tokens", "(12 lines)";
+   - the footer: "<n>k tokens | …", a whole "3 agents" or "2 shells", the mode line (⏵⏵, ⏸, "auto mode on (shift+tab"),
+     "? for shortcuts", "Checking for updates…", "/rc";
+   - hooks in the TUI's shapes: "(running SessionStart hooks… 0/2 · 0s)", "UserPromptSubmit hook · 0s)",
+     "SessionStart:startup hook succeeded"; not "Stop hooks run when …";
+   - "⎿  Tip: …", the effort ("◐ … /effort"), "You've used 89% of your weekly limit · resets …", the banner, the frame
+     rule with the session's name (a run of 10+ "─", the name, " ─"; not "─── Summary ───"), the TUI's own key hints.
+   Anything unclear is not chrome. No recursion, no copy of the line: a few dozen bytes of stack. */
 bool cc_logview_chrome_line(const char *line);
 
 /* The Sessions pane's fallback when cc_logview_tail can't read the screen: cc_log_tail (escape stripping, in place),
-   then without the chrome lines above, stale redraw fragments (no word, and a "…", "·" or arrow: "3  12s…") and a
-   bare verb ("Deliberating…") seen more than once among the last 16 bare verbs (the spinner's; a reply's single
-   "Thinking…" stays). A bare verb seen once may stay: a stray chrome line beats a lost sentence.
-   Keeps the last max_lines; returns how many, 0 (s = "") when only chrome was left (the pane then says "Nothing to
-   show yet"). cc_log_tail itself is unchanged
-   for its other callers (the terminal's error line). */
+   then without the chrome lines above, stale redraw fragments (no word, and a "…" or "·": "3  12s…"; a ⏺ far from
+   its digit) and the spinner's verbs: a bare verb ("Deliberating…") seen twice, or also after a glyph, or once with
+   a chrome line next to it, and broken pieces of a verb ("Galliva ting…", "ify", "Honk"). A reply's lone
+   "Thinking…" stays; "Keep going…" (a capitalised piece and a short gerund) goes. Keeps the last max_lines; returns
+   how many, 0 (s = "") when only chrome was left (the pane then says "Nothing to show yet"). cc_log_tail itself is
+   unchanged for its other callers (the terminal's error line). The largest frame is this one's, ~384 bytes. */
 int cc_logview_fallback(char *s, int max_lines);
