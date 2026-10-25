@@ -22,7 +22,7 @@ typedef struct {
 } voice_status_t;
 typedef struct { uint32_t gen; char key[VR_KEY_MAX]; vr_out_t out; bool at_limit; char text[VR_TEXT_MAX + 1]; } voice_result_t;
 /* Any task. VR_OUT_STARTED, or VR_OUT_BUSY (not idle), VR_OUT_NO_LINK (cc_link_connected() false),
-   VR_OUT_NO_MEMORY (the 960,044 B PSRAM buffer or a task didn't allocate). On STARTED: POWER_HOLD_VOICE on, the
+   VR_OUT_NO_MEMORY (the 960,044 B PSRAM buffer, the result slot or a task didn't allocate). On STARTED: POWER_HOLD_VOICE on, the
    buffer allocated, the voice task created (4 KB), the check helper created (3 KB). */
 vr_out_t voice_start(const char *key);
 void voice_stop(void);       /* RECORDING/STARTING: stop and transcribe; otherwise nothing */
