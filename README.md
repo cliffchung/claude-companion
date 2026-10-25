@@ -371,8 +371,8 @@ YOU, and doesn't light anything.
 - **Leave a take-over:** **Ctrl+←** (Ctrl and the `<` key), or **← Leave** on the session bar. Ctrl+Q
   also works, and Ctrl+] on a USB keyboard (the Tab5 keyboard can't send it). The session
   keeps running on the Host. The session bar shows for 3 seconds when a session opens; tap the top
-  of the screen to bring it back. Its chips send Esc, Tab, ^C, ↑ and ↓, and ⌨ opens the on-screen
-  keyboard when no physical keyboard is attached.
+  of the screen to bring it back. Its chips send Esc, Tab, ^C, ↑ and ↓, **Mic** dictates (as
+  Ctrl+Space), and ⌨ opens the on-screen keyboard when no physical keyboard is attached.
 - **Scroll back in a take-over:** Shift+↑ / Shift+↓ (or Shift+PgUp / Shift+PgDn), or drag.
 
 **If the session is also attached at your desk,** both screens mirror the same session, and it is
@@ -386,29 +386,37 @@ Dictate an answer instead of typing it. This needs the one-time
 
 1. Select a session that has an answer field. Press **Ctrl+Space** (or tap the mic button).
 2. Speak. A red dot, a timer and a level meter show that it is listening.
-3. Press **Ctrl+Space** again to stop. The Tab5 sends the recording to the Host over its SSH link,
-   the Host transcribes it with `whisper-cli`, and the text appears in the answer field. While it
-   waits, the screen says "Transcribing on the Host…".
-4. Check the text, fix it if needed, and press **Enter** to send it like any typed answer.
+3. Press **Ctrl+Space** (or tap the mic) again to stop. The Tab5 sends the recording to the Host
+   over its SSH link, the Host transcribes it with `whisper-cli`, and the text appears in the answer
+   field. While it waits, the screen says "Transcribing on the Host…".
+4. Check the text, fix it if needed, and press **Enter** (or tap **Send**) to send it like any typed
+   answer.
 
-- **It never sends on its own.** Only Enter sends.
+- **It never sends on its own.** Only Enter or Send sends.
 - **The text goes to the session you started on,** even if the list changes while you wait. If that
   session ended meanwhile, the text is dropped with "That session is gone, so the text was dropped".
 - **Limit:** a recording stops by itself at 30 s ("Stopped at the 30 s limit").
-- **Esc cancels** a recording or a transcription and throws the audio away.
-- **Inside a session** (a take-over, or an SSH session from Terminal), **Ctrl+Space** dictates too.
-  The session bar shows a red dot and "Recording 0:07 / 0:30" while it listens; keys you press then
-  are ignored, so they don't reach the session or the recording, except Esc (cancels) and the leave
-  keys (cancel, then leave). Press **Ctrl+Space** again to stop. While it transcribes, keys work
-  normally except **Esc, which cancels the transcription** (and isn't sent); press Esc again to send
-  one. Leaving the session drops the text.
+- **Esc or Cancel cancels** a recording or a transcription and throws the audio away. **Cancel**
+  shows next to the timer (in place of Open) while it records or transcribes.
+- **By touch alone** (no keyboard attached): tap the answer field for the on-screen keyboard, the
+  mic to start and stop, **Cancel** to throw it away and **Send** to send. The hints then say "Tap
+  the mic to stop" and "tap Send" instead of naming keys. While the on-screen keyboard is up, the
+  field, the mic and Send sit above it; its ⌄ key hides it.
+- **Inside a session** (a take-over, or an SSH session from Terminal), **Ctrl+Space** or the session
+  bar's **Mic** chip dictates too, with or without a keyboard. The session bar shows a red dot and
+  "Recording 0:07 / 0:30" while it listens (Mic turns red, and the session name gives the timer
+  room); keys you press then are ignored, so they don't reach the session or the recording, except
+  Esc (cancels) and the leave keys (cancel, then leave). Press **Ctrl+Space** or tap **Mic** again to
+  stop. The bar's **Esc** chip cancels, as Esc does. While it transcribes, keys work normally except
+  **Esc, which cancels the transcription** (and isn't sent); press Esc again to send one. Leaving the
+  session drops the text.
   - The text is **typed** into the session as if you had typed it, **without Enter**: check it, then
     press Enter yourself. Control characters are removed and line breaks become spaces, so it is never
     sent on its own, but it is still keystrokes: a program that acts on single keys acts on it.
     **Dictate only at a prompt.**
   - **In a take-over** the Tab5 types it only when Claude Code shows its empty input line (no
     permission dialog, selector or draft). Otherwise it says "Not typed: the session isn't at an empty
-    prompt" and keeps the text for 60 s: press **Ctrl+Space** at the empty prompt to type it. Send or
+    prompt" and keeps the text for 60 s: press **Ctrl+Space** (or tap **Mic**) at the empty prompt to type it. Send or
     clear a draft first; a second dictation onto your first one is held the same way.
   - **In an SSH session** the Tab5 can't tell a shell prompt from `less`, `mutt` or vi's normal mode,
     where letters are commands. The text is wrapped as a paste only if the remote program asked for
@@ -433,14 +441,18 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | Ctrl+P | Settings |
 | Ctrl+K | The shortcuts list |
 | Esc | Clear the answer; cancels a recording (Sessions is the home screen: Esc never leaves it) |
-| Ctrl+Space | Voice input: press to start, again to stop (Esc cancels) |
-| Ctrl+Space (inside a session) | Dictate into the session's prompt; the text is typed, not sent (Ctrl+@ sends NUL) |
+| Ctrl+Space | Voice input: press to start, again to stop (Esc cancels). By touch: the mic, and Cancel |
+| Ctrl+Space (inside a session) | Dictate into the session's prompt; the text is typed, not sent (Ctrl+@ sends NUL). By touch: the bar's Mic chip, and its Esc chip to cancel |
 | Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
 | Shift+↑ / ↓ | Scroll back in a take-over |
 
 In Settings and Terminal, the arrow keys move the focus, Enter chooses and Esc goes back. Inside a
 take-over or SSH session the Tab5 keeps only Ctrl+← / Ctrl+Q / Ctrl+], the Shift scroll keys and
 Ctrl+Space (voice input); every other key goes to the Host, and Ctrl+@ still sends NUL.
+
+Everything also works by touch. The footer and bar chips do what their keys do (the key shown on
+each chip is only a reminder), the session bar's Mic chip is Ctrl+Space, and ← Leave, ← Sessions and
+← Terminal leave their screens (in a take-over, tap the top of the screen to bring the bar back).
 
 ---
 
