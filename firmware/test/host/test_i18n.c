@@ -57,6 +57,17 @@ static const struct { str_id_t id; const char *conv; } k_formats[] = {
     { STR_TERM_SESSION_ENDED, "d" },
     { STR_HF_DELETE_Q, "s" },
     { STR_SET_TRUST_BODY, "s" },
+    /* Plan 6 */
+    { STR_SET_FW_AVAILABLE, "s" },
+    { STR_SET_FW_AVAILABLE_OLDER, "s" },
+    { STR_FW_CONFIRM_Q, "s" },
+    { STR_FW_CONFIRM_BODY, "s" },
+    { STR_FW_BYTES, "sd" },
+    { STR_FW_UPDATED, "s" },
+    { STR_FW_ROLLED_BACK, "ss" },
+    { STR_FW_ROLLING_BACK, "s" },
+    { STR_FW_BOOTLOOP, "s" },
+    { STR_FW_GO_BACK_Q, "s" },
 };
 /* plain text with a literal percent sign: shown with "%s", never used as a format. Each one's conversion list is
    pinned too ("?" is its lone '%', which starts no conversion), so none can gain a stray "%s" (review M3). */

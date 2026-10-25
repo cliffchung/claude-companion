@@ -559,6 +559,8 @@ void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_
     ui_picker(title, items, count, -1, cb, user_data);
 }
 
+lv_obj_t *ui_modal_layer(void) { return modal_overlay(); }
+
 /* A spinner and a muted label. */
 lv_obj_t *ui_busy(const char *text)
 {

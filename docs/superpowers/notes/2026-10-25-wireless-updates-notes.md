@@ -171,3 +171,28 @@ B, and the diet saved slightly more than estimated. `idf.py size`: External RAM 
 - Builds: the default build passes (6,307,872 B); a scratch build with `CONFIG_COMPANION_DEBUG_COMMANDS=y`,
   `CONFIG_COMPANION_OTA_TEST_NO_VALIDATE=y` and `-D PROJECT_VER=1.6.0+novalid` passes (6,335,648 B, version
   `1.6.0+novalid`: the command-line `PROJECT_VER` wins). Steps 2–7 are device steps: waiting for Task 9.
+
+## Task 7: the UI
+
+- New files, to keep out of the sections other branches touch: `ui/ui_settings_fw.c` (the About rows, the Host
+  path row, both confirms, the worker job bodies, the boot-note toasts) and `ui/ui_fwupdate.c` (the progress
+  screen). `ui_settings.c` gains two calls; `ui_sessions.c` gains the two job types, two dispatch lines,
+  `ui_sessions_fw_check` / `ui_sessions_fw_start` and one line in the 300 ms tick.
+- **Deviation: no About poll timer.** The worker hands the check's result to the LVGL task with `ui_async`, as the
+  voice check does, so About has no timer at all (the preview asserts no 300 ms timer on About). The pending flags
+  live in `ui_settings_fw.c`; a second activation while a check runs does nothing.
+- **Addition: `ui_modal_layer()`** in `ui_core.c` (the existing dialog layer, made public), so the progress screen
+  owns every key and blocks swipes like any dialog. Esc reaches it as `LV_EVENT_CANCEL`; Cancel carries
+  `UI_KEYBOARD_SKIP`, so the modal has no keyboard control and Enter, text and Ctrl+P are eaten. The confirms give
+  Install / Go back `UI_KEYBOARD_FIRST`, so the first Enter installs and Esc cancels.
+- The progress screen's 300 ms timer is bound to the modal and goes with it; `checks.c`'s timer rule excepts it
+  while it shows (`ui_fwupdate_timer()`), as it excepts the voice meter.
+- The error value is the copy's first sentence, cut with dots inside the row by the value label's existing DOTS
+  mode. The default firmware path (52 characters) is also cut with dots in its row; the prompt shows it whole.
+- Preview: new cases `settings 5` × `PREVIEW_FW_CHECK` (7 states), `PREVIEW_FW_PREV=1`, the Install confirm (newer,
+  older), the Go back confirm, `PREVIEW_CLICK=Firmware file on Host` on `settings 0`, `fwupdate` × 5 phases plus 0 %
+  and 100 %, and `fw-notes`. `settings 0` now also asserts Firmware file on Host follows Voice input.
+  `run_all.sh`: every case passed (155 checks).
+- Strings: the remaining `SET_FW_*` and `FW_*` entries and `SET_HOST_NOTE` as spec §8.6; `test_i18n` pins the
+  conversions of the ten format strings.
+- Steps 3–6 (touch, keyboard, Go back, gates) are device steps: waiting for Task 9.
