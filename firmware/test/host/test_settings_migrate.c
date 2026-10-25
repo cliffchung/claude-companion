@@ -4,6 +4,7 @@
 #include "unity.h"
 #include "settings/settings_migrate.h"
 #include "ui/ui_tokens.h"
+#include "companion/cc_cmd.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -11,6 +12,9 @@ void tearDown(void) {}
 /* The v20 layout ends where v21 appended mac_lan_ip; its sizeof rounds up to the struct's alignment. */
 #define V20_END   offsetof(app_settings_t, mac_lan_ip)
 #define V20_SIZE  ((V20_END + 3u) & ~3u)
+/* The v23 layout ends where v24 appended whisper_path (Plan 5). */
+#define V23_END   offsetof(app_settings_t, whisper_path)
+#define V23_SIZE  ((V23_END + 3u) & ~3u)
 
 static uint8_t s_blob[sizeof(cfg_blob_t)];
 
@@ -68,6 +72,19 @@ static void undo_v23_step(app_settings_t *out, const app_settings_t *src)
     memcpy(out->kbd_led_rgb, src->kbd_led_rgb, sizeof(out->kbd_led_rgb));
 }
 
+/* Puts back what the v24 step writes (the two voice paths), from src. */
+static void undo_v24_step(app_settings_t *out, const app_settings_t *src)
+{
+    memcpy(out->whisper_path, src->whisper_path, sizeof(out->whisper_path));
+    memcpy(out->whisper_model, src->whisper_model, sizeof(out->whisper_model));
+}
+
+static void assert_v24_step(const app_settings_t *out)
+{
+    TEST_ASSERT_EQUAL_STRING(CC_WHISPER_DEFAULT, out->whisper_path);
+    TEST_ASSERT_EQUAL_STRING(CC_WHISPER_MODEL_DEFAULT, out->whisper_model);
+}
+
 /* An old-style blob: the user's amber terminal, blinking, 26 px, portrait rotation. */
 static app_settings_t old_look(void)
 {
@@ -107,8 +124,8 @@ static void test_settings_migrate_v20_turns_tailscale_off(void)
     /* saved again it is a v23 blob */
     cfg_blob_t saved = settings_blob_make(&out);
     TEST_ASSERT_EQUAL_UINT32(CFG_MAGIC, saved.magic);
-    TEST_ASSERT_EQUAL_UINT32(23, saved.version);
-    TEST_ASSERT_EQUAL_UINT32(23, CFG_VERSION);
+    TEST_ASSERT_EQUAL_UINT32(24, saved.version);
+    TEST_ASSERT_EQUAL_UINT32(24, CFG_VERSION);
 }
 
 /* Older blobs get the same one-time switch-off. */
@@ -124,27 +141,27 @@ static void test_settings_migrate_older_turns_tailscale_off(void)
 }
 
 /* Sticky: a current blob keeps the user's choice, on or off, and its addresses; the migration never runs again. */
-static void test_settings_v23_keeps_tailscale_choice(void)
+static void test_settings_current_keeps_tailscale_choice(void)
 {
     app_settings_t src = patterned();
     memset(src.mac_lan_ip, 0, sizeof(src.mac_lan_ip));
     memset(src.mac_ts_ip, 0, sizeof(src.mac_ts_ip));
     strcpy(src.mac_lan_ip, "192.168.1.50");
     strcpy(src.mac_ts_ip, "100.101.102.103");
-    size_t len = make_blob(23, &src, sizeof(src));
+    size_t len = make_blob(24, &src, sizeof(src));
     app_settings_t out;
     defaults(&out);
-    TEST_ASSERT_EQUAL_UINT32(23, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
     TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);
     TEST_ASSERT_EQUAL_STRING("192.168.1.50", out.mac_lan_ip);
     TEST_ASSERT_EQUAL_STRING("100.101.102.103", out.mac_ts_ip);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 
     src.ts_enable = 0;
-    len = make_blob(23, &src, sizeof(src));
+    len = make_blob(24, &src, sizeof(src));
     defaults(&out);
     out.ts_enable = 1;   /* whatever the defaults say, the saved off stands */
-    TEST_ASSERT_EQUAL_UINT32(23, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
     TEST_ASSERT_EQUAL_UINT8(0, out.ts_enable);
 }
 
@@ -188,7 +205,9 @@ static void test_migrate_v21_to_v23_terminal_and_rotation(void)
     assert_v23_step(&out);
     TEST_ASSERT_EQUAL_STRING("my-host", out.companion_server);
     TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);   /* the v21 step doesn't run again */
+    assert_v24_step(&out);
     undo_v23_step(&out, &src);
+    undo_v24_step(&out, &src);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));   /* nothing else moved */
 }
 
@@ -211,6 +230,7 @@ static void test_migrate_v20_and_v22_to_v23(void)
     TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);
     TEST_ASSERT_EQUAL_STRING("my-host", out.companion_server);
     undo_v23_step(&out, &src);
+    undo_v24_step(&out, &src);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 }
 
@@ -226,6 +246,8 @@ static void test_v23_blob_unchanged(void)
     TEST_ASSERT_EQUAL_UINT8(30, out.term_line_height);
     TEST_ASSERT_EQUAL_UINT8(1, out.term_cursor_blink);
     TEST_ASSERT_EQUAL_UINT8(0, out.rotation);
+    assert_v24_step(&out);   /* the v24 step does run from 23 */
+    undo_v24_step(&out, &src);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
 }
 
@@ -248,14 +270,17 @@ static void test_migrate_amber_kbd_to_blue(void)
     TEST_ASSERT_EQUAL_HEX8_ARRAY(src.kbd_led_rgb, out.kbd_led_rgb, 3);
 }
 
-/* A blob from a newer build (24): copy what fits and return 24; no older step runs (the downgrade path). */
+/* A blob from a newer build (25): copy what fits and return 25; no older step runs (the downgrade path). */
 static void test_newer_blob_takes_newer_path(void)
 {
     app_settings_t src = old_look();
-    size_t len = make_blob(24, &src, sizeof(src));
+    strcpy(src.whisper_path, "/usr/local/bin/whisper-cli");
+    strcpy(src.whisper_model, "~/m.bin");
+    size_t len = make_blob(25, &src, sizeof(src));
     app_settings_t out;
     defaults(&out);
-    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_UINT32(25, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_STRING("/usr/local/bin/whisper-cli", out.whisper_path);
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
     TEST_ASSERT_EQUAL_UINT8(1, out.ts_enable);
 
@@ -264,8 +289,65 @@ static void test_newer_blob_takes_newer_path(void)
     memset(big, 0x5a, sizeof(big));
     memcpy(big, s_blob, len);
     defaults(&out);
-    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, big, sizeof(big)));
+    TEST_ASSERT_EQUAL_UINT32(25, settings_blob_load(&out, big, sizeof(big)));
     TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
+}
+
+/* ---- CFG 24 (Plan 5): the whisper and model paths ---- */
+static void test_migrate_v23_to_v24_voice_paths(void)
+{
+    app_settings_t src = old_look();
+    memset(src.whisper_path, 0xAA, sizeof(src.whisper_path));   /* the v23 tail padding lands on whisper_path */
+    memset(src.whisper_model, 0xAA, sizeof(src.whisper_model));
+    size_t len = make_blob(23, &src, V23_SIZE);
+    app_settings_t out;
+    defaults(&out);
+    memset(out.whisper_path, 0xAA, sizeof(out.whisper_path));    /* whatever s held before */
+    memset(out.whisper_model, 0xAA, sizeof(out.whisper_model));
+    TEST_ASSERT_EQUAL_UINT32(23, settings_blob_load(&out, s_blob, len));
+    assert_v24_step(&out);
+    /* the v23 fields unchanged, and the v23 step didn't run again */
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, V23_END);
+}
+
+static void test_v24_blob_keeps_voice_paths(void)
+{
+    app_settings_t src = old_look();
+    memset(src.whisper_path, 0, sizeof(src.whisper_path));
+    memset(src.whisper_model, 0, sizeof(src.whisper_model));
+    strcpy(src.whisper_path, "/usr/local/bin/whisper-cli");
+    strcpy(src.whisper_model, "~/models/ggml-small.en.bin");
+    size_t len = make_blob(24, &src, sizeof(src));
+    app_settings_t out;
+    defaults(&out);
+    TEST_ASSERT_EQUAL_UINT32(24, settings_blob_load(&out, s_blob, len));
+    TEST_ASSERT_EQUAL_STRING("/usr/local/bin/whisper-cli", out.whisper_path);
+    TEST_ASSERT_EQUAL_STRING("~/models/ggml-small.en.bin", out.whisper_model);
+    TEST_ASSERT_EQUAL_MEMORY(&src, &out, sizeof(src));
+}
+
+/* settings_init's check (spec §11): each path ends in a NUL and falls back to its default unless cc_path_valid */
+static void test_invalid_voice_path_falls_back(void)
+{
+    app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    strcpy(s.whisper_path, "/a b");
+    strcpy(s.whisper_model, "~/ok.bin");
+    settings_voice_paths_check(&s);
+    TEST_ASSERT_EQUAL_STRING(CC_WHISPER_DEFAULT, s.whisper_path);
+    TEST_ASSERT_EQUAL_STRING("~/ok.bin", s.whisper_model);
+
+    memset(s.whisper_path, 'a', sizeof(s.whisper_path));   /* no NUL: 63 chars once cut, still valid */
+    s.whisper_model[0] = 0;                               /* empty: invalid */
+    settings_voice_paths_check(&s);
+    TEST_ASSERT_EQUAL_CHAR(0, s.whisper_path[sizeof(s.whisper_path) - 1]);
+    TEST_ASSERT_EQUAL_size_t(63, strlen(s.whisper_path));
+    TEST_ASSERT_EQUAL_STRING(CC_WHISPER_MODEL_DEFAULT, s.whisper_model);
+
+    strcpy(s.whisper_path, "/x;rm");
+    strcpy(s.whisper_model, "~/$HOME");
+    settings_voice_paths_check(&s);
+    assert_v24_step(&s);
 }
 
 /* ---- CFG 23 step 3, the TF-card hosts (I1, M2, M3: settings_sd_import_step) ---- */
@@ -395,12 +477,24 @@ static void test_reset_scope_keeps_identity_and_tz(void)
     TEST_ASSERT_EQUAL_MEMORY(&before, &s, sizeof(s));
 }
 
+static void test_reset_scope_keeps_voice_paths(void)
+{
+    app_settings_t s = patterned(), d = reset_defaults();
+    strcpy(d.whisper_path, CC_WHISPER_DEFAULT);
+    strcpy(d.whisper_model, CC_WHISPER_MODEL_DEFAULT);
+    strcpy(s.whisper_path, "/usr/local/bin/whisper-cli");
+    strcpy(s.whisper_model, "~/models/ggml-small.en.bin");
+    settings_reset_scope(&s, &d);
+    TEST_ASSERT_EQUAL_STRING("/usr/local/bin/whisper-cli", s.whisper_path);
+    TEST_ASSERT_EQUAL_STRING("~/models/ggml-small.en.bin", s.whisper_model);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_settings_migrate_v20_turns_tailscale_off);
     RUN_TEST(test_settings_migrate_older_turns_tailscale_off);
-    RUN_TEST(test_settings_v23_keeps_tailscale_choice);
+    RUN_TEST(test_settings_current_keeps_tailscale_choice);
     RUN_TEST(test_settings_foreign_blob_keeps_defaults);
     RUN_TEST(test_settings_addresses_terminated);
     RUN_TEST(test_migrate_v21_to_v23_terminal_and_rotation);
@@ -408,11 +502,15 @@ int main(void)
     RUN_TEST(test_v23_blob_unchanged);
     RUN_TEST(test_migrate_amber_kbd_to_blue);
     RUN_TEST(test_newer_blob_takes_newer_path);
+    RUN_TEST(test_migrate_v23_to_v24_voice_paths);
+    RUN_TEST(test_v24_blob_keeps_voice_paths);
+    RUN_TEST(test_invalid_voice_path_falls_back);
     RUN_TEST(test_sd_import_step_flag_off);
     RUN_TEST(test_sd_import_step_full_boot);
     RUN_TEST(test_sd_import_step_checkin_boot);
     RUN_TEST(test_v23_blob_keeps_creds_on_sd_for_retry);
     RUN_TEST(test_reset_scope_resets_power_light_brightness);
     RUN_TEST(test_reset_scope_keeps_identity_and_tz);
+    RUN_TEST(test_reset_scope_keeps_voice_paths);
     return UNITY_END();
 }

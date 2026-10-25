@@ -79,6 +79,9 @@ typedef struct {
     /* v21 (Plan 3 Task 1, local link) */
     char     mac_lan_ip[16];     /* the Host's fallback LAN address when its name doesn't resolve; "" = none */
     char     mac_ts_ip[16];      /* the Host entry's last tailnet address: its pin carries over to the LAN (L3) */
+    /* v24, Plan 5: must pass cc_path_valid (settings_voice_paths_check); defaults in cc_cmd.h */
+    char     whisper_path[64];   /* whisper-cli on the Host, default CC_WHISPER_DEFAULT */
+    char     whisper_model[64];  /* its model file on the Host, default CC_WHISPER_MODEL_DEFAULT */
 } app_settings_t;
 
 #define TZ_DEFAULT "PST8PDT,M3.2.0,M11.1.0"

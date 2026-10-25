@@ -84,6 +84,8 @@ void settings_defaults(app_settings_t *out)
     strcpy(out->ts_device_name, "claude-companion");
     out->companion_server[0] = 0;
     strcpy(out->claude_path, "~/.local/bin/claude");
+    strcpy(out->whisper_path, CC_WHISPER_DEFAULT);         /* v24, Plan 5 */
+    strcpy(out->whisper_model, CC_WHISPER_MODEL_DEFAULT);
     plan2_defaults(out);
 }
 
@@ -116,7 +118,7 @@ void settings_init(void)
         uint32_t old_version = settings_blob_load(&g_settings, blob, len);
         if (old_version && old_version != CFG_VERSION) {
             /* other layout: settings_blob_load copied what fits and ran the pure steps (v21 Tailscale off once;
-               v23 the token terminal values, rotation 1, no amber keyboard light). The old line-height fixes
+               v23 the token terminal values, rotation 1, no amber keyboard light; v24 the default voice paths). The old line-height fixes
                for v11 and v13 are gone: below 23 the height is 32. */
             ESP_LOGW(TAG, "settings v%u -> v%d", (unsigned)old_version, CFG_VERSION);
             if (old_version <= 14) g_settings.ss_classic = 0;
@@ -159,6 +161,7 @@ void settings_init(void)
     if (g_settings.pw_checkin_min < 1) g_settings.pw_checkin_min = 1;
     if (g_settings.pw_checkin_min > 60) g_settings.pw_checkin_min = 60;
     if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
+    settings_voice_paths_check(&g_settings);   /* NUL-terminated, else the default unless cc_path_valid */
 }
 
 void settings_post_load_migrate(bool checkin_boot)
