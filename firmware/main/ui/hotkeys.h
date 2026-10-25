@@ -5,11 +5,12 @@
 #include "input/keyboard.h"
 #include "i18n/i18n.h"
 
-typedef enum { HK_T_NONE, HK_T_LEAVE, HK_T_SCROLL_UP, HK_T_SCROLL_DOWN } hk_term_t;
+typedef enum { HK_T_NONE, HK_T_LEAVE, HK_T_SCROLL_UP, HK_T_SCROLL_DOWN, HK_T_VOICE } hk_term_t;
 /* Ctrl+] (KEY_EV_CHAR ']' with MOD_CTRL) and Ctrl+Q / Ctrl+q (the alias) -> LEAVE in both modes;
    Shift+Up -> SCROLL_UP and Shift+Down -> SCROLL_DOWN (takeover only: a plain SSH terminal keeps
    Shift+arrows for the remote side); Shift+PgUp / Shift+PgDn -> SCROLL_UP / SCROLL_DOWN in any
-   terminal, as today; everything else -> NONE (sent to the Host) */
+   terminal, as today; Ctrl+Space -> VOICE in both modes (voice input in a session: taken, never sent as NUL;
+   Ctrl+@ still sends NUL); everything else -> NONE (sent to the Host) */
 hk_term_t hk_takeover(const key_event_t *ev, bool takeover);
 
 typedef enum { HK_D_NONE, HK_D_OPEN, HK_D_SETTINGS, HK_D_TERMINAL, HK_D_KEYS, HK_D_VOICE, HK_D_LOCAL } hk_dash_t;

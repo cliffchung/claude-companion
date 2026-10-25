@@ -14,6 +14,7 @@ hk_term_t hk_takeover(const key_event_t *ev, bool takeover)
     if (ev->type == KEY_EV_CHAR) {
         if ((ev->mods & MOD_CTRL) && (ev->cp == ']' || lower(ev->cp) == 'q'))
             return HK_T_LEAVE;
+        if ((ev->mods & MOD_CTRL) && ev->cp == ' ') return HK_T_VOICE;   /* voice in a session; Ctrl+@ still sends NUL */
         return HK_T_NONE;
     }
     /* Ctrl+← (the Tab5 keyboard's "<" key, one hand on each side) is the leave key; Ctrl+Q and Ctrl+] stay.
