@@ -73,6 +73,7 @@ run art
 run term-spacing
 run terminal
 for v in on empty keys deleted-event fail add; do run terminal "$v"; done
+for v in voice-rec voice-done; do run terminal "$v"; done   # voice input in a take-over and an SSH session
 runv "PREVIEW_HOST_TSIP=0" terminal add-fqdn
 for v in new edit-pin sd-key settings; do run hostform "$v"; done
 run takeover
