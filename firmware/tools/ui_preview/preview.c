@@ -495,9 +495,11 @@ esp_err_t cc_link_trust_host_key(const char *want, char *fp, size_t cap, int ms)
 }
 #define PREVIEW_OTHER_FP "SHA256:OtherPreviewHostKeyOnly9876543210zyxwvutsr"
 static bool s_pv_other_key;   /* newkey: the Host now presents another unknown key (fix round 1, C1) */
+static bool s_pv_key_cleared;   /* newkey: a reconnect cleared the unknown key (polish 2, N3) */
 bool cc_link_unknown_host_key(char *fp, size_t cap) {
-    snprintf(fp, cap, "%s", pv_newkey() ? (s_pv_other_key ? PREVIEW_OTHER_FP : PREVIEW_NEW_FP) : "");
-    return pv_newkey();
+    bool on = pv_newkey() && !s_pv_key_cleared;
+    snprintf(fp, cap, "%s", on ? (s_pv_other_key ? PREVIEW_OTHER_FP : PREVIEW_NEW_FP) : "");
+    return on;
 }
 uint32_t cc_link_forget_done(char *fp, size_t cap) {
     snprintf(fp, cap, "%s", s_trust_calls ? s_trust_fp : PREVIEW_FP);
@@ -1057,6 +1059,14 @@ static void pv_stop(lv_display_t *d) {
 }
 static char *key_of(int i, char *k) { sm_key(&s_preview_sessions[i], k, SM_KEY_MAX); return k; }
 static lv_obj_t *find_clickable_shown(lv_obj_t *o, const char *t);
+/* A toast showing text whole: its label is as wide as the text, so nothing is cut with dots. */
+static bool toast_whole(lv_obj_t *top, const char *text) {
+    lv_obj_t *l = find_label(top, text, false);
+    if (!l) return false;
+    lv_point_t sz;
+    lv_text_get_size(&sz, text, lv_obj_get_style_text_font(l, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x <= lv_obj_get_width(l);
+}
 /* Review M1: while recording or transcribing, Send, Open and a tap on the selected row do nothing, like Enter. */
 static int pv_taps_inert(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *name) {
     int pastes = s_paste_calls, checks = s_check_calls;
@@ -2144,9 +2154,24 @@ static int settings_case(lv_display_t *d, int section) {
             printf("check %s: FAIL the refill under the confirm\n", name); return 1;
         }
         lv_obj_send_event(find_clickable_shown(top, "Trust"), LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 200);
-        if (s_trust_calls || !find_label(top, "Not trusted: the Host now presents a different key. Check it again.", false)) {
+        if (s_trust_calls || !find_label(top, tr(STR_SET_TRUST_STALE), false)) {
             printf("check %s: FAIL a refill changed what the confirm trusts (%d calls, \"%s\")\n", name, s_trust_calls, s_trust_fp); return 1;
         }
+        if (!toast_whole(top, tr(STR_SET_TRUST_STALE))) { printf("check %s: FAIL the stale-key toast is cut\n", name); return 1; }
+        lv_obj_clean(top);
+        /* polish 2 (N3): a reconnect clears the unknown key while the confirm is open: the same refusal, the same copy
+           (it names both cases) */
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Trust this key"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        s_pv_key_cleared = true;
+        lv_obj_send_event(find_clickable_shown(top, "Trust"), LV_EVENT_CLICKED, NULL); step(d, 200); step(d, 200);
+        s_pv_key_cleared = false;
+        if (s_trust_calls || !find_label(top, tr(STR_SET_TRUST_STALE), false)) {
+            printf("check %s: FAIL a cleared key: %d trust calls, or no stale-key toast\n", name, s_trust_calls); return 1;
+        }
+        lv_obj_clean(top);
+        /* the trust worker's own refusals fit the toast whole too */
+        ui_toast_ms(tr(STR_SES_TRUST_ENDED), 3000); step(d, 50);
+        if (!toast_whole(top, tr(STR_SES_TRUST_ENDED))) { printf("check %s: FAIL the trust-ended toast is cut\n", name); return 1; }
         lv_obj_clean(top);
         /* the same key after a refill under the confirm: A is trusted, exactly the copy the confirm showed. The
            keyboard focus is on the Trust row (M7: after the pin it must not land on Forget) */

@@ -75,7 +75,7 @@ X(SET_TRUST, "Trust this key") \
 X(SET_TRUST_Q, "Trust this key?") \
 X(SET_TRUST_BODY, "%s\n\nOn the Host, run ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub and compare. Trust it only if they match.") \
 X(SET_TRUST_ACTION, "Trust") \
-X(SET_TRUST_STALE, "Not trusted: the Host now presents a different key. Check it again.") \
+X(SET_TRUST_STALE, "Not trusted: the Host's key changed, or a reconnect cleared it. Check it again.") \
 X(SET_FORGET, "Forget") \
 X(SET_FORGET_Q, "Forget the Host's key?") \
 X(SET_FORGET_BODY, "Only do this if the Host's SSH key changed. The Tab5 will trust the next key it sees.") \
@@ -360,7 +360,7 @@ X(SES_NEW_KEY_PINNED, "New host key pinned:") \
 X(SES_NEW_HOST_KEY, "The Host has a new host key. Check and trust it in Settings \xe2\x80\xba Host.") \
 X(SES_TRUST_WAITING, "Waiting for the Host to connect with that key\xe2\x80\xa6") \
 X(SES_TRUST_REFUSED, "Not trusted: a key is already pinned for the Host. Check Settings \xe2\x80\xba Host.") \
-X(SES_TRUST_ENDED, "Not trusted: the Host didn't connect with that key in time. Check Settings \xe2\x80\xba Host again.") \
+X(SES_TRUST_ENDED, "Not trusted: time ran out, or the Host or its keys changed first. Check Settings \xe2\x80\xba Host again.") \
 X(SES_FORGET_ENDED, "Forget cancelled: the Host changed") \
 X(SES_KEYS_TITLE, "Keyboard shortcuts") \
 X(SES_KEYS_CLOSE, "Any key or a touch closes this") \
