@@ -217,3 +217,46 @@ B, and the diet saved slightly more than estimated. `idf.py size`: External RAM 
   every `merge_flash` / `full_flash` / `write_flash … 0x0` mention sits next to the NVS warning; no "Mac" was added
   for the Host; placeholders only. The README's staging line ran locally with `STAGE_DIR` in the scratchpad:
   `staged 1.6.0+66fe269.dirty, 6322736 B, sha256 39f50fbd2909…`, one file in the directory, removed after.
+
+## End of Tasks 1–8 (host side)
+
+- Final checks on 5ab222d: `firmware/sdkconfig` deleted, `idf.py reconfigure build` passes; image **6,322,736 B**
+  (`1.6.0+5ab222d`), headroom 2,000,336 B (24 %) in the 8,323,072 B slot; bootloader 22,816 B; `idf.py size`: DIRAM
+  195,254 B used (+1,396 B static internal over the Task 3 build), External RAM 6,174,592 B. Host tests: 25 of 25
+  CTest targets pass (fresh build dir). Python: 94 tests pass, none skipped (the real-image tests ran on this
+  build). Lint: clean. Preview `run_all.sh`: every case passed.
+- Nothing was flashed and the Tab5, the serial port and the Host's SSH were not touched.
+
+## Device steps waiting for Task 9
+
+Every device step of Tasks 3–7, plus Task 9 itself. Before the first one, the Global Constraints' recovery rule
+applies (a good build of this branch flashed over USB in the same session, the cable left in).
+
+1. **Task 3 Step 5, the migration flash:** snapshot S before; `esptool read-flash 0x9000 0x6000` to the scratchpad
+   (`chmod 600`); `idf.py -p PORT flash` (log shows bootloader, partition table, `ota_data_initial.bin`, app; nothing
+   at 0x9000); boot log shows `app0` and `1.6.0+…`; read back and decode the partition table (five rows of spec
+   §6.4); snapshot S after equals before; Wi-Fi joins, the link connects with the same pin, sessions list.
+2. **Task 4 Step 3:** first boot logs `settings v24 -> v25`, the second none; snapshot S matches; `help` has no
+   `ota url`.
+3. **Task 5 Steps 2–4:** `ota check` against a scratch stage dir (rc 0, size and SHA-256 equal to
+   `stage_update.sh`'s line, `FW_HDR_OK`); `ota path /nope/x.bin` → rc 120; `ota path "/a b"` refused; `ota
+   read-test` ×3 with the watch on (LAN KB/s, O1; `fw read: direct` logged); `cancel-at 40`, a park
+   (`power go radio-off`), `wifi test drop`, one read over Tailscale; restore the default path.
+4. **Task 6 Steps 2–7:** the first wireless update (build B with `-D PROJECT_VER=1.6.0+testb`, `app0` → `app1`,
+   per-phase times, marked valid, `ota status`, snapshot S); the power hold (`power sim battery 50`, `power sim idle
+   300` during download, write and pending; 25 % refused); refusals before any write (byte flipped, `corrupt-ram`,
+   9 MB, the bootloader, no file: no `fw: writing` line); the no-validate image (debug +
+   `CONFIG_COMPANION_OTA_TEST_NO_VALIDATE`, `-D PROJECT_VER=1.6.0+novalid`): reset while pending, then the 177 s
+   notice and the 180 s rollback; `ota cancel` during the download and the write; `wifi test drop` during the
+   download and the write.
+5. **Task 7 Steps 3–6:** by touch (the path by the soft keyboard, About, Install, screenshots of the row, the
+   download and the write, the Updated toast); by keyboard (Ctrl+P … Enter, Enter; Esc mid-download; then a full
+   update); Go back both ways; the UI gates (take-over, `voice test-bg 10`, `power sim battery 20`).
+6. **Task 9 Steps 0–12:** as written in the plan (sizes, both slots by touch and keyboard, every refusal through
+   the UI, both rollbacks, the boot-loop guard with `ota test-bootloop 3` and `2`, the power hold, Wi-Fi drops,
+   `ui heapmin` with `fw: heapmin`, NVS snapshots after each, nothing left on the Host, clean-up and the visit
+   list), then the Roadmap and Status lines in `README.md` and the main spec go from "device gates pending" to done.
+
+Questions for the user's visit (no device needed to list them): whether the About rows and the progress screen read
+well at arm's length; whether 30 % is the right battery floor; whether the default staging path and the
+`tab5-build` alias suit the workflow.
