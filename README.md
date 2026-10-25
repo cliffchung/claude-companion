@@ -5,7 +5,7 @@ couch screen for the Claude Code sessions on your computer. We call that compute
 The Tab5 signs in to the Host over SSH, by default on your home Wi-Fi. It lists your Claude Code
 sessions and glows **amber** only when a session needs you. You can type a quick answer, or open a
 background session full screen and take it over with `claude attach`. It uses your existing
-Claude Code install and subscription: no API key, no phone, nothing extra installed on the Host.
+Claude Code install and subscription: no API key, no phone, nothing extra installed on the Host (optional voice input uses whisper.cpp there).
 Tailscale is optional and off by default.
 
 The firmware is a fork of [Clientre 5](https://github.com/Mozgi512/Clientre5) (MIT). It is a
@@ -191,6 +191,37 @@ already there, and appends the line with `from="<list>"`. `--from` takes a comma
 of addresses or networks (use your own subnet). Without `--from` the line has no `from=` limit,
 and the script prints a hint recommending one.
 
+### Set up voice input (optional)
+
+Voice input has the Tab5 record your voice and the Host turn it into text with
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp). It runs entirely on the Host: no cloud
+service and no API key. Skip this section and everything else still works. Run these on the Host:
+
+```sh
+brew install whisper.cpp
+mkdir -p ~/.local/share/whisper
+curl -L -o ~/.local/share/whisper/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+shasum ~/.local/share/whisper/ggml-base.en.bin
+```
+
+The `shasum` must print `137c40403d78fd54d454da0f9bd998f78703390c`. If it doesn't, download the
+model again. Then test the pair with one line. It speaks a phrase to a scratch file, transcribes it
+the way the Tab5 will, and removes the file:
+
+```sh
+say -o /tmp/t.wav --data-format=LEI16@16000 "hello from the Host" && /opt/homebrew/bin/whisper-cli -m ~/.local/share/whisper/ggml-base.en.bin -l en -nt -np -otxt -of - -f - < /tmp/t.wav; rm /tmp/t.wav
+```
+
+It should print the phrase (case and punctuation may differ). The Tab5 expects `whisper-cli` at
+`/opt/homebrew/bin/whisper-cli` and the model at `~/.local/share/whisper/ggml-base.en.bin`. These are
+the defaults of the **Whisper path on Host** and **Whisper model on Host** settings. On an Intel Mac,
+Homebrew installs to `/usr/local/bin/whisper-cli`, so set the Whisper path to that in Settings › Host.
+A path may use only letters, digits and `_ . / ~ -`, up to 63 characters, like the Claude path.
+
+The first transcription after a Host restart takes several seconds, while the model loads (Metal
+warm-up). Later ones are quick. In Settings › Host, **Voice input › Check** tests both paths without
+recording anything.
+
 ---
 
 ## 3. First boot on the Tab5
@@ -314,6 +345,30 @@ YOU, and doesn't light anything.
 resized to the Tab5's width (about 106 columns). After you leave on the Tab5, the Host terminal
 stays at that width until you resize its window (by any amount, even one column).
 
+### Voice input
+
+Dictate an answer instead of typing it. This needs the one-time
+[voice input setup](#set-up-voice-input-optional) on the Host.
+
+1. Select a session that has an answer field. Press **Ctrl+Space** (or tap the mic button).
+2. Speak. A red dot, a timer and a level meter show that it is listening.
+3. Press **Ctrl+Space** again to stop. The Tab5 sends the recording to the Host over its SSH link,
+   the Host transcribes it with `whisper-cli`, and the text appears in the answer field. While it
+   waits, the screen says "Transcribing on the Host…".
+4. Check the text, fix it if needed, and press **Enter** to send it like any typed answer.
+
+- **It never sends on its own.** Only Enter sends.
+- **The text goes to the session you started on,** even if the list changes while you wait. If that
+  session ended meanwhile, the text is dropped with "That session is gone, so the text was dropped".
+- **Limit:** a recording stops by itself at 30 s ("Stopped at the 30 s limit").
+- **Esc cancels** a recording or a transcription and throws the audio away.
+- **Take-over isn't supported.** Voice input works in a session's answer field, not inside a
+  full-screen session or in Terminal.
+- **Speed (measured on a home LAN):** from stop to text takes about 0.5 to 0.65 s for a 5 s clip and
+  about 1.8 s for 30 s. The first run after a Host restart takes several seconds. How well it hears
+  you depends on your voice, the room and the model; it was only tested with the Host's `say` voice.
+- The microphone is on only while recording.
+
 ### Keyboard shortcuts
 
 On the Sessions screen (**Ctrl+K** shows this list on the device):
@@ -327,7 +382,7 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | Ctrl+P | Settings |
 | Ctrl+K | The shortcuts list |
 | Esc | Clear the answer, or go back |
-| Ctrl+Space | Reserved for voice input; for now it shows "Voice input comes in a later update" |
+| Ctrl+Space | Voice input: press to start, again to stop (Esc cancels) |
 | Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
 | Shift+↑ / ↓ | Scroll back in a take-over |
 
@@ -343,7 +398,7 @@ Ctrl+P (or the footer's **⌃P Settings**) opens Settings. It has six sections:
 
 | Section | What's in it |
 |---|---|
-| **Host** | Which saved SSH host is the Host, its address and sign-in (the host form), the link status, the fallback address, the Claude path, the pinned host key (with Forget; on first use, the key the Host presented, with Trust this key), and this device's public key (Show). |
+| **Host** | Which saved SSH host is the Host, its address and sign-in (the host form), the link status, the fallback address, the Claude path, the Whisper path and model with **Check** (voice input), the pinned host key (with Forget; on first use, the key the Host presented, with Trust this key), and this device's public key (Show). |
 | **Network** | Wi-Fi: the current network, Networks (saved, available, Join other…) and Advanced › Static address. Tailscale: the switch, status, auth key, device name, control server, connection mode, peers, and Forget this device on the tailnet. |
 | **Power** | Screen: Dim after, Screen off after, Sleep on USB power, Stay awake in Terminal. Wake: Wake when a session needs you. Battery saver: Radio off, Radio off after, Check in every, Deep idle after, Hibernate after, Hibernate check-in every. |
 | **Keyboard light** | Whether a keyboard is connected; its colour (Keyboard's own, or a swatch; Blue is the default) and brightness; Show needs-you on keyboard; Brightness when the screen is dark (2, 5 or 15 %). |
@@ -563,6 +618,26 @@ If the first ROM line says `boot:0x...(DOWNLOAD...)` or `waiting for download`, 
 download mode: reset it again. A normal ROM line followed by no app output means the firmware hung:
 keep the log and open an issue.
 
+**"whisper-cli isn't on the Host at the Whisper path. See README › Set up voice input."** The Host
+has no executable file at the **Whisper path on Host**. Run `brew install whisper.cpp`, then check
+the path with `command -v whisper-cli` on the Host and enter it in Settings › Host (an Intel Mac
+uses `/usr/local/bin/whisper-cli`). **Voice input › Check** tests it.
+
+**"The whisper model isn't on the Host at the model path. See README › Set up voice input."** The
+file at **Whisper model on Host** is missing or unreadable. Download it as in
+[Set up voice input](#set-up-voice-input-optional) and check its `shasum`. If the Host has the file
+but can't load it ("The Host couldn't load the whisper model"), the download is probably damaged:
+download it again.
+
+**"No speech heard. Try again closer to the Tab5."** The recording was too quiet. Speak closer to
+the Tab5 and a little louder. Nothing was sent to the Host. A recording under half a second says
+"Too short. Press Ctrl+Space, speak, then press it again."
+
+**"The Host took too long to transcribe. Try again."** The Host didn't answer in time: it may be
+busy, or loading the model for the first time after a restart (several seconds). Try again. If it
+keeps happening, run the one-line test in
+[Set up voice input](#set-up-voice-input-optional) on the Host and see how long it takes.
+
 **Tailscale is slow.** The first connect after a boot can take about a minute, and the first
 connection to a peer 5 to 30 seconds. Relay only also adds some latency.
 
@@ -650,12 +725,23 @@ Use a Debug build: a Release build of the preview crashes in one case. The cases
   you (see [first boot](#trust-the-hosts-host-key)): Trust this key pins only the fingerprint you
   confirmed, and only while no key is pinned. It refuses a changed key. Terminal hosts ask
   before trusting a new key and warn on a changed one.
+- **Voice audio stays in memory.** The recording goes to `whisper-cli` on the Host through the
+  channel's stdin and is never written to disk on either side: there is no temp file, no named
+  pipe and no background process on the Host. The command is fixed (`cc_cmd_transcribe`) and built
+  only from validated paths, and the transcript comes back on the same channel. No audio and no
+  transcript is logged; logs show only lengths, durations, levels and exit codes. The microphone is
+  on only while recording, and the Tab5 wipes its audio buffer whenever a recording ends, however
+  it ends.
 - **No secrets in logs.** The Tailscale auth key is never logged or shown, and the console's key
   log masks typed characters.
 
 ---
 
 ## Status
+
+Plan 5 (voice input) is done: it was tested on the hardware with speech produced by the Host's
+`say` command. Recognition of real voices, and the microphone's effect on battery life, have not
+been measured.
 
 Tested on one Tab5 (the board support package reports board version 2) with a macOS Host running
 Claude Code 2.1.309, on a home network, with Tailscale both off and on. Not yet tried on the
@@ -672,8 +758,8 @@ screen and isn't used.
 | 2 Power & vitals | Dim, screen off, deep idle, Hibernate with check-ins, wake handling, vitals bar | done |
 | 3 Local link | The Host link over the home LAN; Tailscale becomes an off-by-default switch; fast check-ins | done |
 | 4 UI overhaul | Sessions home, six-section Settings, Terminal hosts; music, camera, USB drive, files and the launcher removed | done |
-| 5 Voice input | Dictate answers with the mic: the Tab5 records, sends the audio over SSH to a local transcriber on the Host (whisper.cpp), and puts the text in the answer field | next |
-| 6 Camera | Take a photo, copy it to the Host, and ask the open session about it | last |
+| 5 Voice input | Dictate answers with the mic: the Tab5 records, sends the audio over SSH to a local transcriber on the Host (whisper.cpp), and puts the text in the answer field (Ctrl+Space) | done |
+| 6 Camera | Take a photo, copy it to the Host, and ask the open session about it | next |
 | 7 Release | Final name, public release, firmware updates | later |
 
 The full table is in the [design spec](docs/superpowers/specs/2026-10-22-claude-tab5-design.md).
