@@ -137,6 +137,9 @@ lv_obj_t *ui_session_bar(lv_obj_t *scr);
 /* The bar's name (one line, cut with "…", at most 400 px) and its muted state text, which takes the rest of the
  * row; both shared styles (no local ones). */
 lv_obj_t *ui_session_bar_name(lv_obj_t *bar, const char *name);
+/* While the bar shows voice input the name gives way (at most 160 px), so the state slot holds the indicator whole at
+   the narrowest bar (the soft-keyboard chip shown, a long name). No allocation: the cap's local style exists. */
+void ui_session_bar_name_narrow(lv_obj_t *name, bool narrow);
 lv_obj_t *ui_session_bar_state(lv_obj_t *bar);
 /* A screen body from under the header (and the banner, when shown) to the bottom of the screen: shared styles. */
 void ui_body_place(lv_obj_t *body, bool banner);

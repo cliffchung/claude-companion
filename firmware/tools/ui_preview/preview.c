@@ -1326,6 +1326,71 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         if (!find_label(lv_layer_top(), "Voice input works in a session's answer field", false)) { printf("check %s: FAIL no needs-field toast\n", name); return 1; }
         return pv_run_checks(d, s, name, true, 0);
     }
+    if (!strcmp(v, "voice-cancel-touch")) {
+        /* touch alone (PREVIEW_KBD=0): the field brings up the soft keyboard with the field and the mic above it; the
+           mic starts, the strip's Cancel drops the recording and then a transcription, and nothing is applied */
+        lv_obj_t *ta = find_shown(s, &lv_textarea_class), *mic = mic_button_of(s);
+        assert(ta && mic);
+        lv_area_t fa0; lv_obj_get_coords(ta, &fa0);
+        lv_obj_send_event(ta, LV_EVENT_CLICKED, NULL); step(d, 400);
+        if (!softkbd_visible()) { printf("check %s: FAIL a tap on the field brought no soft keyboard\n", name); return 1; }
+        lv_area_t ka, fa, ma;
+        lv_obj_get_coords(lv_obj_get_child(s, (int32_t)lv_obj_get_child_count(s) - 1), &ka);   /* the keyboard: the last child */
+        lv_obj_get_coords(ta, &fa); lv_obj_get_coords(mic, &ma);
+        if (fa.y2 >= ka.y1 || ma.y2 >= ka.y1) { printf("check %s: FAIL the soft keyboard (y %d) covers the field (y2 %d) or the mic (y2 %d)\n", name, (int)ka.y1, (int)fa.y2, (int)ma.y2); return 1; }
+        sink_text("ab"); step(d, 400);
+        r |= pv_run_checks(d, s, "sessions-voice-touch-kbd", true, 0);
+        softkbd_hide_all(); step(d, 400);
+        lv_obj_get_coords(ta, &fa);
+        lv_obj_t *selchip = find_clickable(s, tr(STR_SES_SELECT));
+        if (fa.y2 != fa0.y2 || !selchip || !obj_shown(selchip)) { printf("check %s: FAIL the pane or the footer didn't come back after the keyboard (field y2 %d, was %d)\n", name, (int)fa.y2, (int)fa0.y2); return 1; }
+        /* the mic starts a recording */
+        int starts = s_voice_start_calls;
+        lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 100);
+        if (s_voice_start_calls != starts + 1) { printf("check %s: FAIL the mic didn't start\n", name); return 1; }
+        s_pv_voice.phase = VOICE_RECORDING; s_pv_voice.elapsed_ms = 7000; s_pv_voice.meter = 60;
+        step(d, 400); step(d, 400);
+        lv_obj_t *cancel = find_clickable_shown(s, "Cancel"), *hint = find_label(s, "Tap the mic to stop", false);
+        if (!cancel || !obj_shown(cancel) || !hint || !obj_shown(hint)) { printf("check %s: FAIL no Cancel or no \"Tap the mic to stop\"\n", name); return 1; }
+        if (find_label(s, "Ctrl+Space stops \xc2\xb7 Esc cancels", false)) { printf("check %s: FAIL a key hint with no keyboard\n", name); return 1; }
+        if (lv_obj_get_height(cancel) < UI_TK_TARGET) { printf("check %s: FAIL Cancel is %d px\n", name, (int)lv_obj_get_height(cancel)); return 1; }
+        lv_obj_t *open = find_clickable_shown(s, tr(STR_SES_OPEN));
+        lv_area_t oa;
+        lv_obj_get_coords(lv_obj_get_parent(cancel), &oa);
+        if (open && obj_shown(open) && lv_obj_get_parent(open) == lv_obj_get_parent(cancel)) { printf("check %s: FAIL Open still shown beside Cancel\n", name); return 1; }
+        /* the whole strip lies inside the action row, left of Cancel: "Recording" isn't pushed out */
+        lv_obj_t *rec = find_label(s, "Recording", false);
+        lv_area_t ra, ca, sa;
+        lv_obj_get_coords(rec, &ra); lv_obj_get_coords(cancel, &ca); lv_obj_get_coords(lv_obj_get_parent(lv_obj_get_parent(rec)), &sa);
+        if (ra.x1 < sa.x1 || sa.x2 >= ca.x1 || ra.x1 < oa.x1) { printf("check %s: FAIL the strip doesn't fit (Recording x %d, strip %d-%d, Cancel x %d)\n", name, (int)ra.x1, (int)sa.x1, (int)sa.x2, (int)ca.x1); return 1; }
+        r |= pv_run_checks(d, s, name, true, 0);
+        /* Cancel: the recording is dropped, the draft stays, Open comes back */
+        lv_obj_send_event(cancel, LV_EVENT_CLICKED, NULL); step(d, 400);
+        if (s_voice_cancel_calls != 1 || s_pv_voice.phase != VOICE_IDLE || strcmp(field_text(s), "ab")) { printf("check %s: FAIL Cancel: %d cancels, draft \"%s\"\n", name, s_voice_cancel_calls, field_text(s)); return 1; }
+        step(d, 400);
+        if (obj_shown(cancel) || (rec && obj_shown(rec)) || mic_ring_red(s) || timers_with_period(100)) { printf("check %s: FAIL the strip, Cancel or the meter outlived the cancel\n", name); return 1; }
+        if (!open || !obj_shown(open)) { printf("check %s: FAIL Open didn't come back\n", name); return 1; }
+        /* the mic again, the mic to stop: transcribing; Cancel shows with the note and drops it */
+        step(d, 800);
+        lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 100);
+        s_pv_voice.phase = VOICE_RECORDING; s_pv_voice.elapsed_ms = 3000; step(d, 400); step(d, 400);
+        int stops = s_voice_stop_calls;
+        lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 400);
+        if (s_voice_stop_calls != stops + 1 || s_pv_voice.phase != VOICE_TRANSCRIBING) { printf("check %s: FAIL the mic didn't stop\n", name); return 1; }
+        step(d, 400);
+        if (!obj_shown(cancel) || !find_label_has(s, "Transcribing on the Host", 0)) { printf("check %s: FAIL no Cancel while transcribing\n", name); return 1; }
+        r |= pv_run_checks(d, s, "sessions-voice-cancel-touch-busy", true, 0);
+        key_of(0, k0);
+        lv_obj_send_event(cancel, LV_EVENT_CLICKED, NULL); step(d, 400);
+        if (s_voice_cancel_calls != 2 || !s_pv_voice.cancelled || obj_shown(cancel)) { printf("check %s: FAIL Cancel while transcribing\n", name); return 1; }
+        /* the Host answers; the service drops the text: nothing reaches the draft, no note, no paste */
+        pv_voice_post(k0, VR_OUT_CANCELLED, "", false); step(d, 400); step(d, 400);
+        if (strcmp(field_text(s), "ab") || s_paste_calls || s_note_activity_calls || find_label_has(s, "Check the text", 0)) {
+            printf("check %s: FAIL something was applied after Cancel (draft \"%s\", %d pastes)\n", name, field_text(s), s_paste_calls); return 1;
+        }
+        printf("%s: the field brings the soft keyboard with the field and mic above it; the mic starts and stops; Cancel (64 px, in Open's room) drops a recording and a transcription; \"Tap the mic to stop\"; nothing applied\n", name);
+        return r;
+    }
     (void)why;
     fprintf(stderr, "preview: unknown sessions case %s\n", v);
     return 2;
@@ -1362,6 +1427,7 @@ static int sessions_case(lv_display_t *d, const char *v) {
     if (!strcmp(v, "new-key")) setenv("PREVIEW_FAIL", "newkey", 1);
     if (!strcmp(v, "low-battery")) setenv("PREVIEW_BAT", "14", 1);
     if (!strcmp(v, "reconnecting")) s_rc_preview = true;
+    if (!strcmp(v, "voice-cancel-touch")) setenv("PREVIEW_KBD", "0", 1);   /* touch alone */
     if (!strcmp(v, "stale")) s_stale_preview = true;
     preview_sessions_load();
     ui_nav_home(); step(d, 400); step(d, 400);
@@ -2396,6 +2462,7 @@ static int host_dot_of(lv_obj_t *row) {
 }
 static lv_obj_t *host_note(lv_obj_t *row) { lv_obj_t *t = lv_obj_get_child(row, 2); return lv_obj_has_flag(t, LV_OBJ_FLAG_HIDDEN) ? NULL : t; }
 static bool red(lv_obj_t *l) { return l && lv_color_eq(lv_obj_get_style_text_color(l, 0), lv_color_hex(UI_TK_RED)); }
+#define FOOTNOTE_TOUCH "The Host isn't listed here: its sessions are on the Sessions screen. In a session, tap the top of the screen for the bar; \xe2\x86\x90 Leave disconnects."
 #define FOOTNOTE "The Host isn't listed here: its sessions are on the Sessions screen. Ctrl+\xe2\x86\x90 leaves an SSH session."
 static lv_obj_t *open_terminal(lv_display_t *d) {
     preview_sessions_load();
@@ -2406,6 +2473,7 @@ static lv_obj_t *open_terminal(lv_display_t *d) {
 }
 
 static void form_set(lv_display_t *d, lv_obj_t *scr, const char *row, const char *text);
+static void click_row(lv_display_t *d, lv_obj_t *panel, const char *t);
 /* terminal [on|empty|keys|deleted-event|fail|add|add-fqdn]: spec §5.3. The default: Tailscale off. */
 static int term_voice_case(lv_display_t *d, const char *v);   /* voice in a session, below the take-over cases */
 static int terminal_case(lv_display_t *d, const char *v) {
@@ -2417,12 +2485,43 @@ static int terminal_case(lv_display_t *d, const char *v) {
     setenv("PREVIEW_TS", ts_off ? "0" : "2", 1);
     int timers0 = -1;
     if (!strcmp(v, "empty")) setenv("PREVIEW_HOSTS", "empty", 1);
+    bool nokbd = !strcmp(v, "nokbd");
+    if (nokbd) setenv("PREVIEW_KBD", "0", 1);   /* touch alone */
     lv_obj_t *s = open_terminal(d), *body = hosts_body(s), *banner = lv_obj_get_child(s, 1), *top = lv_layer_top();
     (void)timers0;
     assert(find_clickable_shown(s, "\xe2\x86\x90 Sessions") && find_label(s, "Terminal", false));
     if (find_label(body, "Desk", false) || find_label_has(body, "me@studio-host", 0)) { printf("check %s: FAIL the Host's entry is listed\n", name); return 1; }
-    if (!find_label(body, FOOTNOTE, false)) { printf("check %s: FAIL no footnote\n", name); return 1; }
+    if (!find_label(body, nokbd ? FOOTNOTE_TOUCH : FOOTNOTE, false)) { printf("check %s: FAIL no footnote\n", name); return 1; }
     int r = 0;
+    if (nokbd) {
+        /* the footnote says how to leave a session by touch; the host form's fields bring the soft keyboard, with the
+           prompt's OK and Cancel above it; Cancel, "← Terminal" and "← Sessions" leave by touch */
+        r |= pv_run_checks(d, s, name, false, 0);
+        click_label(d, body, "+ Add host");
+        click_label(d, top, "Enter manually");
+        s = lv_screen_active();
+        assert(ui_nav_is_top(ui_host_form_create));
+        click_row(d, lv_obj_get_child(s, 1), "Address");
+        lv_obj_t *ta = find_shown(top, &lv_textarea_class);
+        assert(ta);
+        lv_obj_send_event(ta, LV_EVENT_CLICKED, NULL); step(d, 200);
+        lv_obj_t *ok = find_clickable_shown(top, "OK"), *cancel = find_clickable_shown(top, "Cancel");
+        if (!softkbd_visible() || !ok || !cancel) { printf("check %s: FAIL no soft keyboard on a host-form field\n", name); return 1; }
+        lv_area_t oa, ka;
+        lv_obj_get_coords(ok, &oa);
+        lv_obj_t *kb = lv_obj_get_child(lv_obj_get_parent(lv_obj_get_parent(lv_obj_get_parent(ok))), -1);
+        lv_obj_get_coords(kb, &ka);
+        if (oa.y2 >= ka.y1) { printf("check %s: FAIL the soft keyboard (y %d) covers OK (y2 %d)\n", name, (int)ka.y1, (int)oa.y2); return 1; }
+        r |= pv_run_checks(d, s, "terminal-nokbd-prompt", false, 0);
+        click_label(d, top, "Cancel");
+        if (softkbd_visible() || find_shown(top, &lv_textarea_class)) { printf("check %s: FAIL Cancel left the prompt or the keyboard up\n", name); return 1; }
+        click_label(d, s, "\xe2\x86\x90 Terminal");
+        if (!ui_nav_is_top(ui_hosts_create)) { printf("check %s: FAIL \"\xe2\x86\x90 Terminal\" didn't go back\n", name); return 1; }
+        click_label(d, lv_screen_active(), "\xe2\x86\x90 Sessions");
+        if (!ui_nav_is_top(ui_sessions_create)) { printf("check %s: FAIL \"\xe2\x86\x90 Sessions\" didn't go back\n", name); return 1; }
+        printf("%s: touch footnote; host-form fields bring the soft keyboard under the prompt's OK; Cancel, \u2190 Terminal and \u2190 Sessions leave\n", name);
+        return r;
+    }
     if (!v[0]) {
         if (lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN) || !find_label_has(banner, "Tailscale is off", 0) || !find_label(banner, "Turn on", false)) {
             printf("check %s: FAIL no Tailscale-off banner\n", name); return 1;
@@ -3380,6 +3479,127 @@ static int term_voice_case(lv_display_t *d, const char *v) {
         ui_nav_back(); step(d, 20);
         s_preview_server_n--;
         printf("%s: the pty got exactly cc_voice_type_build_ex's bytes (always bracketed in a take-over, bare in a plain shell), no Enter or newline, no paste; joined with a space; a dialog, a draft, a confirm or a lost link holds the text for Ctrl+Space (60 s); limit and error toasts; another key's result left alone\n", name);
+        return r;
+    }
+    if (!strcmp(v, "voice-touch") || !strcmp(v, "voice-touch-nokbd")) {
+        /* the bar's Mic chip is Ctrl+Space by touch: a tap starts, a tap stops, the text is typed as before. nokbd: no
+           physical keyboard, so ⌨ is in the bar too, and with a name at the 400 px cap the state slot is at its
+           narrowest; "Recording 0:30 / 0:30" must still fit it whole */
+        bool nokbd = !strcmp(v, "voice-touch-nokbd");
+        if (nokbd) setenv("PREVIEW_KBD", "0", 1);
+        lv_indev_t *in = lv_indev_create(); lv_indev_set_type(in, LV_INDEV_TYPE_POINTER); lv_indev_set_read_cb(in, pointer_read);
+        s_ssh_autoclose = false;
+        ui_nav_home(); step(d, 200);
+        const char *title = nokbd ? "companion-test-a-session-name-long-enough-to-reach-the-cap" : "companion-test-colour";
+        ui_terminal_open_command(0, "~/.local/bin/claude attach 1a2b3c4d", title, takeover_closed_cb, NULL);
+        step(d, 20);
+        lv_obj_t *s = lv_screen_active(), *bar = session_bar_of(s), *top = lv_layer_top();
+        assert(ui_terminal_is_top() && bar);
+        pv_ssh_feed(k_takeover_sample); pv_ssh_feed(TV_PROMPT); step(d, 3100);
+        if (obj_shown(bar)) { printf("check %s: FAIL the bar is still up\n", name); return 1; }
+        tap(d, in, 640, 20);   /* touch: the top of the screen brings the bar back */
+        lv_obj_t *mic = find_clickable_shown(bar, "Mic");
+        if (!obj_shown(bar) || !mic || !obj_shown(mic)) { printf("check %s: FAIL no Mic chip in the bar\n", name); return 1; }
+        if ((find_clickable_shown(bar, LV_SYMBOL_KEYBOARD) != NULL) != nokbd) { printf("check %s: FAIL the keyboard chip\n", name); return 1; }
+        if (lv_obj_get_height(mic) != UI_TK_BAR_CTRL || !lv_obj_has_flag(mic, UI_BAR_CONTROL)) { printf("check %s: FAIL the Mic chip isn't a bar chip\n", name); return 1; }
+        lv_obj_t *mic_l = lv_obj_get_child(mic, 0);
+        lv_area_t ma0; lv_obj_get_coords(mic, &ma0);
+        /* a tap starts a recording keyed to this screen and sends nothing */
+        step(d, 800);
+        int starts = s_voice_start_calls;
+        size_t sent = s_ssh_sent_n;
+        lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 20);
+        if (s_voice_start_calls != starts + 1 || s_pv_voice.phase != VOICE_STARTING || strncmp(s_pv_voice.key, "term:", 5) || s_ssh_sent_n != sent) {
+            printf("check %s: FAIL a Mic tap didn't start a terminal recording, or sent a byte\n", name); return 1;
+        }
+        snprintf(key, sizeof(key), "%s", s_pv_voice.key);
+        s_pv_voice.phase = VOICE_RECORDING; s_pv_voice.elapsed_ms = 7000; s_pv_voice.meter = 60; step(d, 20);
+        lv_obj_t *ind = find_label(bar, TV_REC_7, false);
+        if (!ind) {
+            lv_obj_t *st = find_label(bar, "Recording", true);
+            printf("check %s: FAIL the indicator reads \"%s\" in a %d px slot\n", name, st ? lv_label_get_text(st) : "(none)", st ? (int)lv_obj_get_width(st) : -1);
+            return 1;
+        }
+        if (!label_red(ind) || !bar_dot_red(bar) || !label_red(mic_l)) { printf("check %s: FAIL no red indicator and red Mic while recording\n", name); return 1; }
+        /* the state slot holds the indicator whole, at 0:07 and at the 0:30 limit */
+        for (int lim = 0; lim < 2; lim++) {
+            if (lim) { s_pv_voice.elapsed_ms = 30000; step(d, 20); ind = find_label(bar, "Recording 0:30 / 0:30", false); }
+            lv_point_t sz;
+            assert(ind);
+            lv_text_get_size(&sz, lv_label_get_text(ind), lv_obj_get_style_text_font(ind, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            printf("%s: state slot %d px for \"%s\" (%d px)\n", name, (int)lv_obj_get_width(ind), lv_label_get_text(ind), (int)sz.x);
+            if (sz.x > lv_obj_get_width(ind)) { printf("check %s: FAIL \"%s\" (%d px) is cut in a %d px slot\n", name, lv_label_get_text(ind), (int)sz.x, (int)lv_obj_get_width(ind)); return 1; }
+        }
+        /* the indicator's updates (the 16 ms pump's seconds) never move the chip, and leave the bar's 16 px gap to it */
+        lv_area_t ia, ma; lv_obj_get_coords(ind, &ia); lv_obj_get_coords(mic, &ma);
+        if (ma.x1 != ma0.x1 || ma.x2 != ma0.x2 || ia.x2 + 16 > ma.x1) { printf("check %s: FAIL the Mic chip moved (%d-%d, was %d-%d) or the indicator (x2 %d) reaches it\n", name, (int)ma.x1, (int)ma.x2, (int)ma0.x1, (int)ma0.x2, (int)ia.x2); return 1; }
+        s_pv_voice.elapsed_ms = 7000; step(d, 20);
+        lv_obj_t *nr = lv_obj_get_child(bar, 1);   /* the name: after ← Leave */
+        if (!nr || lv_obj_get_width(nr) > 160) { printf("check %s: FAIL the name didn't give way while recording\n", name); return 1; }
+        step(d, 3100);
+        if (!obj_shown(bar)) { printf("check %s: FAIL the bar hid while recording\n", name); return 1; }
+        if (fast_timers(16) != 1 || fast_timers(100)) { printf("check %s: FAIL timers: 16 ms %d, 100 ms %d\n", name, fast_timers(16), fast_timers(100)); return 1; }
+        if (pv_amber_pixels(s)) { printf("check %s: FAIL amber while recording\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        /* a tap on Mic stops it (past the toggle guard): transcribing, Mic muted; a tap now says "Still transcribing…" */
+        step(d, 800);
+        int stops = s_voice_stop_calls;
+        lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 20);
+        if (s_voice_stop_calls != stops + 1 || s_pv_voice.phase != VOICE_TRANSCRIBING || !find_label(bar, "Transcribing", true) || label_red(mic_l)) {
+            printf("check %s: FAIL a Mic tap didn't stop the recording\n", name); return 1;
+        }
+        lv_obj_get_coords(mic, &ma);
+        if (ma.x1 != ma0.x1) { printf("check %s: FAIL the Mic chip moved while transcribing\n", name); return 1; }
+        {
+            lv_obj_t *tl = find_label(bar, TV_TRANSCRIBING, false);
+            if (!tl) { printf("check %s: FAIL \"" TV_TRANSCRIBING "\" is cut in the state slot\n", name); return 1; }
+            printf("%s: state slot %d px for \"%s\"\n", name, (int)lv_obj_get_width(tl), lv_label_get_text(tl));
+        }
+        r |= pv_run_checks(d, s, nokbd ? "terminal-voice-touch-nokbd-transcribing" : "terminal-voice-touch-transcribing", false, 0);
+        step(d, 800);
+        starts = s_voice_start_calls;
+        lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 20);
+        if (s_voice_start_calls != starts || !find_label(top, "Still transcribing\xe2\x80\xa6", false)) { printf("check %s: FAIL a Mic tap while transcribing\n", name); return 1; }
+        /* the result is typed as for Ctrl+Space: the builder's bytes, bracketed, no Enter */
+        sent = s_ssh_sent_n;
+        const char *text = "Please run the tests.";
+        pv_voice_post(key, VR_OUT_TEXT, text, false); step(d, 20);
+        char want[VR_TEXT_MAX + 14];
+        size_t wn = cc_voice_type_build_ex(text, true, false, want, sizeof(want));
+        if (!wn || s_ssh_sent_n - sent != wn || memcmp(s_ssh_sent + sent, want, wn) || sent_has_line_end(sent)) {
+            printf("check %s: FAIL the pty got %d bytes, not the builder's %d\n", name, (int)(s_ssh_sent_n - sent), (int)wn); return 1;
+        }
+        if (find_label(bar, "Transcribing", true) || find_label(bar, "Recording", true)) { printf("check %s: FAIL the indicator outlived the result\n", name); return 1; }
+        lv_obj_t *nl = lv_obj_get_child(bar, 1);
+        if (!nl || lv_obj_get_style_max_width(nl, 0) != 400) { printf("check %s: FAIL the name didn't get its 400 px back\n", name); return 1; }
+        if (nokbd) {
+            /* touch wording: a result the session isn't ready for says to tap Mic, and the Mic tap types it */
+            step(d, 800);
+            lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 20);
+            s_pv_voice.phase = VOICE_RECORDING; s_pv_voice.elapsed_ms = 2000; step(d, 800);
+            lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 20);
+            pv_ssh_feed(TV_DIALOG); step(d, 20);
+            sent = s_ssh_sent_n;
+            pv_voice_post(key, VR_OUT_TEXT, "later", false); step(d, 20);
+            const char *touch = "Not typed: the session isn't at an empty prompt. Tap Mic there to type it.";
+            if (s_ssh_sent_n != sent || !find_label(top, touch, false)) { printf("check %s: FAIL no touch wording for a held text\n", name); return 1; }
+            pv_ssh_feed("\x1b[2J\x1b[H"); pv_ssh_feed(TV_PROMPT); step(d, 800);
+            lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 20);
+            if (s_ssh_sent_n - sent != 17 || memcmp(s_ssh_sent + sent, "\x1b[200~later\x1b[201~", 17)) { printf("check %s: FAIL a Mic tap didn't type the held text\n", name); return 1; }
+        }
+        /* the Esc chip still cancels a recording started by touch */
+        step(d, 800);
+        lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 20);
+        s_pv_voice.phase = VOICE_RECORDING; s_pv_voice.elapsed_ms = 1000; step(d, 20);
+        int cancels = s_voice_cancel_calls;
+        sent = s_ssh_sent_n;
+        click_label(d, bar, "Esc");
+        if (s_voice_cancel_calls != cancels + 1 || s_pv_voice.phase != VOICE_IDLE || s_ssh_sent_n != sent || label_red(mic_l)) { printf("check %s: FAIL the Esc chip didn't cancel\n", name); return 1; }
+        /* leaving by touch: the Leave chip */
+        click_label(d, bar, "\xe2\x86\x90 Leave");
+        if (ui_terminal_is_top()) { printf("check %s: FAIL Leave by touch\n", name); return 1; }
+        pv_voice_reset();
+        printf("%s: Mic (a bar chip%s) starts and stops like Ctrl+Space, red while recording, muted while transcribing; the text is typed as before; the indicator fits the state slot; Esc chip cancels; Leave leaves\n", name, nokbd ? ", beside the soft-keyboard chip, long name" : "");
         return r;
     }
     printf("preview: unknown case terminal %s\n", v);

@@ -284,6 +284,7 @@ X(HOSTS_MANUAL, "Enter manually") \
 X(HOSTS_NO_PEERS, "No tailnet peers online") \
 X(HOSTS_NOT_LISTED, "The Host isn't listed here: its sessions are on the Sessions screen.") \
 X(HOSTS_LEAVE_NOTE, "Ctrl+\xe2\x86\x90 leaves an SSH session.") \
+X(HOSTS_LEAVE_NOTE_TOUCH, "In a session, tap the top of the screen for the bar; \xe2\x86\x90 Leave disconnects.") \
 X(HOSTS_NO_WIFI, "No Wi-Fi") \
 X(HOSTS_GONE, "This host was removed") \
 X(TERM_LEAVE, "\xe2\x86\x90 Leave") \
@@ -292,11 +293,14 @@ X(TERM_KEY_TAB, "Tab") \
 X(TERM_KEY_CTRL_C, "^C") \
 X(TERM_KEY_UP, "\xe2\x86\x91") \
 X(TERM_KEY_DOWN, "\xe2\x86\x93") \
+X(TERM_KEY_MIC, "Mic") \
 X(TERM_STILL_RUNNING, "Session still running on the Host") \
 X(TERM_OPENING, "Opening the session on the Host\xe2\x80\xa6") \
 X(TERM_OPENING_HINT, "Ctrl+\xe2\x86\x90 returns to Sessions; the session keeps running.") \
+X(TERM_OPENING_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave returns to Sessions; the session keeps running.") \
 X(TERM_CONNECTING_TO, "Connecting to %s@%s:%d\xe2\x80\xa6") \
 X(TERM_SSH_HINT, "Ctrl+\xe2\x86\x90 disconnects.") \
+X(TERM_SSH_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave disconnects.") \
 X(TERM_DISCONNECT_Q, "Disconnect from %s?") \
 X(TERM_LINK_LOST, "Link lost, reconnecting\xe2\x80\xa6") \
 X(TERM_DISCONNECTED_FROM, "Disconnected from %s") \
@@ -440,14 +444,19 @@ X(HF_ERR_BAD_PORT, "The port is a number from 1 to 65535") \
 X(HF_ERR_IS_HOST, "That's the Host: its sessions are on the Sessions screen.") \
 X(VOICE_RECORDING, "Recording") \
 X(VOICE_HINT, "Ctrl+Space stops \xc2\xb7 Esc cancels") \
+X(VOICE_HINT_TOUCH, "Tap the mic to stop") \
 X(VOICE_NOT_AT_PROMPT, "Not typed: the session isn't at an empty prompt. Press Ctrl+Space there to type it.") \
+X(VOICE_NOT_AT_PROMPT_TOUCH, "Not typed: the session isn't at an empty prompt. Tap Mic there to type it.") \
 X(VOICE_NOT_READY, "Not typed: the session isn't ready. Press Ctrl+Space when it is to type it.") \
+X(VOICE_NOT_READY_TOUCH, "Not typed: the session isn't ready. Tap Mic when it is to type it.") \
 X(VOICE_TRANSCRIBING, "Transcribing on the Host\xe2\x80\xa6") \
 X(VOICE_REVIEW, "Check the text, then press Enter to send") \
+X(VOICE_REVIEW_TOUCH, "Check the text, then tap Send") \
 X(VOICE_CUT, "The text was cut to fit the answer field") \
 X(VOICE_AT_LIMIT, "Stopped at the 30 s limit") \
 X(VOICE_SESSION_GONE, "That session is gone, so the text was dropped") \
 X(VOICE_TOO_SHORT, "Too short. Press Ctrl+Space, speak, then press it again.") \
+X(VOICE_TOO_SHORT_TOUCH, "Too short. Tap the mic, speak, then tap it again.") \
 X(VOICE_NO_SPEECH, "No speech heard. Try again closer to the Tab5.") \
 X(VOICE_BUSY, "Still transcribing\xe2\x80\xa6") \
 X(VOICE_NEEDS_FIELD, "Voice input works in a session's answer field") \
