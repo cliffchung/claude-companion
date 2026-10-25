@@ -187,7 +187,8 @@ Ctrl+Space (`HK_D_VOICE`) or the mic button toggles it on Sessions.
   60 s is wiped. Nothing calls the paste path with transcript text, so only Enter sends.
 - **Console.** `voice rec <s>`, `voice status`, `voice test <s>`, `voice test-bg <s>`,
   `voice test-short` and `voice test-cancel <s>` drive the service without the UI (`help` has the
-  details). They use the same code path and print only lengths and timings.
+  details). They use the same code path and print only lengths and timings. All but
+  `voice status` are built only with `CONFIG_COMPANION_DEBUG_COMMANDS=y` (see below).
 - **Settings.** `whisper_path` and `whisper_model` are the last fields of the settings blob
   (CFG 24). Their defaults, `CC_WHISPER_DEFAULT` and `CC_WHISPER_MODEL_DEFAULT`, live only in
   `companion/cc_cmd.h`; `tools/ui_lint.py` flags `whisper-cli` or `-otxt` anywhere else under `main/`.
@@ -319,4 +320,17 @@ checks them (amber, touch targets, fit, idle redraws, timers).
 | Clientre5 (upstream fork base, see [LICENSE.clientre5](LICENSE.clientre5)) | MIT |
 
 Fonts: MaruMinya (source TTF copyright © 2023 hicc), Noto Sans CJK (OFL-1.1), DejaVu Sans Mono
-(Bitstream Vera / Arev, permissive). Application code in `main/` and `updater/`: MIT.
+(Bitstream Vera / Arev, permissive). Application code in `main/` and `updater/`: MIT. The full
+list, including the components the build downloads, is in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
+## Test-only console commands
+
+`CONFIG_COMPANION_DEBUG_COMMANDS` (Kconfig menu "Claude Companion", `main/Kconfig.projbuild`) is off
+by default and in `sdkconfig.defaults`. It builds the bench commands that change state behind the
+user's back: `companion hostkey corrupt` (and `ssh_known_host_set_debug`, which writes the wrong
+pin), `companion takeover|kick|hostcache set|watch test-fallback|voice-upload-test`,
+`wifi test drop`, `power bench|sim|go|light test|light raw|checkin hibernate`,
+`power hib test|test-wake|probe|backstop <s> <n>`, `power rail <n> on|off`, `power imu suspend`
+and `voice rec|test|test-bg|test-short|test-cancel`. Set it to `y` in a development device's local
+`sdkconfig` (`idf.py menuconfig`); `sdkconfig` is git-ignored, so the default stays off.

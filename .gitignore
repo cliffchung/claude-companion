@@ -3,7 +3,11 @@
 *.token
 token
 
-# firmware build output
+# firmware build output (any ESP-IDF project or CMake build directory)
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
 firmware/build/
 firmware/managed_components/
 firmware/sdkconfig
@@ -24,3 +28,6 @@ firmware/backups/
 
 # python bytecode
 __pycache__/
+
+# local agent and review scratch files
+.superpowers/

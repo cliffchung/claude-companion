@@ -9,12 +9,30 @@ Claude Code install and subscription: no API key, no phone, nothing extra instal
 Tailscale is optional and off by default.
 
 The firmware is a fork of [Clientre 5](https://github.com/Mozgi512/Clientre5) (MIT). It is a
-working project, not a finished product: see [Status](#status).
+personal project that works day to day, not a finished product: see [Status](#status) and
+[Known limitations](#known-limitations).
+
+## What it looks like
+
+The Tab5 sits landscape on its keyboard, with a dark 1280 × 720 screen in a pixel font. The home
+screen, **Sessions**, has a header bar along the top: "● 2 need you" in amber when something is
+waiting, then the battery, Wi-Fi, a link dot for the Host and the clock. Below it, the left half
+lists your Claude Code sessions, NEEDS YOU first, then WORKING, IDLE, DONE and ENDED, each row
+with its name, state, folder and how long ago it changed. A row that needs you has an amber edge, and the
+keyboard's backlight turns amber with it; nothing else on the device is ever amber. The right
+half shows the selected session: the last lines of its conversation, an answer field with a mic
+button, and **↵ Send** and **⌃O Open**. Open fills the screen with Claude Code's own terminal for
+that session, with a thin bar on top to leave. Settings and the Terminal (plain SSH to other
+machines) are lists of large touch rows in the same style. There are no screenshots in the
+repository yet.
 
 ## What you need
 
-- An **M5Stack Tab5**, ideally with its keyboard (touch and an on-screen keyboard work without
-  it). A microSD card is **not** needed.
+- An [**M5Stack Tab5**](https://docs.m5stack.com/en/core/Tab5) (ESP32-P4 with an ESP32-C6 radio,
+  5-inch 1280 × 720 touch screen, battery), ideally with M5Stack's Tab5 keyboard (touch and an
+  on-screen keyboard work without it). A microSD card is **not** needed. The board support package
+  is Espressif's [`m5stack_tab5`](https://components.espressif.com/components/espressif/m5stack_tab5)
+  component.
 - A **Host**: a computer running **Claude Code**, with an SSH server you can sign in to with a
   key. macOS is the Host OS this has been built and tested against (with Remote Login on).
 - A **2.4 GHz Wi-Fi network** that both the Tab5 and the Host are on. The Tab5's radio (an
@@ -36,7 +54,9 @@ working project, not a finished product: see [Status](#status).
 10. [Troubleshooting](#10-troubleshooting)
 11. [Development](#11-development)
 12. [Security model](#12-security-model)
-13. [Status](#status), [Roadmap](#roadmap), [Repository layout](#repository-layout), [License](#license)
+13. [Status](#status), [Known limitations](#known-limitations), [Roadmap](#roadmap),
+    [Repository layout](#repository-layout), [License and credits](#license-and-credits),
+    [Contributing](#contributing)
 
 ---
 
@@ -582,9 +602,15 @@ Type `help` for the full list. The useful commands:
 | `screenshot` | Dumps the screen as a JPEG frame. `python3 firmware/tools/screenshot.py --port /dev/cu.usbmodemXXXX --out shot.jpg` saves it (needs `pyserial`; close the monitor first). |
 | `reboot` | Restarts the Tab5, closing its SSH sessions first. |
 
-More commands exist for development and measurement (`key`, `power log`, `power bench`,
-`ui heapmin`, `ui timers`, `ota url` and others); `help` describes them. `key` injects key presses
-as if typed, so it acts on whatever is on screen.
+More commands exist for development and measurement (`key`, `power log`, `ui heapmin`,
+`ui timers`, `ota url` and others); `help` describes them. `key` injects key presses as if typed,
+so it acts on whatever is on screen.
+
+Test-only commands that change state behind your back (`companion hostkey corrupt`, which
+overwrites the Host's host-key pin, `power bench`, `power sim`, `power go`, `power rail`,
+`voice test` and others) are built only with `CONFIG_COMPANION_DEBUG_COMMANDS=y`. It is off in
+`sdkconfig.defaults`; turn it on in your own `sdkconfig` (`idf.py menuconfig` › Claude Companion)
+for a development device, never for a build you give away.
 
 ---
 
@@ -768,6 +794,28 @@ SD card, key files, the host import), Forget this device on the tailnet, a USB k
 battery life on the battery. The firmware-update (OTA) code is still in the tree, but it has no
 screen and isn't used.
 
+## Known limitations
+
+- **One board, one Host OS.** Tested only on one Tab5 and a macOS Host. Linux should work with an
+  SSH server and the right Claude path, but hasn't been tried. Windows Hosts aren't supported.
+- **Background sessions only.** A plain interactive `claude` in a terminal can't be listed or
+  answered; start work with `claude --bg` or from `claude agents`.
+- **Depends on Claude Code's CLI output.** The Tab5 reads `claude agents --json --all`,
+  `claude logs` and the `claude attach` screen. A Claude Code release that changes them can break
+  the session list, the output pane or quick answers until the parsers are updated.
+- **2.4 GHz Wi-Fi only**, and the Tab5 and the Host must be on the same network unless you use
+  Tailscale.
+- **Tailscale comes from MicroLink**, an unofficial client. A cold connect takes about a minute,
+  and direct paths are off by default because they can drop traffic behind a strict NAT.
+- **The device key isn't encrypted at rest** (NVS encryption is off): anyone with the Tab5 and a
+  USB cable can read it out. Limit it with `from=` in `authorized_keys`.
+- **Voice input** has been tested only with synthesized speech, in English, with whisper.cpp's
+  `base.en` model on an Apple Silicon Host.
+- **Battery life** hasn't been measured on the battery.
+- **No firmware updates over the air.** The OTA code is in the tree but has no screen; flash with
+  USB.
+- **No screenshots** are in the repository yet.
+
 ## Roadmap
 
 | Plan | What it delivers | State |
@@ -791,13 +839,31 @@ bridge/     legacy: an optional HTTP bridge from an earlier design; the firmware
 web/        legacy: the bridge's browser dashboard
 ```
 
-## License
+`bridge/` and `web/` are from the project's first design, in which a small Python server on the
+Host served a browser dashboard and relayed replies with `claude -p --resume`. The firmware talks
+to Claude Code over SSH instead and needs neither. They are kept for reference, are not
+maintained, and are described in [docs/PROTOCOL.md](docs/PROTOCOL.md). The design record in
+`docs/superpowers/` is written as it happened, so older specs and plans describe things that
+have since changed.
+
+## License and credits
 
 MIT; see [LICENSE](LICENSE).
 
 Based on Clientre 5 by Mozgi512 (MIT)
 
 The upstream licence is kept in [firmware/LICENSE.clientre5](firmware/LICENSE.clientre5). The
-firmware includes libssh, which is LGPL-2.1 (`firmware/components/libssh`, full source included).
-The other bundled components and fonts are listed in
-[firmware/README.md](firmware/README.md#licenses).
+firmware includes libssh, which is LGPL-2.1 (`firmware/components/libssh`, full source included),
+[MicroLink](https://github.com/Csontikka/microlink) (MIT) and wireguard-lwip (BSD-3-Clause), and
+is built with ESP-IDF (Apache-2.0) and LVGL (MIT). The UI font is x12y12pxMaruMinya by hicc; the
+fallback glyphs come from Noto Sans CJK (OFL-1.1) and DejaVu Sans Mono. Every component and its
+licence is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Claude Companion is not affiliated with Anthropic or M5Stack. Claude and Claude Code are
+Anthropic's products; Tailscale is a trademark of Tailscale Inc.
+
+## Contributing
+
+This is a personal project, built for one person's desk. Issues are welcome: bug reports,
+questions and ideas. Pull requests may sit for a while or not be merged, so please open an issue
+first for anything larger than a small fix.
