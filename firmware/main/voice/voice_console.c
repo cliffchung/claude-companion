@@ -1,4 +1,4 @@
-/* The `voice` console command (Plan 5 Task 5; Task 6 adds verbs). Prints levels, lengths, durations and outcomes only: no
+/* The `voice` console command (Plan 5 Tasks 5 and 6). Prints levels, lengths, durations and outcomes only: no
    sample and no transcript text reaches the console (rule 3 as Plan 5 extends it). */
 #include "voice/voice_console.h"
 #include <stdio.h>
@@ -7,17 +7,24 @@
 #include <errno.h>
 #include "esp_console.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sys/debug_console.h"
+#include "companion/cc_link.h"
 #include "voice/mic.h"
+#include "voice/voice.h"
+#include "voice/voice_debug.h"
 #include "voice/voice_rules.h"
 
 #define REC_FRAMES  (VR_RATE * VR_BLOCK_MS / 1000)   /* 1,600 frames: one 100 ms block */
+#define POLL_MS     100
+#define RESULT_WAIT_MS (CC_TRANSCRIBE_TIMEOUT_MS + 20000)
 
 static int usage(void)
 {
-    printf("usage: voice rec <1-10 s> [gain_db]\n");
+    printf("usage: voice rec <1-10 s> [gain_db] | voice status | voice test <1-30 s> | voice test-short | "
+           "voice test-cancel <s>\n");
     return 1;
 }
 
@@ -31,6 +38,8 @@ static bool parse_int(const char *s, int lo, int hi, int *out)
     return true;
 }
 
+static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+
 static void zero(void *p, size_t n)
 {
     memset(p, 0, n);
@@ -40,7 +49,9 @@ static void zero(void *p, size_t n)
 /* voice rec: the capture spike. One reused PSRAM block buffer (stereo block + one mono block), nothing kept. */
 static int cmd_rec(int secs, int gain)
 {
-    if (mic_is_open()) { printf("voice rec: busy\n"); return 1; }
+    voice_status_t st;
+    voice_status(&st);
+    if (st.phase != VOICE_IDLE || mic_is_open()) { printf("voice rec: busy\n"); return 1; }
     const size_t bytes = REC_FRAMES * 2 * sizeof(int16_t) + REC_FRAMES * sizeof(int16_t);
     int16_t *blk = heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!blk) { printf("voice rec: no memory\n"); return 1; }
@@ -90,6 +101,92 @@ static int cmd_rec(int secs, int gain)
     return ok;
 }
 
+static int cmd_status(void)
+{
+    voice_status_t st;
+    voice_status(&st);
+    printf("voice: %s, mic %s, tasks %d, hold %s, result %s\n", voice_phase_name(st.phase),
+           mic_is_open() ? "open" : "closed", voice_task_count(), voice_hold_on() ? "on" : "off",
+           voice_result_pending() ? "pending" : "none");
+    if (voice_stack_free() >= 0) printf("voice: last voice task stack free min %d B\n", voice_stack_free());
+    if (st.phase != VOICE_IDLE)
+        printf("voice: elapsed %d ms, meter %d, at_limit %d, transcribing %d ms\n", st.elapsed_ms, st.meter,
+               st.at_limit, st.transcribing_ms);
+    return 0;
+}
+
+static bool recording(void)
+{
+    voice_status_t st;
+    voice_status(&st);
+    return st.phase == VOICE_STARTING || st.phase == VOICE_RECORDING;
+}
+
+/* Waits for the result (or for the voice task to end without one), prints the outcome and its length, zeroes it. */
+static int finish(void)
+{
+    voice_result_t *r = heap_caps_calloc(1, sizeof(*r), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!r) { printf("voice test: no memory for the result\n"); return 1; }
+    bool got = false;
+    int64_t t0 = now_ms();
+    while (now_ms() - t0 < RESULT_WAIT_MS) {
+        if (voice_take_result(r)) { got = true; break; }
+        if (!voice_task_alive() && !voice_result_pending()) break;
+        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+    }
+    int rc = 0;
+    if (got)
+        printf("voice test: %s, %u chars%s\n", voice_out_name(r->out), (unsigned)strnlen(r->text, sizeof(r->text)),
+               r->at_limit ? ", at limit" : "");
+    else { printf("voice test: no result\n"); rc = 1; }
+    zero(r, sizeof(*r));
+    heap_caps_free(r);
+    return rc;
+}
+
+static bool start(void)
+{
+    vr_out_t o = voice_start("console");
+    if (o != VR_OUT_STARTED) { printf("voice test: %s\n", voice_out_name(o)); return false; }
+    return true;
+}
+
+static int cmd_test(int secs)
+{
+    if (!start()) return 1;
+    int64_t end = now_ms() + (int64_t)secs * 1000;
+    while (now_ms() < end && recording()) vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+    voice_stop();
+    return finish();
+}
+
+static int cmd_test_short(void)
+{
+    if (!start()) return 1;
+    vTaskDelay(pdMS_TO_TICKS(300));
+    voice_stop();
+    return finish();
+}
+
+static int cmd_test_cancel(int secs)
+{
+    if (!start()) return 1;
+    int64_t end = now_ms() + (int64_t)secs * 1000;
+    while (now_ms() < end && voice_task_alive()) vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+    voice_cancel();
+    int64_t t0 = now_ms();
+    while (voice_task_alive() && now_ms() - t0 < RESULT_WAIT_MS) vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+    if (voice_task_alive()) { printf("voice test: the voice task is still running\n"); return 1; }
+    voice_result_t *r = heap_caps_calloc(1, sizeof(*r), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int rc = 0;
+    if (r && voice_take_result(r)) {
+        printf("voice test: a result was left after the cancel (%s)\n", voice_out_name(r->out));
+        rc = 1;
+    } else printf("voice test: cancelled\n");
+    if (r) { zero(r, sizeof(*r)); heap_caps_free(r); }
+    return rc;
+}
+
 static int cmd_voice(int argc, char **argv)
 {
     if (argc < 2) return usage();
@@ -100,6 +197,10 @@ static int cmd_voice(int argc, char **argv)
         if (argc == 4 && !parse_int(argv[3], 0, 37, &g)) return usage();
         return cmd_rec(n, g);
     }
+    if (strcmp(v, "status") == 0 && argc == 2) return cmd_status();
+    if (strcmp(v, "test") == 0 && argc == 3 && parse_int(argv[2], 1, VR_MAX_S, &n)) return cmd_test(n);
+    if (strcmp(v, "test-short") == 0 && argc == 2) return cmd_test_short();
+    if (strcmp(v, "test-cancel") == 0 && argc == 3 && parse_int(argv[2], 0, VR_MAX_S, &n)) return cmd_test_cancel(n);
     return usage();
 }
 
@@ -107,7 +208,8 @@ void voice_console_init(void)
 {
     const esp_console_cmd_t cmd = {
         .command = "voice",
-        .help = "voice rec <1-10 s> [gain_db] (levels only)",
+        .help = "voice rec <1-10 s> [gain_db] | status | test <1-30 s> | test-short | test-cancel <s> "
+                "(levels, lengths and outcomes only)",
         .func = cmd_voice,
     };
     debug_console_register(&cmd);

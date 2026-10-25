@@ -33,11 +33,12 @@ void power_wake_from_isr(power_wake_t why);
 /* v1 touch INT (display_ctl_touch_int_init) */
 void power_touch_isr(void *arg);
 
-typedef enum { POWER_HOLD_TAKEOVER, POWER_HOLD_SSH, POWER_HOLD_BENCH } power_hold_t;
+typedef enum { POWER_HOLD_TAKEOVER, POWER_HOLD_SSH, POWER_HOLD_BENCH, POWER_HOLD_VOICE } power_hold_t;
 /* POWER_HOLD_SSH counts only while g_settings.ss_disable_in_ssh; cc_link_busy() is polled as
-   the third hold. POWER_HOLD_BENCH keeps the bench's Active steps Active. */
+   the third hold. POWER_HOLD_BENCH keeps the bench's Active steps Active. POWER_HOLD_VOICE is on
+   from voice_start until the recording stops (counted like POWER_HOLD_TAKEOVER). */
 void power_hold(power_hold_t h, bool on);
-/* "takeover ssh busy bench" (the ones in force), or "none" */
+/* "takeover,ssh,voice,busy,bench" (the ones in force), or "none" */
 void power_holds_text(char *buf, size_t cap);
 
 int power_poll_period_ms(void);             /* idle_poll: 1000, or 10 000 in Off and deeper while logging is off */
