@@ -213,9 +213,9 @@ static void check_task(void *arg)
     int st = 0;
     esp_err_t e = cc_link_voice_check(&st);
     taskENTER_CRITICAL(&s_mux);
-    /* A link error, a timeout or a check still pending at stop is ignored: the transcribe command runs the same
-       pre-checks. */
-    if (e == ESP_OK && st != 0 && run == s_run) s_check_code = st;
+    /* A link error, a timeout, an exit status the link couldn't read (-1) or a check still pending at stop is
+       ignored: the transcribe command runs the same pre-checks. Only a real shell exit (120, 121, ...) stops it. */
+    if (e == ESP_OK && st > 0 && run == s_run) s_check_code = st;
     s_tasks--;
     taskEXIT_CRITICAL(&s_mux);
     vTaskDelete(NULL);
