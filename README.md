@@ -365,11 +365,22 @@ Dictate an answer instead of typing it. This needs the one-time
 - **Inside a session** (a take-over, or an SSH session from Terminal), **Ctrl+Space** dictates too.
   The session bar shows a red dot and "Recording 0:07 / 0:30" while it listens; keys you press then
   are ignored, so they don't reach the session or the recording, except Esc (cancels) and the leave
-  keys (cancel, then leave). Press **Ctrl+Space** again to stop. The text is typed into the session's
-  prompt as if you had typed it, **without Enter**: check it, then press Enter yourself. Control
-  characters and line breaks are removed first, so dictated text can't run anything. While it
-  transcribes, keys work normally; leaving the session drops the text. Inside a session Ctrl+Space
-  no longer sends NUL to the Host; **Ctrl+@** still does.
+  keys (cancel, then leave). Press **Ctrl+Space** again to stop. While it transcribes, keys work
+  normally except **Esc, which cancels the transcription** (and isn't sent); press Esc again to send
+  one. Leaving the session drops the text.
+  - The text is **typed** into the session as if you had typed it, **without Enter**: check it, then
+    press Enter yourself. Control characters are removed and line breaks become spaces, so it is never
+    sent on its own, but it is still keystrokes: a program that acts on single keys acts on it.
+    **Dictate only at a prompt.**
+  - **In a take-over** the Tab5 types it only when Claude Code shows its empty input line (no
+    permission dialog, selector or draft). Otherwise it says "Not typed: the session isn't at an empty
+    prompt" and keeps the text for 60 s: press **Ctrl+Space** at the empty prompt to type it. Send or
+    clear a draft first; a second dictation onto your first one is held the same way.
+  - **In an SSH session** the Tab5 can't tell a shell prompt from `less`, `mutt` or vi's normal mode,
+    where letters are commands. The text is wrapped as a paste only if the remote program asked for
+    pastes. It is held the same way only while the connection is down or a question is on screen.
+  - A dictation right after another one in the same session starts with a space.
+  - Inside a session Ctrl+Space no longer sends NUL to the Host; **Ctrl+@** still does.
 - **Speed (measured on a home LAN):** from stop to text takes about 0.5 to 0.65 s for a 5 s clip and
   about 1.8 s for 30 s. The first run after a Host restart takes several seconds. How well it hears
   you depends on your voice, the room and the model; it was only tested with the Host's `say` voice.

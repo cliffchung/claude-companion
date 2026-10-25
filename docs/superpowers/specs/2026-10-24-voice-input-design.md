@@ -560,38 +560,70 @@ first Non-goals bullet (§2). Everything in §5–§10 still holds unless this s
 3. **Keys while recording.** Every key but Ctrl+Space, Esc and the leave keys (Ctrl+←, Ctrl+Q,
    Ctrl+]) is eaten, and so are the bar's key chips (the Esc chip cancels), so key clicks stay off
    the Host and typing doesn't mix with the transcript. Esc cancels. A leave key (or "← Leave")
-   cancels, then leaves (an SSH session still asks first). **While transcribing, keys pass normally,
-   Esc included**: Esc belongs to Claude Code and the shell, so it doesn't cancel a transcription
-   here (unlike Sessions); leaving does.
+   cancels, then leaves (an SSH session still asks first). **While transcribing, keys pass, except
+   Esc** (fix round 1, review M1): while this screen's transcription is pending, Esc cancels it and
+   isn't sent, the habit Sessions teaches. A second Esc, with nothing pending, goes to the Host as
+   usual (Claude Code's interrupt, the shell's Esc). Leaving cancels too.
 4. **Delivering the text.** The recording is keyed `term:<the screen's generation>`
    (`VR_TERM_KEY_PREFIX`); the screen takes only its own result (`voice_take_result_for`), and
    Sessions drops any `term:` result (`vr_key_is_term`). A TEXT result is typed into the pty as input
-   with no Enter or newline, built by the pure, host-tested `cc_voice_type_build(text, bracketed,
-   out, cap)` in `cc_cmd.c`:
-   - every C0 control (`\n`, `\r`, `\t` become a space), DEL, ESC, C1 (U+0080–U+009F) and invalid
-     UTF-8 removed, so the text can't execute anything or end the paste early; whitespace runs
-     collapsed to one space and both ends trimmed;
-   - wrapped in `ESC[200~ … ESC[201~` like `cc_paste_build`, but with no Ctrl+U clear and no Enter.
-     **Decision:** wrapped only when the remote side turned bracketed paste on (`vt_bracketed_paste`,
-     DECSET 2004; Claude Code does); otherwise the bare sanitized text, so a shell without it doesn't
-     get `[200~` typed into its line. The text is already free of control bytes, so either form is
-     safe. Cost if wrong: one argument.
+   with no Enter or newline, built by the pure, host-tested `cc_voice_type_build_ex(text, bracketed,
+   join, out, cap)` in `cc_cmd.c`:
+   - every C0 control (`\n`, `\r`, `\t`, `\v` and `\f` become a space), DEL, ESC, C1
+     (U+0080–U+009F, NEL included) and invalid UTF-8 (overlong, surrogates, past U+10FFFF) removed,
+     so the text is never sent with Enter and can't end the paste early; whitespace runs collapsed
+     to one space and both ends trimmed. **It is still typed input**: a program that acts on single
+     keys (a Claude Code selector, `less`, `mutt`, vi normal mode) acts on it. Hence the gate below.
+   - wrapped in `ESC[200~ … ESC[201~` like `cc_paste_build`, with no Ctrl+U clear and no Enter.
+     **In a take-over always** (fix round 1, review I1(b)): Claude Code takes pastes, and the fresh
+     vt may not have seen its DECSET 2004 when `claude attach` started. **In an SSH session** only
+     when the remote turned bracketed paste on (`vt_bracketed_paste`), so a shell without it doesn't
+     get `[200~` typed into its line.
+   - `join`: when this screen already typed a dictation in this session and the new text starts with
+     an ASCII letter or digit, one leading space joins them. In a take-over this rarely fires: the gate
+     refuses a non-empty input line, so a second dictation onto the first is held (below).
    - empty (also after sanitizing) gives nothing; output that doesn't fit `cap` gives nothing.
+   **The gate** (fix round 1, review I1(a) and M3), `term_voice_blocked`, fails closed:
+   - any session: not connected, the link lost (`link_down`), or a modal (the Disconnect confirm, a
+     host-key question) or Ctrl+Tab's terminal UI owning the keys → "Not typed: the session isn't
+     ready. Press Ctrl+Space when it is to type it.";
+   - a take-over also needs Claude Code at its **empty** input line, judged on the live vt screen
+     (`vt_screen_text`) as Sessions' paste gate judges `claude logs`: `cc_screen_input_ready` and not
+     `cc_screen_is_permission_prompt`. A dialog, a selector (the Esc-Esc rewind menu), a draft or an
+     unknown screen → "Not typed: the session isn't at an empty prompt. Press Ctrl+Space there to
+     type it.";
+   - an SSH shell can't be judged further (a shell prompt and vi normal mode look alike), so the
+     README tells the user to dictate only at a prompt.
+   **Decision: hold, don't drop.** A text the gate refuses is kept in PSRAM for up to 60 s (a newer one
+   replaces it) and typed by the next Ctrl+Space if the gate passes then; that press starts no
+   recording. If the gate still refuses, it toasts again and keeps the text. After 60 s, or when the
+   screen closes, it is zeroed and freed and Ctrl+Space records again. Why: the speech is worth
+   keeping across a dialog the user answers in a second, and a deliberate key press is what types it,
+   so nothing lands in a screen the user isn't looking at. 60 s matches the result slot's TTL (P5-3).
+   Cost if wrong: a held text blocks a new recording for up to 60 s (it toasts why).
    Errors toast with the §6.4 copy (6 s); "Stopped at the 30 s limit" toasts after the text. If the
-   screen closed (or the session dropped) before the result arrived, the result is dropped: leaving
-   calls `voice_cancel` for a run of this screen's (recording or transcribing) and takes and wipes
-   a result it posted that nobody took. Never auto-send: no Enter, no `cc_link_paste`.
+   screen closed before the result arrived, the result is dropped: leaving calls `voice_cancel` for a
+   run of this screen's (recording or transcribing) and takes and wipes a result it posted that nobody
+   took. Never auto-send: no Enter, no `cc_link_paste`.
+   **Device check (review I1(c)):** in a take-over, dictate "2 more tests" and raise a permission
+   dialog before it arrives; it must not be typed (held, toast). Also confirm that Claude Code's empty
+   prompt passes `cc_screen_input_ready` on the vt screen (a placeholder hint on the input line would
+   hold every dictation).
 5. **RAM.** A take-over is the tightest internal-RAM case (≥ 20,480 B with Tailscale on, Plan 4 B2).
    This adds no internal-RAM allocation beyond what `voice_start` already takes (its two task
    stacks and the I2S DMA buffers): no LVGL objects (the bar's dot and label are reused), the result
-   struct (about 620 B) and the typed bytes (≤ 493 B) are in PSRAM and zeroed after use. The bytes go
+   struct (about 620 B), the typed bytes (≤ 494 B), a held text (481 B) and the gate's screen copy (rows ×
+   (cols × 4 + 1) B, about 10 KB, only while the gate looks) are in PSRAM; the text buffers are zeroed after use. The bytes go
    through the SSH client's existing tx ring buffer, like typed keys. **Device gate:** the combined
    device pass measures `ui heapmin` across a take-over recording with Tailscale on; it must stay
    ≥ 20,480 B.
 
 Tests: `test_cc_cmd` `test_voice_type_*` (no byte < 0x20 outside the markers, no 0x7f, no CR or LF,
-exact wrapping, empty input, the cap), `test_hotkeys` `test_terminal_ctrl_space_is_voice`,
+exact wrapping, empty input, the cap, every UTF-8 C1, past U+10FFFF, the join space), `test_hotkeys` `test_terminal_ctrl_space_is_voice`,
 `test_voice_rules` `test_term_key`; preview `terminal voice-rec` (indicator, bar kept up, keys and
-chips eaten, Esc, transcribing passes keys, leaving cancels, SSH too, no amber) and `terminal
-voice-done` (the pty write equals the builder's output, bracketed and bare; no Enter or newline; no
-paste; limit and error toasts; another key's result left alone).
+chips eaten, Esc, transcribing passes keys but Esc cancels, leaving cancels by Ctrl+], Ctrl+←, Ctrl+Q
+and the Leave chip, SSH too, no amber) and `terminal voice-done` (the pty write equals the builder's
+output, always bracketed in a take-over and bare in a plain shell; no Enter or newline; no paste; the
+join space; a permission dialog, a draft, the Disconnect confirm and a lost link hold the text, and
+Ctrl+Space types it once ready; a held text expires after 60 s; limit and error toasts; another key's
+result left alone).
