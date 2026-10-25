@@ -71,8 +71,8 @@ static const char *TAG = "sessions";
 #define VOICE_METER_MS   100     /* P5-4: the meter's timer, only while recording */
 #define VOICE_SECS_AFTER_MS 3000 /* the transcribing note adds its seconds after this */
 #define VOICE_RED_LAST_S 5       /* the timer turns red for the last 5 s */
-#define STOP_TIMEOUT_MS  15000   /* `claude stop` waits for the session's process to end */
-#define STOP_POLL_MS     8000    /* the refresh after a stop: the row shows it stopped without waiting for the watch */
+#define STOP_TIMEOUT_MS  30000   /* `claude stop` waits for the session's process to end; a timeout keeps the link */
+#define STOP_POLL_MS     3000    /* the refresh after a stop (the watch, every 3 s, catches what this misses) */
 #define STOP_TOAST_MS    4000
 
 /* The transcript goes into the draft of the session key the recording was started for (spec 5.3). */
@@ -365,16 +365,32 @@ static void run_voice_check(void)
     ui_async(voice_check_toast_cb, (void *)(intptr_t)id);
 }
 
-/* Ctrl+X or the Stop button, after the confirm: `claude stop <id>` (cc_cmd_stop), for the session the confirm named.
-   Its output is not kept or shown: a failure shows the exit status only. A stop that worked refreshes the list at
-   once, so the row turns ENDED without waiting for the watch. */
+/* Whether the link's newest list still has id as the same conversation (session UUID sid) with a live process: the
+   stop is tied to the conversation, not only the 8-hex id (stop review M2). */
+static bool stop_still_same(const char *id, const char *sid)
+{
+    cc_session_t *all = heap_caps_calloc(SNAP_CAP, sizeof(cc_session_t), MALLOC_CAP_SPIRAM);
+    if (!all) return false;
+    int n = cc_poll_snapshot(all, SNAP_CAP);
+    bool ok = false;
+    for (int i = 0; i < n; i++)
+        if (all[i].background && !strcmp(all[i].id, id)) { ok = all[i].live && !strcmp(all[i].session_id, sid); break; }
+    heap_caps_free(all);
+    return ok;
+}
+
+/* Ctrl+X or the Stop button, after the confirm: `claude stop <id>` (cc_cmd_stop), for the session the confirm named
+   (j->text holds its session UUID). Its output is not kept or shown: a failure shows the exit status only. It runs as
+   a slow exec: keepalives go on and a timeout doesn't drop the link (stop review M4). A stop that worked refreshes the
+   list, so the row turns ENDED without waiting for the watch. */
 static void run_stop(const job_t *j, const char *claude)
 {
     char cmd[192], out[64], err[64];
     int status = -1;
     esp_err_t e = ESP_ERR_INVALID_ARG;
-    if (cc_cmd_stop(claude, j->id, cmd, sizeof(cmd)))
-        e = cc_link_exec(cmd, out, sizeof(out), &status, err, sizeof(err), STOP_TIMEOUT_MS);
+    if (!stop_still_same(j->id, j->text)) e = ESP_ERR_NOT_FOUND;
+    else if (cc_cmd_stop(claude, j->id, cmd, sizeof(cmd)))
+        e = cc_link_exec_slow(cmd, out, sizeof(out), &status, err, sizeof(err), STOP_TIMEOUT_MS);
     if (e == ESP_ERR_INVALID_SIZE) e = ESP_OK;   /* more output than out holds: it is dropped anyway */
     ESP_LOGI(TAG, "stop %s: %s, exit %d", j->id, esp_err_to_name(e), status);
     res_lock();
@@ -387,12 +403,7 @@ static void run_stop(const job_t *j, const char *claude)
     s_act.msg[0] = 0;
     res_unlock();
     s_act_pending = false;
-    if (e == ESP_OK && status == 0) {
-#ifndef UI_PREVIEW
-        vTaskDelay(pdMS_TO_TICKS(500));   /* the agents list drops the pid a moment after the process ends */
-#endif
-        cc_link_poll_now(STOP_POLL_MS);
-    }
+    if (e == ESP_OK && status == 0) cc_link_poll_now(STOP_POLL_MS);
 }
 
 static void run_job(const job_t *j)
@@ -1058,7 +1069,9 @@ static void apply_action_result(void)
    answered: a poll may re-sort the rows, move the selection or end the session meanwhile. The answer then stops that
    same session if the newest list still has it running, and is refused otherwise. gen ties an answer to the latest
    confirm. */
-static struct { char key[SM_KEY_MAX]; char id[16]; unsigned gen; } s_stop_ask;
+static struct { char key[SM_KEY_MAX]; char id[16]; char sid[40]; unsigned gen; } s_stop_ask;
+/* Sessions stopped here this boot: listed past the finished limit (sm_visible), RAM only (stop review I2). */
+static sm_pins_t s_pins;
 
 static const cc_session_t *item_by_key(const char *key);
 static void load_snapshot(void);
@@ -1069,13 +1082,16 @@ static void stop_result(const char *id, esp_err_t err, int rc)
     for (int i = 0; i < s_n; i++)
         if (s_items[i].background && strcmp(s_items[i].id, id) == 0) { s = &s_items[i]; break; }
     if (err == ESP_OK && rc == 0) {
+        sm_pin_add(&s_pins, id);   /* a background session's key is its id */
+        s_seen_poll = s_poll_gen - 1;   /* re-filter now: a list loaded before the pin must not drop it */
         if (s) note_clear(s);
         ui_toast(tr(STR_SES_STOPPED));
         s_logs_at_ms = 0;
         return;
     }
     char m[96];
-    if (err == ESP_ERR_INVALID_STATE) strlcpy(m, tr(STR_SES_NOT_CONNECTED), sizeof(m));
+    if (err == ESP_ERR_NOT_FOUND) strlcpy(m, tr(STR_SES_STOP_GONE), sizeof(m));
+    else if (err == ESP_ERR_INVALID_STATE) strlcpy(m, tr(STR_SES_NOT_CONNECTED), sizeof(m));
     else if (err == ESP_ERR_TIMEOUT) strlcpy(m, tr(STR_SES_STOP_TIMEOUT), sizeof(m));
     else if (err == ESP_OK) snprintf(m, sizeof(m), tr(STR_SES_STOP_FAILED), rc);   /* the exit status, never the output */
     else strlcpy(m, tr(STR_SES_STOP_ERROR), sizeof(m));
@@ -1091,10 +1107,12 @@ static void stop_yes(bool yes, void *ud)
     if (!s_scr) return;   /* Sessions is gone: nothing would show the result */
     load_snapshot();      /* judge it against the newest list */
     const cc_session_t *s = item_by_key(s_stop_ask.key);
-    if (!s || strcmp(s->id, s_stop_ask.id) != 0) { ui_toast(tr(STR_SES_STOP_GONE)); render(); return; }
+    if (!s || strcmp(s->id, s_stop_ask.id) != 0 || strcmp(s->session_id, s_stop_ask.sid) != 0) {
+        ui_toast(tr(STR_SES_STOP_GONE)); render(); return;
+    }
     if (!stoppable(s)) { ui_toast(tr(STR_SES_STOP_NOT_RUNNING)); render(); return; }
     if (voice_busy()) return;
-    post_action(JOB_STOP, s, NULL);   /* s, not selected(): the session the confirm named */
+    post_action(JOB_STOP, s, s_stop_ask.sid);   /* s, not selected(): the session the confirm named */
     render();
 }
 
@@ -1107,6 +1125,7 @@ static void stop_ask(void)
     if (s_act_pending) { ui_toast(tr(STR_SES_STILL_WORKING)); return; }
     sm_key(s, s_stop_ask.key, sizeof(s_stop_ask.key));
     strlcpy(s_stop_ask.id, s->id, sizeof(s_stop_ask.id));
+    strlcpy(s_stop_ask.sid, s->session_id, sizeof(s_stop_ask.sid));
     static unsigned gens;
     if (++gens == 0) gens = 1;   /* 0 means no confirm is open */
     s_stop_ask.gen = gens;
@@ -1501,8 +1520,9 @@ static void load_snapshot(void)
     if (!s_snap || !s_items) return;
     int n = cc_poll_snapshot(s_snap, SNAP_CAP);
     if (n < 0) return;
-    n = sm_hide_finished_tests(s_snap, n);   /* P4C-11: finished companion-test-* sessions aren't shown */
-    n = cc_sessions_visible(s_snap, n, 4);
+    /* P4C-11: finished companion-test-* sessions aren't shown; the 4 newest finished ones are, and (stop review I2) every
+       session stopped here this boot */
+    n = sm_visible(s_snap, n, 4, &s_pins);
     if (n > MAX_ROWS) n = MAX_ROWS;
     bool changed = n != s_n;
     for (int i = 0; !changed && i < n; i++) changed = !same_session(&s_snap[i], &s_items[i]);

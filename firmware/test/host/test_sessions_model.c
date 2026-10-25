@@ -434,6 +434,85 @@ static void test_meta_marks_interactive(void)
     TEST_ASSERT_EQUAL_STRING("on Host \xc2\xb7 web", m);
 }
 
+/* Stop review I2: a session stopped here stays listed past the finished limit and the test filter, until it runs
+   again after a poll showed it stopped, or leaves the Host's list. */
+static cc_session_t fin(const char *id, cc_state_t st, int64_t started, const char *name)
+{
+    cc_session_t s = bg(id, st, false);
+    s.started_ms = started;
+    if (name) snprintf(s.name, sizeof(s.name), "%s", name);
+    return s;
+}
+
+static void test_pins_keep_a_stopped_session(void)
+{
+    sm_pins_t p;
+    memset(&p, 0, sizeof(p));
+    /* five finished, the oldest (a0000000) is the one just stopped here, plus a live one */
+    cc_session_t a[8] = { bg("c0000000", CC_WORKING, true),
+                          fin("a0000004", CC_DONE, 50, NULL), fin("a0000003", CC_DONE, 40, NULL),
+                          fin("a0000002", CC_ENDED, 30, NULL), fin("a0000001", CC_ENDED, 20, NULL),
+                          fin("a0000000", CC_ENDED, 10, NULL) };
+    cc_session_t w[8];
+    memcpy(w, a, sizeof(a));
+    TEST_ASSERT_EQUAL(5, sm_visible(w, 6, 4, &p));   /* unpinned: the oldest finished one goes */
+    TEST_ASSERT_EQUAL_STRING("a0000001", w[4].id);
+    sm_pin_add(&p, "a0000000");
+    TEST_ASSERT_TRUE(sm_pinned(&p, "a0000000"));
+    memcpy(w, a, sizeof(a));
+    TEST_ASSERT_EQUAL(6, sm_visible(w, 6, 4, &p));   /* pinned: listed too, and the 4 newest still are */
+    TEST_ASSERT_EQUAL_STRING("a0000000", w[5].id);
+    TEST_ASSERT_EQUAL_STRING("a0000001", w[4].id);
+    /* NULL pins: as cc_sessions_visible */
+    memcpy(w, a, sizeof(a));
+    TEST_ASSERT_EQUAL(5, sm_visible(w, 6, 4, NULL));
+    /* a pinned companion-test-* session isn't hidden; an unpinned finished one is */
+    cc_session_t t[3] = { fin("b0000001", CC_ENDED, 5, "companion-test-stop"), fin("b0000002", CC_ENDED, 6, "companion-test-x"),
+                          inter("desk", 1, CC_IDLE) };
+    sm_pin_add(&p, "b0000001");
+    TEST_ASSERT_EQUAL(1, sm_visible(t, 3, 4, &p));
+    TEST_ASSERT_EQUAL_STRING("b0000001", t[0].id);
+}
+
+static void test_pins_until_running_again(void)
+{
+    sm_pins_t p;
+    memset(&p, 0, sizeof(p));
+    sm_pin_add(&p, "a0000000");
+    /* the list still shows the process right after the stop: the pin stays */
+    cc_session_t s = bg("a0000000", CC_IDLE, true);
+    sm_pins_prune(&p, &s, 1);
+    TEST_ASSERT_TRUE(sm_pinned(&p, "a0000000"));
+    /* stopped, then opened and running again: the pin goes */
+    s.live = false; s.state = CC_ENDED;
+    sm_pins_prune(&p, &s, 1);
+    TEST_ASSERT_TRUE(sm_pinned(&p, "a0000000"));
+    s.live = true; s.state = CC_IDLE;
+    sm_pins_prune(&p, &s, 1);
+    TEST_ASSERT_FALSE(sm_pinned(&p, "a0000000"));
+    /* gone from the Host's list: the pin goes */
+    sm_pin_add(&p, "a0000009");
+    sm_pins_prune(&p, &s, 1);
+    TEST_ASSERT_FALSE(sm_pinned(&p, "a0000009"));
+}
+
+static void test_pins_hold_four(void)
+{
+    sm_pins_t p;
+    memset(&p, 0, sizeof(p));
+    const char *k[5] = { "a0000001", "a0000002", "a0000003", "a0000004", "a0000005" };
+    for (int i = 0; i < 4; i++) sm_pin_add(&p, k[i]);
+    sm_pin_add(&p, k[0]);   /* again: refreshed, no duplicate */
+    sm_pin_add(&p, k[4]);   /* full: the least recently pinned (k[1]) goes */
+    TEST_ASSERT_TRUE(sm_pinned(&p, k[0]));
+    TEST_ASSERT_FALSE(sm_pinned(&p, k[1]));
+    for (int i = 2; i < 5; i++) TEST_ASSERT_TRUE(sm_pinned(&p, k[i]));
+    TEST_ASSERT_FALSE(sm_pinned(&p, ""));
+    TEST_ASSERT_FALSE(sm_pinned(NULL, k[0]));
+    sm_pin_add(&p, "");   /* ignored */
+    TEST_ASSERT_TRUE(sm_pinned(&p, k[0]));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -466,5 +545,8 @@ int main(void)
     RUN_TEST(test_hide_finished_tests);
     RUN_TEST(test_hide_interactive);
     RUN_TEST(test_meta_marks_interactive);
+    RUN_TEST(test_pins_keep_a_stopped_session);
+    RUN_TEST(test_pins_until_running_again);
+    RUN_TEST(test_pins_hold_four);
     return UNITY_END();
 }

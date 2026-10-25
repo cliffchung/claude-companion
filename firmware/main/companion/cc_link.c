@@ -71,6 +71,7 @@ typedef struct {
     int64_t exec_us, eof_us;    /* exec with a payload: when the exec was requested and the EOF sent (0 = not) */
     bool keep_tail;             /* exec: on overflow keep the newest bytes, not the first */
     bool from_clear;            /* exec, keep_tail: ...and only those since the latest ESC[2J */
+    bool slow;                  /* exec: may take long (claude stop): watch keepalives go on, a timeout keeps the link */
     cc_tailbuf_t tb;            /* exec, keep_tail: the ring the newest bytes go into */
     int64_t deadline_us;
     esp_err_t result;
@@ -1100,7 +1101,7 @@ static esp_err_t do_exec(req_t *r)
         if (n == 0 && ssh_channel_is_eof(ch)) break;
         if (now_us() > r->deadline_us) { timed_out = true; break; }
         if (s_parked) { parked = true; break; }   /* I1: the link is going down: give up now */
-        if (r->payload && now_us() - ka_us > 1000000) { watch_keepalive(); ka_us = now_us(); }
+        if ((r->payload || r->slow) && now_us() - ka_us > 1000000) { watch_keepalive(); ka_us = now_us(); }
     }
     if (r->keep_tail && r->out && r->cap) {   /* every path from here on: the ring in order, NUL-terminated */
         olen = cc_tailbuf_finish(&r->tb);
@@ -1119,7 +1120,11 @@ static esp_err_t do_exec(req_t *r)
     if (parked) return ESP_ERR_INVALID_STATE;   /* the park's teardown closes the session */
     /* A channel that never finishes means the link is gone (Wi-Fi lost without an event)
        or wedged; start over either way. */
-    if (timed_out) { s_drop = true; return ESP_ERR_TIMEOUT; }
+    if (timed_out) {
+        /* a slow command (claude stop) that is only late: the session answered all along, so keep it */
+        if (!r->slow || !ssh_is_connected(s_sess)) s_drop = true;
+        return ESP_ERR_TIMEOUT;
+    }
     return truncated ? ESP_ERR_INVALID_SIZE : ESP_OK;
 }
 
@@ -1788,6 +1793,18 @@ esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *exit_st
     if (!cmd || timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
     req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = out, .cap = cap, .exit_status = exit_status,
                 .err = err, .err_cap = err_cap, .keep_tail = true,
+                .deadline_us = now_us() + (int64_t)timeout_ms * 1000 };
+    return submit(&r);
+}
+
+esp_err_t cc_link_exec_slow(const char *cmd, char *out, size_t cap, int *exit_status,
+                            char *err, size_t err_cap, int timeout_ms)
+{
+    if (out && cap) out[0] = 0;
+    if (err && err_cap) err[0] = 0;
+    if (!cmd || timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+    req_t r = { .type = REQ_EXEC, .cmd = cmd, .out = out, .cap = cap, .exit_status = exit_status,
+                .err = err, .err_cap = err_cap, .slow = true,
                 .deadline_us = now_us() + (int64_t)timeout_ms * 1000 };
     return submit(&r);
 }

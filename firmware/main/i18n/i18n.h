@@ -371,7 +371,7 @@ X(SES_FORGET_ENDED, "Forget cancelled: the Host changed") \
 X(SES_STOP, "\xe2\x8c\x83X Stop") \
 X(SES_STOP_ACTION, "Stop") \
 X(SES_STOP_Q, "Stop %s?") \
-X(SES_STOP_BODY, "It stops running. Its conversation is kept; Open starts it again.") \
+X(SES_STOP_BODY, "It stops running. Its conversation stays on the Host, and Open starts it again while it is listed here.") \
 X(SES_STOPPING, "Stopping\xe2\x80\xa6") \
 X(SES_STOPPED, "Stopped") \
 X(SES_STOP_NOT_RUNNING, "This session isn't running, so there is nothing to stop") \

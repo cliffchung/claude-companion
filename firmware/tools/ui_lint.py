@@ -9,8 +9,8 @@ Prints one "<file>:<line>: <rule>" per problem and exits 1 if there are any. Rul
   amber-accessor       ui_tk_needs_you_hex( outside ui_comp.c (and its own ui_tokens.c/.h), or
                        ui_needs_you_color( outside ui_comp.c/.h
   exec-outside-cc_cmd  in ui/**: a string literal "claude attach|logs|agents|stop|rm|-p" or one holding /bin/sh,
-                       or a cc_link_exec / cc_link_exec_tail call with no cc_cmd_ call before it in the
-                       same function body
+                       or a cc_link_exec / _tail / _screen / _slow call with no cc_cmd_ call before it
+                       in the same function body
   mac-word             the word "Mac" or "Macs" ("Mac's" too) inside a string literal in ui/**, i18n/i18n.h,
                        companion/cc_link.c, cc_link.h, cc_console.c or sys/checkin.c ("MacBook", mac_lan_ip pass)
   literal-outside-tr   in ui/**: text passed straight (not inside a nested call) to lv_label_set_text(_fmt|_static),
@@ -39,7 +39,7 @@ SOURCE_EXT = (".c", ".h")
 AMBER_RE = re.compile(r"f4b545", re.IGNORECASE)
 HEX_ACCESSOR_RE = re.compile(r"\bui_tk_needs_you_hex\s*\(")
 COLOR_ACCESSOR_RE = re.compile(r"\bui_needs_you_color\s*\(")
-EXEC_CALL_RE = re.compile(r"\bcc_link_exec(?:_tail)?\s*\(")
+EXEC_CALL_RE = re.compile(r"\bcc_link_exec(?:_tail|_screen|_slow)?\s*\(")
 CC_CMD_RE = re.compile(r"\bcc_cmd_\w+\s*\(")
 COMMAND_LITERAL_RE = re.compile(r"claude (attach|logs|agents|stop|rm|-p)\b")
 
