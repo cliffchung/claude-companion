@@ -1258,6 +1258,32 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         assert(!strcmp(field_text(s), ""));
         return pv_run_checks(d, s, name, true, 0);   /* the note dots inside its slot */
     }
+    if (!strcmp(v, "voice-norow")) {
+        /* M3: recording on the first session, then a tap on a stopped one, which has no answer field (so no mic). The
+           strip stays while recording and the transcribing note after the stop; once the result is in, the stopped
+           session's pane is back to its plain look. */
+        key_of(0, k0);
+        pv_record(d, 5000, 50);
+        lv_obj_t *row = row_named(s, "done one");
+        assert(row);
+        lv_obj_send_event(row, LV_EVENT_PRESSED, NULL);
+        lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 400);
+        assert(find_label_x(s, "done one", 440) && !field_text(s) && !mic_button_of(s));
+        lv_obj_t *rec = find_label(s, "Recording", false), *t = find_label(s, "0:05 / 0:30", false);
+        if (!rec || !obj_shown(rec) || !t || !obj_shown(t)) { printf("check %s: FAIL no voice strip on a row with no field\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, true, 0);
+        pv_stop(d);
+        s_pv_voice.transcribing_ms = 4000; step(d, 400);
+        lv_obj_t *n = find_label(s, "Transcribing on the Host\xe2\x80\xa6 4 s", false);
+        if (!n || !obj_shown(n)) { printf("check %s: FAIL no transcribing note on a row with no field\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, true, 0);   /* the snapshot shows this: the note beside Open */
+        pv_voice_post(k0, VR_OUT_TEXT, "Please run the tests.", false); step(d, 400); step(d, 400);
+        n = find_label_has(s, "Transcribing on the Host", 0);
+        rec = find_label(s, "Recording", false);
+        if ((n && obj_shown(n)) || (rec && obj_shown(rec))) { printf("check %s: FAIL the voice row outlived the result\n", name); return 1; }
+        if (!find_label_x(s, "done one", 440) || s_paste_calls) { printf("check %s: FAIL the selection or a paste changed\n", name); return 1; }
+        return r;
+    }
     if (!strcmp(v, "voice-nofield")) {
         int k = -1;
         for (int i = 0; i < s_preview_n; i++) if (s_preview_sessions[i].background && s_preview_sessions[i].state == CC_DONE) k = i;
