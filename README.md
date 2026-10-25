@@ -379,7 +379,7 @@ Dictate an answer instead of typing it. This needs the one-time
   - **In an SSH session** the Tab5 can't tell a shell prompt from `less`, `mutt` or vi's normal mode,
     where letters are commands. The text is wrapped as a paste only if the remote program asked for
     pastes. It is held the same way only while the connection is down or a question is on screen.
-  - A dictation right after another one in the same session starts with a space.
+  - In an SSH shell, a dictation right after another one (no key between) starts with a space.
   - Inside a session Ctrl+Space no longer sends NUL to the Host; **Ctrl+@** still does.
 - **Speed (measured on a home LAN):** from stop to text takes about 0.5 to 0.65 s for a 5 s clip and
   about 1.8 s for 30 s. The first run after a Host restart takes several seconds. How well it hears

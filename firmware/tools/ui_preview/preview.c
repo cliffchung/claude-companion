@@ -3265,11 +3265,12 @@ static int term_voice_case(lv_display_t *d, const char *v) {
         r |= pv_run_checks(d, s, name, false, 0);
         step(d, 3100);
         if (obj_shown(bar)) { printf("check %s: FAIL the bar stayed up after the result\n", name); return 1; }
-        /* a second dictation joins the first with one space; the 30 s limit toasts after the text */
+        /* a second dictation in a take-over doesn't join (it types only at an empty prompt: re-review N1); the 30 s
+           limit toasts after the text */
         if (!pv_term_record(d, 30000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no second recording\n", name); return 1; }
         sent = s_ssh_sent_n;
         pv_voice_post(key, VR_OUT_TEXT, "More.", true); step(d, 20);
-        if (s_ssh_sent_n - sent != 18 || memcmp(s_ssh_sent + sent, "\x1b[200~ More.\x1b[201~", 18) || !find_label(top, "Stopped at the 30 s limit", false)) { printf("check %s: FAIL the joined limit result\n", name); return 1; }
+        if (s_ssh_sent_n - sent != 17 || memcmp(s_ssh_sent + sent, "\x1b[200~More.\x1b[201~", 17) || !find_label(top, "Stopped at the 30 s limit", false)) { printf("check %s: FAIL the limit result\n", name); return 1; }
         /* an error types nothing and toasts */
         if (!pv_term_record(d, 3000, key) || !pv_term_stop(d)) { printf("check %s: FAIL no third recording\n", name); return 1; }
         sent = s_ssh_sent_n;
@@ -3288,7 +3289,7 @@ static int term_voice_case(lv_display_t *d, const char *v) {
         if (s_ssh_sent_n != sent || s_voice_start_calls != starts) { printf("check %s: FAIL Ctrl+Space at the dialog typed or recorded\n", name); return 1; }
         pv_ssh_feed("\x1b[2J\x1b[H"); pv_ssh_feed(TV_PROMPT); step(d, 20);
         step(d, 800); pv_ctrl_space(d);
-        if (s_voice_start_calls != starts || s_ssh_sent_n - sent != 36 || memcmp(s_ssh_sent + sent, "\x1b[200~ 2 more tests, then stop\x1b[201~", 36)) {
+        if (s_voice_start_calls != starts || s_ssh_sent_n - sent != 35 || memcmp(s_ssh_sent + sent, "\x1b[200~2 more tests, then stop\x1b[201~", 35)) {
             printf("check %s: FAIL the held text at the prompt: %d bytes\n", name, (int)(s_ssh_sent_n - sent)); return 1;
         }
         /* the held text is typed once: the next press records */

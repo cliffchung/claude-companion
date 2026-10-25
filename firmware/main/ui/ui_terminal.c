@@ -98,7 +98,7 @@ typedef struct {
     voice_result_t *vres;       /* PSRAM, from the start to the end of a run; zeroed after use */
     char *held;                 /* PSRAM: a transcript the screen wasn't ready for; zeroed and freed when typed or old */
     int64_t held_ms;
-    bool typed_once;            /* a dictation was typed in this session: the next one joins it with a space */
+    bool typed_once;            /* a dictation was the last thing typed: the next one joins it with a space (SSH only) */
 } term_ctx_t;
 
 static term_ctx_t *s_ctx = NULL;
@@ -411,7 +411,10 @@ static bool term_voice_type(term_ctx_t *c, const char *text)
     if (why != STR_COUNT) { ui_toast_ms(tr(why), VOICE_ERROR_TOAST_MS); return false; }
     char *buf = heap_caps_malloc(VOICE_TYPE_CAP, MALLOC_CAP_SPIRAM);
     if (!buf) { ui_toast_ms(tr(STR_VOICE_NO_MEMORY), VOICE_ERROR_TOAST_MS); return false; }
-    size_t n = cc_voice_type_build_ex(text, c->cmd_mode || vt_bracketed_paste(c->vt), c->typed_once, buf, VOICE_TYPE_CAP);
+    /* re-review N1: join only in an SSH shell, right after a dictation with no key since; a take-over types only at an
+       empty prompt, where a leading space is wrong */
+    size_t n = cc_voice_type_build_ex(text, c->cmd_mode || vt_bracketed_paste(c->vt), !c->cmd_mode && c->typed_once, buf,
+                                      VOICE_TYPE_CAP);
     if (n) { ssh_client_send(c->ssh, (const uint8_t *)buf, n); vt_scroll_view_reset(c->vt); c->typed_once = true; }
     ESP_LOGI(TAG, "voice: typed %u bytes into the session", (unsigned)n);   /* a length only, never the text */
     memset(buf, 0, VOICE_TYPE_CAP);
@@ -539,6 +542,7 @@ static void send_key(term_ctx_t *c, const key_event_t *e)
     char buf[32];
     size_t n = term_keys_encode(e, c->vt, buf, sizeof(buf));
     if (n && c->ssh) { ssh_client_send(c->ssh, (const uint8_t *)buf, n); vt_scroll_view_reset(c->vt); }
+    if (n) c->typed_once = false;   /* a key since the dictation (Enter, an edit): the next one doesn't join */
 }
 
 static bool term_key(const key_event_t *ev, void *user)
