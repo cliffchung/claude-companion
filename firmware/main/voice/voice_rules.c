@@ -72,6 +72,33 @@ vr_key_t vr_on_voice_key(vr_keys_t *k, bool recording, int64_t now_ms)
     return recording ? VR_KEY_STOP : VR_KEY_START;
 }
 
+/* The code point of the UTF-8 sequence at p (lead byte c >= 0xC0), or 0 for a malformed one. */
+static uint32_t utf8_cp(const unsigned char *p)
+{
+    unsigned char c = p[0];
+    int n = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+    uint32_t cp = c & (0x3F >> n);
+    for (int i = 1; i <= n; i++) {
+        if ((p[i] & 0xC0) != 0x80) return 0;
+        cp = cp << 6 | (p[i] & 0x3F);
+    }
+    return cp;
+}
+
+/* Spec 9.3 step 4 counts letters and digits only. Outside ASCII, the blocks whisper's non-speech output comes from
+   are not letters: Latin-1 punctuation and signs (U+00A0-00BF, × ÷), General Punctuation (– — ‘ ’ “ ” …), arrows to
+   dingbats (♪ ♫), CJK punctuation, variation selectors and emoji. Everything else (é, 日本, …) counts. */
+static bool utf8_is_letter(uint32_t cp)
+{
+    if (cp == 0 || cp < 0xC0 || cp == 0xD7 || cp == 0xF7) return false;
+    if (cp >= 0x2000 && cp <= 0x206F) return false;
+    if (cp >= 0x2190 && cp <= 0x2BFF) return false;
+    if (cp >= 0x3000 && cp <= 0x303F) return false;
+    if (cp >= 0xFE00 && cp <= 0xFE0F) return false;
+    if (cp >= 0x1F000 && cp <= 0x1FAFF) return false;
+    return true;
+}
+
 size_t vr_clean_transcript(char *s)
 {
     size_t w = 0;
@@ -86,10 +113,12 @@ size_t vr_clean_transcript(char *s)
         r++;
         if (c == '\n' || c == '\t' || c == ' ') { pending = true; continue; }
         if (c < 0x20 || c == 0x7f) continue;
+        /* decoded before the write below: the sequence's own bytes are still ahead of w */
+        if (c >= 0xC0 && utf8_is_letter(utf8_cp((const unsigned char *)r - 1))) alnum = true;
         if (pending && w > 0) s[w++] = ' ';
         pending = false;
         s[w++] = (char)c;
-        if (c >= 0x80 || (c >= '0' && c <= '9') || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z')) alnum = true;
+        if ((c >= '0' && c <= '9') || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z')) alnum = true;
     }
     if (!alnum) w = 0;
     s[w] = 0;

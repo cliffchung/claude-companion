@@ -22,6 +22,8 @@ bool ui_sessions_forget_host_key(void);
    "Voice input is ready on the Host" or the matching error through ui_async. LVGL task; false when a check is
    already pending or the worker can't take it now. */
 bool ui_sessions_voice_check(void);
+/* The voice meter's 100 ms timer (P5-4): non-NULL only while recording with Sessions shown (the preview's timer check). */
+lv_timer_t *ui_sessions_voice_meter(void);
 /* Why the Host link is down, in Host words with no "(retry in Ns)": "No Host set up", "Can't reach <name>. Is it
    awake?" or cc_link's failure up to its parenthetical. The Sessions banner and Settings › Host › Link use it. */
 void ui_sessions_link_down_text(char *out, size_t cap);

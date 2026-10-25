@@ -14,8 +14,9 @@ hk_term_t hk_takeover(const key_event_t *ev, bool takeover);
 
 typedef enum { HK_D_NONE, HK_D_OPEN, HK_D_SETTINGS, HK_D_TERMINAL, HK_D_KEYS, HK_D_VOICE, HK_D_LOCAL } hk_dash_t;
 /* KEY_EV_CHAR with MOD_CTRL or MOD_META: o/O -> OPEN, p/P -> SETTINGS, t/T and m/M -> TERMINAL,
-   k/K -> KEYS, ' ' with Ctrl -> VOICE, any other character -> LOCAL (eaten: never typed into an
-   answer field, never sent); anything else -> NONE (dash_key's existing handling) */
+   k/K -> KEYS, ' ' with Ctrl -> VOICE (Plan 5: Sessions starts or stops voice input; no space is typed), any
+   other character -> LOCAL (eaten: never typed into an answer field, never sent); anything else -> NONE
+   (dash_key's existing handling) */
 hk_dash_t hk_dashboard(const key_event_t *ev);
 
 typedef struct { str_id_t keys, what; } hk_line_t;   /* tr() ids */

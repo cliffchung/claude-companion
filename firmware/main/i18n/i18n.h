@@ -366,14 +366,13 @@ X(HK_W_CTRL_P, "settings") \
 X(HK_K_CTRL_K, "Ctrl+K") \
 X(HK_W_CTRL_K, "this list") \
 X(HK_K_CTRL_SPACE, "Ctrl+Space") \
-X(HK_W_CTRL_SPACE, "voice input (coming later)") \
+X(HK_W_CTRL_SPACE, "voice input: press to start, again to stop") \
 X(HK_K_ESC, "Esc") \
 X(HK_W_ESC, "clear the answer, or go back") \
 X(HK_K_CTRL_BRACKET, "Ctrl+\xe2\x86\x90") \
 X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
 X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
-X(HK_VOICE, "Voice input comes in a later update") \
 X(TERM_KEEPS_RUNNING, "The session keeps running on the Host.") \
 X(SSH_NO_SESSION, "Couldn't start SSH. Try again.") \
 X(SSH_CANT_CONNECT, "Couldn't connect:") \
@@ -427,6 +426,13 @@ X(HF_ERR_NO_ADDRESS, "Enter the host's address") \
 X(HF_ERR_NO_USER, "Enter a user") \
 X(HF_ERR_BAD_PORT, "The port is a number from 1 to 65535") \
 X(HF_ERR_IS_HOST, "That's the Host: its sessions are on the Sessions screen.") \
+X(VOICE_RECORDING, "Recording") \
+X(VOICE_HINT, "Ctrl+Space stops \xc2\xb7 Esc cancels") \
+X(VOICE_TRANSCRIBING, "Transcribing on the Host\xe2\x80\xa6") \
+X(VOICE_REVIEW, "Check the text, then press Enter to send") \
+X(VOICE_CUT, "The text was cut to fit the answer field") \
+X(VOICE_AT_LIMIT, "Stopped at the 30 s limit") \
+X(VOICE_SESSION_GONE, "That session is gone, so the text was dropped") \
 X(VOICE_TOO_SHORT, "Too short. Press Ctrl+Space, speak, then press it again.") \
 X(VOICE_NO_SPEECH, "No speech heard. Try again closer to the Tab5.") \
 X(VOICE_BUSY, "Still transcribing\xe2\x80\xa6") \
