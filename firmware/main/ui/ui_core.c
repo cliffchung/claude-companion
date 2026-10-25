@@ -186,6 +186,13 @@ lv_obj_t *ui_textarea(lv_obj_t *parent, const char *placeholder, bool password, 
     lv_obj_set_style_text_color(ta, lv_color_hex(UI_TK_FG), 0);
     lv_obj_set_style_border_color(ta, lv_color_hex(UI_TK_PANEL2), 0);
     lv_obj_set_style_radius(ta, UI_TK_RADIUS, 0);
+    if (oneline) {   /* a touch target like any body control: 64 px, an 80 px hit area, the line centred */
+        lv_obj_set_height(ta, UI_TK_TARGET);
+        int32_t pad = (UI_TK_TARGET - 2 * lv_obj_get_style_border_width(ta, 0) - lv_font_get_line_height(
+                           lv_obj_get_style_text_font(ta, 0))) / 2;
+        lv_obj_set_style_pad_ver(ta, pad > 0 ? pad : 0, 0);
+        lv_obj_set_ext_click_area(ta, (UI_TK_HIT - UI_TK_TARGET) / 2);
+    }
     return ta;
 }
 
@@ -591,6 +598,8 @@ static void key_hint_deleted(lv_event_t *e)
 {
     if (lv_event_get_target_obj(e) == s_key_hint) s_key_hint = NULL;
 }
+
+str_id_t ui_touch_text(str_id_t keys) { return i18n_touch_text(keys, keyboard_any_present()); }
 
 void ui_keyboard_hint(lv_obj_t *label)
 {

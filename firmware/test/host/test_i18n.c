@@ -98,6 +98,43 @@ static void test_out_of_range_is_empty(void)
     TEST_ASSERT_EQUAL_STRING("", tr(STR_COUNT));
 }
 
+/* ui_touch_text's mapping: each key hint and its touch wording, which names no key */
+static const struct { str_id_t keys, touch; } k_touch[] = {
+    { STR_HOSTS_LEAVE_NOTE, STR_HOSTS_LEAVE_NOTE_TOUCH },
+    { STR_TERM_OPENING_HINT, STR_TERM_OPENING_HINT_TOUCH },
+    { STR_TERM_SSH_HINT, STR_TERM_SSH_HINT_TOUCH },
+    { STR_VOICE_HINT, STR_VOICE_HINT_TOUCH },
+    { STR_VOICE_NOT_AT_PROMPT, STR_VOICE_NOT_AT_PROMPT_TOUCH },
+    { STR_VOICE_NOT_READY, STR_VOICE_NOT_READY_TOUCH },
+    { STR_VOICE_REVIEW, STR_VOICE_REVIEW_TOUCH },
+    { STR_VOICE_TOO_SHORT, STR_VOICE_TOO_SHORT_TOUCH },
+};
+
+static void test_touch_text_maps_each_key_hint(void)
+{
+    for (size_t i = 0; i < sizeof(k_touch) / sizeof(k_touch[0]); i++) {
+        const char *k = tr(k_touch[i].keys);
+        TEST_ASSERT_EQUAL_MESSAGE(k_touch[i].keys, i18n_touch_text(k_touch[i].keys, true), k);
+        TEST_ASSERT_EQUAL_MESSAGE(k_touch[i].touch, i18n_touch_text(k_touch[i].keys, false), k);
+        const char *t = tr(k_touch[i].touch);
+        TEST_ASSERT_NULL_MESSAGE(strstr(t, "Ctrl"), t);
+        TEST_ASSERT_NULL_MESSAGE(strstr(t, "Press"), t);
+        TEST_ASSERT_NULL_MESSAGE(strstr(t, "Esc"), t);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(t, "Tap") ? strstr(t, "Tap") : strstr(t, "tap"), t);
+    }
+}
+
+static void test_touch_text_leaves_other_ids(void)
+{
+    for (int id = 0; id < STR_COUNT; id++) {
+        bool listed = false;
+        for (size_t i = 0; i < sizeof(k_touch) / sizeof(k_touch[0]); i++) listed |= k_touch[i].keys == (str_id_t)id;
+        if (listed) continue;
+        TEST_ASSERT_EQUAL_MESSAGE(id, i18n_touch_text((str_id_t)id, false), tr((str_id_t)id));
+        TEST_ASSERT_EQUAL_MESSAGE(id, i18n_touch_text((str_id_t)id, true), tr((str_id_t)id));
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -105,5 +142,7 @@ int main(void)
     RUN_TEST(test_plain_percent_entries_have_no_conversion);
     RUN_TEST(test_no_other_entry_has_a_conversion);
     RUN_TEST(test_out_of_range_is_empty);
+    RUN_TEST(test_touch_text_maps_each_key_hint);
+    RUN_TEST(test_touch_text_leaves_other_ids);
     return UNITY_END();
 }

@@ -250,7 +250,7 @@ static void fill(void)
        Enter left Terminal); with hosts it stays where it was, so a bare Enter never connects to one */
     if (s_n == 0) lv_obj_add_flag(add, UI_KEYBOARD_FIRST);
     char note[200];
-    snprintf(note, sizeof(note), "%s %s", tr(STR_HOSTS_NOT_LISTED), tr(STR_HOSTS_LEAVE_NOTE));
+    snprintf(note, sizeof(note), "%s %s", tr(STR_HOSTS_NOT_LISTED), tr(ui_touch_text(STR_HOSTS_LEAVE_NOTE)));
     ui_footnote(s_body, note);
     ui_keyboard_hint(ui_footnote(s_body, tr(STR_SET_KEY_HINT)));   /* §5.13: while the keyboard is in use */
 }

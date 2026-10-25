@@ -137,6 +137,10 @@ static bool s_kbd_attached;                /* the soft keyboard is attached to t
 /* Voice input (Plan 5, spec 5-6): the mic button and its glyph, the voice strip in the action row's note slot */
 static lv_obj_t *s_mic, *s_mic_glyph[3], *s_mic_dot;
 static lv_obj_t *s_vstrip, *s_vtimer, *s_vmeter;
+static lv_obj_t *s_vcancel;                /* the strip's Cancel button: shown while recording or transcribing (touch Esc) */
+static lv_obj_t *s_vhint_keys, *s_vhint_touch;   /* the strip's hint, both wordings built once (no realloc mid-recording) */
+static bool s_kbd_up;                      /* the soft keyboard is up: the pane ends above it (touch alone) */
+static lv_obj_t *s_footer;                 /* hidden under the soft keyboard: its chips would sit under the keys */
 static lv_timer_t *s_meter_timer;          /* P5-4: exists only while recording */
 static vr_keys_t s_vkeys;                  /* Ctrl+Space and the mic tap: the repeat and toggle guard */
 static bool s_voice_mine;                  /* a recording Sessions started may still post a result */
@@ -760,7 +764,8 @@ static void pane_update(void)
        with no answer field and no Open too): the recording goes on, so the screen must say so */
     changed |= set_shown(s_action_row, open || s_vrec || s_vnote[0]);
     set_shown(s_send, field);
-    set_shown(s_open, open);
+    /* recording or transcribing, Open is inert (review M1): Cancel takes its room, so the strip fits the row */
+    set_shown(s_open, open && !s_vrec && !s_vnote[0]);
     /* the info line: interactive sessions (B3), and background ones that can't be acted on */
     const char *info = NULL;
     tc_t ic = TC_MUTED;
@@ -804,6 +809,7 @@ static void select_index(int i);
 static void sessions_open_selected(void);
 static void render(void);
 static bool voice_busy(void);
+static void pane_fit_kbd(void);
 
 /* A tap belongs to the session under the finger when it went down (review I1): a poll can re-sort the
    rows between the press and the release, and the row object then shows another session. */
@@ -1125,6 +1131,12 @@ static void voice_view(const voice_status_t *v)
              : v->phase == VOICE_TRANSCRIBING ? MIC_TRANSCRIBING : MIC_IDLE);
     set_shown(s_vstrip, rec);
     set_shown(s_note, !rec);   /* the strip takes the note's slot */
+    set_shown(s_vcancel, v->phase != VOICE_IDLE);   /* Esc by touch: after the strip, or after the transcribing note */
+    if (rec) {   /* a keyboard may come or go: both wordings exist, so this only flips HIDDEN (no allocation) */
+        bool touch = ui_touch_text(STR_VOICE_HINT) != STR_VOICE_HINT;
+        set_shown(s_vhint_keys, !touch);
+        set_shown(s_vhint_touch, touch);
+    }
     if (rec != s_vrec) { s_vrec = rec; s_dirty_pane = true; }
     if (rec && s_vtimer && s_vmeter) {
         int sec = v->elapsed_ms / 1000;
@@ -1171,12 +1183,12 @@ lv_timer_t *ui_sessions_voice_meter(void) { return s_meter_timer; }
 static void voice_toast(str_id_t id)
 {
     lv_obj_t *above = s_answer_row && lv_obj_is_visible(s_answer_row) ? s_answer_row : s_action_row;
-    ui_toast_above_ms(tr(id), VOICE_ERROR_TOAST_MS, above);
+    ui_toast_above_ms(tr(ui_touch_text(id)), VOICE_ERROR_TOAST_MS, above);
 }
 
 static void voice_error(const cc_session_t *s, str_id_t id)
 {
-    note_set(s, NOTE_ERROR, tr(id));
+    note_set(s, NOTE_ERROR, tr(ui_touch_text(id)));
     voice_toast(id);
 }
 
@@ -1210,6 +1222,15 @@ static void voice_toggle(void)
     voice_view(&v);
 }
 
+/* Esc and the Cancel button: the recording or the transcription is dropped (nothing is applied), the draft stays. */
+static void voice_cancel_view(void)
+{
+    voice_status_t v;
+    voice_cancel();
+    voice_get(&v);
+    voice_view(&v);
+}
+
 /* A result from the voice service: into the draft of the session it was recorded for, never sent. */
 static void apply_voice_result(const voice_result_t *r)
 {
@@ -1234,7 +1255,7 @@ static void apply_voice_result(const voice_result_t *r)
     if (m != VR_MERGE_EMPTY) sm_draft_set(s_drafts, r->key, buf);
     memset(buf, 0, SM_ANSWER_MAX + 1);
     heap_caps_free(buf);
-    const char *what = tr(m == VR_MERGE_CUT ? STR_VOICE_CUT : STR_VOICE_REVIEW);
+    const char *what = tr(m == VR_MERGE_CUT ? STR_VOICE_CUT : ui_touch_text(STR_VOICE_REVIEW));
     char n[160];
     if (r->at_limit) snprintf(n, sizeof(n), "%s. %s", tr(STR_VOICE_AT_LIMIT), what);
     else strlcpy(n, what, sizeof(n));
@@ -1299,9 +1320,7 @@ static bool sessions_key(const key_event_t *ev, void *user)
     voice_get(&vs);
     if (vs.phase != VOICE_IDLE) {
         if (ev->type == KEY_EV_SPECIAL && ev->key == SK_ESC) {
-            voice_cancel();
-            voice_get(&vs);
-            voice_view(&vs);
+            voice_cancel_view();
             render();
         }
         return true;
@@ -1427,6 +1446,19 @@ static void unreachable_text(char *out, size_t cap, bool too_big, int fails)
     ui_sessions_link_down_text(out, cap);
 }
 
+/* The pane's and the list's height, the one place it is worked out: from under the header (and the banner, when
+   shown) to the footer, or to the soft keyboard's top while it is up (review I1), so no row or control sits under
+   the keys. Only a change resizes. */
+static void pane_size(void)
+{
+    if (!s_pane || s_body_top < 0) return;
+    int h = lv_display_get_vertical_resolution(NULL) - s_body_top - (s_kbd_up ? softkbd_height() : UI_TK_FOOTER_H);
+    if (s_list && lv_obj_get_style_height(s_list, 0) != h) lv_obj_set_height(s_list, h);
+    if (lv_obj_get_style_height(s_pane, 0) == h) return;
+    lv_obj_set_height(s_pane, h);
+    s_dirty_pane = true;   /* the log block changed height */
+}
+
 static void place_body(int top)
 {
     if (top == s_body_top) return;
@@ -1435,9 +1467,10 @@ static void place_body(int top)
     lv_obj_t *parts[] = { s_list, s_skel, s_pane, s_nohost, s_empty };
     for (unsigned i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
         lv_obj_set_y(parts[i], top);
-        lv_obj_set_height(parts[i], h);
+        if (parts[i] != s_pane && parts[i] != s_list) lv_obj_set_height(parts[i], h);
     }
-    s_dirty_pane = true;   /* the log block changed height */
+    pane_size();
+    s_dirty_pane = true;
 }
 
 static void update_state(void)
@@ -1572,6 +1605,7 @@ static void tick_cb(lv_timer_t *t)
     if (!s_scr) return;   /* opening a session replaced the screen */
     forget_check();       /* P4-3: a forget finished by a later connect */
     voice_tick();
+    pane_fit_kbd();
     notes_expire();
     res_lock();
     unsigned lg = s_logs.gen;
@@ -1632,6 +1666,19 @@ static void chip_settings_cb(lv_event_t *e) { (void)e; ui_nav_push(ui_settings_c
 static void chip_keys_cb(lv_event_t *e) { (void)e; ui_sessions_keys_overlay(true); }
 static void set_up_host_cb(lv_event_t *e) { (void)e; ui_settings_open(UI_SET_HOST); }
 static void mic_cb(lv_event_t *e) { (void)e; voice_toggle(); render(); }
+static void vcancel_cb(lv_event_t *e) { (void)e; if (voice_busy()) voice_cancel_view(); render(); }
+
+/* With the soft keyboard up (no physical keyboard), the pane ends above it, so the field, the mic, Send, Open and
+   the voice strip's Cancel stay in view; the log block gives up the height. Down on the keyboard (or its Enter in
+   a prompt) hides it: the 300 ms tick then gives the pane its height back. Only a change resizes. */
+static void pane_fit_kbd(void)
+{
+    bool up = softkbd_visible();
+    if (!s_pane || up == s_kbd_up) return;
+    s_kbd_up = up;
+    pane_size();   /* with the banner's height, whether it is up or not */
+    set_shown(s_footer, !up);
+}
 
 /* A tap focuses the field; the soft keyboard is only a fallback with no physical keyboard. Its keys
    come back through keyboard_inject to the sink, like the physical ones. */
@@ -1645,6 +1692,8 @@ static void field_clicked_cb(lv_event_t *e)
         s_kbd_attached = true;
         lv_obj_send_event(s_ta, LV_EVENT_CLICKED, NULL);   /* the attach missed this tap */
     }
+    pane_fit_kbd();
+    render();
 }
 
 /* The mic button (spec 6.1): 64 x 64 with an 80 px hit area, a solid line border and a mic glyph; mic_look
@@ -1688,7 +1737,8 @@ static lv_obj_t *mic_button(lv_obj_t *parent)
 }
 
 /* The voice strip (spec 6.2), built once with the pane and hidden: shown only while recording, in the note's slot.
-   Two lines, right-aligned: the dot, "Recording", the timer and the meter; the hint under them. */
+   Two lines, right-aligned: the dot, "Recording", the timer and the meter; the hint under them ("Tap the mic to stop"
+   with no physical keyboard). Then the Cancel button. */
 static void build_voice_strip(lv_obj_t *row)
 {
     s_vstrip = box(row);
@@ -1715,10 +1765,19 @@ static void build_voice_strip(lv_obj_t *row)
     lv_obj_set_size(s_vmeter, 160, 8);
     lv_bar_set_range(s_vmeter, 0, 100);
     lv_obj_remove_flag(s_vmeter, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_t *hint = text(s_vstrip, tr(STR_VOICE_HINT), &st_label, TC_MUTED);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_max_width(hint, LV_PCT(100), 0);
+    s_vhint_keys = text(s_vstrip, tr(STR_VOICE_HINT), &st_label, TC_MUTED);
+    s_vhint_touch = text(s_vstrip, tr(STR_VOICE_HINT_TOUCH), &st_label, TC_MUTED);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *h = i ? s_vhint_touch : s_vhint_keys;
+        lv_label_set_long_mode(h, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_style_max_width(h, LV_PCT(100), 0);
+    }
+    set_shown(ui_touch_text(STR_VOICE_HINT) == STR_VOICE_HINT ? s_vhint_touch : s_vhint_keys, false);
     lv_obj_add_flag(s_vstrip, LV_OBJ_FLAG_HIDDEN);
+    /* Cancel (touch Esc): a 64 px button at the row's end, also shown while transcribing (the strip then gives its
+       slot back to the transcribing note). Secondary: red stays the recording's, amber is never voice's. */
+    s_vcancel = ui_btn(row, UI_BTN_SECONDARY, tr(STR_CANCEL), vcancel_cb, NULL);
+    lv_obj_add_flag(s_vcancel, LV_OBJ_FLAG_HIDDEN);
 }
 
 static lv_obj_t *build_pane(lv_obj_t *scr, int W, int top, int h)
@@ -1819,7 +1878,7 @@ static void scr_delete_cb(lv_event_t *e)
     voice_get(&vs);
     if (voice_recording(&vs)) voice_cancel();
     if (s_meter_timer) { lv_timer_delete(s_meter_timer); s_meter_timer = NULL; }
-    s_mic = s_mic_dot = s_vstrip = s_vtimer = s_vmeter = NULL;
+    s_mic = s_mic_dot = s_vstrip = s_vtimer = s_vmeter = s_vhint_keys = s_vhint_touch = s_vcancel = NULL;
     memset(s_mic_glyph, 0, sizeof(s_mic_glyph));
     s_mic_look = -1;
     s_vnote[0] = 0;
@@ -1827,7 +1886,7 @@ static void scr_delete_cb(lv_event_t *e)
     s_scr = s_needs = s_banner = s_list = s_skel = s_nohost = s_empty = NULL;
     s_pane = s_title = s_pill = s_meta = s_logbox = s_log = s_info = NULL;
     s_answer_row = s_ta = s_action_row = s_send = s_open = s_note = NULL;
-    s_keys_ov = NULL;
+    s_keys_ov = s_footer = NULL;
     memset(s_rows, 0, sizeof(s_rows));
     /* PT11: the rate stays 3 s on every other screen (Active/Dim); Off sets its floor */
 }
@@ -1899,6 +1958,7 @@ lv_obj_t *ui_sessions_create(void *arg)
     s_needs = ui_header_needs_you(hd);
     s_banner = ui_banner(scr, UI_TK_HEADER_H);
     lv_obj_t *f = ui_footer(scr);
+    s_footer = f;
     lv_obj_t *l = ui_footer_group(f, false), *r = ui_footer_group(f, true);
     ui_chip(l, tr(STR_SES_SELECT), chip_select_cb, NULL);
     ui_chip(l, tr(STR_SES_SEND), chip_send_cb, NULL);
@@ -1913,6 +1973,7 @@ lv_obj_t *ui_sessions_create(void *arg)
 
     s_visit++;   /* answers to requests from an earlier visit are not acted on */
     s_kbd_attached = false;
+    s_kbd_up = false;
     s_body_top = s_body = s_banner_shown = s_inert = -1;
     s_cols = s_rows_fit = 0;
     s_dirty_rows = s_dirty_pane = s_dirty_log = true;

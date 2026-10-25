@@ -257,8 +257,8 @@ void ui_comp_init(void)
     lv_style_set_pad_hor(&s_bar, UI_TK_MARGIN);
     lv_style_set_text_color(&s_bar, HEX(UI_TK_FG));
     flex_row(&s_bar, UI_TK_GAP_M);
-    /* the session bar's name (one line, at most 400 px) and its state text (takes the rest of the row) */
-    lv_style_set_max_width(&s_bar_name, 400);
+    /* the session bar's name (one line; its cap is a local geometry style, see ui_session_bar_name) and its state
+       text (takes the rest of the row) */
     lv_style_set_height(&s_bar_name, lv_font_get_line_height(FONT_BODY));
     lv_style_set_width(&s_bar_state, 1);
     lv_style_set_flex_grow(&s_bar_state, 1);
@@ -1009,12 +1009,23 @@ lv_obj_t *ui_session_bar(lv_obj_t *scr)
     return b;
 }
 
+#define BAR_NAME_MAX        400   /* the name's cap */
+#define BAR_NAME_MAX_VOICE  160   /* while the bar shows voice input: the state slot fits "Transcribing on the Host…" */
+
 lv_obj_t *ui_session_bar_name(lv_obj_t *bar, const char *name)
 {
     lv_obj_t *n = ui_text(bar, name, UI_TONE_FG, false);
     lv_label_set_long_mode(n, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_add_style(n, &s_bar_name, 0);
+    /* local, made here once: ui_session_bar_name_narrow then only rewrites its value, so a recording allocates
+       nothing (internal RAM is short while the microphone's DMA buffers are up) */
+    lv_obj_set_style_max_width(n, BAR_NAME_MAX, 0);
     return n;
+}
+
+void ui_session_bar_name_narrow(lv_obj_t *name, bool narrow)
+{
+    if (name) lv_obj_set_style_max_width(name, narrow ? BAR_NAME_MAX_VOICE : BAR_NAME_MAX, 0);
 }
 
 lv_obj_t *ui_session_bar_state(lv_obj_t *bar)

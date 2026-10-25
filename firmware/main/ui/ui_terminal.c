@@ -1,7 +1,7 @@
 /* Full-screen terminal: the take-over of a Claude session on the Host, or an SSH session to another box
  * (spec §5.2, §5.4). One session bar over the top of the terminal; every key goes to the remote side except
  * Ctrl+] / Ctrl+Q / Ctrl+← (Leave), the Shift scroll keys and Ctrl+Space (voice input, follow-up 2026-10-24; Esc
- * too while this screen's dictation is recording or transcribing). */
+ * too while this screen's dictation is recording or transcribing). The bar's Mic chip is Ctrl+Space by touch. */
 #include "ui.h"
 #include "ui_comp.h"
 #include "ui_softkbd.h"
@@ -65,6 +65,8 @@ static SemaphoreHandle_t s_hk_lock;
 
 typedef struct {
     lv_obj_t *scr, *bar, *bar_dot, *bar_state, *kbd;
+    lv_obj_t *mic_label;        /* the bar's Mic chip label: red while recording, muted while transcribing */
+    lv_obj_t *bar_name;         /* narrowed while the bar shows voice input (ui_session_bar_name_narrow) */
     term_view_t *tv;
     vt_t *vt;
     ssh_client_t *ssh;
@@ -269,6 +271,13 @@ static void bar_show(term_ctx_t *c, uint32_t ms)
     }
 }
 
+/* The name gives way (ui_session_bar_name_narrow) whenever the state slot has text: connecting, a lost link, voice.
+   At the narrowest bar (⌨ and Mic shown, a long name) the slot then holds each of them whole (review M2). */
+static void bar_name_fit(term_ctx_t *c)
+{
+    ui_session_bar_name_narrow(c->bar_name, c->voice_shown != VOICE_IDLE || c->bar_st != BAR_LIVE);
+}
+
 /* The bar's state from the session and the link: "Connecting…" muted until the session is up, a red
  * "Link lost, reconnecting…" while the link is down. Only a change writes anything. */
 static void bar_update(term_ctx_t *c)
@@ -278,6 +287,7 @@ static void bar_update(term_ctx_t *c)
     c->bar_st = st;
     if (c->voice_shown != VOICE_IDLE) { c->bar_dirty = true; return; }   /* the voice indicator owns the dot and label */
     c->bar_dirty = false;
+    bar_name_fit(c);
     ui_dot_tone(c->bar_dot, st == BAR_LIVE ? UI_TONE_GREEN : st == BAR_LINK_LOST ? UI_TONE_RED : UI_TONE_MUTED);
     ui_text_tone(c->bar_state, st == BAR_LINK_LOST ? UI_TONE_RED : UI_TONE_MUTED);
     lv_label_set_text(c->bar_state, st == BAR_CONNECTING ? tr(STR_HOSTS_CONNECTING)
@@ -310,7 +320,7 @@ static void leave(term_ctx_t *c)
 }
 
 /* -------------------------------------------------------- voice input (follow-up 2026-10-24) */
-/* Ctrl+Space toggles a recording in a take-over and in an SSH session. While recording, every key but Ctrl+Space, Esc
+/* Ctrl+Space (or a tap on the bar's Mic chip) toggles a recording in a take-over and in an SSH session. While recording, every key but Ctrl+Space, Esc
    (cancel) and the leave keys (which cancel, then leave) is eaten: key clicks stay off the Host and typing doesn't mix
    with the transcript. While transcribing, keys pass. The text is typed into this screen's pty with no Enter
    (cc_voice_type_build_ex), and only when the screen is ready for it (term_voice_blocked); leaving the screen
@@ -351,8 +361,12 @@ static void voice_bar(term_ctx_t *c, const voice_status_t *v)
     }
     if (ph == c->voice_shown && sec == c->voice_sec_shown) return;
     bool was = c->voice_shown != VOICE_IDLE;
+    if (ph != c->voice_shown) {   /* the phase only: the 16 ms pump's seconds touch neither the chip nor the name */
+        ui_text_tone(c->mic_label, rec ? UI_TONE_RED : ph == VOICE_TRANSCRIBING ? UI_TONE_MUTED : UI_TONE_FG);
+    }
     c->voice_shown = ph;
     c->voice_sec_shown = sec;
+    if (ph != VOICE_IDLE) bar_name_fit(c);   /* idle: bar_update below gives the name back with the session's state */
     if (ph == VOICE_IDLE) {   /* the bar goes back to the session's state, then hides after 3 s */
         c->bar_dirty = true;
         bar_update(c);
@@ -408,7 +422,7 @@ static str_id_t term_voice_blocked(term_ctx_t *c)
 static bool term_voice_type(term_ctx_t *c, const char *text)
 {
     str_id_t why = term_voice_blocked(c);
-    if (why != STR_COUNT) { ui_toast_ms(tr(why), VOICE_ERROR_TOAST_MS); return false; }
+    if (why != STR_COUNT) { ui_toast_ms(tr(ui_touch_text(why)), VOICE_ERROR_TOAST_MS); return false; }
     char *buf = heap_caps_malloc(VOICE_TYPE_CAP, MALLOC_CAP_SPIRAM);
     if (!buf) { ui_toast_ms(tr(STR_VOICE_NO_MEMORY), VOICE_ERROR_TOAST_MS); return false; }
     /* re-review N1: join only in an SSH shell, right after a dictation with no key since; a take-over types only at an
@@ -436,7 +450,7 @@ static void term_voice_cancel(term_ctx_t *c)
     voice_bar(c, &v);
 }
 
-/* The one path for Ctrl+Space, as Sessions' voice_toggle. */
+/* The one path for Ctrl+Space and the bar's Mic chip, as Sessions' voice_toggle. */
 static void term_voice_toggle(term_ctx_t *c)
 {
     voice_status_t v;
@@ -461,7 +475,7 @@ static void term_voice_toggle(term_ctx_t *c)
     vr_out_t o = voice_start(c->vkey);
     if (o != VR_OUT_STARTED) {
         str_id_t id = vr_out_text(o);
-        if (id != STR_COUNT) ui_toast_ms(tr(id), o == VR_OUT_BUSY ? 3000 : VOICE_ERROR_TOAST_MS);
+        if (id != STR_COUNT) ui_toast_ms(tr(ui_touch_text(id)), o == VR_OUT_BUSY ? 3000 : VOICE_ERROR_TOAST_MS);
         if (!c->voice_mine) voice_end_run(c);
         return;
     }
@@ -476,7 +490,7 @@ static void term_voice_apply(term_ctx_t *c, const voice_result_t *r)
     if (r->out == VR_OUT_CANCELLED || r->out == VR_OUT_STARTED) return;
     if (r->out != VR_OUT_TEXT) {
         str_id_t id = vr_out_text(r->out);
-        if (id != STR_COUNT) ui_toast_ms(tr(id), VOICE_ERROR_TOAST_MS);
+        if (id != STR_COUNT) ui_toast_ms(tr(ui_touch_text(id)), VOICE_ERROR_TOAST_MS);
         return;
     }
     if (term_voice_type(c, r->text)) {
@@ -604,6 +618,17 @@ static void leave_cb(lv_event_t *e)
     if (!voice_gate(s_ctx, &none, HK_T_LEAVE)) leave(s_ctx);   /* recording: cancelled, then left */
 }
 
+/* The Mic chip: Ctrl+Space by touch (start, stop, or type a held transcript), with or without a keyboard. The Esc
+   chip cancels, as Esc does. */
+static void mic_cb(lv_event_t *e)
+{
+    (void)e;
+    term_ctx_t *c = s_ctx;
+    if (!c || c->closing) return;
+    bar_show(c, BAR_SHOW_MS);   /* in use: keep it up (the indicator keeps it up while voice is active) */
+    term_voice_toggle(c);
+}
+
 static void kbd_cb(lv_event_t *e)
 {
     (void)e;
@@ -616,15 +641,19 @@ static void kbd_cb(lv_event_t *e)
 }
 
 /* 56 px over the top of the terminal: ← Leave, the name, the link dot, the state, ⌨ (no physical keyboard
- * only), then Esc, Tab, ^C, ↑ and ↓. Every control is a bar chip: the bar's full height, >= 80 px across. */
+ * only), Mic, then Esc, Tab, ^C, ↑ and ↓. Every control is a bar chip: the bar's full height, >= 80 px across. The
+ * state slot takes what is left. While it has text the name gives way (bar_name_fit), so at its narrowest (⌨ shown,
+ * a long name) it still holds "Connecting…", "Link lost, reconnecting…", "Recording 0:30 / 0:30" and "Transcribing on
+ * the Host…" whole (the preview's terminal voice-touch cases measure them). */
 static lv_obj_t *session_bar(term_ctx_t *c, const char *name)
 {
     lv_obj_t *b = ui_session_bar(c->scr);
     ui_chip(b, tr(STR_TERM_LEAVE), leave_cb, c);
-    ui_session_bar_name(b, name);
+    c->bar_name = ui_session_bar_name(b, name);
     c->bar_dot = ui_dot(b);
     c->bar_state = ui_session_bar_state(b);
     if (!keyboard_any_present()) ui_chip(b, LV_SYMBOL_KEYBOARD, kbd_cb, c);
+    c->mic_label = lv_obj_get_child(ui_chip(b, tr(STR_TERM_KEY_MIC), mic_cb, c), 0);
     for (size_t i = 0; i < sizeof(k_bar_keys) / sizeof(k_bar_keys[0]); i++)
         ui_chip(b, tr(k_bar_keys[i].label), key_chip_cb, (void *)&k_bar_keys[i]);
     return b;
@@ -828,7 +857,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
     if (c->cmd_mode) strlcpy(what, tr(STR_TERM_OPENING), sizeof(what));
     else snprintf(what, sizeof(what), tr(STR_TERM_CONNECTING_TO), s->user, s->host, s->port);
     snprintf(banner, sizeof(banner), "\x1b[36m%s\x1b[0m\r\n\x1b[90m%s\x1b[0m\r\n", what,
-             tr(c->cmd_mode ? STR_TERM_OPENING_HINT : STR_TERM_SSH_HINT));
+             tr(ui_touch_text(c->cmd_mode ? STR_TERM_OPENING_HINT : STR_TERM_SSH_HINT)));
     vt_feed(c->vt, (const uint8_t *)banner, strlen(banner));
 
     key_sink_t sink = { .key = term_key, .user = c };
@@ -872,6 +901,11 @@ static lv_obj_t *ui_terminal_cmd_create(void *arg)
     s_pending_cmd.ctx = NULL;
     return scr;
 }
+
+#ifdef UI_PREVIEW
+/* The preview reads the open terminal's screen (the banner's touch wording). */
+const vt_t *ui_terminal_preview_vt(void) { return s_ctx ? s_ctx->vt : NULL; }
+#endif
 
 bool ui_terminal_is_top(void)
 {

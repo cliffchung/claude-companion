@@ -65,15 +65,16 @@ runv "PREVIEW_HOST=0" settings-sub networks   # join a saved network with no Hos
 run keyboard-settings
 for v in live selected-needs-you working loading stale reconnecting no-wifi not-found no-host empty \
          interactive sent low-battery 16 long screen-log screen-dialog resort tap-resort resort-scroll keys idle forget new-key \
-         voice-rec voice-rec-limit voice-busy voice-cancel-busy voice-auto-stop voice-done voice-gone voice-error voice-nofield voice-norow; do run sessions "$v"; done
+         voice-rec voice-rec-limit voice-busy voice-cancel-busy voice-auto-stop voice-done voice-gone voice-error voice-nofield voice-norow voice-cancel-touch voice-kbd-banner; do run sessions "$v"; done
 run ctrlk
 run keyboard
 run gesture
 run art
 run term-spacing
 run terminal
-for v in on empty keys deleted-event fail add; do run terminal "$v"; done
+for v in on empty keys deleted-event fail add nokbd; do run terminal "$v"; done
 for v in voice-rec voice-done; do run terminal "$v"; done   # voice input in a take-over and an SSH session
+for v in voice-touch voice-touch-nokbd; do run terminal "$v"; done   # the bar's Mic chip; touch alone at the narrowest bar
 runv "PREVIEW_HOST_TSIP=0" terminal add-fqdn
 for v in new edit-pin sd-key settings; do run hostform "$v"; done
 run takeover

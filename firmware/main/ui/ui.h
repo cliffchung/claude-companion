@@ -23,6 +23,9 @@ bool ui_keyboard_owns_input(void);
 /* A screen's footer hint ("↑↓ move · Enter choose · Esc back"): ui_core shows it while the last input was a
    key and hides it on a touch. One per screen; forgotten when the label is deleted. */
 void ui_keyboard_hint(lv_obj_t *label);
+/* A text that tells the user to press a key, or its touch wording while no physical keyboard is present
+   ("Press Ctrl+Space…" becomes "Tap the mic…"). Any other id comes back as it is. Read when the text is shown. */
+str_id_t ui_touch_text(str_id_t keys);
 /* The control with the keyboard focus (NULL: none), so a panel rebuilt in place can put it back on the same row
    (T13-3). ui_keyboard_focus_index: the focused control's number among the keyboard controls in root's subtree
    (root itself counts), -1 when the focus isn't there. ui_keyboard_focus_in focuses control number nth there and
