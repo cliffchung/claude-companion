@@ -398,7 +398,7 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | Ctrl+T (or Ctrl+M) | Terminal (other SSH hosts) |
 | Ctrl+P | Settings |
 | Ctrl+K | The shortcuts list |
-| Esc | Clear the answer, or go back |
+| Esc | Clear the answer; cancels a recording (Sessions is the home screen: Esc never leaves it) |
 | Ctrl+Space | Voice input: press to start, again to stop (Esc cancels) |
 | Ctrl+Space (inside a session) | Dictate into the session's prompt; the text is typed, not sent (Ctrl+@ sends NUL) |
 | Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
