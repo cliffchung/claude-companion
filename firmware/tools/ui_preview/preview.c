@@ -1239,7 +1239,22 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         lv_obj_t *n = find_label_has(s, "The whisper model isn't on the Host", 440);   /* dotted to its slot */
         if (!n || !obj_shown(n) || !label_red(n)) { printf("check %s: FAIL no red NO_MODEL note\n", name); return 1; }
         printf("sessions voice-error: note \"%s\"\n", lv_label_get_text(n));
-        if (!find_label(lv_layer_top(), tr(STR_VOICE_NO_MODEL), false)) { printf("check %s: FAIL no toast with the whole copy\n", name); return 1; }
+        lv_obj_t *tl = find_label(lv_layer_top(), tr(STR_VOICE_NO_MODEL), false);
+        if (!tl) { printf("check %s: FAIL no toast with the whole copy\n", name); return 1; }
+        /* polish 2: the 6 s toast sits above the answer row; the field, the mic, Send and Open stay in view */
+        lv_area_t ta, oa;
+        lv_obj_get_coords(lv_obj_get_parent(tl), &ta);
+        lv_obj_t *keep[] = { find_clickable_shown(s, tr(STR_SES_SEND)), find_clickable_shown(s, tr(STR_SES_OPEN)), mic_button_of(s),
+                             find_shown(s, &lv_textarea_class) };
+        for (unsigned i = 0; i < sizeof(keep) / sizeof(keep[0]); i++) {
+            assert(keep[i]);
+            lv_obj_get_coords(keep[i], &oa);
+            if (ta.y2 >= oa.y1 && ta.y1 <= oa.y2 && ta.x2 >= oa.x1 && ta.x1 <= oa.x2) {
+                printf("check %s: FAIL the toast (y %d-%d) covers control %u (y %d-%d)\n", name, (int)ta.y1, (int)ta.y2, i, (int)oa.y1, (int)oa.y2);
+                return 1;
+            }
+        }
+        printf("sessions voice-error: toast y %d-%d\n", (int)ta.y1, (int)ta.y2);
         assert(!strcmp(field_text(s), ""));
         return pv_run_checks(d, s, name, true, 0);   /* the note dots inside its slot */
     }

@@ -1140,12 +1140,19 @@ static void meter_ensure(void)
 lv_timer_t *ui_sessions_voice_meter(void) { return s_meter_timer; }
 
 /* A voice error: red in the session's note slot, which cuts the longer copy short, and whole in a toast (the README
-   pointer must be readable). */
+   pointer must be readable). The toast stays 6 s, long enough to read the longest copy, so it sits above the answer
+   field rather than at the bottom: the field, the mic, Send and Open stay in view (polish 2). */
 #define VOICE_ERROR_TOAST_MS 6000
+static void voice_toast(str_id_t id)
+{
+    lv_obj_t *above = s_answer_row && lv_obj_is_visible(s_answer_row) ? s_answer_row : s_action_row;
+    ui_toast_above_ms(tr(id), VOICE_ERROR_TOAST_MS, above);
+}
+
 static void voice_error(const cc_session_t *s, str_id_t id)
 {
     note_set(s, NOTE_ERROR, tr(id));
-    ui_toast_ms(tr(id), VOICE_ERROR_TOAST_MS);
+    voice_toast(id);
 }
 
 /* The one path for Ctrl+Space and the mic tap. */
@@ -1187,7 +1194,7 @@ static void apply_voice_result(const voice_result_t *r)
     str_id_t id = vr_out_text(r->out);
     if (!s) {
         if (r->out == VR_OUT_TEXT) ui_toast(tr(STR_VOICE_SESSION_GONE));   /* the text is dropped */
-        else if (id != STR_COUNT) ui_toast_ms(tr(id), VOICE_ERROR_TOAST_MS);
+        else if (id != STR_COUNT) voice_toast(id);
         return;
     }
     if (r->out != VR_OUT_TEXT) {
