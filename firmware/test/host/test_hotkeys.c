@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 #include "unity.h"
 #include "ui/hotkeys.h"
@@ -159,24 +160,68 @@ static void test_ctrl_m_is_not_enter(void)
 
 static void test_overlay_lists_every_shortcut(void)
 {
-    const char *need[] = { "Up / Down", "Enter", "Ctrl+O", "Ctrl+T", "Ctrl+P", "Ctrl+K", "Ctrl+Space",
-                           "Esc", "Ctrl+\xe2\x86\x90", "Shift+Up / Down", "Ctrl+X", "Ctrl+Up / Down" };
+    struct { hk_sec_t sec; const char *keys; const char *what; } need[] = {
+        { HK_SEC_SESSIONS, "Up / Down", "move between sessions" },
+        { HK_SEC_SESSIONS, "Enter", "send the answer (empty: open)" },
+        { HK_SEC_SESSIONS, "Ctrl+O", "open the session" },
+        { HK_SEC_SESSIONS, "Ctrl+X", "stop the selected session" },
+        { HK_SEC_SESSIONS, "Ctrl+T / Ctrl+M", "terminal (other SSH hosts)" },
+        { HK_SEC_SESSIONS, "Ctrl+P", "settings" },
+        { HK_SEC_SESSIONS, "Ctrl+K", "this list" },
+        { HK_SEC_SESSIONS, "Ctrl+Space", "voice input: press to start, again to stop" },
+        { HK_SEC_SESSIONS, "Esc", "clear the answer (cancels a recording)" },
+        { HK_SEC_SESSION, "Ctrl+\xe2\x86\x90", "leave; it keeps running (Ctrl+Q too, Ctrl+] from USB)" },
+        { HK_SEC_SESSION, "Ctrl+Up / Down", "scroll: PgUp / PgDn to Claude Code, local in SSH; or drag" },
+        { HK_SEC_SESSION, "Shift+Up / Down", "the same from a USB keyboard (Shift+PgUp / PgDn too)" },
+        { HK_SEC_SESSION, "Ctrl+Space", "dictate into the prompt: typed, not sent" },
+    };
     int n = hk_overlay_n;
-    TEST_ASSERT_EQUAL(12, n);
+    TEST_ASSERT_EQUAL(13, n);
     for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
         bool found = false;
         for (int k = 0; k < n; k++)
-            if (strstr(tr(hk_overlay[k].keys), need[i]) && tr(hk_overlay[k].what)[0]) found = true;
-        TEST_ASSERT_TRUE_MESSAGE(found, need[i]);
+            if (hk_overlay[k].sec == need[i].sec && !strcmp(tr(hk_overlay[k].keys), need[i].keys) && !strcmp(tr(hk_overlay[k].what), need[i].what)) found = true;
+        TEST_ASSERT_TRUE_MESSAGE(found, need[i].keys);
     }
-    bool stop = false;
-    for (int k = 0; k < n; k++)
-        if (!strcmp(tr(hk_overlay[k].keys), "Ctrl+X") && !strcmp(tr(hk_overlay[k].what), "stop the selected session")) stop = true;
-    TEST_ASSERT_TRUE(stop);
-    bool scroll = false;
-    for (int k = 0; k < n; k++)
-        if (!strcmp(tr(hk_overlay[k].keys), "Ctrl+Up / Down") && !strcmp(tr(hk_overlay[k].what), "scroll back in a session")) scroll = true;
-    TEST_ASSERT_TRUE(scroll);
+    /* the sections come in order, Sessions first, and each line documents at least one key */
+    for (int k = 0; k < n; k++) {
+        if (k) TEST_ASSERT_TRUE(hk_overlay[k].sec >= hk_overlay[k - 1].sec);
+        TEST_ASSERT_TRUE(hk_overlay[k].covers[0].type != 0 || hk_overlay[k].covers[0].code != 0);
+    }
+    TEST_ASSERT_EQUAL_STRING("Sessions", tr(hk_section_title(HK_SEC_SESSIONS)));
+    TEST_ASSERT_EQUAL_STRING("In a session", tr(hk_section_title(HK_SEC_SESSION)));
+}
+
+/* Every key hk_dashboard or hk_takeover keeps has a help line in its section: a new key fails here until the Ctrl+K
+   list documents it. LOCAL (any other Ctrl or Meta character on Sessions: eaten, does nothing) is not a shortcut. */
+static bool covered(hk_sec_t sec, const key_event_t *e)
+{
+    for (int k = 0; k < hk_overlay_n; k++)
+        if (hk_overlay[k].sec == sec && hk_line_covers(&hk_overlay[k], e)) return true;
+    return false;
+}
+static void test_every_handled_key_has_a_line(void)
+{
+    char why[64];
+    for (int pass = 0; pass < 2; pass++)
+        for (uint32_t c = pass ? SK_ENTER : 0x20; c <= (pass ? (uint32_t)SK_F12 : 0x7e); c++)
+            for (uint8_t m = 0; m < 16; m++) {
+                key_event_t e = pass ? sk((special_key_t)c, m) : ch(c, m);
+                hk_dash_t d = hk_dashboard(&e);
+                snprintf(why, sizeof(why), "Sessions: %s 0x%x mods 0x%x", pass ? "key" : "char", (unsigned)c, m);
+                if (d != HK_D_NONE && d != HK_D_LOCAL) TEST_ASSERT_TRUE_MESSAGE(covered(HK_SEC_SESSIONS, &e), why);
+                for (int t = 0; t < 2; t++) {
+                    snprintf(why, sizeof(why), "session (%s): %s 0x%x mods 0x%x", t ? "take-over" : "SSH", pass ? "key" : "char", (unsigned)c, m);
+                    if (hk_takeover(&e, t) != HK_T_NONE) TEST_ASSERT_TRUE_MESSAGE(covered(HK_SEC_SESSION, &e), why);
+                }
+            }
+    /* the check bites: a key no line lists is not covered */
+    key_event_t e = ch('z', MOD_CTRL);
+    TEST_ASSERT_FALSE(covered(HK_SEC_SESSIONS, &e));
+    e = sk(SK_F5, 0);
+    TEST_ASSERT_FALSE(covered(HK_SEC_SESSION, &e));
+    e = ch('O', MOD_META);   /* Meta counts as Ctrl on Sessions, upper case as lower */
+    TEST_ASSERT_TRUE(covered(HK_SEC_SESSIONS, &e));
 }
 
 int main(void)
@@ -195,5 +240,6 @@ int main(void)
     RUN_TEST(test_dashboard_ctrl_never_typed);
     RUN_TEST(test_ctrl_m_is_not_enter);
     RUN_TEST(test_overlay_lists_every_shortcut);
+    RUN_TEST(test_every_handled_key_has_a_line);
     return UNITY_END();
 }

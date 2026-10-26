@@ -300,11 +300,11 @@ X(TERM_KEY_SCROLL_DOWN, "\xe2\x87\x93") \
 X(TERM_SCROLLED_BACK, "Scrolled back \xc2\xb7 Live \xe2\x86\x93") \
 X(TERM_STILL_RUNNING, "Session still running on the Host") \
 X(TERM_OPENING, "Opening the session on the Host\xe2\x80\xa6") \
-X(TERM_OPENING_HINT, "Ctrl+\xe2\x86\x90 returns to Sessions; the session keeps running.") \
-X(TERM_OPENING_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave returns to Sessions; the session keeps running.") \
+X(TERM_OPENING_HINT, "Ctrl+\xe2\x86\x90 leave \xc2\xb7 Ctrl+\xe2\x86\x91\xe2\x86\x93 scroll \xc2\xb7 Ctrl+Space dictate. The session keeps running on the Host.") \
+X(TERM_OPENING_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave returns to Sessions. Drag to scroll; Mic dictates.") \
 X(TERM_CONNECTING_TO, "Connecting to %s@%s:%d\xe2\x80\xa6") \
-X(TERM_SSH_HINT, "Ctrl+\xe2\x86\x90 disconnects.") \
-X(TERM_SSH_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave disconnects.") \
+X(TERM_SSH_HINT, "Ctrl+\xe2\x86\x90 disconnect \xc2\xb7 Ctrl+\xe2\x86\x91\xe2\x86\x93 scroll \xc2\xb7 Ctrl+Space dictate") \
+X(TERM_SSH_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave disconnects. Drag to scroll; Mic dictates.") \
 X(TERM_DISCONNECT_Q, "Disconnect from %s?") \
 X(TERM_LINK_LOST, "Link lost, reconnecting\xe2\x80\xa6") \
 X(TERM_DISCONNECTED_FROM, "Disconnected from %s") \
@@ -331,9 +331,22 @@ X(SES_TITLE, "Sessions") \
 X(SES_SELECT, "\xe2\x86\x91\xe2\x86\x93 Select") \
 X(SES_SEND, "\xe2\x86\xb5 Send") \
 X(SES_OPEN, "\xe2\x8c\x83O Open") \
-X(SES_TERMINAL, "\xe2\x8c\x83T/\xe2\x8c\x83M Terminal") \
+X(SES_TERMINAL, "\xe2\x8c\x83T Terminal") \
 X(SES_SETTINGS, "\xe2\x8c\x83P Settings") \
 X(SES_KEYS, "\xe2\x8c\x83K Keys") \
+X(SES_F_STOP, "\xe2\x8c\x83X Stop") \
+X(SES_F_VOICE, "\xe2\x8c\x83Space Voice") \
+X(SES_F_VOICE_STOP, "\xe2\x8c\x83Space Stop") \
+X(SES_F_CANCEL, "Esc Cancel") \
+X(SES_T_SELECT, "Select") \
+X(SES_T_SEND, "Send") \
+X(SES_T_OPEN, "Open") \
+X(SES_T_STOP, "Stop") \
+X(SES_T_VOICE, "Voice") \
+X(SES_T_VOICE_STOP, "Stop recording") \
+X(SES_T_CANCEL, "Cancel") \
+X(SES_T_TERMINAL, "Terminal") \
+X(SES_T_SETTINGS, "Settings") \
 X(SES_NO_HOST_BODY, "Set up your Host to see its Claude sessions.") \
 X(SES_SET_UP_HOST, "Set up Host") \
 X(SES_EMPTY, "No sessions on this Host. Start one with `claude --bg`.") \
@@ -385,13 +398,15 @@ X(SES_STOP_ERROR, "Stop failed: the command didn't run on the Host") \
 X(SES_KEYS_TITLE, "Keyboard shortcuts") \
 X(SES_KEYS_CLOSE, "Any key or a touch closes this") \
 X(HK_K_UPDOWN, "Up / Down") \
+X(HK_SEC_SESSIONS, "Sessions") \
+X(HK_SEC_SESSION, "In a session") \
 X(HK_W_UPDOWN, "move between sessions") \
 X(HK_K_ENTER, "Enter") \
 X(HK_W_ENTER, "send the answer (empty: open)") \
 X(HK_K_CTRL_O, "Ctrl+O") \
 X(HK_W_CTRL_O, "open the session") \
-X(HK_K_CTRL_T, "Ctrl+T") \
-X(HK_W_CTRL_T, "terminal (Ctrl+M also)") \
+X(HK_K_CTRL_T, "Ctrl+T / Ctrl+M") \
+X(HK_W_CTRL_T, "terminal (other SSH hosts)") \
 X(HK_K_CTRL_P, "Ctrl+P") \
 X(HK_W_CTRL_P, "settings") \
 X(HK_K_CTRL_X, "Ctrl+X") \
@@ -403,11 +418,12 @@ X(HK_W_CTRL_SPACE, "voice input: press to start, again to stop") \
 X(HK_K_ESC, "Esc") \
 X(HK_W_ESC, "clear the answer (cancels a recording)") \
 X(HK_K_CTRL_BRACKET, "Ctrl+\xe2\x86\x90") \
-X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
+X(HK_W_CTRL_BRACKET, "leave; it keeps running (Ctrl+Q too, Ctrl+] from USB)") \
 X(HK_K_CTRL_UPDOWN, "Ctrl+Up / Down") \
-X(HK_W_CTRL_UPDOWN, "scroll back in a session") \
+X(HK_W_CTRL_UPDOWN, "scroll: PgUp / PgDn to Claude Code, local in SSH; or drag") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
-X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
+X(HK_W_SHIFT_UPDOWN, "the same from a USB keyboard (Shift+PgUp / PgDn too)") \
+X(HK_W_DICTATE, "dictate into the prompt: typed, not sent") \
 X(TERM_KEEPS_RUNNING, "The session keeps running on the Host.") \
 X(SSH_NO_SESSION, "Couldn't start SSH. Try again.") \
 X(SSH_CANT_CONNECT, "Couldn't connect:") \

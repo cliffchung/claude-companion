@@ -51,18 +51,40 @@ hk_dash_t hk_dashboard(const key_event_t *ev)
     }
 }
 
+#define CH(c, m) { KEY_EV_CHAR, (c), (m) }
+#define SP(k, m) { KEY_EV_SPECIAL, (k), (m) }
 const hk_line_t hk_overlay[] = {
-    { STR_HK_K_UPDOWN, STR_HK_W_UPDOWN },
-    { STR_HK_K_ENTER, STR_HK_W_ENTER },
-    { STR_HK_K_CTRL_O, STR_HK_W_CTRL_O },
-    { STR_HK_K_CTRL_T, STR_HK_W_CTRL_T },
-    { STR_HK_K_CTRL_P, STR_HK_W_CTRL_P },
-    { STR_HK_K_CTRL_X, STR_HK_W_CTRL_X },
-    { STR_HK_K_CTRL_K, STR_HK_W_CTRL_K },
-    { STR_HK_K_CTRL_SPACE, STR_HK_W_CTRL_SPACE },
-    { STR_HK_K_ESC, STR_HK_W_ESC },
-    { STR_HK_K_CTRL_BRACKET, STR_HK_W_CTRL_BRACKET },
-    { STR_HK_K_CTRL_UPDOWN, STR_HK_W_CTRL_UPDOWN },
-    { STR_HK_K_SHIFT_UPDOWN, STR_HK_W_SHIFT_UPDOWN },
+    { HK_SEC_SESSIONS, STR_HK_K_UPDOWN, STR_HK_W_UPDOWN, { SP(SK_UP, 0), SP(SK_DOWN, 0) } },
+    { HK_SEC_SESSIONS, STR_HK_K_ENTER, STR_HK_W_ENTER, { SP(SK_ENTER, 0) } },
+    { HK_SEC_SESSIONS, STR_HK_K_CTRL_O, STR_HK_W_CTRL_O, { CH('o', MOD_CTRL) } },
+    { HK_SEC_SESSIONS, STR_HK_K_CTRL_X, STR_HK_W_CTRL_X, { CH('x', MOD_CTRL) } },
+    { HK_SEC_SESSIONS, STR_HK_K_CTRL_T, STR_HK_W_CTRL_T, { CH('t', MOD_CTRL), CH('m', MOD_CTRL) } },
+    { HK_SEC_SESSIONS, STR_HK_K_CTRL_P, STR_HK_W_CTRL_P, { CH('p', MOD_CTRL) } },
+    { HK_SEC_SESSIONS, STR_HK_K_CTRL_K, STR_HK_W_CTRL_K, { CH('k', MOD_CTRL) } },
+    { HK_SEC_SESSIONS, STR_HK_K_CTRL_SPACE, STR_HK_W_CTRL_SPACE, { CH(' ', MOD_CTRL) } },
+    { HK_SEC_SESSIONS, STR_HK_K_ESC, STR_HK_W_ESC, { SP(SK_ESC, 0) } },
+    { HK_SEC_SESSION, STR_HK_K_CTRL_BRACKET, STR_HK_W_CTRL_BRACKET, { SP(SK_LEFT, MOD_CTRL), CH('q', MOD_CTRL), CH(']', MOD_CTRL) } },
+    { HK_SEC_SESSION, STR_HK_K_CTRL_UPDOWN, STR_HK_W_CTRL_UPDOWN, { SP(SK_UP, MOD_CTRL), SP(SK_DOWN, MOD_CTRL) } },
+    { HK_SEC_SESSION, STR_HK_K_SHIFT_UPDOWN, STR_HK_W_SHIFT_UPDOWN,
+      { SP(SK_UP, MOD_SHIFT), SP(SK_DOWN, MOD_SHIFT), SP(SK_PGUP, MOD_SHIFT), SP(SK_PGDN, MOD_SHIFT) } },
+    { HK_SEC_SESSION, STR_HK_K_CTRL_SPACE, STR_HK_W_DICTATE, { CH(' ', MOD_CTRL) } },
 };
+#undef CH
+#undef SP
 const int hk_overlay_n = (int)(sizeof(hk_overlay) / sizeof(hk_overlay[0]));
+
+str_id_t hk_section_title(hk_sec_t sec) { return sec == HK_SEC_SESSIONS ? STR_HK_SEC_SESSIONS : STR_HK_SEC_SESSION; }
+
+bool hk_line_covers(const hk_line_t *l, const key_event_t *ev)
+{
+    if (!l || !ev) return false;
+    uint8_t m = ev->mods;
+    if (l->sec == HK_SEC_SESSIONS && (m & MOD_META)) m |= MOD_CTRL;   /* hk_dashboard takes Meta as Ctrl */
+    uint32_t code = ev->type == KEY_EV_CHAR ? lower(ev->cp) : (uint32_t)ev->key;
+    for (int i = 0; i < HK_COVERS; i++) {
+        const hk_key_t *k = &l->covers[i];
+        if (k->type == 0 && k->code == 0) break;
+        if (k->type == ev->type && k->code == code && (m & k->mods) == k->mods) return true;
+    }
+    return false;
+}

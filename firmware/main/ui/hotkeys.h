@@ -21,6 +21,17 @@ typedef enum { HK_D_NONE, HK_D_OPEN, HK_D_SETTINGS, HK_D_TERMINAL, HK_D_KEYS, HK
    (dash_key's existing handling) */
 hk_dash_t hk_dashboard(const key_event_t *ev);
 
-typedef struct { str_id_t keys, what; } hk_line_t;   /* tr() ids */
-extern const hk_line_t hk_overlay[];   /* the Ctrl+K overlay, one shortcut per line */
+/* The Ctrl+K overlay, one shortcut per line, in two sections: Sessions (hk_dashboard's keys and the screen's own
+   Up / Down, Enter, Esc) and In a session (hk_takeover's). Each line names the key events it documents (`covers`:
+   the type, the special key or the lower-case character, and the modifiers it needs; an event with more modifiers
+   matches too, and on Sessions Meta counts as Ctrl). test_hotkeys sweeps every key: one that hk_dashboard or
+   hk_takeover keeps must be covered by a line of its section, so a new key can't come without its help line. */
+typedef enum { HK_SEC_SESSIONS, HK_SEC_SESSION } hk_sec_t;
+#define HK_COVERS 4
+typedef struct { key_ev_type_t type; uint32_t code; uint8_t mods; } hk_key_t;   /* code: cp (lower case) or special_key_t; type 0 + code 0 ends */
+typedef struct { hk_sec_t sec; str_id_t keys, what; hk_key_t covers[HK_COVERS]; } hk_line_t;   /* tr() ids */
+extern const hk_line_t hk_overlay[];
 extern const int hk_overlay_n;
+str_id_t hk_section_title(hk_sec_t sec);
+/* True when line l documents ev (see covers above). */
+bool hk_line_covers(const hk_line_t *l, const key_event_t *ev);

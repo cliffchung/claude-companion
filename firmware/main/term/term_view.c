@@ -13,6 +13,7 @@ struct term_view {
     uint32_t blink_tick; bool blink_on;
     lv_timer_t *blink_timer;
     lv_point_t press; int press_view; bool dragging;
+    term_view_drag_cb_t drag_cb; void *drag_user; int drag_rows; bool app_drag;   /* the rows the cb took this drag; it took some */
     term_cursor_t cursor_style; bool cursor_blink; lv_color_t cursor_col; bool cursor_col_set;
 };
 
@@ -182,7 +183,7 @@ static void touch_cb(lv_event_t *e)
     lv_indev_t *indev = lv_indev_active();
     if (!indev || !tv->vt) return;
     lv_point_t p; lv_indev_get_point(indev, &p);
-    if (code == LV_EVENT_PRESSED) { tv->press = p; tv->press_view = vt_view_offset(tv->vt); tv->dragging = false; }
+    if (code == LV_EVENT_PRESSED) { tv->press = p; tv->press_view = vt_view_offset(tv->vt); tv->dragging = false; tv->drag_rows = 0; tv->app_drag = false; }
     else if (code == LV_EVENT_PRESSING) {
         int dx = p.x - tv->press.x;
         int dy = p.y - tv->press.y;
@@ -192,6 +193,14 @@ static void touch_cb(lv_event_t *e)
         if (abs(dx) > TERM_DRAG_SLOP || abs(dy) > TERM_DRAG_SLOP) {
             tv->dragging = true;
             int lines = dy / tv->cell_h;
+            if (tv->drag_cb && lines != tv->drag_rows) {   /* the app scrolls itself: give it the new rows first */
+                lv_area_t oa; lv_obj_get_coords(tv->obj, &oa);
+                int col = (tv->press.x - oa.x1) / tv->cell_w + 1, row = (tv->press.y - oa.y1) / tv->cell_h + 1;
+                int took = tv->drag_cb(lines - tv->drag_rows, col, row, tv->drag_user);
+                tv->drag_rows += took;
+                if (took) tv->app_drag = true;
+            }
+            if (tv->app_drag) return;   /* the app scrolls this drag; the local view stays put (rows not yet taken: next move) */
             int target = tv->press_view + lines;
             int cur = vt_view_offset(tv->vt);
             if (target != cur) { vt_scroll_view(tv->vt, target - cur); lv_obj_invalidate(tv->obj); }
@@ -286,6 +295,12 @@ void term_view_set_colors(term_view_t *tv, lv_color_t fg, lv_color_t bg)
 }
 int term_view_cell_w(term_view_t *tv) { return tv->cell_w; }
 int term_view_cell_h(term_view_t *tv) { return tv->cell_h; }
+
+void term_view_set_drag_cb(term_view_t *tv, term_view_drag_cb_t cb, void *user)
+{
+    if (!tv) return;
+    tv->drag_cb = cb; tv->drag_user = user;
+}
 
 bool term_view_long_press_allowed(term_view_t *tv)
 {

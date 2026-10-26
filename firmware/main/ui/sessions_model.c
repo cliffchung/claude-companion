@@ -362,6 +362,11 @@ static int line_number(const char *s, const char *end)
     return (d && s < end && *s == '.') ? v : 0;
 }
 
+bool sm_picks_hint(cc_state_t state, int options)
+{
+    return options >= 2 && (state == CC_NEEDS_YOU || state == CC_IDLE);
+}
+
 int sm_tail_options(const char *tail)
 {
     if (!tail) return 0;
@@ -385,4 +390,25 @@ int sm_tail_options(const char *tail)
         end = b;
     }
     return items >= 2 ? hi : 0;
+}
+
+void sm_footer(bool keyboard, sm_voice_t voice, bool stoppable, sm_footer_t *out)
+{
+    static const str_id_t keys[SM_F_N] = { STR_SES_SELECT, STR_SES_SEND, STR_SES_OPEN, STR_SES_F_STOP, STR_SES_F_VOICE,
+                                           STR_SES_F_CANCEL, STR_SES_TERMINAL, STR_SES_SETTINGS, STR_SES_KEYS };
+    static const str_id_t words[SM_F_N] = { STR_SES_T_SELECT, STR_SES_T_SEND, STR_SES_T_OPEN, STR_SES_T_STOP, STR_SES_T_VOICE,
+                                            STR_SES_T_CANCEL, STR_SES_T_TERMINAL, STR_SES_T_SETTINGS, STR_SES_KEYS };
+    if (!out) return;
+    for (int i = 0; i < SM_F_N; i++) { out->label[i] = keyboard ? keys[i] : words[i]; out->shown[i] = false; }
+    if (voice != SM_VOICE_IDLE) {
+        out->shown[SM_F_CANCEL] = true;
+        if (voice == SM_VOICE_RECORDING) {
+            out->shown[SM_F_VOICE] = true;
+            out->label[SM_F_VOICE] = keyboard ? STR_SES_F_VOICE_STOP : STR_SES_T_VOICE_STOP;
+        }
+        return;
+    }
+    for (int i = 0; i < SM_F_N; i++) out->shown[i] = i != SM_F_CANCEL;
+    out->shown[SM_F_STOP] = stoppable;
+    out->shown[SM_F_KEYS] = keyboard;   /* the shortcut list is no use without a keyboard */
 }

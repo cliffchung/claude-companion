@@ -26,7 +26,7 @@ target_compile_options(companion PRIVATE -Wall -Wextra)
 set(MAIN ${CMAKE_CURRENT_SOURCE_DIR}/../../main)
 add_library(pure STATIC ${MAIN}/sys/plog.c ${MAIN}/sys/vitals.c ${MAIN}/sys/power_rules.c ${MAIN}/sys/hib_rules.c ${MAIN}/ui/hotkeys.c ${MAIN}/input/key_log.c ${MAIN}/ssh/kh_rules.c
     ${MAIN}/companion/kh_carry.c ${MAIN}/settings/settings_migrate.c ${MAIN}/net/ts_host.c ${MAIN}/net/fast_rules.c
-    ${MAIN}/sys/link_guard.c ${MAIN}/companion/cc_park.c ${MAIN}/ui/ui_tokens.c ${MAIN}/ui/sessions_model.c ${MAIN}/term/wcwidth.c
+    ${MAIN}/sys/link_guard.c ${MAIN}/companion/cc_park.c ${MAIN}/ui/ui_tokens.c ${MAIN}/ui/sessions_model.c ${MAIN}/term/wcwidth.c ${MAIN}/term/term_scroll.c
     ${MAIN}/settings/kbd_colour.c ${MAIN}/servers/host_rules.c ${MAIN}/i18n/i18n.c ${MAIN}/ssh/cb_gate.c ${MAIN}/voice/voice_rules.c
     ${MAIN}/ota/fw_rules.c)
 target_include_directories(pure PUBLIC ${MAIN} ${MAIN}/sys)
@@ -60,6 +60,10 @@ add_test(NAME test_hib_rules COMMAND test_hib_rules)
 add_executable(test_hotkeys test_hotkeys.c)
 target_link_libraries(test_hotkeys pure unity)
 add_test(NAME test_hotkeys COMMAND test_hotkeys)
+
+add_executable(test_term_scroll test_term_scroll.c)
+target_link_libraries(test_term_scroll pure unity)
+add_test(NAME test_term_scroll COMMAND test_term_scroll)
 
 add_executable(test_key_log test_key_log.c)
 target_link_libraries(test_key_log pure unity)

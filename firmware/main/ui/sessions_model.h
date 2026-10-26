@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "companion/cc_sessions.h"
+#include "i18n/i18n.h"
 
 #define SM_KEY_MAX 128
 #define SM_DRAFTS 16
@@ -77,3 +78,16 @@ typedef int (*sm_cells_fn)(uint32_t cp, void *ctx);
 int sm_wrap_tail_fn(const char *in, int cols, int rows, char *out, size_t cap, sm_cells_fn fn, void *ctx);
 /* The highest number of a trailing numbered list of at least 2 items (^\s*(❯\s*)?\d+\.), else 0. */
 int sm_tail_options(const char *tail);
+/* The action row's "1–N picks an option" hint: only for a session that can take an answer (NEEDS YOU or IDLE), never
+   one that is working, whose numbered output is just output; and only for a list of at least 2 options. */
+bool sm_picks_hint(cc_state_t state, int options);
+
+/* The Sessions footer's chips (follow-up 2026-10-25), left group then right. Each does what its key does. */
+typedef enum { SM_F_SELECT, SM_F_SEND, SM_F_OPEN, SM_F_STOP, SM_F_VOICE, SM_F_CANCEL,   /* left */
+               SM_F_TERMINAL, SM_F_SETTINGS, SM_F_KEYS, SM_F_N } sm_fchip_t;          /* right */
+typedef enum { SM_VOICE_IDLE, SM_VOICE_RECORDING, SM_VOICE_TRANSCRIBING } sm_voice_t;
+typedef struct { bool shown[SM_F_N]; str_id_t label[SM_F_N]; } sm_footer_t;
+/* Which chips show, and their words. With a keyboard the key comes first ("⌃X Stop"); without one, plain words
+   ("Stop") and no Keys chip. Stop only for a session that is running (stoppable). While recording only Esc Cancel and
+   the voice chip as "⌃Space Stop"; while transcribing only Esc Cancel. Cancel shows at no other time. */
+void sm_footer(bool keyboard, sm_voice_t voice, bool stoppable, sm_footer_t *out);
