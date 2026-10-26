@@ -402,3 +402,65 @@ Findings:
 End state: `1.6.0+e02ec1a` in app0 (valid, debug verbs on), the five-row table, settings and key unchanged, the link
 connected, Tailscale off, `ota path` and the whisper paths unchanged (default firmware path), no test session left,
 the real staging directory never created, nothing left running on the Host.
+
+## Device pass 2 (2026-10-25): the reduced wireless-update gates
+
+Main at e02ec1a (`1.6.0+e02ec1a`, debug verbs on) in app0, app1 empty at the start. Test images built from a scratch
+copy of the worktree into their own build directories: `1.6.0+upd1` (`-D PROJECT_VER`, the same sdkconfig with
+`CONFIG_COMPANION_DEBUG_COMMANDS=y`) and `1.6.0+novalid` (plus `CONFIG_COMPANION_OTA_TEST_NO_VALIDATE=y`). Every
+image staged with `stage_update.sh` (`STAGE_DIR` = a scratch directory) behind a short `/tmp` symlink, since the
+firmware path setting takes 63 characters. LAN link, Tailscale off, on USB power. The UI was driven on Settings only
+(opened with the console `ui settings`, About by `power sim touch`, then the debug `key` verb), so no session row was
+ever selected and no test session was needed.
+
+### Results
+
+| Gate | Result |
+|---|---|
+| `ota path /nope/x.bin` + `ota check` | pass: rc 120, "No firmware file on the Host…" |
+| `ota path` (scratch) + `ota check` of the running build | pass: `up to date`; About reads "Up to date" |
+| `ota read-test` (LAN) | pass: 6,360,736 B in 14.9 s, **417 KB/s**, sha256 match |
+| First update by keyboard (app0 → app1): row "1.6.0+upd1 available"; confirm opened by Enter with Cancel focused; Enter cancels; Up, Right, Down never reach Install; Tab then Enter installs | pass |
+| Progress screen (title, "Downloading from the Host", bar, "2.0 of 6.4 MB · 30 %", hint, Cancel), check, write, restart | pass |
+| New build boots from app1 pending, marked valid 7.0 s after boot (first Host result), hold back to `none`; About: Version 1.6.0+upd1, "Up to date", "Previous version 1.6.0+e02ec1a · Go back" | pass |
+| Settings, pubkey line, host-key pin, Wi-Fi, Tailscale off after the update | pass: identical to the snapshot (the scratch `ota path` survived) |
+| Go back (keyboard: Enter on Previous version, Tab, Enter): app0 boots and is marked valid at once (trusted switch) | pass |
+| Second update by touch (tap the row, tap Install), app0 → app1 again, valid | pass |
+| Corrupt image (4 bytes flipped mid-image of a different build): "The firmware file is damaged…" after the download, no `fw: writing`, `ota status` unchanged | pass |
+| Wrong project name (byte 80): `stage_update.sh` refuses; copied in by hand, `ota check`/`ota update` and the About row say "That file isn't Claude Companion firmware…" | pass |
+| `wifi leave` at 30 % of the download: "Lost the connection to the Host. Nothing was changed. Try again." (2.2 MB read), no write, `ota status` unchanged; `wifi join` back in 3 s, link and watch on | pass |
+| No-validate image, `reboot` while pending: bootloader goes back to upd1, "didn't start properly" logged; app0 `aborted` | pass |
+| No-validate image, the 180 s timer: "not valid after 180 s: rolling back", back to upd1; app0 `invalid` | pass (run twice) |
+| The 177 s "Going back" notice on screen | not seen: one screenshot was 1 s early, the other was cut in transfer. PENDING (visual only) |
+| `ui heapmin start` before an update, then `fw: heapmin` just before the restart | pass: 125,171 B (UI update), 130,603 B (touch update), 97,159 B (console update); all ≥ 40,960 B |
+| Final: main `1.6.0+e02ec1a` installed by a last wireless update, valid | pass |
+| Battery floor, 175 s / 180.5 s races, repeats, power-hold timing, boot-loop guard | SKIPPED (by the user's choice) |
+
+### Times (LAN, 6,360,736 B)
+
+| Update | Download | Check | Write | Read-back | Install → restart | Install → valid |
+|---|---|---|---|---|---|---|
+| main → upd1, into the empty app1 (keyboard) | 14.9 s (417 KB/s) | 0.3 s | 25.5 s | 1.3 s | 42.7 s | about 53 s |
+| main → upd1, app1 held a build (touch) | 15.8 s (394 KB/s) | 0.3 s | 44.7 s | 1.3 s | 62.8 s | about 73 s |
+| upd1 → novalid (×3) and upd1 → main, into app0 | 14.7–15.8 s | 0.3 s | 49.2–49.5 s | 1.3 s | about 68 s | about 79 s (main) |
+
+The write takes about twice as long when the slot holds an earlier image (the erase), so a usual update is 70–80 s
+from Install to valid, over the plan's ≤ 60 s guess; the confirm says "about a minute".
+
+### Findings
+
+1. After the Install confirm is cancelled by the keyboard, no focus ring shows on About, and the next Enter went to
+   "← Sessions" (left Settings). Re-focusing needs a tap or Tab from the top.
+2. The screen dimmed (30 s) with the Install confirm open: the update hold starts at Install, not at the confirm
+   (spec §7.5 says "from the confirm"). Harmless.
+3. `fw: heapmin` prints the lifetime minimum unless `ui heapmin start` ran first (28–30 KB then, from boot and the
+   Wi-Fi rejoin), and `ui heapmin stop` can't run after the restart, so the gate reads the `fw:` line under a started
+   monitor.
+4. Cosmetic: `ota check: No firmware file on the Host at the firmware path (Settings › Host)., rc 120` (". ,"); the
+   summary log after a cut download names the target `?`.
+5. Right after `ui settings`, five `key down` did nothing; the first key after a touch shows the focus on
+   "← Sessions", then Tab walks the sections and the rows.
+
+End state: `1.6.0+e02ec1a` in app0 (valid), `1.6.0+upd1` in app1 (valid; it is the Previous version now), updates
+on, bootloop 0, holds none; the link connected, Tailscale off, the firmware path back at its default, the symlink
+removed, the real staging directory never created, nothing left running on the Host. Snapshot equal to the start.
