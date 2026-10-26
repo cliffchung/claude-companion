@@ -2033,10 +2033,20 @@ static int sessions_case(lv_display_t *d, const char *v) {
         step(d, 100);
         assert(find_label(s, "voice input: press to start, again to stop", false));
         assert(find_label(s, "Ctrl+X", false) && find_label(s, "stop the selected session", false));
-        /* two columns, nothing wrapped */
+        assert(find_label(s, "Sessions", false) && find_label(s, "In a session", false));
+        assert(find_label(s, "scroll: PgUp / PgDn to Claude Code, local in SSH; or drag", false));
+        assert(find_label(s, "dictate into the prompt: typed, not sent", false));
+        /* two sections of two columns, nothing wrapped, and the sheet inside the screen */
         lv_obj_t *t = find_label(s, "Keyboard shortcuts", false);
         assert(t);
         lv_obj_t *sheet = lv_obj_get_parent(t);
+        {
+            lv_obj_update_layout(sheet);
+            lv_area_t sa; lv_obj_get_coords(sheet, &sa);
+            int32_t W = lv_display_get_horizontal_resolution(NULL), H = lv_display_get_vertical_resolution(NULL);
+            printf("%s: the sheet is %d x %d px at %d,%d on %d x %d\n", name, (int)lv_area_get_width(&sa), (int)lv_area_get_height(&sa), (int)sa.x1, (int)sa.y1, (int)W, (int)H);
+            if (sa.x1 < 0 || sa.y1 < 0 || sa.x2 >= W || sa.y2 >= H) { printf("check %s: FAIL the sheet is clipped\n", name); return 1; }
+        }
         for (uint32_t i = 1; i < lv_obj_get_child_count(sheet); i++) {
             lv_obj_t *r = lv_obj_get_child(sheet, i);
             for (uint32_t j = 0; j < lv_obj_get_child_count(r); j++) {

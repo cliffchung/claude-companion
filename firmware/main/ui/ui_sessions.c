@@ -1217,6 +1217,10 @@ void ui_sessions_keys_overlay(bool show)
         if (sz.x > kw) kw = sz.x;
     }
     for (int i = 0; i < hk_overlay_n; i++) {
+        if (!i || hk_overlay[i].sec != hk_overlay[i - 1].sec) {   /* "Sessions", then "In a session" */
+            lv_obj_t *h = text(p, tr(hk_section_title(hk_overlay[i].sec)), &st_body, TC_MUTED);
+            if (i) lv_obj_set_style_pad_top(h, UI_TK_GAP_S, 0);
+        }
         lv_obj_t *r = box(p);
         lv_obj_set_size(r, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);

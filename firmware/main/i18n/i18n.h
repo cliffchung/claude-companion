@@ -385,13 +385,15 @@ X(SES_STOP_ERROR, "Stop failed: the command didn't run on the Host") \
 X(SES_KEYS_TITLE, "Keyboard shortcuts") \
 X(SES_KEYS_CLOSE, "Any key or a touch closes this") \
 X(HK_K_UPDOWN, "Up / Down") \
+X(HK_SEC_SESSIONS, "Sessions") \
+X(HK_SEC_SESSION, "In a session") \
 X(HK_W_UPDOWN, "move between sessions") \
 X(HK_K_ENTER, "Enter") \
 X(HK_W_ENTER, "send the answer (empty: open)") \
 X(HK_K_CTRL_O, "Ctrl+O") \
 X(HK_W_CTRL_O, "open the session") \
-X(HK_K_CTRL_T, "Ctrl+T") \
-X(HK_W_CTRL_T, "terminal (Ctrl+M also)") \
+X(HK_K_CTRL_T, "Ctrl+T / Ctrl+M") \
+X(HK_W_CTRL_T, "terminal (other SSH hosts)") \
 X(HK_K_CTRL_P, "Ctrl+P") \
 X(HK_W_CTRL_P, "settings") \
 X(HK_K_CTRL_X, "Ctrl+X") \
@@ -403,11 +405,12 @@ X(HK_W_CTRL_SPACE, "voice input: press to start, again to stop") \
 X(HK_K_ESC, "Esc") \
 X(HK_W_ESC, "clear the answer (cancels a recording)") \
 X(HK_K_CTRL_BRACKET, "Ctrl+\xe2\x86\x90") \
-X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
+X(HK_W_CTRL_BRACKET, "leave; it keeps running (Ctrl+Q too, Ctrl+] from USB)") \
 X(HK_K_CTRL_UPDOWN, "Ctrl+Up / Down") \
-X(HK_W_CTRL_UPDOWN, "scroll back in a session (by touch: drag)") \
+X(HK_W_CTRL_UPDOWN, "scroll: PgUp / PgDn to Claude Code, local in SSH; or drag") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
-X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
+X(HK_W_SHIFT_UPDOWN, "the same from a USB keyboard (Shift+PgUp / PgDn too)") \
+X(HK_W_DICTATE, "dictate into the prompt: typed, not sent") \
 X(TERM_KEEPS_RUNNING, "The session keeps running on the Host.") \
 X(SSH_NO_SESSION, "Couldn't start SSH. Try again.") \
 X(SSH_CANT_CONNECT, "Couldn't connect:") \
