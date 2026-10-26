@@ -92,13 +92,14 @@ int  fw_pct(uint64_t done, uint64_t total);       /* floor; 0 for total 0; 99 un
 void fw_mb_text(uint64_t done, uint64_t total, char *out, size_t cap);
 
 typedef struct {
-    bool rollback_ok;   /* the build and the bootloader can roll back (fix C1); false refuses every update */
+    bool layout_ok;     /* the slots are this plan's (round 2, N8: its own copy) */
+    bool rollback_ok;   /* the bootloader can roll back (fix C1); false refuses every update */
     bool pending;       /* the running image still waits to be marked valid (core I2) */
     bool link_up, session_open, voice_active, updating;
     pr_src_t src; int battery_pct;
     size_t psram_largest; uint32_t image_size;
 } fw_gate_in_t;
-typedef enum { FW_GATE_OK, FW_GATE_NO_ROLLBACK, FW_GATE_BUSY, FW_GATE_PENDING, FW_GATE_NO_LINK, FW_GATE_SESSION, FW_GATE_VOICE,
+typedef enum { FW_GATE_OK, FW_GATE_LAYOUT, FW_GATE_NO_ROLLBACK, FW_GATE_BUSY, FW_GATE_PENDING, FW_GATE_NO_LINK, FW_GATE_SESSION, FW_GATE_VOICE,
                FW_GATE_BATTERY_UNKNOWN, FW_GATE_BATTERY, FW_GATE_MEMORY } fw_gate_t;
 fw_gate_t fw_gate(const fw_gate_in_t *in);       /* first failing in the enum's order */
 
@@ -109,7 +110,22 @@ fw_validity_t fw_validity(bool pending, bool host_ok, int64_t uptime_ms);
 /* Boot (core I1): a PENDING_VERIFY image the guard or Go back switched to (trusted_switch: it was VALID or a wired
    flash before the switch) is marked valid at once, with no probation; any other pending image gets the probation. */
 typedef enum { FW_BOOT_NONE, FW_BOOT_PROBATION, FW_BOOT_TRUSTED } fw_boot_t;
-fw_boot_t fw_boot_state(bool pending, bool trusted_switch);
+/* target_match (round 2, N2): the running slot is the one the flag was set for (its address is stored with it). */
+fw_boot_t fw_boot_state(bool pending, bool trusted_switch, bool target_match);
+/* round 2, N2: a switch is trusted (no probation) only when its target's otadata entry is VALID: an entry-less slot
+   may be a complete build that never ran (esp_ota_begin erases the entry; a power cut before the switch keeps it). */
+bool fw_switch_trusted(bool entry_valid);
+/* round 2, N2: the other slot is offered as Previous version (and is the guard's target) only with a VALID entry, a
+   claude_companion descriptor, and the fw/ok_<slot> marker (written when that build was valid and running) naming
+   its ELF SHA-256. */
+bool fw_previous_ok(bool entry_valid, bool project_ok, bool marker_matches);
+/* round 2, N1: Go back on a pending image is the rollback itself (mark it invalid: the previous slot keeps its
+   VALID entry); otherwise a switch. */
+typedef enum { FW_GB_SWITCH, FW_GB_ROLLBACK } fw_go_back_t;
+fw_go_back_t fw_go_back_mode(bool pending);
+/* round 2, N1: the claim on a pending image (the rollback task, Go back, mark-valid): test-and-clear, so exactly one
+   claimant wins. The firmware calls it under its lock. */
+bool fw_pending_claim(bool *pending);
 /* The boot-loop guard's step (core M7): under FW_BOOTLOOP_N early crashes NONE; else, after FW_BOOTLOOP_MAX_FALLBACKS
    switches without a stable boot in between, or with no runnable other slot, GIVE_UP (stop, show a notice); else
    SWITCH. fallbacks resets when a boot lasts FW_BOOTLOOP_EARLY_MS. */
@@ -127,7 +143,7 @@ bool fw_bootloop_trip(int count, bool other_runnable);   /* count >= FW_BOOTLOOP
 typedef enum { FW_OUT_OK, FW_OUT_CANCELLED, FW_OUT_NO_LINK, FW_OUT_LINK_LOST, FW_OUT_TIMEOUT, FW_OUT_NO_FILE,
                FW_OUT_HOST_READ, FW_OUT_NOT_APP, FW_OUT_TOO_BIG, FW_OUT_CORRUPT, FW_OUT_CHANGED, FW_OUT_WRITE,
                FW_OUT_BATTERY, FW_OUT_BATTERY_UNKNOWN, FW_OUT_SESSION, FW_OUT_VOICE, FW_OUT_BUSY,
-               FW_OUT_NO_MEMORY, FW_OUT_PENDING, FW_OUT_NO_ROLLBACK } fw_out_t;
+               FW_OUT_NO_MEMORY, FW_OUT_PENDING, FW_OUT_NO_ROLLBACK, FW_OUT_LAYOUT } fw_out_t;
 fw_out_t fw_host_rc(int rc);                     /* 0 OK; 120 NO_FILE; 121, 122, 126, 127 and others HOST_READ */
 fw_out_t fw_hdr_out(fw_hdr_t h);                 /* TOO_BIG -> TOO_BIG; SHORT -> CHANGED; the rest -> NOT_APP */
 fw_out_t fw_gate_out(fw_gate_t g);

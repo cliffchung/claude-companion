@@ -321,7 +321,7 @@ static void test_mb_text(void)
 
 static fw_gate_in_t gate_ok(void)
 {
-    fw_gate_in_t g = { .rollback_ok = true, .pending = false, .link_up = true, .session_open = false, .voice_active = false, .updating = false,
+    fw_gate_in_t g = { .layout_ok = true, .rollback_ok = true, .pending = false, .link_up = true, .session_open = false, .voice_active = false, .updating = false,
                        .src = PR_SRC_BATTERY, .battery_pct = 80, .psram_largest = 20u * 1024 * 1024,
                        .image_size = 6374957 };
     return g;
@@ -331,6 +331,7 @@ static void test_gate_each(void)
 {
     fw_gate_in_t g = gate_ok();
     TEST_ASSERT_EQUAL(FW_GATE_OK, fw_gate(&g));
+    g = gate_ok(); g.layout_ok = false;    TEST_ASSERT_EQUAL(FW_GATE_LAYOUT, fw_gate(&g));
     g = gate_ok(); g.rollback_ok = false;  TEST_ASSERT_EQUAL(FW_GATE_NO_ROLLBACK, fw_gate(&g));
     g = gate_ok(); g.updating = true;      TEST_ASSERT_EQUAL(FW_GATE_BUSY, fw_gate(&g));
     g = gate_ok(); g.pending = true;       TEST_ASSERT_EQUAL(FW_GATE_PENDING, fw_gate(&g));
@@ -348,9 +349,10 @@ static void test_gate_each(void)
 
 static void test_gate_order(void)
 {
-    fw_gate_in_t g = { .rollback_ok = false, .pending = true, .link_up = false, .session_open = true, .voice_active = true,
+    fw_gate_in_t g = { .layout_ok = false, .rollback_ok = false, .pending = true, .link_up = false, .session_open = true, .voice_active = true,
                        .updating = true, .src = PR_SRC_UNKNOWN, .battery_pct = 1, .psram_largest = 0, .image_size = 6374957 };
-    TEST_ASSERT_EQUAL(FW_GATE_NO_ROLLBACK, fw_gate(&g));
+    TEST_ASSERT_EQUAL(FW_GATE_LAYOUT, fw_gate(&g));
+    g.layout_ok = true;     TEST_ASSERT_EQUAL(FW_GATE_NO_ROLLBACK, fw_gate(&g));
     g.rollback_ok = true;   TEST_ASSERT_EQUAL(FW_GATE_BUSY, fw_gate(&g));
     g.updating = false;     TEST_ASSERT_EQUAL(FW_GATE_PENDING, fw_gate(&g));
     g.pending = false;      TEST_ASSERT_EQUAL(FW_GATE_NO_LINK, fw_gate(&g));
@@ -390,10 +392,43 @@ static void test_bootloop(void)
 /* core I1: a switch by the guard or Go back skips the probation */
 static void test_boot_state(void)
 {
-    TEST_ASSERT_EQUAL(FW_BOOT_NONE, fw_boot_state(false, false));
-    TEST_ASSERT_EQUAL(FW_BOOT_NONE, fw_boot_state(false, true));    /* a stale flag on a valid image: nothing */
-    TEST_ASSERT_EQUAL(FW_BOOT_PROBATION, fw_boot_state(true, false)); /* a wireless update */
-    TEST_ASSERT_EQUAL(FW_BOOT_TRUSTED, fw_boot_state(true, true));    /* the guard's or Go back's target */
+    TEST_ASSERT_EQUAL(FW_BOOT_NONE, fw_boot_state(false, false, false));
+    TEST_ASSERT_EQUAL(FW_BOOT_NONE, fw_boot_state(false, true, true));     /* a stale flag on a valid image: nothing */
+    TEST_ASSERT_EQUAL(FW_BOOT_PROBATION, fw_boot_state(true, false, false)); /* a wireless update */
+    TEST_ASSERT_EQUAL(FW_BOOT_TRUSTED, fw_boot_state(true, true, true));     /* the guard's or Go back's target */
+    TEST_ASSERT_EQUAL(FW_BOOT_PROBATION, fw_boot_state(true, true, false));  /* N2: the flag names another slot */
+}
+
+/* round 2, N2: an entry-less complete slot (a build that never ran) is never trusted and never offered */
+static void test_trust_and_previous(void)
+{
+    TEST_ASSERT_TRUE(fw_switch_trusted(true));
+    TEST_ASSERT_FALSE(fw_switch_trusted(false));
+    TEST_ASSERT_TRUE(fw_previous_ok(true, true, true));
+    TEST_ASSERT_FALSE(fw_previous_ok(false, true, true));   /* no VALID entry: a cut before the switch */
+    TEST_ASSERT_FALSE(fw_previous_ok(true, false, true));   /* another project */
+    TEST_ASSERT_FALSE(fw_previous_ok(true, true, false));   /* no marker for this build: it never ran valid */
+    /* so the guard's target is never an entry-less slot either, and a switch to one would not be trusted */
+    bool entry_valid = false;
+    TEST_ASSERT_FALSE(fw_previous_ok(entry_valid, true, true) && fw_switch_trusted(entry_valid));
+}
+
+/* round 2, N1: Go back on a pending image rolls back; one claim on the pending flag wins */
+static void test_go_back_and_claim(void)
+{
+    TEST_ASSERT_EQUAL(FW_GB_ROLLBACK, fw_go_back_mode(true));
+    TEST_ASSERT_EQUAL(FW_GB_SWITCH, fw_go_back_mode(false));
+    bool pending = true;
+    bool go_back = fw_pending_claim(&pending);    /* Go back first */
+    bool rollback = fw_pending_claim(&pending);   /* then the 180 s task */
+    TEST_ASSERT_TRUE(go_back);
+    TEST_ASSERT_FALSE(rollback);
+    pending = true;
+    rollback = fw_pending_claim(&pending);        /* the other order */
+    go_back = fw_pending_claim(&pending);
+    TEST_ASSERT_TRUE(rollback ^ go_back);
+    TEST_ASSERT_FALSE(pending);
+    TEST_ASSERT_FALSE(fw_pending_claim(NULL));
 }
 
 /* core I1 and M7: the guard's state machine over boots */
@@ -414,7 +449,7 @@ static void test_bootloop_action(void)
         fw_loop_t a = fw_bootloop_action(count, true, fallbacks);
         if (a == FW_LOOP_SWITCH) { switches++; fallbacks++; count = 0; trusted = true; continue; }
         if (a == FW_LOOP_GIVE_UP) gave_up++;
-        if (trusted) { TEST_ASSERT_EQUAL(FW_BOOT_TRUSTED, fw_boot_state(true, trusted)); trusted = false; }
+        if (trusted) { TEST_ASSERT_EQUAL(FW_BOOT_TRUSTED, fw_boot_state(true, trusted, true)); trusted = false; }
     }
     TEST_ASSERT_EQUAL(1, switches);
     TEST_ASSERT_TRUE(gave_up >= 1);
@@ -472,6 +507,7 @@ static void test_gate_out(void)
 {
     TEST_ASSERT_EQUAL(FW_OUT_OK, fw_gate_out(FW_GATE_OK));
     TEST_ASSERT_EQUAL(FW_OUT_NO_ROLLBACK, fw_gate_out(FW_GATE_NO_ROLLBACK));
+    TEST_ASSERT_EQUAL(FW_OUT_LAYOUT, fw_gate_out(FW_GATE_LAYOUT));
     TEST_ASSERT_EQUAL(FW_OUT_PENDING, fw_gate_out(FW_GATE_PENDING));
     TEST_ASSERT_EQUAL(FW_OUT_BUSY, fw_gate_out(FW_GATE_BUSY));
     TEST_ASSERT_EQUAL(FW_OUT_NO_LINK, fw_gate_out(FW_GATE_NO_LINK));
@@ -495,9 +531,9 @@ static void test_out_text_ids(void)
         { FW_OUT_BATTERY_UNKNOWN, STR_FW_ERR_BATTERY_UNKNOWN }, { FW_OUT_SESSION, STR_FW_ERR_BUSY_SESSION },
         { FW_OUT_VOICE, STR_FW_ERR_BUSY_VOICE }, { FW_OUT_BUSY, STR_FW_ERR_BUSY },
         { FW_OUT_NO_MEMORY, STR_FW_ERR_NO_MEMORY }, { FW_OUT_PENDING, STR_FW_ERR_PENDING },
-        { FW_OUT_NO_ROLLBACK, STR_FW_ERR_NO_ROLLBACK },
+        { FW_OUT_NO_ROLLBACK, STR_FW_ERR_NO_ROLLBACK }, { FW_OUT_LAYOUT, STR_FW_ERR_LAYOUT },
     };
-    TEST_ASSERT_EQUAL(FW_OUT_NO_ROLLBACK, sizeof m / sizeof m[0]);   /* every value but OK */
+    TEST_ASSERT_EQUAL(FW_OUT_LAYOUT, sizeof m / sizeof m[0]);   /* every value but OK */
     for (size_t i = 0; i < sizeof m / sizeof m[0]; i++) {
         TEST_ASSERT_EQUAL(m[i].s, fw_out_text(m[i].o));
         const char *t = tr(fw_out_text(m[i].o));
@@ -531,6 +567,8 @@ int main(void)
     RUN_TEST(test_validity);
     RUN_TEST(test_bootloop);
     RUN_TEST(test_boot_state);
+    RUN_TEST(test_trust_and_previous);
+    RUN_TEST(test_go_back_and_claim);
     RUN_TEST(test_bootloop_action);
     RUN_TEST(test_confirm_matches);
     RUN_TEST(test_attempt_rolled_back);

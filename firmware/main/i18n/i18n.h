@@ -503,6 +503,8 @@ X(FW_ERR_NO_MEMORY, "Not enough memory for the update. Restart the Tab5 and try 
 X(FW_ERR_PENDING, "The new version is still checking in with the Host. Try again in a few minutes.") \
 X(FW_ERR_NO_ROLLBACK, "Updates are off: this Tab5's bootloader can't go back. Flash it once over USB.") \
 X(SET_FW_ROLLBACK_OFF, "Rollback off") \
+X(SET_FW_LAYOUT_OLD, "Old partition table") \
+X(FW_ERR_LAYOUT, "Updates are off: the partition table is old. Flash this build once over USB.") \
 X(FW_TOO_LATE, "Too late to cancel: the Tab5 is switching to the new version.") \
 X(FW_BOOTLOOP_BOTH, "Both versions keep restarting. Flash a good build over USB (README \xe2\x80\xba Update over Wi-Fi).") \
 X(FW_ROLLBACK_FAILED, "The new version can't reach the Host and the Tab5 couldn't go back; it keeps this version.") \

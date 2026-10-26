@@ -70,6 +70,7 @@ static void row_value(char *out, size_t cap, ui_tone_t *tone)
 {
     fwu_check_t c;
     *tone = UI_TONE_MUTED;
+    if (!fwu_layout_ok()) { snprintf(out, cap, "%s", tr(STR_SET_FW_LAYOUT_OLD)); *tone = UI_TONE_RED; return; }   /* N8 */
     if (!fwu_rollback_ok()) { snprintf(out, cap, "%s", tr(STR_SET_FW_ROLLBACK_OFF)); *tone = UI_TONE_RED; return; }
     if (s_checking) { snprintf(out, cap, "%s", tr(STR_SET_FW_CHECKING)); return; }
     if (!fwu_last_check(&c)) { snprintf(out, cap, "%s", tr(STR_SET_FW_CHECK)); return; }
@@ -131,6 +132,7 @@ static void open_confirm(const fwu_check_t *c)
 static void fw_row_cb(lv_event_t *e)
 {
     (void)e;
+    if (!fwu_layout_ok()) { ui_toast_ms(tr(STR_FW_ERR_LAYOUT), 6000); return; }
     if (!fwu_rollback_ok()) { ui_toast_ms(tr(STR_FW_ERR_NO_ROLLBACK), 6000); return; }
     if (s_checking || s_confirm_open) return;
     fwu_check_t c;
@@ -246,7 +248,7 @@ void ui_settings_fw_about(lv_obj_t *p)
     ui_footnote(p, tr(STR_SET_FW_NOTE));
     /* the background check when About is shown (P6-16, P6-19: About and the console only) */
     fwu_check_t c;
-    if (fwu_rollback_ok() && !s_checking && !fwu_busy() && !(fwu_last_check(&c) && fresh(&c))) request_check(false);
+    if (fwu_layout_ok() && fwu_rollback_ok() && !s_checking && !fwu_busy() && !(fwu_last_check(&c) && fresh(&c))) request_check(false);
 }
 
 /* ------------------------------------------------------------- boot notes */

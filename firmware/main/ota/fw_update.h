@@ -33,9 +33,9 @@ bool fwu_cancel(void);
 void fwu_status(fwu_status_t *out);
 bool fwu_busy(void);
 bool fwu_pending(void);                         /* the running image still waits to be marked valid */
-/* False when updates are off: the running bootloader can't roll back (fix C1), or the slot layout is not this
-   plan's. About shows "Rollback off" and Install refuses. */
+/* False when the running bootloader can't roll back (fix C1): About shows "Rollback off" and Install refuses. */
 bool fwu_rollback_ok(void);
+bool fwu_layout_ok(void);   /* the slots are this plan's (round 2, N8: its own diagnosis) */
 const char *fwu_phase_name(fwu_phase_t p);      /* "idle", "downloading", ... (console) */
 
 /* One outcome slot (P6-17): the update's end (CANCELLED, errors) or a boot note, with the version strings it needs.
@@ -60,11 +60,12 @@ void fwu_boot_init(void);                       /* spec §12.3: after NVS and se
    nothing before the link starts). */
 void fwu_link_started(void);
 
-/* The other slot holds a runnable image (VALID or UNDEFINED state, or no otadata entry at all: a wired flash;
-   descriptor readable, project FW_PROJECT). */
+/* The other slot holds a runnable image: a VALID otadata entry, a FW_PROJECT descriptor, and the fw/ok_<slot> marker
+   for its ELF SHA-256 (the build was valid and running there; round 2, N2). */
 bool fwu_previous(fw_desc_t *out);
-/* Go back (blocking: a worker or the console, never the LVGL task): the gates (busy, session, voice, battery),
-   esp_image_verify on the other slot, a trusted switch and link_down_restart. Never returns on success; otherwise
+/* Go back (blocking: a worker or the console, never the LVGL task): the gates (busy, session, voice, battery). On a
+   pending image: the claim on it (FW_OUT_BUSY if the 180 s rollback has it), then the rollback itself (round 2,
+   N1). Otherwise esp_image_verify on the other slot, a trusted switch and link_down_restart. Never returns on success; otherwise
    the gate's outcome, or FW_OUT_WRITE when the slot isn't runnable or doesn't verify. */
 fw_out_t fwu_go_back(void);
 

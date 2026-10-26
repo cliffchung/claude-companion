@@ -18,6 +18,7 @@
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hal/efuse_hal.h"
@@ -97,7 +98,7 @@ static uint8_t s_sha[32];
 static fw_desc_t s_desc;              /* the downloaded image's descriptor */
 
 /* ---- boot ---- */
-#define RTC_MAGIC 0x46575532u          /* "FWU2" */
+#define RTC_MAGIC 0x46575533u          /* "FWU3" */
 typedef struct {
     uint32_t magic;
     int32_t count;          /* early crashes in a row */
@@ -107,6 +108,7 @@ typedef struct {
     uint8_t bootloop_note;  /* the image before this boot kept restarting and switched here */
     uint8_t trusted_switch; /* the guard or Go back switched here: mark valid at once (core I1) */
     uint8_t pad;
+    uint32_t trusted_addr;  /* ...and the slot it switched to: only that slot is trusted (round 2, N2) */
 } rtc_rec_t;
 static RTC_NOINIT_ATTR rtc_rec_t s_rtc;
 static bool s_subscribed;
@@ -156,13 +158,29 @@ bool fwu_peek_note(fwu_note_t *out)
     return have;
 }
 
+/* The one claim on a pending image (round 2, N1): mark-valid, the 180 s rollback and Go back each take it under the
+   lock, and only the winner may call esp_ota_mark_*. */
 static bool take_pending(void)
 {
     taskENTER_CRITICAL(&s_mux);
-    bool was = s_pending;
-    s_pending = false;
+    bool won = fw_pending_claim(&s_pending);
     taskEXIT_CRITICAL(&s_mux);
-    return was;
+    return won;
+}
+
+/* Posts the note only while the image is still pending, under the lock (round 2, N6: never "Going back" over
+   "Updated"). */
+static void post_note_if_pending(fwu_note_kind_t kind, const char *a)
+{
+    taskENTER_CRITICAL(&s_mux);
+    if (s_pending) {
+        memset(&s_note, 0, sizeof s_note);
+        s_note.gen = ++s_note_gen;
+        s_note.kind = kind;
+        s_note.out = FW_OUT_OK;
+        if (a) strlcpy(s_note.ver_a, a, sizeof s_note.ver_a);
+    }
+    taskEXIT_CRITICAL(&s_mux);
 }
 
 static void put_pending(void)
@@ -180,7 +198,8 @@ bool fwu_pending(void)
     return p;
 }
 
-bool fwu_rollback_ok(void) { return s_rollback_ok && s_slot_ok; }
+bool fwu_rollback_ok(void) { return s_rollback_ok; }
+bool fwu_layout_ok(void) { return s_slot_ok; }
 
 const char *fwu_running_version(void) { return esp_app_get_description()->version; }
 
@@ -216,6 +235,37 @@ static const esp_partition_t *other_slot(void) { return esp_ota_get_next_update_
 
 static void attempt_set(const char *v) { nvs_set_str_ns(NVS_NS, NVS_ATTEMPT, v); }
 static void attempt_clear(void) { nvs_erase_key_ns(NVS_NS, NVS_ATTEMPT); }
+
+/* fw/ok_<slot> (round 2, N2): the ELF SHA-256 of the build last seen valid and running in that slot. Previous
+   version (and the guard) take only a slot whose build matches its marker: a complete build that never ran has none. */
+static void marker_key(const esp_partition_t *p, char *key, size_t cap) { snprintf(key, cap, "ok_%s", p->label); }
+
+static void elf_hex(const uint8_t sha[32], char out[65])
+{
+    for (int i = 0; i < 32; i++) snprintf(out + 2 * i, 3, "%02x", sha[i]);
+}
+
+static void marker_write_running(void)
+{
+    const esp_partition_t *r = esp_ota_get_running_partition();
+    if (!r) return;
+    char key[24], hex[65], *old = NULL;
+    marker_key(r, key, sizeof key);
+    elf_hex(esp_app_get_description()->app_elf_sha256, hex);
+    bool same = nvs_get_str_alloc(NVS_NS, key, &old) && old && !strcmp(old, hex);
+    free(old);
+    if (!same) nvs_set_str_ns(NVS_NS, key, hex);
+}
+
+static bool marker_matches(const esp_partition_t *p, const uint8_t elf_sha[32])
+{
+    char key[24], hex[65], *v = NULL;
+    marker_key(p, key, sizeof key);
+    elf_hex(elf_sha, hex);
+    bool ok = nvs_get_str_alloc(NVS_NS, key, &v) && v && !strcmp(v, hex);
+    free(v);
+    return ok;
+}
 
 /* ---- the check ---- */
 
@@ -372,9 +422,9 @@ static fw_out_t run_update(times_t *t)
     set_phase(FWU_WRITING, s_size);
     t0 = now_ms();
     ESP_LOGI(TAG, "writing %s", next->label);
-    s_dirty = next;   /* from here a failure erases its header (release) */
     if (esp_ota_begin(next, OTA_WITH_SEQUENTIAL_WRITES, &s_h) != ESP_OK) return FW_OUT_WRITE;
     s_begun = true;
+    s_dirty = next;   /* only once begin succeeded (round 2, N5): from here a failure erases its header (release) */
     for (uint32_t off = 0; off < s_size; off += CHUNK) {
         if (s_cancel) return FW_OUT_CANCELLED;              /* release() aborts the handle */
         uint32_t k = s_size - off > CHUNK ? CHUNK : s_size - off;
@@ -450,7 +500,8 @@ static void gate_inputs(fw_gate_in_t *g, uint32_t image_size, bool for_install)
     int pct = -1;
     bool chg = false;
     memset(g, 0, sizeof *g);
-    g->rollback_ok = fwu_rollback_ok();
+    g->layout_ok = s_slot_ok;
+    g->rollback_ok = s_rollback_ok;
     g->pending = for_install && fwu_pending();
     g->link_up = for_install ? cc_link_connected() : true;
     g->session_open = power_hold_is_on(POWER_HOLD_TAKEOVER) || power_hold_is_on(POWER_HOLD_SSH);
@@ -469,7 +520,8 @@ fw_out_t fwu_start_expect(const char *expect_sha)
     if (s_busy) return FW_OUT_BUSY;
     fw_gate_in_t g;
     gate_inputs(&g, have ? c.size : 0, true);
-    if (!g.rollback_ok) return s_slot_ok ? FW_OUT_NO_ROLLBACK : FW_OUT_WRITE;
+    if (!g.layout_ok) return FW_OUT_LAYOUT;
+    if (!g.rollback_ok) return FW_OUT_NO_ROLLBACK;
     if (g.pending) return FW_OUT_PENDING;   /* core I2: an unvalidated image can't be updated (esp_ota_begin refuses) */
     if (!have || c.out != FW_OUT_OK || c.offer == FW_OFFER_UP_TO_DATE || now_ms() - c.at_ms >= FW_CHECK_TTL_MS)
         return FW_OUT_CHANGED;
@@ -524,11 +576,11 @@ bool fwu_previous(fw_desc_t *out)
 {
     const esp_partition_t *o = other_slot();
     if (!o) return false;
-    int st = part_state(o);
-    if (!(st == ESP_OTA_IMG_VALID || st == ESP_OTA_IMG_UNDEFINED || st < 0)) return false;
     esp_app_desc_t d;
-    if (esp_ota_get_partition_description(o, &d) != ESP_OK) return false;
-    if (strncmp(d.project_name, FW_PROJECT, sizeof d.project_name) != 0) return false;
+    bool have = esp_ota_get_partition_description(o, &d) == ESP_OK;
+    bool project = have && strncmp(d.project_name, FW_PROJECT, sizeof d.project_name) == 0;
+    if (!fw_previous_ok(part_state(o) == ESP_OTA_IMG_VALID, project, project && marker_matches(o, d.app_elf_sha256)))
+        return false;   /* round 2, N2: a VALID entry and a marker for this build; never an entry-less slot */
     if (out) {
         memset(out, 0, sizeof *out);
         strlcpy(out->version, d.version, sizeof out->version);
@@ -541,9 +593,11 @@ bool fwu_previous(fw_desc_t *out)
     return true;
 }
 
-/* A switch to a slot that was VALID (or a wired flash) before it: the trusted flag makes the next boot mark it
-   valid at once instead of putting it on probation (core I1). Set before esp_ota_set_boot_partition, cleared on a
-   failure. */
+/* A switch to a slot whose entry is VALID: the trusted flag, bound to that slot's address, makes the next boot mark
+   it valid at once instead of putting it on probation (core I1; round 2, N2: only a VALID target). Set before
+   esp_ota_set_boot_partition, cleared on a failure. Only for a running image that isn't pending (Go back on a
+   pending one is the rollback, round 2, N1); any leftover pending claim is taken first, so nothing else calls
+   esp_ota_mark_* after the switch. */
 static esp_err_t switch_to_other(void)
 {
     const esp_partition_t *o = other_slot();
@@ -552,9 +606,16 @@ static esp_err_t switch_to_other(void)
     esp_image_metadata_t md;
     esp_err_t e = esp_image_verify(ESP_IMAGE_VERIFY, &pos, &md);
     if (e != ESP_OK) { ESP_LOGW(TAG, "switch: %s doesn't verify (%s)", o->label, esp_err_to_name(e)); return e; }
-    s_rtc.trusted_switch = 1;
+    (void)take_pending();
+    bool trusted = fw_switch_trusted(part_state(o) == ESP_OTA_IMG_VALID);
+    s_rtc.trusted_switch = trusted;
+    s_rtc.trusted_addr = trusted ? o->address : 0;
     e = esp_ota_set_boot_partition(o);
-    if (e != ESP_OK) { s_rtc.trusted_switch = 0; ESP_LOGW(TAG, "switch: set boot %s: %s", o->label, esp_err_to_name(e)); }
+    if (e != ESP_OK) {
+        s_rtc.trusted_switch = 0;
+        s_rtc.trusted_addr = 0;
+        ESP_LOGW(TAG, "switch: set boot %s: %s", o->label, esp_err_to_name(e));
+    }
     return e;
 }
 
@@ -563,8 +624,23 @@ fw_out_t fwu_go_back(void)
     fw_gate_in_t g;
     gate_inputs(&g, 0, false);
     g.rollback_ok = true;   /* going back needs no rollback support: the target was good */
+    g.layout_ok = true;
     fw_out_t o = fw_gate_out(fw_gate(&g));
     if (o != FW_OUT_OK) return o;
+    if (fw_go_back_mode(fwu_pending()) == FW_GB_ROLLBACK) {
+        /* round 2, N1: a pending image goes back by the rollback itself. The previous slot keeps its VALID entry;
+           no switch, so the 180 s rollback can't then invalidate the target. The claim decides who acts. */
+        if (!fwu_previous(NULL)) return FW_OUT_WRITE;
+        if (!take_pending()) return FW_OUT_BUSY;   /* the rollback (or a mark-valid) already has it */
+        if (s_valid_timer) esp_timer_stop(s_valid_timer);
+        ESP_LOGI(TAG, "go back while pending: rolling back");
+        lg_token_t t = lg_close(false, LG_CLOSE_MS);
+        esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   /* returns only on a failure */
+        ESP_LOGE(TAG, "go back: rollback failed (%s)", esp_err_to_name(e));
+        lg_reopen(t);
+        put_pending();
+        return FW_OUT_WRITE;
+    }
     if (switch_to_other() != ESP_OK) return FW_OUT_WRITE;
     ESP_LOGI(TAG, "go back: restarting into the other slot");
     link_down_restart("firmware go back");
@@ -627,8 +703,9 @@ void fwu_boot_early(void)
 
     /* a trusted switch (the guard or Go back): the image was good before the switch, so no probation (core I1) */
     bool pending = part_state(running) == ESP_OTA_IMG_PENDING_VERIFY;
-    fw_boot_t b = fw_boot_state(pending, s_rtc.trusted_switch != 0);
+    fw_boot_t b = fw_boot_state(pending, s_rtc.trusted_switch != 0, running && running->address == s_rtc.trusted_addr);
     s_rtc.trusted_switch = 0;
+    s_rtc.trusted_addr = 0;
     if (b == FW_BOOT_TRUSTED) {
         esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
         ESP_LOGI(TAG, "%s (%s): switched to by the boot-loop guard or Go back, marked valid (%s)", fwu_running_version(),
@@ -643,7 +720,11 @@ void fwu_boot_early(void)
         post_note(FWU_NOTE_BOOTLOOP, FW_OUT_OK, fwu_running_version(), NULL);
     }
     if (s_rtc.count > 0) ESP_LOGW(TAG, "boot-loop guard: %d early crash(es) in a row", (int)s_rtc.count);
-    fw_loop_t a = fw_bootloop_action(s_rtc.count, s_slot_ok && fwu_previous(NULL), s_rtc.fallbacks);
+    /* fwu_previous reads the fw/ok_<slot> marker from NVS: open it only when the guard may act (nvs_flash_init is
+       safe to repeat; settings_init calls it again; a failure leaves no target, so the guard gives up) */
+    bool runnable = false;
+    if (s_rtc.count >= FW_BOOTLOOP_N && s_slot_ok && nvs_flash_init() == ESP_OK) runnable = fwu_previous(NULL);
+    fw_loop_t a = fw_bootloop_action(s_rtc.count, runnable, s_rtc.fallbacks);
     if (a == FW_LOOP_SWITCH) {
         ESP_LOGE(TAG, "boot-loop guard: %d early crashes: switching to %s", (int)s_rtc.count, next->label);
         if (switch_to_other() == ESP_OK) {
@@ -686,6 +767,7 @@ static void mark_valid_now(void)
     if (e != ESP_OK) { ESP_LOGW(TAG, "mark valid: %s", esp_err_to_name(e)); put_pending(); return; }
     if (s_valid_timer) esp_timer_stop(s_valid_timer);
     attempt_clear();
+    marker_write_running();   /* round 2, N2: this build ran and reached the Host */
     power_hold(POWER_HOLD_FW_PENDING, false);   /* the pending check's hold only (core I2) */
     ESP_LOGI(TAG, "marked valid at %lld ms: %s", (long long)now_ms(), fwu_running_version());
     post_note(FWU_NOTE_UPDATED, FW_OUT_OK, fwu_running_version(), NULL);
@@ -705,10 +787,10 @@ static void rollback_task(void *arg)
     if (take_pending()) {
         ESP_LOGW(TAG, "not valid after %d s: rolling back", FW_VALIDATE_MS / 1000);
         lg_token_t t = lg_close(false, LG_CLOSE_MS);   /* C1: SSH closes before the restart */
-        (void)t;
         esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   /* returns only on a failure */
         ESP_LOGE(TAG, "rollback failed (%s): keeping %s for now", esp_err_to_name(e), fwu_running_version());
-        put_pending();   /* a later result from the Host can still mark it valid; the next reset still rolls back */
+        lg_reopen(t);    /* round 2, N3: the link comes back, so a later Host result can still mark it valid */
+        put_pending();   /* the next reset still rolls back */
         power_hold(POWER_HOLD_FW_PENDING, false);
         post_note(FWU_NOTE_ROLLBACK_FAILED, FW_OUT_OK, NULL, NULL);
     }
@@ -730,7 +812,7 @@ static void valid_timer_cb(void *arg)
     const esp_partition_t *o = other_slot();
     esp_app_desc_t d;
     const char *prev = o && esp_ota_get_partition_description(o, &d) == ESP_OK ? d.version : "";
-    post_note(FWU_NOTE_ROLLING_BACK, FW_OUT_OK, prev, NULL);
+    post_note_if_pending(FWU_NOTE_ROLLING_BACK, prev);   /* round 2, N6 */
     int64_t left = FW_VALIDATE_MS - now_ms();
     esp_timer_start_once(s_valid_timer, (uint64_t)(left > 0 ? left : 1) * 1000);
 }
@@ -756,6 +838,8 @@ void fwu_boot_init(void)
         attempt_clear();
         return;
     }
+
+    if (st == ESP_OTA_IMG_VALID) marker_write_running();   /* round 2, N2 (a trusted switch, a wired flash) */
 
     /* a new image waiting for its check (a trusted switch was marked valid in fwu_boot_early) */
     if (st == ESP_OTA_IMG_PENDING_VERIFY) {

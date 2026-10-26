@@ -207,6 +207,7 @@ void fw_mb_text(uint64_t done, uint64_t total, char *out, size_t cap)
 
 fw_gate_t fw_gate(const fw_gate_in_t *in)
 {
+    if (!in->layout_ok) return FW_GATE_LAYOUT;
     if (!in->rollback_ok) return FW_GATE_NO_ROLLBACK;
     if (in->updating) return FW_GATE_BUSY;
     if (in->pending) return FW_GATE_PENDING;
@@ -234,10 +235,26 @@ int fw_bootloop_next(int count, bool crash_reset, bool was_early)
 
 bool fw_bootloop_trip(int count, bool other_runnable) { return count >= FW_BOOTLOOP_N && other_runnable; }
 
-fw_boot_t fw_boot_state(bool pending, bool trusted_switch)
+fw_boot_t fw_boot_state(bool pending, bool trusted_switch, bool target_match)
 {
     if (!pending) return FW_BOOT_NONE;
-    return trusted_switch ? FW_BOOT_TRUSTED : FW_BOOT_PROBATION;
+    return trusted_switch && target_match ? FW_BOOT_TRUSTED : FW_BOOT_PROBATION;
+}
+
+bool fw_switch_trusted(bool entry_valid) { return entry_valid; }
+
+bool fw_previous_ok(bool entry_valid, bool project_ok, bool marker_matches)
+{
+    return entry_valid && project_ok && marker_matches;
+}
+
+fw_go_back_t fw_go_back_mode(bool pending) { return pending ? FW_GB_ROLLBACK : FW_GB_SWITCH; }
+
+bool fw_pending_claim(bool *pending)
+{
+    if (!pending || !*pending) return false;
+    *pending = false;
+    return true;
 }
 
 fw_loop_t fw_bootloop_action(int count, bool other_runnable, int fallbacks)
@@ -282,6 +299,7 @@ fw_out_t fw_gate_out(fw_gate_t g)
 {
     switch (g) {
     case FW_GATE_OK:              return FW_OUT_OK;
+    case FW_GATE_LAYOUT:          return FW_OUT_LAYOUT;
     case FW_GATE_NO_ROLLBACK:     return FW_OUT_NO_ROLLBACK;
     case FW_GATE_BUSY:            return FW_OUT_BUSY;
     case FW_GATE_PENDING:         return FW_OUT_PENDING;
@@ -318,6 +336,7 @@ str_id_t fw_out_text(fw_out_t o)
     case FW_OUT_NO_MEMORY:       return STR_FW_ERR_NO_MEMORY;
     case FW_OUT_PENDING:         return STR_FW_ERR_PENDING;
     case FW_OUT_NO_ROLLBACK:     return STR_FW_ERR_NO_ROLLBACK;
+    case FW_OUT_LAYOUT:          return STR_FW_ERR_LAYOUT;
     }
     return STR_COUNT;
 }
