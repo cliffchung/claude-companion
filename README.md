@@ -466,13 +466,20 @@ YOU, and doesn't light anything.
   keeps running on the Host. The session bar shows for 3 seconds when a session opens; tap the top
   of the screen to bring it back. Its chips send Esc, Tab, ^C, ↑ and ↓, **Mic** dictates (as
   Ctrl+Space), and ⌨ opens the on-screen keyboard when no physical keyboard is attached.
-- **Scroll back in a take-over or SSH session:** **Ctrl+↑ / Ctrl+↓** scroll half a screen back and
-  forward (the Tab5 keyboard has no Shift+arrow or PgUp/PgDn; these never reach the Host, so Claude
-  Code's own Ctrl+↑/↓, which moves through its diff file list and agent groups, is Alt+↑/↓ there).
-  Shift+↑ / Shift+↓ (take-over only) and Shift+PgUp / Shift+PgDn also work from a USB keyboard. By
+- **Scroll back in a take-over:** **Ctrl+↑ / Ctrl+↓** scroll Claude Code's conversation back and
+  forward. Claude Code draws on the terminal's alternate screen and scrolls its own conversation, so
+  there is no local scrollback to show: the Tab5 sends it **PgUp / PgDn** (`ESC[5~` / `ESC[6~`), which
+  it scrolls by half its view (the Tab5 keyboard has no PgUp/PgDn key). Shift+↑ / ↓ and Shift+PgUp /
+  PgDn from a USB keyboard do the same. By touch, drag: each text row dragged sends one mouse-wheel
+  report (finger down goes back), once Claude Code has turned mouse reporting on, as it does as soon as
+  it draws. Claude Code keeps its own place (typing doesn't jump back to the newest text): Ctrl+↓ or a
+  drag up returns. Claude Code's own Ctrl+↑/↓ (its diff file list and agent groups) is Alt+↑/↓ there.
+- **Scroll back in an SSH session:** **Ctrl+↑ / Ctrl+↓** scroll the Tab5's own scrollback half a
+  screen back and forward, and send nothing (Shift+PgUp / Shift+PgDn too, from a USB keyboard). By
   touch, drag. While the view is scrolled back the session bar stays up, its ↑ ↓ chips become ⇑ ⇓
   (half a screen back or forward), and **Scrolled back · Live ↓** shows: tap it, or type any key, to
-  return to the live view.
+  return to the live view. A full-screen program there (an editor, a pager) gets no local scrollback;
+  use its own keys.
 - **Stop a session:** **Ctrl+X** (or tap **⌃X Stop** next to Open) asks "Stop <name>?" first.
   Cancel has the focus, and only Tab, Shift+Tab or a tap reaches **Stop**: Enter, Space, Esc and the
   arrow keys on the question all cancel, so a stray Ctrl+X followed by ↑ and Enter does nothing. To
@@ -555,7 +562,7 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | Ctrl+Space | Voice input: press to start, again to stop (Esc cancels). By touch: the mic, and Cancel |
 | Ctrl+Space (inside a session) | Dictate into the session's prompt; the text is typed, not sent (Ctrl+@ sends NUL). By touch: the bar's Mic chip, and its Esc chip to cancel |
 | Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
-| Ctrl+↑ / ↓ | Scroll back in a take-over or SSH session (by touch: drag, then the bar's ⇑ ⇓) |
+| Ctrl+↑ / ↓ | Scroll back: in a take-over sends Claude Code PgUp / PgDn; in an SSH session scrolls the Tab5's scrollback (by touch: drag; in an SSH session then the bar's ⇑ ⇓) |
 | Shift+↑ / ↓ | Scroll back in a take-over (USB keyboard; Shift+PgUp / PgDn in an SSH session too) |
 
 In Settings and Terminal, the arrow keys move the focus, Enter chooses and Esc goes back. On a

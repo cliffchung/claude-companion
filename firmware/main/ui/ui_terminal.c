@@ -1,6 +1,7 @@
 /* Full-screen terminal: the take-over of a Claude session on the Host, or an SSH session to another box
  * (spec §5.2, §5.4). One session bar over the top of the terminal; every key goes to the remote side except
- * Ctrl+] / Ctrl+Q / Ctrl+← (Leave), the scroll keys (Ctrl+↑/↓, Shift+↑/↓ in a take-over, Shift+PgUp/PgDn) and Ctrl+Space (voice input, follow-up 2026-10-24; Esc
+ * Ctrl+] / Ctrl+Q / Ctrl+← (Leave), the scroll keys (Ctrl+↑/↓, Shift+↑/↓ in a take-over, Shift+PgUp/PgDn: the local
+ * view in an SSH session, PgUp/PgDn to Claude Code in a take-over) and Ctrl+Space (voice input, follow-up 2026-10-24; Esc
  * too while this screen's dictation is recording or transcribing). The bar's Mic chip is Ctrl+Space by touch. */
 #include "ui.h"
 #include "ui_comp.h"
@@ -10,6 +11,7 @@
 #include "term/vt.h"
 #include "term/term_view.h"
 #include "term/term_keys.h"
+#include "term/term_scroll.h"
 #include "ui/hotkeys.h"
 #include "input/keyboard.h"
 #include "companion/cc_cmd.h"
@@ -594,12 +596,42 @@ static void send_key(term_ctx_t *c, const key_event_t *e)
     if (n) c->typed_once = false;   /* a key since the dictation (Enter, an edit): the next one doesn't join */
 }
 
-/* Half a screen back (older) or forward: Ctrl+↑/↓, the Shift keys and the bar's ⇑ ⇓ chips. Sends nothing. */
+/* Half a screen back (older) or forward in the local view: the scroll keys in an SSH session, and the bar's ⇑ ⇓ chips. Sends nothing. */
 static void scroll_half(term_ctx_t *c, bool back)
 {
     vt_scroll_view(c->vt, back ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
     lv_obj_invalidate(term_view_obj(c->tv));
     scroll_ui(c);
+}
+
+/* The scroll keys (Ctrl+↑/↓, the Shift ones). An SSH session scrolls the local view: nothing is sent. A take-over sends
+   Claude Code PgUp / PgDn instead: it draws on the alternate screen and scrolls its conversation itself, so the local
+   scrollback holds nothing there (term_scroll.h has what was measured). The local view stays live. */
+static void scroll_key(term_ctx_t *c, bool back)
+{
+    if (!c->cmd_mode) { scroll_half(c, back); return; }
+    char b[8];
+    size_t n = term_scroll_page(back, b, sizeof(b));
+    if (n && c->ssh) ssh_client_send(c->ssh, (const uint8_t *)b, n);
+    if (vt_view_offset(c->vt) > 0) {   /* a drag before mouse reporting was on may have moved it */
+        vt_scroll_view_reset(c->vt);
+        lv_obj_invalidate(term_view_obj(c->tv));
+        scroll_ui(c);
+    }
+}
+
+/* A drag in a take-over: once Claude Code has turned mouse reporting on, each text row dragged is one wheel report
+   (one row of its conversation; finger down = back), sent at the cell the press began on. Before that (0 rows taken)
+   the drag scrolls the local view as in an SSH session. */
+static int takeover_drag_cb(int rows, int col, int row, void *user)
+{
+    term_ctx_t *c = user;
+    if (!c || c->closing || !c->ssh || !rows || !vt_mouse_enabled(c->vt)) return 0;
+    char b[256];   /* up to 19 reports of 13 bytes: a faster drag sends the rest on its next move */
+    int k = 0;
+    size_t n = term_scroll_wheel(rows > 0, rows > 0 ? rows : -rows, col, row, b, sizeof(b), &k);
+    if (n) ssh_client_send(c->ssh, (const uint8_t *)b, n);
+    return rows > 0 ? k : -k;
 }
 
 static bool term_key(const key_event_t *ev, void *user)
@@ -609,7 +641,7 @@ static bool term_key(const key_event_t *ev, void *user)
     if (hk == HK_T_VOICE) { term_voice_toggle(c); return true; }   /* never sent as NUL (Ctrl+@ still is) */
     if (voice_gate(c, ev, hk)) return true;   /* recording: eaten; c may be gone */
     if (hk == HK_T_LEAVE) { leave(c); return true; }   /* never sent; c may be gone */
-    if (hk == HK_T_SCROLL_UP || hk == HK_T_SCROLL_DOWN) { scroll_half(c, hk == HK_T_SCROLL_UP); return true; }   /* never sent */
+    if (hk == HK_T_SCROLL_UP || hk == HK_T_SCROLL_DOWN) { scroll_key(c, hk == HK_T_SCROLL_UP); return true; }
     send_key(c, ev);   /* no key shows the bar: every key belongs to the remote side (§5.2) */
     return true;
 }
@@ -914,6 +946,7 @@ static lv_obj_t *term_create(int idx, const term_cmd_t *cmd)
     vt_set_bell_cb(c->vt, vt_bell_cb, c);
     vt_set_title_cb(c->vt, vt_title_cb, c);
     c->tv = term_view_create(c->scr, c->vt, &g_term_font);
+    if (c->cmd_mode) term_view_set_drag_cb(c->tv, takeover_drag_cb, c);   /* Claude Code scrolls itself */
     /* The token palette (P4-10); the saved terminal colours are no longer read. Claude Code's own colours are
        content, drawn as sent. A steady block cursor: no blink, so no blink timer (B1). */
     vt_set_palette(ui_tk_term_ansi);

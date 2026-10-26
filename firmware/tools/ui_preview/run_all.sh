@@ -91,7 +91,7 @@ run terminal
 for v in on empty keys deleted-event fail add nokbd; do run terminal "$v"; done
 for v in voice-rec voice-done; do run terminal "$v"; done   # voice input in a take-over and an SSH session
 for v in voice-touch voice-touch-nokbd; do run terminal "$v"; done   # the bar's Mic chip; touch alone at the narrowest bar
-for v in scroll-keys scroll-touch; do run terminal "$v"; done   # Ctrl+Up/Down scroll back; the bar's scroll chips and indicator
+for v in scroll-keys scroll-drag scroll-touch; do run terminal "$v"; done   # Ctrl+Up/Down scroll (PgUp/PgDn to Claude Code in a take-over); a take-over drag sends wheel reports; the bar's scroll chips and indicator
 runv "PREVIEW_HOST_TSIP=0" terminal add-fqdn
 for v in new edit-pin sd-key settings; do run hostform "$v"; done
 run takeover

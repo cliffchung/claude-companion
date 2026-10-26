@@ -175,7 +175,7 @@ static void test_overlay_lists_every_shortcut(void)
     TEST_ASSERT_TRUE(stop);
     bool scroll = false;
     for (int k = 0; k < n; k++)
-        if (!strcmp(tr(hk_overlay[k].keys), "Ctrl+Up / Down") && !strcmp(tr(hk_overlay[k].what), "scroll back in a session")) scroll = true;
+        if (!strcmp(tr(hk_overlay[k].keys), "Ctrl+Up / Down") && !strcmp(tr(hk_overlay[k].what), "scroll back in a session (by touch: drag)")) scroll = true;
     TEST_ASSERT_TRUE(scroll);
 }
 

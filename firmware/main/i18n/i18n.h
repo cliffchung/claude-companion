@@ -405,7 +405,7 @@ X(HK_W_ESC, "clear the answer (cancels a recording)") \
 X(HK_K_CTRL_BRACKET, "Ctrl+\xe2\x86\x90") \
 X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
 X(HK_K_CTRL_UPDOWN, "Ctrl+Up / Down") \
-X(HK_W_CTRL_UPDOWN, "scroll back in a session") \
+X(HK_W_CTRL_UPDOWN, "scroll back in a session (by touch: drag)") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
 X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
 X(TERM_KEEPS_RUNNING, "The session keeps running on the Host.") \

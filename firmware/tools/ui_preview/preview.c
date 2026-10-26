@@ -4000,9 +4000,38 @@ static int term_scroll_case(lv_display_t *d, const char *v) {
     int r = 0;
     pv_voice_reset();
     if (!strcmp(v, "scroll-keys")) {
-        /* in a take-over and in an SSH session alike: Ctrl+Up scrolls back half a screen, Ctrl+Down forward, and
-           neither sends a byte; Alt+Up and a typed key go to the Host and return to the live view */
-        for (int mode = 0; mode < 2; mode++) {
+        /* a take-over: Claude Code draws on the alternate screen and scrolls itself, so the scroll keys send it PgUp /
+           PgDn (Ctrl+Up/Down, and from a USB keyboard Shift+Up/Down and Shift+PgUp/PgDn), the local view stays live and
+           the bar never says "Scrolled back"; Alt+Up stays Alt+Up */
+        {
+            lv_obj_t *s = pv_open_takeover(d), *bar = session_bar_of(s);
+            assert(bar);
+            pv_ssh_feed("\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h"); pv_feed_lines(120); pv_ssh_feed(TV_PROMPT); step(d, 20);
+            static const struct { key_event_t ev; const char *want; const char *what; } k[] = {
+                { { .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_CTRL }, "\x1b[5~", "Ctrl+Up" },
+                { { .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_CTRL }, "\x1b[5~", "a second Ctrl+Up" },
+                { { .type = KEY_EV_SPECIAL, .key = SK_DOWN, .mods = MOD_CTRL }, "\x1b[6~", "Ctrl+Down" },
+                { { .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_CTRL | MOD_SHIFT }, "\x1b[5~", "Ctrl+Shift+Up" },
+                { { .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_SHIFT }, "\x1b[5~", "Shift+Up" },
+                { { .type = KEY_EV_SPECIAL, .key = SK_DOWN, .mods = MOD_SHIFT }, "\x1b[6~", "Shift+Down" },
+                { { .type = KEY_EV_SPECIAL, .key = SK_PGUP, .mods = MOD_SHIFT }, "\x1b[5~", "Shift+PgUp" },
+                { { .type = KEY_EV_SPECIAL, .key = SK_PGDN, .mods = MOD_SHIFT }, "\x1b[6~", "Shift+PgDn" },
+                { { .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_ALT }, "\x1b[1;3A", "Alt+Up" },
+            };
+            for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+                size_t sent = s_ssh_sent_n, n = strlen(k[i].want);
+                pv_key(k[i].ev); step(d, 20);
+                if (s_ssh_sent_n != sent + n || memcmp(s_ssh_sent + sent, k[i].want, n)) {
+                    printf("check %s: FAIL %s in a take-over sent %d bytes, not the %d of its sequence\n", name, k[i].what, (int)(s_ssh_sent_n - sent), (int)n); return 1;
+                }
+                if (pv_view_off() != 0 || !pv_scroll_chips(bar, false, false)) { printf("check %s: FAIL %s moved the local view of a take-over (%d)\n", name, k[i].what, pv_view_off()); return 1; }
+            }
+            r |= pv_run_checks(d, s, "terminal-scroll-keys-takeover", false, 0);
+            ui_nav_back(); step(d, 20);
+        }
+        /* an SSH session: Ctrl+Up scrolls the local view back half a screen, Ctrl+Down forward, and neither sends a
+           byte; Alt+Up and a typed key go to the Host and return to the live view */
+        for (int mode = 1; mode < 2; mode++) {
             const char *what = mode ? "SSH session" : "take-over";
             lv_obj_t *s = mode ? pv_open_ssh(d) : pv_open_takeover(d), *bar = session_bar_of(s);
             assert(bar);
@@ -4018,7 +4047,7 @@ static int term_scroll_case(lv_display_t *d, const char *v) {
             if (pv_view_off() != half) { printf("check %s: FAIL Ctrl+Down in a %s: %d, not %d\n", name, what, pv_view_off(), half); return 1; }
             if (s_ssh_sent_n != sent) { printf("check %s: FAIL Ctrl+Up/Down sent %d bytes to the Host in a %s\n", name, (int)(s_ssh_sent_n - sent), what); return 1; }
             if (!obj_shown(bar) || !pv_scroll_chips(bar, true, true)) { printf("check %s: FAIL the bar doesn't say the %s is scrolled back\n", name, what); return 1; }
-            if (!mode) r |= pv_run_checks(d, s, name, false, 0);
+            r |= pv_run_checks(d, s, name, false, 0);
             /* the Shift keys stay: Shift+PgUp in both, Shift+Up in a take-over only */
             pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_PGUP, .mods = MOD_SHIFT }); step(d, 20);
             if (pv_view_off() != 2 * half || s_ssh_sent_n != sent) { printf("check %s: FAIL Shift+PgUp in a %s\n", name, what); return 1; }
@@ -4049,11 +4078,43 @@ static int term_scroll_case(lv_display_t *d, const char *v) {
                 s_preview_server_n--;
             }
         }
-        printf("%s: Ctrl+Up/Down scroll half a screen in a take-over and an SSH session and send nothing; Shift+PgUp still scrolls; Alt+Up, Ctrl+Right and a typed key go to the Host, and a typed key returns to the live view\n", name);
+        printf("%s: in a take-over Ctrl+Up/Down (and Shift+Up/Down, Shift+PgUp/PgDn) send Claude Code PgUp/PgDn and leave the local view live, Alt+Up stays Alt+Up; in an SSH session Ctrl+Up/Down scroll half a screen and send nothing, Shift+PgUp still scrolls, Alt+Up, Ctrl+Right and a typed key go to the Host, and a typed key returns to the live view\n", name);
+        return r;
+    }
+    if (!strcmp(v, "scroll-drag")) {
+        /* a take-over of Claude Code, which has turned mouse reporting on: a drag sends it one SGR wheel report per text
+           row (finger down = wheel up, back), at the cell the press began on; the local view stays live */
+        lv_indev_t *in = lv_indev_create(); lv_indev_set_type(in, LV_INDEV_TYPE_POINTER); lv_indev_set_read_cb(in, pointer_read);
+        lv_obj_t *s = pv_open_takeover(d), *bar = session_bar_of(s);
+        assert(bar);
+        pv_ssh_feed("\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h"); pv_feed_lines(120); pv_ssh_feed(TV_PROMPT); step(d, 20);
+        int cell_h = lv_font_get_line_height(&g_term_font), cell_w = lv_font_get_glyph_width(&g_term_font, 'M', 0);
+        char want[32];
+        for (int dir = 0; dir < 2; dir++) {
+            int y0 = dir ? 500 : 300, y1 = dir ? 300 : 500;
+            size_t sent = s_ssh_sent_n;
+            pointer_move(in, 640, y0, true); step(d, 20);
+            pointer_move(in, 640, (y0 + y1) / 2, true); step(d, 20);
+            pointer_move(in, 640, y1, true); step(d, 20);
+            pointer_move(in, 640, y1, false); step(d, 20);
+            snprintf(want, sizeof(want), "\x1b[<%d;%d;%dM", dir ? 65 : 64, 640 / cell_w + 1, y0 / cell_h + 1);
+            size_t wn = strlen(want);
+            int rows = 200 / cell_h, got = 0;
+            for (size_t i = sent; i + wn <= s_ssh_sent_n && !memcmp(s_ssh_sent + i, want, wn); i += wn) got++;
+            if (got != rows || s_ssh_sent_n != sent + (size_t)rows * wn) {
+                printf("check %s: FAIL a %d px drag %s sent %d bytes, %d of them \"ESC%s\" reports, not %d\n", name, 200, dir ? "up" : "down", (int)(s_ssh_sent_n - sent), got, want + 1, rows); return 1;
+            }
+            if (pv_view_off() != 0 || !pv_scroll_chips(bar, false, false)) { printf("check %s: FAIL the drag moved the local view (%d)\n", name, pv_view_off()); return 1; }
+        }
+        r |= pv_run_checks(d, s, name, false, 0);
+        ui_nav_back(); step(d, 20);
+        lv_indev_delete(in);
+        printf("%s: with mouse reporting on, a %d px drag in a take-over sends Claude Code %d wheel reports (down: back, up: forward) and the local view stays live\n", name, 200, 200 / cell_h);
         return r;
     }
     if (!strcmp(v, "scroll-touch")) {
-        /* the narrowest bar (no keyboard: ⌨ shown; a name at the cap), as the voice-touch-nokbd case */
+        /* the narrowest bar (no keyboard: ⌨ shown; a name at the cap), as the voice-touch-nokbd case. A take-over before
+           Claude Code turns mouse reporting on: the drag falls back to the local view, as in an SSH session */
         setenv("PREVIEW_KBD", "0", 1);
         lv_indev_t *in = lv_indev_create(); lv_indev_set_type(in, LV_INDEV_TYPE_POINTER); lv_indev_set_read_cb(in, pointer_read);
         s_ssh_autoclose = false;
