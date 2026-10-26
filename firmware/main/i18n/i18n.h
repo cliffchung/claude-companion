@@ -300,11 +300,11 @@ X(TERM_KEY_SCROLL_DOWN, "\xe2\x87\x93") \
 X(TERM_SCROLLED_BACK, "Scrolled back \xc2\xb7 Live \xe2\x86\x93") \
 X(TERM_STILL_RUNNING, "Session still running on the Host") \
 X(TERM_OPENING, "Opening the session on the Host\xe2\x80\xa6") \
-X(TERM_OPENING_HINT, "Ctrl+\xe2\x86\x90 returns to Sessions; the session keeps running.") \
-X(TERM_OPENING_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave returns to Sessions; the session keeps running.") \
+X(TERM_OPENING_HINT, "Ctrl+\xe2\x86\x90 leave \xc2\xb7 Ctrl+\xe2\x86\x91\xe2\x86\x93 scroll \xc2\xb7 Ctrl+Space dictate. The session keeps running on the Host.") \
+X(TERM_OPENING_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave returns to Sessions. Drag to scroll; Mic dictates.") \
 X(TERM_CONNECTING_TO, "Connecting to %s@%s:%d\xe2\x80\xa6") \
-X(TERM_SSH_HINT, "Ctrl+\xe2\x86\x90 disconnects.") \
-X(TERM_SSH_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave disconnects.") \
+X(TERM_SSH_HINT, "Ctrl+\xe2\x86\x90 disconnect \xc2\xb7 Ctrl+\xe2\x86\x91\xe2\x86\x93 scroll \xc2\xb7 Ctrl+Space dictate") \
+X(TERM_SSH_HINT_TOUCH, "Tap the top of the screen for the bar: \xe2\x86\x90 Leave disconnects. Drag to scroll; Mic dictates.") \
 X(TERM_DISCONNECT_Q, "Disconnect from %s?") \
 X(TERM_LINK_LOST, "Link lost, reconnecting\xe2\x80\xa6") \
 X(TERM_DISCONNECTED_FROM, "Disconnected from %s") \

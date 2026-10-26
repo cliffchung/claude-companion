@@ -4133,6 +4133,8 @@ static int term_scroll_case(lv_display_t *d, const char *v) {
             const char *what = mode ? "SSH session" : "take-over";
             lv_obj_t *s = mode ? pv_open_ssh(d) : pv_open_takeover(d), *bar = session_bar_of(s);
             assert(bar);
+            /* the opening banner names the keys that matter */
+            if (!pv_screen_has("Ctrl+\xe2\x86\x90 disconnect \xc2\xb7 Ctrl+\xe2\x86\x91\xe2\x86\x93 scroll \xc2\xb7 Ctrl+Space dictate")) { printf("check %s: FAIL the SSH banner doesn't list the keys\n", name); return 1; }
             pv_feed_lines(120); pv_ssh_feed(mode ? "pi@box:~ $ " : TV_PROMPT); step(d, 20);
             int half = pv_view_rows() / 2;
             assert(half > 0 && pv_view_off() == 0);
@@ -4526,8 +4528,8 @@ static int term_voice_case(lv_display_t *d, const char *v) {
         /* review M2: before the pump sees the session up the bar says "Connecting…", whole beside Mic */
         if (!pv_state_fits(name, bar, "Connecting\xe2\x80\xa6")) return 1;
         /* the banner's hint says how to leave: by touch with no keyboard (review M5) */
-        const char *hint = nokbd ? "Tap the top of the screen for the bar: \xe2\x86\x90 Leave returns to Sessions"
-                                 : "Ctrl+\xe2\x86\x90 returns to Sessions";
+        const char *hint = nokbd ? "Tap the top of the screen for the bar: \xe2\x86\x90 Leave returns to Sessions. Drag to scroll; Mic dictates."
+                                 : "Ctrl+\xe2\x86\x90 leave \xc2\xb7 Ctrl+\xe2\x86\x91\xe2\x86\x93 scroll \xc2\xb7 Ctrl+Space dictate.";
         if (!pv_screen_has(hint)) { printf("check %s: FAIL the terminal banner doesn't read \"%s\"\n", name, hint); return 1; }
         step(d, 20);
         pv_ssh_feed(k_takeover_sample); pv_ssh_feed(TV_PROMPT); step(d, 20);
@@ -4643,7 +4645,7 @@ static int term_voice_case(lv_display_t *d, const char *v) {
         if (nokbd) {
             /* an SSH session by touch: its banner, and a result held behind the Disconnect confirm says to tap Mic */
             s = pv_open_ssh(d); bar = session_bar_of(s);
-            if (!pv_screen_has("Tap the top of the screen for the bar: \xe2\x86\x90 Leave disconnects.")) { printf("check %s: FAIL the SSH banner isn't touch wording\n", name); return 1; }
+            if (!pv_screen_has("Tap the top of the screen for the bar: \xe2\x86\x90 Leave disconnects. Drag to scroll; Mic dictates.")) { printf("check %s: FAIL the SSH banner isn't touch wording\n", name); return 1; }
             pv_ssh_feed("pi@box:~ $ "); step(d, 800);
             mic = find_clickable_shown(bar, "Mic");
             lv_obj_send_event(mic, LV_EVENT_CLICKED, NULL); step(d, 20);
