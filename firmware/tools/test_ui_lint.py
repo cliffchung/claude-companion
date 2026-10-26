@@ -227,6 +227,21 @@ class LintTests(unittest.TestCase):
                                     os.path.join("storage", "sd.c") + ":3: ota-outside-fw_update",
                                     os.path.join("storage", "sd.c") + ":4: ota-outside-fw_update"])
 
+    def test_flash_writes_flagged(self):
+        main = self.tree({
+            "main/sys/x.c": "void f(void) {\n    esp_flash_write(NULL, b, 0, 4);\n    esp_flash_erase_region(NULL, 0, 4096);\n"
+                            "    spi_flash_write(0, b, 4);\n    bootloader_flash_erase_range(0, 4096);\n    spi_flash_mmap(0);\n}\n",
+            "main/ota/fw_update.c": "void g(void) {\n    esp_flash_write(NULL, b, 0, 4);\n}\n",
+            "components/vendor/src/w.c": "void h(void) {\n    esp_partition_write(p, 0, b, 4);\n}\n",
+            "components/vendor/src/r.c": "void k(void) {\n    esp_partition_read(p, 0, b, 4);\n}\n",
+        })
+        problems = [p for p in ui_lint.lint(os.path.join(main, "main")) if not p.endswith("unused-str")]
+        self.assertEqual(problems, [os.path.join("sys", "x.c") + ":2: ota-outside-fw_update",
+                                    os.path.join("sys", "x.c") + ":3: ota-outside-fw_update",
+                                    os.path.join("sys", "x.c") + ":4: ota-outside-fw_update",
+                                    os.path.join("sys", "x.c") + ":5: ota-outside-fw_update",
+                                    os.path.join("..", "components", "vendor", "src", "w.c") + ":2: ota-outside-fw_update"])
+
     def test_fwcmd_literal_flagged(self):
         main = self.tree({
             "ota/fw_update.c": "static const char *c = \"exec cat x\";\n",

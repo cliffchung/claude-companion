@@ -29,8 +29,12 @@ Prints one "<file>:<line>: <rule>" per problem and exits 1 if there are any. Rul
   notify-under-lock    net/tailscale.c: a notify() call (the UI's event slot, which reaches ui_async and the LVGL
                        lock) while s_ctl is held: in a *_locked function, or after ctl_lock() and before its
                        ctl_unlock() (a block that unlocks and returns leaves the lock held after it). Final review I2.
-  ota-outside-fw_update  a call to esp_ota_*, esp_partition_erase_range or esp_partition_write* anywhere under
-                       firmware/main outside ota/fw_update.c (Plan 6 ruling P6-10: one file writes app partitions)
+  ota-outside-fw_update  a call to esp_ota_*, esp_partition_erase_range, esp_partition_write*, esp_flash_write*,
+                       esp_flash_erase*, spi_flash_write*, spi_flash_erase*, bootloader_flash_write* or
+                       bootloader_flash_erase* anywhere under firmware/main outside ota/fw_update.c, and anywhere
+                       under firmware/components (the sibling of main; Plan 6 ruling P6-10: one file writes flash). No
+                       vendored component needs an exclusion today (libssh, MicroLink and wireguard_lwip write no
+                       flash); a future one is listed in COMPONENT_FLASH_OK with the reason.
   fwcmd-outside-cc_cmd  claude_companion.bin, "head -c 288" or "exec cat" inside a string literal anywhere under
                        firmware/main except companion/cc_cmd.c, companion/cc_cmd.h and i18n/i18n.h (P6-10)
 """
@@ -69,7 +73,10 @@ STR_USE_RE = re.compile(r"\bSTR_(\w+)")
 WHISPER_RE = re.compile(r"whisper-cli|-otxt")
 WHISPER_HOMES = {os.path.join("companion", "cc_cmd.c"), os.path.join("companion", "cc_cmd.h"), I18N_H}
 
-OTA_CALL_RE = re.compile(r"\b(?:esp_ota_\w+|esp_partition_erase_range|esp_partition_write\w*)\s*\(")
+OTA_CALL_RE = re.compile(r"\b(?:esp_ota_\w+|esp_partition_erase_range|esp_partition_write\w*|esp_flash_write\w*|"
+                         r"esp_flash_erase\w*|spi_flash_write\w*|spi_flash_erase\w*|bootloader_flash_write\w*|"
+                         r"bootloader_flash_erase\w*)\s*\(")
+COMPONENT_FLASH_OK = set()   # paths under firmware/components allowed to write flash, each with its reason
 OTA_HOME = os.path.join("ota", "fw_update.c")
 FWCMD_RE = re.compile(r"claude_companion\.bin|head -c 288|exec cat")
 FWCMD_HOMES = WHISPER_HOMES
@@ -279,6 +286,29 @@ def unused_strings(texts):
             for m in STR_ENTRY_RE.finditer(table) if m.group(1) not in used]
 
 
+def lint_components(comp_dir):
+    """ota-outside-fw_update over firmware/components (core review M9)."""
+    problems = []
+    if not os.path.isdir(comp_dir):
+        return problems
+    for root, dirs, files in os.walk(comp_dir):
+        dirs.sort()
+        for name in sorted(files):
+            if not name.endswith(SOURCE_EXT):
+                continue
+            path = os.path.join(root, name)
+            rel = os.path.join("..", "components", os.path.relpath(path, comp_dir))
+            if rel in COMPONENT_FLASH_OK:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            if not OTA_CALL_RE.search(text):
+                continue
+            for m in OTA_CALL_RE.finditer(split_source(text)[0]):
+                problems.append(f"{rel}:{line_of(text, m.start())}: ota-outside-fw_update")
+    return problems
+
+
 def lint(main_dir):
     texts = {}
     for root, dirs, files in os.walk(main_dir):
@@ -294,7 +324,7 @@ def lint(main_dir):
     problems = []
     for rel in texts:
         problems += lint_file(rel, texts[rel], macros)
-    return problems + unused_strings(texts)
+    return problems + unused_strings(texts) + lint_components(os.path.join(main_dir, "..", "components"))
 
 
 def main(argv):
