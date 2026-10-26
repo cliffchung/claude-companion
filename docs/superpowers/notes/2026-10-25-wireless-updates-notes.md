@@ -294,3 +294,20 @@ well at arm's length; whether 30 % is the right battery floor; whether the defau
   cancel during the write erases `app1`'s header (log: "header erased after a failed update"), and About shows no
   Previous version.
 - Install while a new image is still pending: "The new version is still checking in with the Host…".
+
+## Fix round 2 (re-review)
+
+- Spec §18 lists the changes (N1–N9). New pure rules with tests: `fw_pending_claim` (two claimants, one winner, both
+  orders), `fw_go_back_mode`, `fw_switch_trusted`, `fw_previous_ok` (an entry-less complete slot is never offered
+  and never trusted), `fw_boot_state(pending, flag, target_match)`.
+- `rtc_rec_t` gained the target address, so its magic is now `FWU3` (an older record reads as garbage and resets).
+- Preview: the reviewer's 13 failures were not reproduced; `run_all.sh` from a fresh build directory passes (see the
+  results below in the report). New case `PREVIEW_FW_LAYOUT=0`.
+
+### More device steps for Task 9
+
+- Go back at about 175 s of a pending image with the Host unreachable: the Tab5 rolls back to the old build, which
+  stays (no probation), and `ota status` shows the new slot invalid or aborted and the old one valid.
+- A cut (power off) during the read-back of an update: the old build boots and About shows no Previous version.
+- `ota status` after the migration and after each update: the `fw/ok_<slot>` marker for the running slot is written
+  (Previous version appears for the other slot only once its build has run valid).

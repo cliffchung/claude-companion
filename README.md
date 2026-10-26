@@ -208,9 +208,15 @@ while a session is open full-screen, or while voice input is busy.
 - If it reached the Host but then keeps crashing early (three times in a row), it goes back and says
   "The Tab5 kept restarting…".
 - If it works but you don't like it, Settings › About › **Previous version** › **Go back** restarts
-  into the version it ran before, which is kept at once (no 180 s check: it was good before). A build from before
+  into the version it ran before, which is kept at once (no 180 s check: it was good before). Previous version is
+  offered only for a build that has run and reached the Host in that slot; a build that was written but never
+  started (a power cut before the restart) isn't offered. Go back while the new build is still in its 180 s check
+  is the same as its rollback. A build from before
   Plan 6's settings (CFG 25) forgets **Firmware file on Host** if it saves its settings; set it again after the
   next update.
+- The first boot of a new build has 180 s to reach the Host, with the screen kept on. A reset in that time (a
+  brownout on a weak USB port, the reset button) sends it back too, as if it had failed: give that first boot a good
+  power source (the battery, or a good USB port).
 - If both versions keep crashing early, the Tab5 stops switching after one fallback and says "Both versions keep
   restarting. Flash a good build over USB…".
 

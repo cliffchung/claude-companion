@@ -872,8 +872,9 @@ What changed in the design, in the order of the review findings:
   `POWER_HOLD_FW_PENDING`; neither clears the other's. Install refuses while the running image is pending
   (`FW_GATE_PENDING`, `FW_ERR_PENDING`).
 - **M1.** The 180 s rollback runs on a task of its own: it closes SSH (`lg_close`), then calls
-  `esp_ota_mark_app_invalid_rollback_and_reboot`; if that returns, the hold ends, the image stays pending (a later
-  Host result can still mark it valid; the next reset still goes back) and `FW_ROLLBACK_FAILED` toasts.
+  `esp_ota_mark_app_invalid_rollback_and_reboot`; if that returns, the hold ends, the image stays pending (the next reset still goes back) and
+  `FW_ROLLBACK_FAILED` toasts. (Round 1 left the link parked after a failed rollback, so the claim that a later Host
+  result could still mark it valid was wrong; round 2, N3, reopens the link with `lg_reopen`.)
 - **M2.** `s_pending` is tested and cleared under the lock by both mark-valid and the rollback.
 - **M3.** A failed or cancelled write erases the other slot's first sector, so it is never offered as Previous
   version. (A power cut mid-write can still leave a partial image there; Go back's `esp_image_verify` refuses it.)
@@ -904,3 +905,35 @@ New copy: `FW_ERR_PENDING` "The new version is still checking in with the Host. 
 `FW_BOOTLOOP_BOTH` "Both versions keep restarting. Flash a good build over USB (README › Update over Wi-Fi).";
 `FW_ROLLBACK_FAILED` "The new version can't reach the Host and the Tab5 couldn't go back; it keeps this version.";
 `SET_FW_PATH_BAD` "Use only letters, digits and _ . / ~ - (1 to 63 characters), not starting with -".
+
+## 18. Fix round 2 (re-review, 2026-10-25)
+
+- **N1, Go back during the pending window.** `esp_ota_mark_app_*` act on the *active* otadata entry, so a Go back
+  that switched to A while the new image N was pending let the 180 s rollback mark A invalid (both entries invalid:
+  the bootloader then boots ota_0 unchecked). Now Go back on a pending image *is* the rollback: it claims the
+  pending flag under the lock the rollback task and mark-valid use (`fw_pending_claim`: test-and-clear, one winner),
+  returns Busy if the rollback has it, stops the timer, closes SSH and calls
+  `esp_ota_mark_app_invalid_rollback_and_reboot`; A boots in its existing VALID entry. A rollback task that loses
+  the claim does nothing. `switch_to_other` also takes any leftover claim before `esp_ota_set_boot_partition`.
+- **N2, the trusted flag and a never-run build.** `esp_ota_begin` erases the other slot's entry, so a power cut in
+  the read-back, or between `fw/attempt` and the switch, left a complete build that never ran with no entry. Now:
+  Previous version (and the guard's target) needs a VALID entry, a `claude_companion` descriptor, and the
+  `fw/ok_<slot>` NVS marker naming the build's ELF SHA-256, which is written only while that build runs valid
+  (`fw_previous_ok`). A switch is trusted only to a VALID target (`fw_switch_trusted`), and the RTC flag stores the
+  target's address: `fwu_boot_early` trusts only that slot (`fw_boot_state(pending, flag, target_match)`). A
+  wired-flash build gets its marker on its first boot (the bootloader writes its entry VALID). The guard reads the
+  marker by opening NVS early (`nvs_flash_init`, as `hibernate_boot_early` does) only when it may act.
+- **N3.** A failed rollback reopens the link (`lg_reopen`), so a later Host result can still mark the image valid.
+- **N4, accepted.** A reset during the 180 s check (a brownout on a weak USB port, while the hold keeps the screen
+  on) makes the bootloader abort a good build; the old one boots with "didn't start properly". Not a brick; the
+  README says to give a new build's first boot a good power source.
+- **N5.** The slot is marked dirty only after `esp_ota_begin` succeeds, so a failed begin can't erase the header of
+  the previous good build.
+- **N6.** The 177 s notice is posted only while the image is still pending, under the lock.
+- **N7, accepted.** A power cut in the milliseconds between the guard's switch and its restart (or a brownout before
+  `fwu_boot_early` marks the target valid) loses the trust: the target goes on probation, the old failure mode of
+  core I1, in a very narrow window that fails toward probation.
+- **N8.** A slot-size mismatch (an old partition table) has its own diagnosis: the row reads "Old partition table"
+  and Install refuses with `FW_ERR_LAYOUT` ("Updates are off: the partition table is old. Flash this build once over
+  USB."), not "Rollback off".
+- **N9.** See §17 C1: the runtime Rollback off check is one update late.
