@@ -3133,8 +3133,10 @@ static void form_set(lv_display_t *d, lv_obj_t *scr, const char *row, const char
 static void click_row(lv_display_t *d, lv_obj_t *panel, const char *t);
 /* terminal [on|empty|keys|deleted-event|fail|add|add-fqdn]: spec §5.3. The default: Tailscale off. */
 static int term_voice_case(lv_display_t *d, const char *v);   /* voice in a session, below the take-over cases */
+static int term_scroll_case(lv_display_t *d, const char *v);   /* scrollback keys and chips, beside it */
 static int terminal_case(lv_display_t *d, const char *v) {
     if (!strncmp(v, "voice-", 6)) return term_voice_case(d, v);
+    if (!strncmp(v, "scroll-", 7)) return term_scroll_case(d, v);
     char name[48];
     snprintf(name, sizeof(name), "terminal%s%s", v[0] ? "-" : "", v);
     bool ts_off = !v[0] || !strcmp(v, "fail");
@@ -3972,6 +3974,171 @@ static bool pv_screen_has(const char *text) {
     if (!vt) return false;
     vt_screen_text(vt, t, sizeof(t));
     return strstr(t, text) != NULL;
+}
+
+/* Scrollback (follow-up 2026-10-25): Ctrl+Up / Ctrl+Down, the Tab5 keyboard's scroll keys, and by touch the bar's
+   scroll chips and its "Scrolled back" chip. */
+#define TS_SCROLLED "Scrolled back \xc2\xb7 Live \xe2\x86\x93"
+#define TS_UP "\xe2\x87\x91"
+#define TS_DOWN "\xe2\x87\x93"
+static void pv_feed_lines(int n) {
+    char l[40];
+    for (int i = 0; i < n; i++) { snprintf(l, sizeof(l), "history line %03d\r\n", i); pv_ssh_feed(l); }
+}
+static int pv_view_off(void) { return vt_view_offset(ui_terminal_preview_vt()); }
+static int pv_view_rows(void) { return vt_rows(ui_terminal_preview_vt()); }
+/* The bar shows the live chips (↑ ↓) or the scrolled-back ones (⇑ ⇓ and the "Scrolled back" chip), never both. */
+static bool pv_chip_shown(lv_obj_t *bar, const char *t) { lv_obj_t *c = find_clickable_shown(bar, t); return c && obj_shown(c); }
+static bool pv_scroll_chips(lv_obj_t *bar, bool scrolled, bool indicator) {
+    bool up = pv_chip_shown(bar, "\xe2\x86\x91"), down = pv_chip_shown(bar, "\xe2\x86\x93");
+    bool sup = pv_chip_shown(bar, TS_UP), sdown = pv_chip_shown(bar, TS_DOWN), ind = pv_chip_shown(bar, TS_SCROLLED);
+    return up == !scrolled && down == !scrolled && sup == scrolled && sdown == scrolled && ind == indicator;
+}
+static int term_scroll_case(lv_display_t *d, const char *v) {
+    char name[48];
+    snprintf(name, sizeof(name), "terminal-%s", v);
+    int r = 0;
+    pv_voice_reset();
+    if (!strcmp(v, "scroll-keys")) {
+        /* in a take-over and in an SSH session alike: Ctrl+Up scrolls back half a screen, Ctrl+Down forward, and
+           neither sends a byte; Alt+Up and a typed key go to the Host and return to the live view */
+        for (int mode = 0; mode < 2; mode++) {
+            const char *what = mode ? "SSH session" : "take-over";
+            lv_obj_t *s = mode ? pv_open_ssh(d) : pv_open_takeover(d), *bar = session_bar_of(s);
+            assert(bar);
+            pv_feed_lines(120); pv_ssh_feed(mode ? "pi@box:~ $ " : TV_PROMPT); step(d, 20);
+            int half = pv_view_rows() / 2;
+            assert(half > 0 && pv_view_off() == 0);
+            size_t sent = s_ssh_sent_n;
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_CTRL }); step(d, 20);
+            if (pv_view_off() != half) { printf("check %s: FAIL Ctrl+Up in a %s scrolled to %d, not %d\n", name, what, pv_view_off(), half); return 1; }
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_CTRL }); step(d, 20);
+            if (pv_view_off() != 2 * half) { printf("check %s: FAIL a second Ctrl+Up in a %s: %d\n", name, what, pv_view_off()); return 1; }
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_DOWN, .mods = MOD_CTRL }); step(d, 20);
+            if (pv_view_off() != half) { printf("check %s: FAIL Ctrl+Down in a %s: %d, not %d\n", name, what, pv_view_off(), half); return 1; }
+            if (s_ssh_sent_n != sent) { printf("check %s: FAIL Ctrl+Up/Down sent %d bytes to the Host in a %s\n", name, (int)(s_ssh_sent_n - sent), what); return 1; }
+            if (!obj_shown(bar) || !pv_scroll_chips(bar, true, true)) { printf("check %s: FAIL the bar doesn't say the %s is scrolled back\n", name, what); return 1; }
+            if (!mode) r |= pv_run_checks(d, s, name, false, 0);
+            /* the Shift keys stay: Shift+PgUp in both, Shift+Up in a take-over only */
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_PGUP, .mods = MOD_SHIFT }); step(d, 20);
+            if (pv_view_off() != 2 * half || s_ssh_sent_n != sent) { printf("check %s: FAIL Shift+PgUp in a %s\n", name, what); return 1; }
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_DOWN, .mods = MOD_CTRL }); step(d, 20);
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_DOWN, .mods = MOD_CTRL }); step(d, 20);
+            if (pv_view_off() != 0 || !pv_scroll_chips(bar, false, false)) { printf("check %s: FAIL Ctrl+Down back to the bottom in a %s: %d\n", name, what, pv_view_off()); return 1; }
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_DOWN, .mods = MOD_CTRL }); step(d, 20);
+            if (pv_view_off() != 0 || s_ssh_sent_n != sent) { printf("check %s: FAIL Ctrl+Down at the bottom in a %s\n", name, what); return 1; }
+            /* Alt+Up is the Host's: sent, and the view goes live */
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_CTRL }); step(d, 20);
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_ALT }); step(d, 20);
+            if (s_ssh_sent_n == sent || pv_view_off() != 0) { printf("check %s: FAIL Alt+Up in a %s wasn't sent, or left the view scrolled (%d)\n", name, what, pv_view_off()); return 1; }
+            /* a typed key while scrolled back is sent and returns to the live view */
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_UP, .mods = MOD_CTRL }); step(d, 20);
+            assert(pv_view_off() == half);
+            sent = s_ssh_sent_n;
+            pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'a' }); step(d, 20);
+            if (s_ssh_sent_n != sent + 1 || s_ssh_sent[sent] != 'a' || pv_view_off() != 0) { printf("check %s: FAIL a typed key in a %s: %d bytes, view %d\n", name, what, (int)(s_ssh_sent_n - sent), pv_view_off()); return 1; }
+            if (!pv_scroll_chips(bar, false, false)) { printf("check %s: FAIL the bar still says scrolled back after a typed key\n", name); return 1; }
+            /* Ctrl+Right is the Host's (the leave key is Ctrl+Left) */
+            sent = s_ssh_sent_n;
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_RIGHT, .mods = MOD_CTRL }); step(d, 20);
+            if (s_ssh_sent_n == sent || !ui_terminal_is_top()) { printf("check %s: FAIL Ctrl+Right in a %s\n", name, what); return 1; }
+            ui_nav_back(); step(d, 20);
+            if (mode) {
+                lv_obj_t *top = lv_layer_top();
+                if (find_clickable_shown(top, "Disconnect")) click_label(d, top, "Disconnect");
+                s_preview_server_n--;
+            }
+        }
+        printf("%s: Ctrl+Up/Down scroll half a screen in a take-over and an SSH session and send nothing; Shift+PgUp still scrolls; Alt+Up, Ctrl+Right and a typed key go to the Host, and a typed key returns to the live view\n", name);
+        return r;
+    }
+    if (!strcmp(v, "scroll-touch")) {
+        /* the narrowest bar (no keyboard: ⌨ shown; a name at the cap), as the voice-touch-nokbd case */
+        setenv("PREVIEW_KBD", "0", 1);
+        lv_indev_t *in = lv_indev_create(); lv_indev_set_type(in, LV_INDEV_TYPE_POINTER); lv_indev_set_read_cb(in, pointer_read);
+        s_ssh_autoclose = false;
+        ui_nav_home(); step(d, 200);
+        ui_terminal_open_command(0, "~/.local/bin/claude attach 1a2b3c4d", "companion-test-a-session-name-long-enough-to-reach-the-cap", takeover_closed_cb, NULL);
+        lv_obj_t *s = lv_screen_active(), *bar = session_bar_of(s);
+        assert(ui_terminal_is_top() && bar);
+        step(d, 20);
+        pv_feed_lines(120); pv_ssh_feed(TV_PROMPT); step(d, 20);
+        step(d, 3100);
+        if (obj_shown(bar)) { printf("check %s: FAIL the bar is still up\n", name); return 1; }
+        tap(d, in, 640, 20);
+        if (!obj_shown(bar) || !pv_scroll_chips(bar, false, false)) { printf("check %s: FAIL the live bar's chips\n", name); return 1; }
+        lv_obj_t *mic = find_clickable_shown(bar, "Mic");
+        assert(mic);
+        lv_area_t ma0; lv_obj_get_coords(mic, &ma0);
+        lv_obj_t *up0 = find_clickable_shown(bar, "\xe2\x86\x91");
+        lv_area_t ua0; lv_obj_get_coords(up0, &ua0);
+        step(d, 3100);
+        assert(!obj_shown(bar));
+        /* a drag down scrolls back: the bar comes up and says so, and ⇑ ⇓ stand where ↑ ↓ were */
+        size_t sent = s_ssh_sent_n;
+        pointer_move(in, 640, 300, true); step(d, 20);
+        pointer_move(in, 640, 340, true); step(d, 20);
+        pointer_move(in, 640, 500, true); step(d, 20);
+        pointer_move(in, 640, 500, false); step(d, 20);
+        int off = pv_view_off();
+        if (off <= 0) { printf("check %s: FAIL a drag didn't scroll back\n", name); return 1; }
+        if (!obj_shown(bar) || !pv_scroll_chips(bar, true, true)) { printf("check %s: FAIL the bar doesn't say the view is scrolled back\n", name); return 1; }
+        lv_obj_t *sup = find_clickable_shown(bar, TS_UP), *sdown = find_clickable_shown(bar, TS_DOWN), *ind = find_clickable_shown(bar, TS_SCROLLED);
+        lv_obj_update_layout(bar);
+        lv_area_t a, ma; lv_obj_get_coords(sup, &a); lv_obj_get_coords(mic, &ma);
+        if (a.x1 != ua0.x1 || ma.x1 != ma0.x1) { printf("check %s: FAIL the chips moved (scroll chip at %d, the up key was at %d; Mic %d, was %d)\n", name, (int)a.x1, (int)ua0.x1, (int)ma.x1, (int)ma0.x1); return 1; }
+        lv_obj_t *chips[] = { sup, sdown, ind };
+        for (int i = 0; i < 3; i++)
+            if (lv_obj_get_height(chips[i]) != UI_TK_BAR_CTRL || !lv_obj_has_flag(chips[i], UI_BAR_CONTROL)) { printf("check %s: FAIL a scroll chip isn't a bar chip\n", name); return 1; }
+        {
+            lv_obj_t *il = lv_obj_get_child(ind, 0);
+            lv_point_t sz;
+            lv_text_get_size(&sz, lv_label_get_text(il), lv_obj_get_style_text_font(il, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            printf("%s: \"%s\" chip %d px for %d px of text; scroll chips %d and %d px\n", name, TS_SCROLLED, (int)lv_obj_get_width(ind), (int)sz.x, (int)lv_obj_get_width(sup), (int)lv_obj_get_width(sdown));
+            if (sz.x > lv_obj_get_width(il)) { printf("check %s: FAIL the indicator is cut\n", name); return 1; }
+        }
+        lv_obj_t *nr = lv_obj_get_child(bar, 1);
+        if (lv_obj_get_style_max_width(nr, 0) != 160) { printf("check %s: FAIL the name didn't give way to the indicator\n", name); return 1; }
+        step(d, 3100);
+        if (!obj_shown(bar)) { printf("check %s: FAIL the bar hid while scrolled back\n", name); return 1; }
+        if (pv_amber_pixels(s)) { printf("check %s: FAIL amber while scrolled back\n", name); return 1; }
+        r |= pv_run_checks(d, s, name, false, 0);
+        /* ⇑ half a screen back, ⇓ forward; nothing sent */
+        int half = pv_view_rows() / 2;
+        lv_obj_send_event(sup, LV_EVENT_CLICKED, NULL); step(d, 20);
+        if (pv_view_off() != off + half) { printf("check %s: FAIL the scroll-up chip: %d, not %d\n", name, pv_view_off(), off + half); return 1; }
+        lv_obj_send_event(sdown, LV_EVENT_CLICKED, NULL); step(d, 20);
+        if (pv_view_off() != off) { printf("check %s: FAIL the scroll-down chip: %d, not %d\n", name, pv_view_off(), off); return 1; }
+        if (s_ssh_sent_n != sent) { printf("check %s: FAIL a scroll chip or the drag sent %d bytes\n", name, (int)(s_ssh_sent_n - sent)); return 1; }
+        /* a lost link takes the state slot (whole), the scroll chips stay; the link back gives the indicator back */
+        setenv("PREVIEW_WIFI", "0", 1); step(d, 20);
+        if (!pv_state_fits(name, bar, "Link lost, reconnecting\xe2\x80\xa6")) return 1;
+        if (!pv_scroll_chips(bar, true, false)) { printf("check %s: FAIL the indicator over a lost link\n", name); return 1; }
+        r |= pv_run_checks(d, s, "terminal-scroll-touch-link-lost", false, 0);
+        setenv("PREVIEW_WIFI", "1", 1); step(d, 20);
+        if (!pv_scroll_chips(bar, true, true)) { printf("check %s: FAIL the indicator didn't come back with the link\n", name); return 1; }
+        /* a tap on the indicator returns to the bottom: the ↑ ↓ key chips return, nothing is sent, the bar hides in 3 s */
+        lv_obj_send_event(ind, LV_EVENT_CLICKED, NULL); step(d, 20);
+        if (pv_view_off() != 0 || !pv_scroll_chips(bar, false, false) || s_ssh_sent_n != sent) { printf("check %s: FAIL the indicator's tap: view %d\n", name, pv_view_off()); return 1; }
+        if (lv_obj_get_style_max_width(nr, 0) != 400) { printf("check %s: FAIL the name didn't get its 400 px back\n", name); return 1; }
+        step(d, 3100);
+        if (obj_shown(bar)) { printf("check %s: FAIL the bar stayed up at the bottom\n", name); return 1; }
+        /* the Esc chip while scrolled back: sent, and the view goes live */
+        tap(d, in, 640, 20);
+        lv_obj_send_event(sup, LV_EVENT_CLICKED, NULL); step(d, 20);
+        assert(pv_view_off() > 0);
+        lv_obj_t *esc = find_clickable_shown(bar, "Esc");
+        assert(esc);
+        lv_obj_send_event(esc, LV_EVENT_CLICKED, NULL); step(d, 20);
+        if (s_ssh_sent_n != sent + 1 || s_ssh_sent[sent] != 0x1b || pv_view_off() != 0 || !pv_scroll_chips(bar, false, false)) { printf("check %s: FAIL the Esc chip while scrolled back\n", name); return 1; }
+        if (fast_timers(16) != 1 || fast_timers(100)) { printf("check %s: FAIL timers: 16 ms %d, 100 ms %d\n", name, fast_timers(16), fast_timers(100)); return 1; }
+        ui_nav_back(); step(d, 20);
+        lv_indev_delete(in);
+        printf("%s: a drag scrolls back and brings up the bar; at the narrowest bar the scroll chips take the up and down keys' places (every chip a bar chip, nothing moves), the indicator chip fits beside the narrowed name and gives way to a lost link; the chips scroll half a screen and send nothing; a tap on the indicator, or any key chip, returns to the live view\n", name);
+        return r;
+    }
+    printf("preview: unknown terminal scroll case %s\n", v);
+    return 2;
 }
 
 static int term_voice_case(lv_display_t *d, const char *v) {

@@ -1,6 +1,6 @@
 /* Full-screen terminal: the take-over of a Claude session on the Host, or an SSH session to another box
  * (spec §5.2, §5.4). One session bar over the top of the terminal; every key goes to the remote side except
- * Ctrl+] / Ctrl+Q / Ctrl+← (Leave), the Shift scroll keys and Ctrl+Space (voice input, follow-up 2026-10-24; Esc
+ * Ctrl+] / Ctrl+Q / Ctrl+← (Leave), the scroll keys (Ctrl+↑/↓, Shift+↑/↓ in a take-over, Shift+PgUp/PgDn) and Ctrl+Space (voice input, follow-up 2026-10-24; Esc
  * too while this screen's dictation is recording or transcribing). The bar's Mic chip is Ctrl+Space by touch. */
 #include "ui.h"
 #include "ui_comp.h"
@@ -101,6 +101,11 @@ typedef struct {
     char *held;                 /* PSRAM: a transcript the screen wasn't ready for; zeroed and freed when typed or old */
     int64_t held_ms;
     bool typed_once;            /* a dictation was the last thing typed: the next one joins it with a space (SSH only) */
+    /* scrollback by touch: while the view is scrolled back the bar's ↑ ↓ key chips give way to ⇑ ⇓ scroll chips, and
+       the "Scrolled back · Live ↓" chip (a tap returns to the bottom) sits in the state slot. All made with the bar:
+       scrolling only flips HIDDEN flags, so it allocates nothing. */
+    lv_obj_t *key_up, *key_down, *scroll_up, *scroll_down, *scrolled_chip;
+    bool scrolled;              /* what the bar shows: the view is scrolled back (vt_view_offset > 0) */
 } term_ctx_t;
 
 static term_ctx_t *s_ctx = NULL;
@@ -249,6 +254,7 @@ static void bar_hide_cb(lv_timer_t *t)
     term_ctx_t *c = lv_timer_get_user_data(t);
     c->bar_timer = NULL;   /* one-shot: LVGL deletes it after this call */
     if (c->voice_shown != VOICE_IDLE) return;   /* the voice indicator keeps the bar up; its end shows it for 3 s */
+    if (c->scrolled) return;   /* so does a scrolled-back view: the bar says it isn't live; going live shows it for 3 s */
     if (c->bar_st == BAR_LIVE && !lv_obj_has_flag(c->bar, LV_OBJ_FLAG_HIDDEN)) lv_obj_add_flag(c->bar, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -275,7 +281,34 @@ static void bar_show(term_ctx_t *c, uint32_t ms)
    At the narrowest bar (⌨ and Mic shown, a long name) the slot then holds each of them whole (review M2). */
 static void bar_name_fit(term_ctx_t *c)
 {
-    ui_session_bar_name_narrow(c->bar_name, c->voice_shown != VOICE_IDLE || c->bar_st != BAR_LIVE);
+    ui_session_bar_name_narrow(c->bar_name, c->voice_shown != VOICE_IDLE || c->bar_st != BAR_LIVE || c->scrolled);
+}
+
+static void show_if(lv_obj_t *o, bool show)
+{
+    if (!o || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) == !show) return;
+    if (show) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* The bar's scrollback controls follow the view: scrolled back (by Ctrl+↑, a Shift key, a drag or a chip), ⇑ ⇓ stand in
+   for ↑ ↓ and the "Scrolled back" chip shows, unless the state slot has text of its own (connecting, a lost link, voice
+   input), which comes first. Back at the bottom (a typed key, the chip, scrolling forward) the ↑ ↓ key chips return.
+   Only a change writes anything; nothing is allocated. */
+static void scroll_ui(term_ctx_t *c)
+{
+    if (c->closing || !c->bar) return;
+    bool sb = vt_view_offset(c->vt) > 0;
+    bool changed = sb != c->scrolled;
+    c->scrolled = sb;
+    show_if(c->key_up, !sb);
+    show_if(c->key_down, !sb);
+    show_if(c->scroll_up, sb);
+    show_if(c->scroll_down, sb);
+    show_if(c->scrolled_chip, sb && c->voice_shown == VOICE_IDLE && c->bar_st == BAR_LIVE);
+    if (!changed) return;
+    bar_name_fit(c);
+    bar_show(c, BAR_SHOW_MS);   /* scrolled back: up until live again; live again: up for 3 s, then it hides */
 }
 
 /* The bar's state from the session and the link: "Connecting…" muted until the session is up, a red
@@ -292,6 +325,7 @@ static void bar_update(term_ctx_t *c)
     ui_text_tone(c->bar_state, st == BAR_LINK_LOST ? UI_TONE_RED : UI_TONE_MUTED);
     lv_label_set_text(c->bar_state, st == BAR_CONNECTING ? tr(STR_HOSTS_CONNECTING)
                                     : st == BAR_LINK_LOST ? tr(STR_TERM_LINK_LOST) : "");
+    scroll_ui(c);   /* the "Scrolled back" chip gives the slot to the session's state, and has it back when live */
     bar_show(c, BAR_SHOW_MS);
 }
 
@@ -379,6 +413,7 @@ static void voice_bar(term_ctx_t *c, const voice_status_t *v)
     ui_dot_tone(c->bar_dot, rec ? UI_TONE_RED : UI_TONE_MUTED);
     ui_text_tone(c->bar_state, rec ? UI_TONE_RED : UI_TONE_MUTED);
     lv_label_set_text(c->bar_state, t);
+    if (!was) scroll_ui(c);   /* the voice indicator takes the state slot from the "Scrolled back" chip */
     if (!was) bar_show(c, BAR_SHOW_MS);   /* up while voice is active: bar_hide_cb leaves it */
 }
 
@@ -559,6 +594,14 @@ static void send_key(term_ctx_t *c, const key_event_t *e)
     if (n) c->typed_once = false;   /* a key since the dictation (Enter, an edit): the next one doesn't join */
 }
 
+/* Half a screen back (older) or forward: Ctrl+↑/↓, the Shift keys and the bar's ⇑ ⇓ chips. Sends nothing. */
+static void scroll_half(term_ctx_t *c, bool back)
+{
+    vt_scroll_view(c->vt, back ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
+    lv_obj_invalidate(term_view_obj(c->tv));
+    scroll_ui(c);
+}
+
 static bool term_key(const key_event_t *ev, void *user)
 {
     term_ctx_t *c = user;
@@ -566,11 +609,7 @@ static bool term_key(const key_event_t *ev, void *user)
     if (hk == HK_T_VOICE) { term_voice_toggle(c); return true; }   /* never sent as NUL (Ctrl+@ still is) */
     if (voice_gate(c, ev, hk)) return true;   /* recording: eaten; c may be gone */
     if (hk == HK_T_LEAVE) { leave(c); return true; }   /* never sent; c may be gone */
-    if (hk == HK_T_SCROLL_UP || hk == HK_T_SCROLL_DOWN) {
-        vt_scroll_view(c->vt, hk == HK_T_SCROLL_UP ? vt_rows(c->vt) / 2 : -vt_rows(c->vt) / 2);
-        lv_obj_invalidate(term_view_obj(c->tv));
-        return true;
-    }
+    if (hk == HK_T_SCROLL_UP || hk == HK_T_SCROLL_DOWN) { scroll_half(c, hk == HK_T_SCROLL_UP); return true; }   /* never sent */
     send_key(c, ev);   /* no key shows the bar: every key belongs to the remote side (§5.2) */
     return true;
 }
@@ -629,6 +668,26 @@ static void mic_cb(lv_event_t *e)
     term_voice_toggle(c);
 }
 
+/* ⇑ ⇓: half a screen back or forward, as Ctrl+↑/↓. Nothing is sent to the Host. */
+static void scroll_chip_cb(lv_event_t *e)
+{
+    term_ctx_t *c = s_ctx;
+    if (!c || c->closing) return;
+    scroll_half(c, lv_event_get_user_data(e) != NULL);
+    bar_show(c, BAR_SHOW_MS);   /* in use: keep it up */
+}
+
+/* "Scrolled back · Live ↓": back to the bottom, the live view. Nothing is sent. */
+static void live_cb(lv_event_t *e)
+{
+    (void)e;
+    term_ctx_t *c = s_ctx;
+    if (!c || c->closing) return;
+    vt_scroll_view_reset(c->vt);
+    lv_obj_invalidate(term_view_obj(c->tv));
+    scroll_ui(c);
+}
+
 static void kbd_cb(lv_event_t *e)
 {
     (void)e;
@@ -641,7 +700,10 @@ static void kbd_cb(lv_event_t *e)
 }
 
 /* 56 px over the top of the terminal: ← Leave, the name, the link dot, the state, ⌨ (no physical keyboard
- * only), Mic, then Esc, Tab, ^C, ↑ and ↓. Every control is a bar chip: the bar's full height, >= 80 px across. The
+ * only), Mic, then Esc, Tab, ^C, ↑ and ↓. Every control is a bar chip: the bar's full height, >= 80 px across. Two more
+ * scroll chips don't fit the narrowest bar (⌨ and Mic shown, a long name) beside the state slot's longest text, so while
+ * the view is scrolled back ⇑ ⇓ (scroll half a screen) take the places of ↑ ↓, which would only send a key and end
+ * the scroll, and a "Scrolled back · Live ↓" chip shows after the state slot (scroll_ui). The
  * state slot takes what is left. While it has text the name gives way (bar_name_fit), so at its narrowest (⌨ shown,
  * a long name) it still holds "Connecting…", "Link lost, reconnecting…", "Recording 0:30 / 0:30" and "Transcribing on
  * the Host…" whole (the preview's terminal voice-touch cases measure them). */
@@ -652,10 +714,22 @@ static lv_obj_t *session_bar(term_ctx_t *c, const char *name)
     c->bar_name = ui_session_bar_name(b, name);
     c->bar_dot = ui_dot(b);
     c->bar_state = ui_session_bar_state(b);
+    c->scrolled_chip = ui_chip(b, tr(STR_TERM_SCROLLED_BACK), live_cb, c);
+    lv_obj_add_flag(c->scrolled_chip, LV_OBJ_FLAG_HIDDEN);
     if (!keyboard_any_present()) ui_chip(b, LV_SYMBOL_KEYBOARD, kbd_cb, c);
     c->mic_label = lv_obj_get_child(ui_chip(b, tr(STR_TERM_KEY_MIC), mic_cb, c), 0);
-    for (size_t i = 0; i < sizeof(k_bar_keys) / sizeof(k_bar_keys[0]); i++)
-        ui_chip(b, tr(k_bar_keys[i].label), key_chip_cb, (void *)&k_bar_keys[i]);
+    for (size_t i = 0; i < sizeof(k_bar_keys) / sizeof(k_bar_keys[0]); i++) {
+        lv_obj_t *k = ui_chip(b, tr(k_bar_keys[i].label), key_chip_cb, (void *)&k_bar_keys[i]);
+        if (k_bar_keys[i].ev.key == SK_UP) {
+            c->key_up = k;
+            c->scroll_up = ui_chip(b, tr(STR_TERM_KEY_SCROLL_UP), scroll_chip_cb, (void *)1);
+            lv_obj_add_flag(c->scroll_up, LV_OBJ_FLAG_HIDDEN);
+        } else if (k_bar_keys[i].ev.key == SK_DOWN) {
+            c->key_down = k;
+            c->scroll_down = ui_chip(b, tr(STR_TERM_KEY_SCROLL_DOWN), scroll_chip_cb, NULL);
+            lv_obj_add_flag(c->scroll_down, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
     return b;
 }
 
@@ -736,6 +810,7 @@ static void pump_cb(lv_timer_t *t)
     c->link_lost = c->connected && link_down(c);
     bar_update(c);
     term_voice_tick(c);
+    scroll_ui(c);   /* a drag, a typed key or new output may have moved the view */
 }
 
 /* -------------------------------------------------------- lifecycle */

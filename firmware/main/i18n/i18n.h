@@ -295,6 +295,9 @@ X(TERM_KEY_CTRL_C, "^C") \
 X(TERM_KEY_UP, "\xe2\x86\x91") \
 X(TERM_KEY_DOWN, "\xe2\x86\x93") \
 X(TERM_KEY_MIC, "Mic") \
+X(TERM_KEY_SCROLL_UP, "\xe2\x87\x91") \
+X(TERM_KEY_SCROLL_DOWN, "\xe2\x87\x93") \
+X(TERM_SCROLLED_BACK, "Scrolled back \xc2\xb7 Live \xe2\x86\x93") \
 X(TERM_STILL_RUNNING, "Session still running on the Host") \
 X(TERM_OPENING, "Opening the session on the Host\xe2\x80\xa6") \
 X(TERM_OPENING_HINT, "Ctrl+\xe2\x86\x90 returns to Sessions; the session keeps running.") \
@@ -401,6 +404,8 @@ X(HK_K_ESC, "Esc") \
 X(HK_W_ESC, "clear the answer (cancels a recording)") \
 X(HK_K_CTRL_BRACKET, "Ctrl+\xe2\x86\x90") \
 X(HK_W_CTRL_BRACKET, "leave a take-over or SSH session") \
+X(HK_K_CTRL_UPDOWN, "Ctrl+Up / Down") \
+X(HK_W_CTRL_UPDOWN, "scroll back in a session") \
 X(HK_K_SHIFT_UPDOWN, "Shift+Up / Down") \
 X(HK_W_SHIFT_UPDOWN, "scroll back in a take-over") \
 X(TERM_KEEPS_RUNNING, "The session keeps running on the Host.") \

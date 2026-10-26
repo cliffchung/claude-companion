@@ -8,7 +8,8 @@
 typedef enum { HK_T_NONE, HK_T_LEAVE, HK_T_SCROLL_UP, HK_T_SCROLL_DOWN, HK_T_VOICE } hk_term_t;
 /* Ctrl+] (KEY_EV_CHAR ']' with MOD_CTRL) and Ctrl+Q / Ctrl+q (the alias) -> LEAVE in both modes;
    Shift+Up -> SCROLL_UP and Shift+Down -> SCROLL_DOWN (takeover only: a plain SSH terminal keeps
-   Shift+arrows for the remote side); Shift+PgUp / Shift+PgDn -> SCROLL_UP / SCROLL_DOWN in any
+   Shift+arrows for the remote side); Ctrl+Up / Ctrl+Down (Ctrl+Shift too, not with Alt or Meta) -> SCROLL_UP /
+   SCROLL_DOWN in both modes (the Tab5 keyboard's scroll keys: it has no Shift+arrow or PgUp); Shift+PgUp / Shift+PgDn -> SCROLL_UP / SCROLL_DOWN in any
    terminal, as today; Ctrl+Space -> VOICE in both modes (voice input in a session: taken, never sent as NUL;
    Ctrl+@ still sends NUL); everything else -> NONE (sent to the Host) */
 hk_term_t hk_takeover(const key_event_t *ev, bool takeover);

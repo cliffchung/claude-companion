@@ -20,6 +20,12 @@ hk_term_t hk_takeover(const key_event_t *ev, bool takeover)
     /* Ctrl+← (the Tab5 keyboard's "<" key, one hand on each side) is the leave key; Ctrl+Q and Ctrl+] stay.
        The keyboard's own firmware drops Ctrl on "]", so Ctrl+] works only from a USB keyboard. */
     if (ev->key == SK_LEFT && (ev->mods & MOD_CTRL)) return HK_T_LEAVE;
+    /* Ctrl+↑ / Ctrl+↓ scroll the view in both modes: the Tab5 keyboard has no Shift+arrow, Fn or PgUp/PgDn, but sends
+       these intact. Alt+↑/↓ (and Ctrl+Alt) stay with the Host: Claude Code, shells and editors use them. */
+    if ((ev->mods & MOD_CTRL) && !(ev->mods & (MOD_ALT | MOD_META))) {
+        if (ev->key == SK_UP) return HK_T_SCROLL_UP;
+        if (ev->key == SK_DOWN) return HK_T_SCROLL_DOWN;
+    }
     if (!(ev->mods & MOD_SHIFT)) return HK_T_NONE;
     switch (ev->key) {
     case SK_PGUP: return HK_T_SCROLL_UP;
@@ -56,6 +62,7 @@ const hk_line_t hk_overlay[] = {
     { STR_HK_K_CTRL_SPACE, STR_HK_W_CTRL_SPACE },
     { STR_HK_K_ESC, STR_HK_W_ESC },
     { STR_HK_K_CTRL_BRACKET, STR_HK_W_CTRL_BRACKET },
+    { STR_HK_K_CTRL_UPDOWN, STR_HK_W_CTRL_UPDOWN },
     { STR_HK_K_SHIFT_UPDOWN, STR_HK_W_SHIFT_UPDOWN },
 };
 const int hk_overlay_n = (int)(sizeof(hk_overlay) / sizeof(hk_overlay[0]));

@@ -85,6 +85,29 @@ static void test_takeover_scroll(void)
     e = sk(SK_PGDN, MOD_SHIFT); TEST_ASSERT_EQUAL(HK_T_SCROLL_DOWN, hk_takeover(&e, true));
 }
 
+/* The Tab5 keyboard has no Shift+arrow, Fn or PgUp/PgDn: Ctrl+Up / Ctrl+Down scroll, in a take-over and an SSH
+   session alike, and never reach the Host. Alt+Up/Down and Ctrl+Right stay with the Host. */
+static void test_ctrl_updown_scrolls(void)
+{
+    key_event_t e;
+    for (int t = 0; t < 2; t++) {
+        e = sk(SK_UP, MOD_CTRL);               TEST_ASSERT_EQUAL(HK_T_SCROLL_UP, hk_takeover(&e, t));
+        e = sk(SK_DOWN, MOD_CTRL);             TEST_ASSERT_EQUAL(HK_T_SCROLL_DOWN, hk_takeover(&e, t));
+        e = sk(SK_UP, MOD_CTRL | MOD_SHIFT);   TEST_ASSERT_EQUAL(HK_T_SCROLL_UP, hk_takeover(&e, t));
+        /* negatives: these go to the Host */
+        e = sk(SK_UP, MOD_ALT);                TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = sk(SK_DOWN, MOD_ALT);              TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = sk(SK_UP, MOD_META);               TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = sk(SK_UP, MOD_CTRL | MOD_ALT);     TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = sk(SK_RIGHT, MOD_CTRL);            TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = sk(SK_UP, 0);                      TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = sk(SK_DOWN, 0);                    TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        e = sk(SK_PGUP, MOD_CTRL);             TEST_ASSERT_EQUAL(HK_T_NONE, hk_takeover(&e, t));
+        /* Ctrl+Left is still the leave key */
+        e = sk(SK_LEFT, MOD_CTRL);             TEST_ASSERT_EQUAL(HK_T_LEAVE, hk_takeover(&e, t));
+    }
+}
+
 static void test_dashboard_keys(void)
 {
     key_event_t e;
@@ -137,9 +160,9 @@ static void test_ctrl_m_is_not_enter(void)
 static void test_overlay_lists_every_shortcut(void)
 {
     const char *need[] = { "Up / Down", "Enter", "Ctrl+O", "Ctrl+T", "Ctrl+P", "Ctrl+K", "Ctrl+Space",
-                           "Esc", "Ctrl+\xe2\x86\x90", "Shift+Up / Down", "Ctrl+X" };
+                           "Esc", "Ctrl+\xe2\x86\x90", "Shift+Up / Down", "Ctrl+X", "Ctrl+Up / Down" };
     int n = hk_overlay_n;
-    TEST_ASSERT_EQUAL(11, n);
+    TEST_ASSERT_EQUAL(12, n);
     for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
         bool found = false;
         for (int k = 0; k < n; k++)
@@ -150,6 +173,10 @@ static void test_overlay_lists_every_shortcut(void)
     for (int k = 0; k < n; k++)
         if (!strcmp(tr(hk_overlay[k].keys), "Ctrl+X") && !strcmp(tr(hk_overlay[k].what), "stop the selected session")) stop = true;
     TEST_ASSERT_TRUE(stop);
+    bool scroll = false;
+    for (int k = 0; k < n; k++)
+        if (!strcmp(tr(hk_overlay[k].keys), "Ctrl+Up / Down") && !strcmp(tr(hk_overlay[k].what), "scroll back in a session")) scroll = true;
+    TEST_ASSERT_TRUE(scroll);
 }
 
 int main(void)
@@ -161,6 +188,7 @@ int main(void)
     RUN_TEST(test_dashboard_terminal_keys);
     RUN_TEST(test_ctrl_space_is_voice);
     RUN_TEST(test_takeover_scroll);
+    RUN_TEST(test_ctrl_updown_scrolls);
     RUN_TEST(test_terminal_ctrl_space_is_voice);
     RUN_TEST(test_dashboard_keys);
     RUN_TEST(test_dashboard_ctrl_x_is_stop);
