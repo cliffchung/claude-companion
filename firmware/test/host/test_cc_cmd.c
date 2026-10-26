@@ -660,7 +660,7 @@ static void fw_rejects(fw_builder_t fn)
     long64[0] = '/';
     long64[64] = 0;
     const char *bad[] = { NULL, "", long64, "/a b", "/a'b", "/a;b", "/a$b", "/a`b", "/a\nb",
-                          "/a\"b", "/a|b", "/a&b" };
+                          "/a\"b", "/a|b", "/a&b", "-u", "--version", "-" };   /* core M8: no option-like path */
     char out[512];
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         memset(out, 'x', sizeof(out));

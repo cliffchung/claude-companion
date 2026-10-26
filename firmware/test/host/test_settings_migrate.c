@@ -564,6 +564,10 @@ static void test_invalid_fw_path_falls_back(void)
     strcpy(s.fw_path, "/a b.bin");
     settings_fw_path_check(&s);
     TEST_ASSERT_EQUAL_STRING(CC_FW_PATH_DEFAULT, s.fw_path);
+    memset(s.fw_path, 0, sizeof(s.fw_path));
+    strcpy(s.fw_path, "-u");   /* core M8 */
+    settings_fw_path_check(&s);
+    TEST_ASSERT_EQUAL_STRING(CC_FW_PATH_DEFAULT, s.fw_path);
     s.fw_path[0] = 0;
     settings_fw_path_check(&s);
     TEST_ASSERT_EQUAL_STRING(CC_FW_PATH_DEFAULT, s.fw_path);

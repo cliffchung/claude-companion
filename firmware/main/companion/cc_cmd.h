@@ -87,6 +87,8 @@ bool cc_cmd_voice_check(const char *whisper, const char *model, char *out, size_
 #define CC_FW_RC_NO_FILE    120   /* not a readable regular file */
 #define CC_FW_RC_SIZE       121   /* wc failed */
 #define CC_FW_RC_HASH       122   /* no hash tool worked */
+/* cc_path_valid and not starting with '-' (core M8: cat and head would read it as an option). */
+bool cc_fw_path_valid(const char *p);
 /* spec §9.1: prints "<size> <sha256>\n" then the first 288 bytes. false for an invalid path or a small cap (out cleared). */
 bool cc_cmd_fw_info(const char *path, char *out, size_t cap);
 /* spec §9.1: prints the file. */

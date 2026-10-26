@@ -321,7 +321,7 @@ static void test_mb_text(void)
 
 static fw_gate_in_t gate_ok(void)
 {
-    fw_gate_in_t g = { .link_up = true, .session_open = false, .voice_active = false, .updating = false,
+    fw_gate_in_t g = { .rollback_ok = true, .pending = false, .link_up = true, .session_open = false, .voice_active = false, .updating = false,
                        .src = PR_SRC_BATTERY, .battery_pct = 80, .psram_largest = 20u * 1024 * 1024,
                        .image_size = 6374957 };
     return g;
@@ -331,7 +331,9 @@ static void test_gate_each(void)
 {
     fw_gate_in_t g = gate_ok();
     TEST_ASSERT_EQUAL(FW_GATE_OK, fw_gate(&g));
+    g = gate_ok(); g.rollback_ok = false;  TEST_ASSERT_EQUAL(FW_GATE_NO_ROLLBACK, fw_gate(&g));
     g = gate_ok(); g.updating = true;      TEST_ASSERT_EQUAL(FW_GATE_BUSY, fw_gate(&g));
+    g = gate_ok(); g.pending = true;       TEST_ASSERT_EQUAL(FW_GATE_PENDING, fw_gate(&g));
     g = gate_ok(); g.link_up = false;      TEST_ASSERT_EQUAL(FW_GATE_NO_LINK, fw_gate(&g));
     g = gate_ok(); g.session_open = true;  TEST_ASSERT_EQUAL(FW_GATE_SESSION, fw_gate(&g));
     g = gate_ok(); g.voice_active = true;  TEST_ASSERT_EQUAL(FW_GATE_VOICE, fw_gate(&g));
@@ -346,10 +348,12 @@ static void test_gate_each(void)
 
 static void test_gate_order(void)
 {
-    fw_gate_in_t g = { .link_up = false, .session_open = true, .voice_active = true, .updating = true,
-                       .src = PR_SRC_UNKNOWN, .battery_pct = 1, .psram_largest = 0, .image_size = 6374957 };
-    TEST_ASSERT_EQUAL(FW_GATE_BUSY, fw_gate(&g));
-    g.updating = false;     TEST_ASSERT_EQUAL(FW_GATE_NO_LINK, fw_gate(&g));
+    fw_gate_in_t g = { .rollback_ok = false, .pending = true, .link_up = false, .session_open = true, .voice_active = true,
+                       .updating = true, .src = PR_SRC_UNKNOWN, .battery_pct = 1, .psram_largest = 0, .image_size = 6374957 };
+    TEST_ASSERT_EQUAL(FW_GATE_NO_ROLLBACK, fw_gate(&g));
+    g.rollback_ok = true;   TEST_ASSERT_EQUAL(FW_GATE_BUSY, fw_gate(&g));
+    g.updating = false;     TEST_ASSERT_EQUAL(FW_GATE_PENDING, fw_gate(&g));
+    g.pending = false;      TEST_ASSERT_EQUAL(FW_GATE_NO_LINK, fw_gate(&g));
     g.link_up = true;       TEST_ASSERT_EQUAL(FW_GATE_SESSION, fw_gate(&g));
     g.session_open = false; TEST_ASSERT_EQUAL(FW_GATE_VOICE, fw_gate(&g));
     g.voice_active = false; TEST_ASSERT_EQUAL(FW_GATE_BATTERY_UNKNOWN, fw_gate(&g));
@@ -383,6 +387,63 @@ static void test_bootloop(void)
     TEST_ASSERT_FALSE(fw_bootloop_trip(2, true));
 }
 
+/* core I1: a switch by the guard or Go back skips the probation */
+static void test_boot_state(void)
+{
+    TEST_ASSERT_EQUAL(FW_BOOT_NONE, fw_boot_state(false, false));
+    TEST_ASSERT_EQUAL(FW_BOOT_NONE, fw_boot_state(false, true));    /* a stale flag on a valid image: nothing */
+    TEST_ASSERT_EQUAL(FW_BOOT_PROBATION, fw_boot_state(true, false)); /* a wireless update */
+    TEST_ASSERT_EQUAL(FW_BOOT_TRUSTED, fw_boot_state(true, true));    /* the guard's or Go back's target */
+}
+
+/* core I1 and M7: the guard's state machine over boots */
+static void test_bootloop_action(void)
+{
+    TEST_ASSERT_EQUAL(FW_LOOP_NONE, fw_bootloop_action(2, true, 0));
+    TEST_ASSERT_EQUAL(FW_LOOP_SWITCH, fw_bootloop_action(3, true, 0));
+    TEST_ASSERT_EQUAL(FW_LOOP_GIVE_UP, fw_bootloop_action(3, false, 0));   /* nothing to go to */
+    TEST_ASSERT_EQUAL(FW_LOOP_GIVE_UP, fw_bootloop_action(3, true, 1));    /* already fell back once */
+    TEST_ASSERT_EQUAL(FW_LOOP_NONE, fw_bootloop_action(0, true, 1));
+
+    /* Simulated boots. A crash-loops; the guard switches to B; B (trusted) is marked valid at once. Ping-pong: B
+       crash-loops too: after three more early crashes the guard gives up instead of switching back. */
+    int count = 0, fallbacks = 0, switches = 0, gave_up = 0;
+    bool trusted = false;
+    for (int boot = 0; boot < 12; boot++) {
+        count = fw_bootloop_next(count, boot > 0, true);   /* every boot after the first follows an early panic */
+        fw_loop_t a = fw_bootloop_action(count, true, fallbacks);
+        if (a == FW_LOOP_SWITCH) { switches++; fallbacks++; count = 0; trusted = true; continue; }
+        if (a == FW_LOOP_GIVE_UP) gave_up++;
+        if (trusted) { TEST_ASSERT_EQUAL(FW_BOOT_TRUSTED, fw_boot_state(true, trusted)); trusted = false; }
+    }
+    TEST_ASSERT_EQUAL(1, switches);
+    TEST_ASSERT_TRUE(gave_up >= 1);
+
+    /* a boot that lasts the early window resets both: a later crash loop may fall back again */
+    count = 3; fallbacks = 1;
+    count = fw_bootloop_next(count, false, false); fallbacks = 0;   /* early_cb */
+    for (int i = 0; i < 3; i++) count = fw_bootloop_next(count, true, true);
+    TEST_ASSERT_EQUAL(FW_LOOP_SWITCH, fw_bootloop_action(count, true, fallbacks));
+}
+
+static void test_confirm_matches(void)
+{
+    TEST_ASSERT_TRUE(fw_confirm_matches(HEX64, HEX64));
+    TEST_ASSERT_FALSE(fw_confirm_matches(HEX64, "3f2a9c1e0123456789abcdef0123456789abcdef0123456789abcdef01234568"));
+    TEST_ASSERT_FALSE(fw_confirm_matches("", ""));
+    TEST_ASSERT_FALSE(fw_confirm_matches(NULL, HEX64));
+    TEST_ASSERT_FALSE(fw_confirm_matches(HEX64, NULL));
+}
+
+static void test_attempt_rolled_back(void)
+{
+    TEST_ASSERT_TRUE(fw_attempt_rolled_back("1.6.1+3f2a9c1", true, "1.6.1+3f2a9c1"));
+    TEST_ASSERT_FALSE(fw_attempt_rolled_back("1.6.1+3f2a9c1", false, NULL));          /* power cut before the switch */
+    TEST_ASSERT_FALSE(fw_attempt_rolled_back("1.6.1+3f2a9c1", true, "1.5.0+0c1d2e3")); /* an older rollback */
+    TEST_ASSERT_FALSE(fw_attempt_rolled_back("", true, ""));
+    TEST_ASSERT_FALSE(fw_attempt_rolled_back(NULL, true, "x"));
+}
+
 /* ---- outcomes ---- */
 
 static void test_host_rc(void)
@@ -410,6 +471,8 @@ static void test_hdr_out(void)
 static void test_gate_out(void)
 {
     TEST_ASSERT_EQUAL(FW_OUT_OK, fw_gate_out(FW_GATE_OK));
+    TEST_ASSERT_EQUAL(FW_OUT_NO_ROLLBACK, fw_gate_out(FW_GATE_NO_ROLLBACK));
+    TEST_ASSERT_EQUAL(FW_OUT_PENDING, fw_gate_out(FW_GATE_PENDING));
     TEST_ASSERT_EQUAL(FW_OUT_BUSY, fw_gate_out(FW_GATE_BUSY));
     TEST_ASSERT_EQUAL(FW_OUT_NO_LINK, fw_gate_out(FW_GATE_NO_LINK));
     TEST_ASSERT_EQUAL(FW_OUT_SESSION, fw_gate_out(FW_GATE_SESSION));
@@ -431,9 +494,10 @@ static void test_out_text_ids(void)
         { FW_OUT_WRITE, STR_FW_ERR_WRITE }, { FW_OUT_BATTERY, STR_FW_ERR_BATTERY },
         { FW_OUT_BATTERY_UNKNOWN, STR_FW_ERR_BATTERY_UNKNOWN }, { FW_OUT_SESSION, STR_FW_ERR_BUSY_SESSION },
         { FW_OUT_VOICE, STR_FW_ERR_BUSY_VOICE }, { FW_OUT_BUSY, STR_FW_ERR_BUSY },
-        { FW_OUT_NO_MEMORY, STR_FW_ERR_NO_MEMORY },
+        { FW_OUT_NO_MEMORY, STR_FW_ERR_NO_MEMORY }, { FW_OUT_PENDING, STR_FW_ERR_PENDING },
+        { FW_OUT_NO_ROLLBACK, STR_FW_ERR_NO_ROLLBACK },
     };
-    TEST_ASSERT_EQUAL(FW_OUT_NO_MEMORY, sizeof m / sizeof m[0]);   /* every value but OK */
+    TEST_ASSERT_EQUAL(FW_OUT_NO_ROLLBACK, sizeof m / sizeof m[0]);   /* every value but OK */
     for (size_t i = 0; i < sizeof m / sizeof m[0]; i++) {
         TEST_ASSERT_EQUAL(m[i].s, fw_out_text(m[i].o));
         const char *t = tr(fw_out_text(m[i].o));
@@ -466,6 +530,10 @@ int main(void)
     RUN_TEST(test_gate_order);
     RUN_TEST(test_validity);
     RUN_TEST(test_bootloop);
+    RUN_TEST(test_boot_state);
+    RUN_TEST(test_bootloop_action);
+    RUN_TEST(test_confirm_matches);
+    RUN_TEST(test_attempt_rolled_back);
     RUN_TEST(test_host_rc);
     RUN_TEST(test_hdr_out);
     RUN_TEST(test_gate_out);

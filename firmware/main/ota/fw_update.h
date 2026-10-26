@@ -23,23 +23,38 @@ void fwu_check(fwu_check_t *out);
 bool fwu_last_check(fwu_check_t *out);          /* the cached check and its age (at_ms); false if none */
 /* Runs fw_gate on the live inputs; on OK starts the update task (6 KB internal) with the cached check's size and
    SHA-256 and returns FW_OUT_OK; otherwise the gate's outcome. Needs a cached OK check younger than
-   FW_CHECK_TTL_MS whose offer isn't UP_TO_DATE (else FW_OUT_CHANGED: the caller re-checks). */
+   FW_CHECK_TTL_MS whose offer isn't UP_TO_DATE (else FW_OUT_CHANGED: the caller re-checks). fwu_start_expect also
+   needs the cached check's SHA-256 to be expect_sha (the one a confirm showed, fix I3; NULL: any). */
 fw_out_t fwu_start(void);
-void fwu_cancel(void);                          /* any phase before RESTARTING */
+fw_out_t fwu_start_expect(const char *expect_sha);
+/* Asks the running update to stop; false when there is none or it is too late (RESTARTING: the read-back passed and
+   the switch is under way, core M6). */
+bool fwu_cancel(void);
 void fwu_status(fwu_status_t *out);
 bool fwu_busy(void);
+bool fwu_pending(void);                         /* the running image still waits to be marked valid */
+/* False when updates are off: the running bootloader can't roll back (fix C1), or the slot layout is not this
+   plan's. About shows "Rollback off" and Install refuses. */
+bool fwu_rollback_ok(void);
 const char *fwu_phase_name(fwu_phase_t p);      /* "idle", "downloading", ... (console) */
 
-/* One outcome slot (P6-17): the update's end (CANCELLED, errors) or a boot note (UPDATED, ROLLED_BACK, BOOTLOOP,
-   and ROLLING_BACK: the 3 s notice before the 180 s rollback), with the version strings it needs. True once per
-   outcome. */
+/* One outcome slot (P6-17): the update's end (CANCELLED, errors) or a boot note, with the version strings it needs.
+   True once per outcome. ROLLING_BACK is the 3 s notice before the 180 s rollback; ROLLBACK_FAILED its failure;
+   BOOTLOOP_BOTH: the guard gave up (both slots crash early, or no other slot). */
 typedef enum { FWU_NOTE_RESULT, FWU_NOTE_UPDATED, FWU_NOTE_ROLLED_BACK, FWU_NOTE_BOOTLOOP,
-               FWU_NOTE_ROLLING_BACK } fwu_note_kind_t;
+               FWU_NOTE_ROLLING_BACK, FWU_NOTE_ROLLBACK_FAILED, FWU_NOTE_BOOTLOOP_BOTH } fwu_note_kind_t;
 typedef struct { uint32_t gen; fwu_note_kind_t kind; fw_out_t out; char ver_a[33], ver_b[33]; } fwu_note_t;
 bool fwu_take_note(fwu_note_t *out);
-/* The same, for every kind but RESULT (Sessions' tick: a RESULT belongs to the progress screen or the console). */
+/* Every kind but RESULT (Sessions' tick: a RESULT belongs to the progress screen or the console). */
 bool fwu_take_boot_note(fwu_note_t *out);
+/* RESULT only (the progress screen: a boot note waiting for Sessions stays, fix M3). */
+bool fwu_take_result(fwu_note_t *out);
+/* The newest note whether taken or not (the console's printer: it never takes one). */
+bool fwu_peek_note(fwu_note_t *out);
 
+/* spec §7.6.3, core M4: the boot-loop guard and a trusted switch's mark-valid. First thing in app_main: it needs only
+   the reset reason, RTC memory and the partition API. */
+void fwu_boot_early(void);
 void fwu_boot_init(void);                       /* spec §12.3: after NVS and settings, before Wi-Fi */
 /* After cc_link_start: a PENDING_VERIFY image subscribes to the first result from the Host (cc_poll_subscribe does
    nothing before the link starts). */
@@ -48,9 +63,10 @@ void fwu_link_started(void);
 /* The other slot holds a runnable image (VALID or UNDEFINED state, or no otadata entry at all: a wired flash;
    descriptor readable, project FW_PROJECT). */
 bool fwu_previous(fw_desc_t *out);
-/* esp_image_verify on the other slot, then esp_ota_set_boot_partition and link_down_restart. ESP_ERR_NOT_FOUND
-   when not runnable; never returns on success. */
-esp_err_t fwu_go_back(void);
+/* Go back (blocking: a worker or the console, never the LVGL task): the gates (busy, session, voice, battery),
+   esp_image_verify on the other slot, a trusted switch and link_down_restart. Never returns on success; otherwise
+   the gate's outcome, or FW_OUT_WRITE when the slot isn't runnable or doesn't verify. */
+fw_out_t fwu_go_back(void);
 
 typedef struct { const char *running_label, *other_label; int running_state, other_state; bool pending, rollback_possible; int bootloop; } fwu_info_t;
 void fwu_info(fwu_info_t *out);                 /* for `ota status` and About */

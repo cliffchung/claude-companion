@@ -48,7 +48,7 @@ static const char *TAG = "cc_link";
 #define SCREEN_CAP      (16 * 1024)
 #define POLL_TIMEOUT_MS 15000
 #define PASTE_BUDGET_MS 15000
-#define MAX_SUBS        4
+#define MAX_SUBS        CC_POLL_MAX_SUBS   /* 6: Sessions, power, hibernate and the firmware check use 4 (core M11) */
 #define DEFAULT_CLAUDE  "~/.local/bin/claude"
 #define STDIN_CHUNK     (16 * 1024)    /* cc_link_transcribe writes stdin in chunks this big, draining between them */
 /* ... each as ssh_channel_write calls of at most this much: the port's libssh caps a buffer at 16384 bytes
@@ -277,7 +277,7 @@ const char *cc_settings_fw_path(char *out, size_t cap)
 {
     if (!out || !cap) return "";
     lock();
-    strlcpy(out, cc_path_valid(g_settings.fw_path) ? g_settings.fw_path : CC_FW_PATH_DEFAULT, cap);
+    strlcpy(out, cc_fw_path_valid(g_settings.fw_path) ? g_settings.fw_path : CC_FW_PATH_DEFAULT, cap);
     unlock();
     return out;
 }
@@ -429,7 +429,8 @@ bool cc_link_set_whisper_model(const char *path)
 
 bool cc_link_set_fw_path(const char *path)
 {
-    return set_voice_path(g_settings.fw_path, sizeof(g_settings.fw_path), path);   /* the same validated setter */
+    if (!cc_fw_path_valid(path)) return false;   /* core M8: no leading '-' */
+    return set_voice_path(g_settings.fw_path, sizeof(g_settings.fw_path), path);
 }
 
 /* ---------- status ---------- */
@@ -2104,14 +2105,27 @@ const char *cc_watch_status_text(char *b, size_t cap)
     return b;
 }
 
-void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx)
+bool cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx)
 {
-    if (!s_lock || !cb) return;
+    if (!s_lock || !cb) return false;
+    bool ok = false;
     lock();
     for (int i = 0; i < MAX_SUBS; i++) {
-        if (!s_subs[i].cb) { s_subs[i].cb = cb; s_subs[i].ctx = ctx; break; }
+        if (!s_subs[i].cb) { s_subs[i].cb = cb; s_subs[i].ctx = ctx; ok = true; break; }
     }
     unlock();
+    if (!ok) ESP_LOGW(TAG, "poll subscribe: all %d slots in use; this subscriber gets no results", MAX_SUBS);
+    return ok;
+}
+
+int cc_poll_subscribers(void)
+{
+    if (!s_lock) return 0;
+    int n = 0;
+    lock();
+    for (int i = 0; i < MAX_SUBS; i++) n += s_subs[i].cb != NULL;
+    unlock();
+    return n;
 }
 
 int64_t cc_poll_last_ok_ms(void)

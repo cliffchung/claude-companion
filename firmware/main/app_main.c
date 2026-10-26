@@ -133,6 +133,7 @@ static void idle_task(void *arg)
 
 void app_main(void)
 {
+    fwu_boot_early();   /* Plan 6 (core M4): the boot-loop guard first, before the display and settings */
     boot_phase_init();
     int64_t boot_started = esp_timer_get_time();
     ESP_LOGI(TAG, "Claude Companion starting");
@@ -169,7 +170,7 @@ void app_main(void)
 
     /* Everything below runs while the already-rendered logo remains visible. */
     settings_init();
-    fwu_boot_init();   /* Plan 6: the boot-loop guard, a pending image's check, a rollback note; before Wi-Fi */
+    fwu_boot_init();   /* Plan 6: a pending image's check, a rollback note, rollback support; before Wi-Fi */
     power_log_boot();
     display_apply_settings();
     secure_store_init();

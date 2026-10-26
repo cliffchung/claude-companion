@@ -26,6 +26,7 @@ extern "C" {
 #define FW_BOOTLOOP_N       3
 #define FW_BOOTLOOP_EARLY_MS 60000
 #define FW_CHECK_TTL_MS     60000
+#define FW_BOOTLOOP_MAX_FALLBACKS 1   /* guard switches before it gives up (core M7: no ping-pong) */
 
 /* Byte offsets in the first FW_HDR_LEN bytes of an image (fw_update.c pins them to esp_image_header_t and
    esp_app_desc_t with _Static_assert). */
@@ -91,11 +92,13 @@ int  fw_pct(uint64_t done, uint64_t total);       /* floor; 0 for total 0; 99 un
 void fw_mb_text(uint64_t done, uint64_t total, char *out, size_t cap);
 
 typedef struct {
+    bool rollback_ok;   /* the build and the bootloader can roll back (fix C1); false refuses every update */
+    bool pending;       /* the running image still waits to be marked valid (core I2) */
     bool link_up, session_open, voice_active, updating;
     pr_src_t src; int battery_pct;
     size_t psram_largest; uint32_t image_size;
 } fw_gate_in_t;
-typedef enum { FW_GATE_OK, FW_GATE_BUSY, FW_GATE_NO_LINK, FW_GATE_SESSION, FW_GATE_VOICE,
+typedef enum { FW_GATE_OK, FW_GATE_NO_ROLLBACK, FW_GATE_BUSY, FW_GATE_PENDING, FW_GATE_NO_LINK, FW_GATE_SESSION, FW_GATE_VOICE,
                FW_GATE_BATTERY_UNKNOWN, FW_GATE_BATTERY, FW_GATE_MEMORY } fw_gate_t;
 fw_gate_t fw_gate(const fw_gate_in_t *in);       /* first failing in the enum's order */
 
@@ -103,6 +106,20 @@ typedef enum { FW_V_NONE, FW_V_WAIT, FW_V_MARK_VALID, FW_V_ROLLBACK } fw_validit
 /* not pending -> NONE; host_ok -> MARK_VALID; uptime >= FW_VALIDATE_MS -> ROLLBACK; else WAIT */
 fw_validity_t fw_validity(bool pending, bool host_ok, int64_t uptime_ms);
 
+/* Boot (core I1): a PENDING_VERIFY image the guard or Go back switched to (trusted_switch: it was VALID or a wired
+   flash before the switch) is marked valid at once, with no probation; any other pending image gets the probation. */
+typedef enum { FW_BOOT_NONE, FW_BOOT_PROBATION, FW_BOOT_TRUSTED } fw_boot_t;
+fw_boot_t fw_boot_state(bool pending, bool trusted_switch);
+/* The boot-loop guard's step (core M7): under FW_BOOTLOOP_N early crashes NONE; else, after FW_BOOTLOOP_MAX_FALLBACKS
+   switches without a stable boot in between, or with no runnable other slot, GIVE_UP (stop, show a notice); else
+   SWITCH. fallbacks resets when a boot lasts FW_BOOTLOOP_EARLY_MS. */
+typedef enum { FW_LOOP_NONE, FW_LOOP_SWITCH, FW_LOOP_GIVE_UP } fw_loop_t;
+fw_loop_t fw_bootloop_action(int count, bool other_runnable, int fallbacks);
+/* fix I3: the staged image is still the one the confirm showed (same 64-hex SHA-256; false for NULL or empty). */
+bool fw_confirm_matches(const char *shown_sha, const char *now_sha);
+/* core M5: the old image reports "didn't start properly" only when an invalid slot exists and holds the attempted
+   version (a power cut between writing fw/attempt and the switch leaves the key with no rollback). */
+bool fw_attempt_rolled_back(const char *attempt, bool have_invalid, const char *invalid_version);
 /* The count after this boot: crash_reset && was_early -> count + 1, else 0. */
 int  fw_bootloop_next(int count, bool crash_reset, bool was_early);
 bool fw_bootloop_trip(int count, bool other_runnable);   /* count >= FW_BOOTLOOP_N && other_runnable */
@@ -110,7 +127,7 @@ bool fw_bootloop_trip(int count, bool other_runnable);   /* count >= FW_BOOTLOOP
 typedef enum { FW_OUT_OK, FW_OUT_CANCELLED, FW_OUT_NO_LINK, FW_OUT_LINK_LOST, FW_OUT_TIMEOUT, FW_OUT_NO_FILE,
                FW_OUT_HOST_READ, FW_OUT_NOT_APP, FW_OUT_TOO_BIG, FW_OUT_CORRUPT, FW_OUT_CHANGED, FW_OUT_WRITE,
                FW_OUT_BATTERY, FW_OUT_BATTERY_UNKNOWN, FW_OUT_SESSION, FW_OUT_VOICE, FW_OUT_BUSY,
-               FW_OUT_NO_MEMORY } fw_out_t;
+               FW_OUT_NO_MEMORY, FW_OUT_PENDING, FW_OUT_NO_ROLLBACK } fw_out_t;
 fw_out_t fw_host_rc(int rc);                     /* 0 OK; 120 NO_FILE; 121, 122, 126, 127 and others HOST_READ */
 fw_out_t fw_hdr_out(fw_hdr_t h);                 /* TOO_BIG -> TOO_BIG; SHORT -> CHANGED; the rest -> NOT_APP */
 fw_out_t fw_gate_out(fw_gate_t g);

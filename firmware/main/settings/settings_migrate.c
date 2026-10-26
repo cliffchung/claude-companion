@@ -89,7 +89,7 @@ void settings_fw_path_check(app_settings_t *s)
 {
     if (!s) return;
     s->fw_path[sizeof(s->fw_path) - 1] = 0;
-    if (!cc_path_valid(s->fw_path)) {
+    if (!cc_fw_path_valid(s->fw_path)) {
         memset(s->fw_path, 0, sizeof(s->fw_path));
         strcpy(s->fw_path, CC_FW_PATH_DEFAULT);
     }

@@ -25,8 +25,18 @@
 #include "companion/cc_link.h"
 #include "settings/settings.h"
 #include "sys/link_down.h"
+#include "sys/link_guard.h"
 #include "sys/power.h"
 #include "voice/voice.h"
+
+/* Fix C1: a stale firmware/sdkconfig keeps the options it already has, whatever sdkconfig.defaults says. A build
+   without rollback (or still on the dynamic code page) must not happen silently. */
+#if !CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+#error "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is off: a stale firmware/sdkconfig. Delete firmware/sdkconfig (it is git-ignored), then run idf.py reconfigure (README > Update over Wi-Fi)."
+#endif
+#if CONFIG_FATFS_CODEPAGE_DYNAMIC
+#error "CONFIG_FATFS_CODEPAGE_DYNAMIC is on: a stale firmware/sdkconfig (the image would not fit the app slot's headroom). Delete firmware/sdkconfig, then run idf.py reconfigure."
+#endif
 
 static const char *TAG = "fw";
 
@@ -57,6 +67,7 @@ _Static_assert(FW_DESC_MAGIC == ESP_APP_DESC_MAGIC_WORD, "descriptor magic");
 #define NVS_NS       "fw"
 #define NVS_ATTEMPT  "attempt"
 #define NOTICE_MS    3000     /* the rolling-back notice shows this long before the rollback */
+#define SECTOR       4096
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -69,24 +80,35 @@ static uint32_t s_total;
 static volatile bool s_cancel;
 static volatile bool s_busy;          /* claimed by fwu_start, released by release() */
 static bool s_slot_ok = true;         /* FW_SLOT_SIZE == the other slot's size (boot check) */
+static bool s_rollback_ok = true;     /* the running bootloader rolls back (fix C1: a NEW state at boot says it doesn't) */
 static bool s_corrupt_ram;            /* debug */
 static fwu_note_t s_note;
 static uint32_t s_note_gen, s_note_taken;
+static bool s_pending;                /* the running image is PENDING_VERIFY; test-and-clear under s_mux (core M2) */
 
 /* ---- the task's own (only the update task touches them) ---- */
 static uint8_t *s_buf;                /* the image (size + 1), PSRAM */
 static uint8_t *s_rb;                 /* the read-back block, PSRAM */
 static esp_ota_handle_t s_h;
-static bool s_begun;
+static bool s_begun;                  /* an open esp_ota handle */
+static const esp_partition_t *s_dirty;   /* the other slot, written but not switched to (core M3) */
 static uint32_t s_size;
 static uint8_t s_sha[32];
 static fw_desc_t s_desc;              /* the downloaded image's descriptor */
 
 /* ---- boot ---- */
-#define RTC_MAGIC 0x46575531u          /* "FWU1" */
-typedef struct { uint32_t magic; int32_t count; uint8_t early, bootloop_note, pad[2]; int32_t test_left; } rtc_rec_t;
+#define RTC_MAGIC 0x46575532u          /* "FWU2" */
+typedef struct {
+    uint32_t magic;
+    int32_t count;          /* early crashes in a row */
+    int32_t fallbacks;      /* guard switches since the last boot that lasted FW_BOOTLOOP_EARLY_MS (core M7) */
+    int32_t test_left;      /* `ota test-bootloop` */
+    uint8_t early;          /* this boot hasn't lasted FW_BOOTLOOP_EARLY_MS yet */
+    uint8_t bootloop_note;  /* the image before this boot kept restarting and switched here */
+    uint8_t trusted_switch; /* the guard or Go back switched here: mark valid at once (core I1) */
+    uint8_t pad;
+} rtc_rec_t;
 static RTC_NOINIT_ATTR rtc_rec_t s_rtc;
-static bool s_pending;                /* the running image is PENDING_VERIFY */
 static bool s_subscribed;
 static esp_timer_handle_t s_early_timer, s_valid_timer, s_test_timer;
 
@@ -104,11 +126,15 @@ static void post_note(fwu_note_kind_t kind, fw_out_t out, const char *a, const c
     taskEXIT_CRITICAL(&s_mux);
 }
 
-static bool take(fwu_note_t *out, bool boot_only)
+typedef enum { TAKE_ANY, TAKE_BOOT, TAKE_RESULT } take_t;
+
+static bool take(fwu_note_t *out, take_t which)
 {
     bool got = false;
     taskENTER_CRITICAL(&s_mux);
-    if (s_note_gen != s_note_taken && !(boot_only && s_note.kind == FWU_NOTE_RESULT)) {
+    bool result = s_note.kind == FWU_NOTE_RESULT;
+    bool fits = which == TAKE_ANY || (which == TAKE_BOOT && !result) || (which == TAKE_RESULT && result);
+    if (s_note_gen != s_note_taken && fits) {
         if (out) *out = s_note;
         s_note_taken = s_note_gen;
         got = true;
@@ -117,8 +143,44 @@ static bool take(fwu_note_t *out, bool boot_only)
     return got;
 }
 
-bool fwu_take_note(fwu_note_t *out) { return take(out, false); }
-bool fwu_take_boot_note(fwu_note_t *out) { return take(out, true); }
+bool fwu_take_note(fwu_note_t *out) { return take(out, TAKE_ANY); }
+bool fwu_take_boot_note(fwu_note_t *out) { return take(out, TAKE_BOOT); }
+bool fwu_take_result(fwu_note_t *out) { return take(out, TAKE_RESULT); }
+
+bool fwu_peek_note(fwu_note_t *out)
+{
+    taskENTER_CRITICAL(&s_mux);
+    bool have = s_note_gen != 0;
+    if (have && out) *out = s_note;
+    taskEXIT_CRITICAL(&s_mux);
+    return have;
+}
+
+static bool take_pending(void)
+{
+    taskENTER_CRITICAL(&s_mux);
+    bool was = s_pending;
+    s_pending = false;
+    taskEXIT_CRITICAL(&s_mux);
+    return was;
+}
+
+static void put_pending(void)
+{
+    taskENTER_CRITICAL(&s_mux);
+    s_pending = true;
+    taskEXIT_CRITICAL(&s_mux);
+}
+
+bool fwu_pending(void)
+{
+    taskENTER_CRITICAL(&s_mux);
+    bool p = s_pending;
+    taskEXIT_CRITICAL(&s_mux);
+    return p;
+}
+
+bool fwu_rollback_ok(void) { return s_rollback_ok && s_slot_ok; }
 
 const char *fwu_running_version(void) { return esp_app_get_description()->version; }
 
@@ -216,14 +278,20 @@ bool fwu_last_check(fwu_check_t *out)
 
 typedef struct { int64_t dl, check, write, readback; } times_t;
 
-/* P6-15: every exit goes through here. The image isn't secret, so nothing is zeroed for secrecy. */
+/* P6-15: every exit goes through here. The image isn't secret, so nothing is zeroed for secrecy. A slot that was
+   written but not switched to loses its first sector, so it is never offered as Previous version (core M3). */
 static void release(bool restarting)
 {
     if (s_begun) { esp_ota_abort(s_h); s_begun = false; }
+    if (s_dirty) {
+        esp_err_t e = esp_partition_erase_range(s_dirty, 0, SECTOR);
+        ESP_LOGI(TAG, "%s: header erased after a failed update (%s)", s_dirty->label, esp_err_to_name(e));
+        s_dirty = NULL;
+    }
     if (s_buf) { heap_caps_free(s_buf); s_buf = NULL; }
     if (s_rb) { heap_caps_free(s_rb); s_rb = NULL; }
     if (!restarting) {
-        power_hold(POWER_HOLD_UPDATE, false);
+        power_hold(POWER_HOLD_UPDATE, false);   /* the update's own hold only: a pending check has its own (core I2) */
         taskENTER_CRITICAL(&s_mux);
         s_phase = FWU_IDLE;
         s_busy = false;
@@ -304,6 +372,7 @@ static fw_out_t run_update(times_t *t)
     set_phase(FWU_WRITING, s_size);
     t0 = now_ms();
     ESP_LOGI(TAG, "writing %s", next->label);
+    s_dirty = next;   /* from here a failure erases its header (release) */
     if (esp_ota_begin(next, OTA_WITH_SEQUENTIAL_WRITES, &s_h) != ESP_OK) return FW_OUT_WRITE;
     s_begun = true;
     for (uint32_t off = 0; off < s_size; off += CHUNK) {
@@ -336,12 +405,18 @@ static fw_out_t run_update(times_t *t)
     mbedtls_sha256_free(&c);
     if (!sha_eq(h, s_sha)) return FW_OUT_WRITE;             /* check 10 */
     t->readback = now_ms() - t0;
-    if (s_cancel) return FW_OUT_CANCELLED;
 
-    /* 7. the switch */
+    /* 7. the switch. From RESTARTING on a cancel is refused ("Too late to cancel", core M6). */
+    bool cancelled;
+    taskENTER_CRITICAL(&s_mux);
+    cancelled = s_cancel;
+    if (!cancelled) { s_phase = FWU_RESTARTING; s_done = s_total = s_size; }
+    taskEXIT_CRITICAL(&s_mux);
+    if (cancelled) return FW_OUT_CANCELLED;
     attempt_set(s_desc.version);
     e = esp_ota_set_boot_partition(next);                   /* check 11 */
     if (e != ESP_OK) { attempt_clear(); ESP_LOGW(TAG, "set boot: %s", esp_err_to_name(e)); return FW_OUT_WRITE; }
+    s_dirty = NULL;   /* switched: keep it */
     return FW_OUT_OK;
 }
 
@@ -361,38 +436,44 @@ static void update_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    set_phase(FWU_RESTARTING, s_size);
     release(true);   /* the buffer freed; the hold and busy stay until the restart */
     ESP_LOGI(TAG, "heapmin %u B", (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
     vTaskDelay(pdMS_TO_TICKS(1000));   /* the progress screen shows "Restarting…" */
     link_down_restart("firmware update");
 }
 
-fw_out_t fwu_start(void)
+/* The live gate inputs. need_link and image_size: Install's; Go back needs neither. */
+static void gate_inputs(fw_gate_in_t *g, uint32_t image_size, bool for_install)
 {
-    if (!s_slot_ok) return FW_OUT_WRITE;
-    fwu_check_t c;
-    bool have = fwu_last_check(&c);
-    taskENTER_CRITICAL(&s_mux);
-    bool busy = s_busy;
-    taskEXIT_CRITICAL(&s_mux);
-    if (busy) return FW_OUT_BUSY;
-    if (!have || c.out != FW_OUT_OK || c.offer == FW_OFFER_UP_TO_DATE || now_ms() - c.at_ms >= FW_CHECK_TTL_MS)
-        return FW_OUT_CHANGED;
     voice_status_t vs;
     voice_status(&vs);
     int pct = -1;
     bool chg = false;
-    fw_gate_in_t g = {
-        .link_up = cc_link_connected(),
-        .session_open = power_hold_is_on(POWER_HOLD_TAKEOVER) || power_hold_is_on(POWER_HOLD_SSH),
-        .voice_active = vs.phase != VOICE_IDLE,
-        .updating = false,
-        .psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
-        .image_size = c.size,
-    };
-    g.src = power_source(&pct, &chg);
-    g.battery_pct = pct;
+    memset(g, 0, sizeof *g);
+    g->rollback_ok = fwu_rollback_ok();
+    g->pending = for_install && fwu_pending();
+    g->link_up = for_install ? cc_link_connected() : true;
+    g->session_open = power_hold_is_on(POWER_HOLD_TAKEOVER) || power_hold_is_on(POWER_HOLD_SSH);
+    g->voice_active = vs.phase != VOICE_IDLE;
+    g->updating = s_busy;
+    g->src = power_source(&pct, &chg);
+    g->battery_pct = pct;
+    g->psram_largest = for_install ? heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) : SIZE_MAX;
+    g->image_size = for_install ? image_size : 0;
+}
+
+fw_out_t fwu_start_expect(const char *expect_sha)
+{
+    fwu_check_t c;
+    bool have = fwu_last_check(&c);
+    if (s_busy) return FW_OUT_BUSY;
+    fw_gate_in_t g;
+    gate_inputs(&g, have ? c.size : 0, true);
+    if (!g.rollback_ok) return s_slot_ok ? FW_OUT_NO_ROLLBACK : FW_OUT_WRITE;
+    if (g.pending) return FW_OUT_PENDING;   /* core I2: an unvalidated image can't be updated (esp_ota_begin refuses) */
+    if (!have || c.out != FW_OUT_OK || c.offer == FW_OFFER_UP_TO_DATE || now_ms() - c.at_ms >= FW_CHECK_TTL_MS)
+        return FW_OUT_CHANGED;
+    if (expect_sha && !fw_confirm_matches(expect_sha, c.sha)) return FW_OUT_CHANGED;   /* fix I3 */
     fw_out_t o = fw_gate_out(fw_gate(&g));
     if (o != FW_OUT_OK) return o;
     taskENTER_CRITICAL(&s_mux);
@@ -401,6 +482,7 @@ fw_out_t fwu_start(void)
     taskEXIT_CRITICAL(&s_mux);
     if (o != FW_OUT_OK) return o;
     s_size = c.size;
+    s_dirty = NULL;
     if (!hex_to_bytes(c.sha, s_sha)) { release(false); return FW_OUT_HOST_READ; }
     memset(&s_desc, 0, sizeof s_desc);
     power_hold(POWER_HOLD_UPDATE, true);
@@ -411,11 +493,15 @@ fw_out_t fwu_start(void)
     return FW_OUT_OK;
 }
 
-void fwu_cancel(void)
+fw_out_t fwu_start(void) { return fwu_start_expect(NULL); }
+
+bool fwu_cancel(void)
 {
     taskENTER_CRITICAL(&s_mux);
-    if (s_busy && s_phase != FWU_RESTARTING) s_cancel = true;
+    bool ok = s_busy && s_phase != FWU_RESTARTING;
+    if (ok) s_cancel = true;
     taskEXIT_CRITICAL(&s_mux);
+    return ok;
 }
 
 void fwu_status(fwu_status_t *out)
@@ -455,6 +541,9 @@ bool fwu_previous(fw_desc_t *out)
     return true;
 }
 
+/* A switch to a slot that was VALID (or a wired flash) before it: the trusted flag makes the next boot mark it
+   valid at once instead of putting it on probation (core I1). Set before esp_ota_set_boot_partition, cleared on a
+   failure. */
 static esp_err_t switch_to_other(void)
 {
     const esp_partition_t *o = other_slot();
@@ -462,17 +551,21 @@ static esp_err_t switch_to_other(void)
     esp_partition_pos_t pos = { .offset = o->address, .size = o->size };
     esp_image_metadata_t md;
     esp_err_t e = esp_image_verify(ESP_IMAGE_VERIFY, &pos, &md);
-    if (e != ESP_OK) { ESP_LOGW(TAG, "go back: %s doesn't verify (%s)", o->label, esp_err_to_name(e)); return e; }
+    if (e != ESP_OK) { ESP_LOGW(TAG, "switch: %s doesn't verify (%s)", o->label, esp_err_to_name(e)); return e; }
+    s_rtc.trusted_switch = 1;
     e = esp_ota_set_boot_partition(o);
-    if (e != ESP_OK) ESP_LOGW(TAG, "go back: set boot %s: %s", o->label, esp_err_to_name(e));
+    if (e != ESP_OK) { s_rtc.trusted_switch = 0; ESP_LOGW(TAG, "switch: set boot %s: %s", o->label, esp_err_to_name(e)); }
     return e;
 }
 
-esp_err_t fwu_go_back(void)
+fw_out_t fwu_go_back(void)
 {
-    if (s_busy) return ESP_ERR_INVALID_STATE;
-    esp_err_t e = switch_to_other();
-    if (e != ESP_OK) return e;
+    fw_gate_in_t g;
+    gate_inputs(&g, 0, false);
+    g.rollback_ok = true;   /* going back needs no rollback support: the target was good */
+    fw_out_t o = fw_gate_out(fw_gate(&g));
+    if (o != FW_OUT_OK) return o;
+    if (switch_to_other() != ESP_OK) return FW_OUT_WRITE;
     ESP_LOGI(TAG, "go back: restarting into the other slot");
     link_down_restart("firmware go back");
 }
@@ -486,7 +579,7 @@ void fwu_info(fwu_info_t *out)
     out->other_label = o ? o->label : "?";
     out->running_state = part_state(r);
     out->other_state = part_state(o);
-    out->pending = s_pending;
+    out->pending = fwu_pending();
     out->rollback_possible = esp_ota_check_rollback_is_possible();
     out->bootloop = s_rtc.magic == RTC_MAGIC ? (int)s_rtc.count : 0;
 }
@@ -496,8 +589,9 @@ void fwu_info(fwu_info_t *out)
 static void early_cb(void *arg)
 {
     (void)arg;
-    s_rtc.early = 0;     /* 60 s up: this boot didn't crash early */
+    s_rtc.early = 0;     /* FW_BOOTLOOP_EARLY_MS up: this boot didn't crash early */
     s_rtc.count = 0;
+    s_rtc.fallbacks = 0;
 }
 
 static void test_cb(void *arg)
@@ -507,8 +601,79 @@ static void test_cb(void *arg)
     abort();
 }
 
-static void valid_timer_cb(void *arg);
+static void make_timer(esp_timer_cb_t cb, const char *name, esp_timer_handle_t *out)
+{
+    const esp_timer_create_args_t a = { .callback = cb, .name = name };
+    if (esp_timer_create(&a, out) != ESP_OK) *out = NULL;
+}
 
+/* A crash that the guard counts: a panic, a watchdog, a CPU lockup (core M4). A brownout or a power-on isn't. */
+static bool crash_reset(esp_reset_reason_t why)
+{
+    return why == ESP_RST_PANIC || why == ESP_RST_INT_WDT || why == ESP_RST_TASK_WDT || why == ESP_RST_WDT ||
+           why == ESP_RST_CPU_LOCKUP;
+}
+
+void fwu_boot_early(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next = other_slot();
+    s_slot_ok = next && next->size == FW_SLOT_SIZE;
+    esp_reset_reason_t why = esp_reset_reason();
+    if (s_rtc.magic != RTC_MAGIC || why == ESP_RST_POWERON) {
+        memset(&s_rtc, 0, sizeof s_rtc);
+        s_rtc.magic = RTC_MAGIC;
+    }
+
+    /* a trusted switch (the guard or Go back): the image was good before the switch, so no probation (core I1) */
+    bool pending = part_state(running) == ESP_OTA_IMG_PENDING_VERIFY;
+    fw_boot_t b = fw_boot_state(pending, s_rtc.trusted_switch != 0);
+    s_rtc.trusted_switch = 0;
+    if (b == FW_BOOT_TRUSTED) {
+        esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
+        ESP_LOGI(TAG, "%s (%s): switched to by the boot-loop guard or Go back, marked valid (%s)", fwu_running_version(),
+                 running->label, esp_err_to_name(e));
+    }
+
+    /* the boot-loop guard (§7.6.3, core M7) */
+    s_rtc.count = fw_bootloop_next(s_rtc.count, crash_reset(why), s_rtc.early != 0);
+    s_rtc.early = 1;
+    if (s_rtc.bootloop_note) {
+        s_rtc.bootloop_note = 0;
+        post_note(FWU_NOTE_BOOTLOOP, FW_OUT_OK, fwu_running_version(), NULL);
+    }
+    if (s_rtc.count > 0) ESP_LOGW(TAG, "boot-loop guard: %d early crash(es) in a row", (int)s_rtc.count);
+    fw_loop_t a = fw_bootloop_action(s_rtc.count, s_slot_ok && fwu_previous(NULL), s_rtc.fallbacks);
+    if (a == FW_LOOP_SWITCH) {
+        ESP_LOGE(TAG, "boot-loop guard: %d early crashes: switching to %s", (int)s_rtc.count, next->label);
+        if (switch_to_other() == ESP_OK) {
+            s_rtc.count = 0;
+            s_rtc.early = 0;
+            s_rtc.fallbacks++;
+            s_rtc.bootloop_note = 1;
+            esp_restart();   /* the first thing in app_main: no SSH session exists yet */
+        }
+        a = FW_LOOP_GIVE_UP;
+    }
+    if (a == FW_LOOP_GIVE_UP) {
+        ESP_LOGE(TAG, "boot-loop guard: %d early crashes and no slot to go to (fallbacks %d): flash a good build over USB",
+                 (int)s_rtc.count, (int)s_rtc.fallbacks);
+        post_note(FWU_NOTE_BOOTLOOP_BOTH, FW_OUT_OK, NULL, NULL);
+    }
+    make_timer(early_cb, "fw_early", &s_early_timer);
+    if (s_early_timer) esp_timer_start_once(s_early_timer, (uint64_t)FW_BOOTLOOP_EARLY_MS * 1000);
+
+    /* the test hook (`ota test-bootloop`) */
+    if (s_rtc.test_left > 0) {
+        s_rtc.test_left--;
+        ESP_LOGW(TAG, "test-bootloop: panic in 5 s (%d more after this)", (int)s_rtc.test_left);
+        make_timer(test_cb, "fw_test", &s_test_timer);
+        if (s_test_timer) esp_timer_start_once(s_test_timer, 5000 * 1000);
+    }
+}
+
+/* The first result from the Host: mark valid (the poll task). Test-and-clear of s_pending, so a rollback at the
+   same moment can't also run (core M2). */
 static void mark_valid_now(void)
 {
 #if CONFIG_COMPANION_OTA_TEST_NO_VALIDATE
@@ -516,38 +681,52 @@ static void mark_valid_now(void)
     if (!said) { ESP_LOGW(TAG, "test build: not marking valid"); said = true; }
     return;
 #else
-    if (!s_pending) return;
-    if (fw_validity(true, true, now_ms()) != FW_V_MARK_VALID) return;
+    if (!take_pending()) return;
     esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
-    if (e != ESP_OK) { ESP_LOGW(TAG, "mark valid: %s", esp_err_to_name(e)); return; }
-    s_pending = false;
+    if (e != ESP_OK) { ESP_LOGW(TAG, "mark valid: %s", esp_err_to_name(e)); put_pending(); return; }
     if (s_valid_timer) esp_timer_stop(s_valid_timer);
     attempt_clear();
-    power_hold(POWER_HOLD_UPDATE, false);
+    power_hold(POWER_HOLD_FW_PENDING, false);   /* the pending check's hold only (core I2) */
     ESP_LOGI(TAG, "marked valid at %lld ms: %s", (long long)now_ms(), fwu_running_version());
     post_note(FWU_NOTE_UPDATED, FW_OUT_OK, fwu_running_version(), NULL);
 #endif
 }
 
-/* The poll task, after each successful result from the Host (a poll, a watch block or heartbeat). */
 static void on_host_result(const cc_session_t *s, int n, void *ctx)
 {
     (void)s; (void)n; (void)ctx;
-    if (s_pending) mark_valid_now();
+    if (fwu_pending()) mark_valid_now();
+}
+
+/* P6-7 at 180 s, on a task of its own (it closes SSH first, which blocks): back to the previous slot (core M1). */
+static void rollback_task(void *arg)
+{
+    (void)arg;
+    if (take_pending()) {
+        ESP_LOGW(TAG, "not valid after %d s: rolling back", FW_VALIDATE_MS / 1000);
+        lg_token_t t = lg_close(false, LG_CLOSE_MS);   /* C1: SSH closes before the restart */
+        (void)t;
+        esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   /* returns only on a failure */
+        ESP_LOGE(TAG, "rollback failed (%s): keeping %s for now", esp_err_to_name(e), fwu_running_version());
+        put_pending();   /* a later result from the Host can still mark it valid; the next reset still rolls back */
+        power_hold(POWER_HOLD_FW_PENDING, false);
+        post_note(FWU_NOTE_ROLLBACK_FAILED, FW_OUT_OK, NULL, NULL);
+    }
+    vTaskDelete(NULL);
 }
 
 /* P6-7: at FW_VALIDATE_MS - NOTICE_MS the notice, then at FW_VALIDATE_MS the rollback, unless valid by then. */
 static void valid_timer_cb(void *arg)
 {
     (void)arg;
-    if (!s_pending) return;
-    fw_validity_t v = fw_validity(true, false, now_ms());
-    if (v == FW_V_ROLLBACK) {
-        ESP_LOGW(TAG, "not valid after %d s: rolling back", FW_VALIDATE_MS / 1000);
-        esp_ota_mark_app_invalid_rollback_and_reboot();   /* restarts into the previous slot */
+    if (!fwu_pending()) return;
+    if (fw_validity(true, false, now_ms()) == FW_V_ROLLBACK) {
+        if (xTaskCreate(rollback_task, "fw_rollback", 4096, NULL, 5, NULL) != pdPASS) {
+            ESP_LOGE(TAG, "rollback: no task; the next reset goes back");
+            power_hold(POWER_HOLD_FW_PENDING, false);
+        }
         return;
     }
-    /* the notice; the rollback when FW_VALIDATE_MS is reached */
     const esp_partition_t *o = other_slot();
     esp_app_desc_t d;
     const char *prev = o && esp_ota_get_partition_description(o, &d) == ESP_OK ? d.version : "";
@@ -556,65 +735,32 @@ static void valid_timer_cb(void *arg)
     esp_timer_start_once(s_valid_timer, (uint64_t)(left > 0 ? left : 1) * 1000);
 }
 
-static void make_timer(esp_timer_cb_t cb, const char *name, esp_timer_handle_t *out)
-{
-    const esp_timer_create_args_t a = { .callback = cb, .name = name };
-    if (esp_timer_create(&a, out) != ESP_OK) *out = NULL;
-}
-
 void fwu_boot_init(void)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *next = other_slot();
-    if (!next || next->size != FW_SLOT_SIZE) {
+    if (!s_slot_ok)
         ESP_LOGE(TAG, "the other app slot is %u B, not FW_SLOT_SIZE %u: updates disabled",
                  next ? (unsigned)next->size : 0u, (unsigned)FW_SLOT_SIZE);
-        s_slot_ok = false;
-    }
-
-    /* 1. the boot-loop guard (§7.6.3) */
-    esp_reset_reason_t why = esp_reset_reason();
-    if (s_rtc.magic != RTC_MAGIC || why == ESP_RST_POWERON) {
-        memset(&s_rtc, 0, sizeof s_rtc);
-        s_rtc.magic = RTC_MAGIC;
-    }
-    bool crash = why == ESP_RST_PANIC || why == ESP_RST_INT_WDT || why == ESP_RST_TASK_WDT;
-    s_rtc.count = fw_bootloop_next(s_rtc.count, crash, s_rtc.early != 0);
-    s_rtc.early = 1;
-    if (s_rtc.bootloop_note) {   /* the image before this boot kept restarting and switched here */
-        s_rtc.bootloop_note = 0;
-        post_note(FWU_NOTE_BOOTLOOP, FW_OUT_OK, fwu_running_version(), NULL);
-    }
-    if (s_rtc.count > 0) ESP_LOGW(TAG, "boot-loop guard: %d early crash(es) in a row", (int)s_rtc.count);
-    if (fw_bootloop_trip(s_rtc.count, s_slot_ok && fwu_previous(NULL))) {
-        ESP_LOGE(TAG, "boot-loop guard: %d early crashes: switching to %s", (int)s_rtc.count, next->label);
-        if (switch_to_other() == ESP_OK) {
-            s_rtc.count = 0;
-            s_rtc.early = 0;
-            s_rtc.bootloop_note = 1;
-            /* before link_down_init and Wi-Fi: no SSH session exists yet, so a plain restart */
-            esp_restart();
-        }
-    }
-    make_timer(early_cb, "fw_early", &s_early_timer);
-    if (s_early_timer) esp_timer_start_once(s_early_timer, (uint64_t)FW_BOOTLOOP_EARLY_MS * 1000);
-
-    /* 2. the test hook (`ota test-bootloop`) */
-    if (s_rtc.test_left > 0) {
-        s_rtc.test_left--;
-        ESP_LOGW(TAG, "test-bootloop: panic in 5 s (%d more after this)", (int)s_rtc.test_left);
-        make_timer(test_cb, "fw_test", &s_test_timer);
-        if (s_test_timer) esp_timer_start_once(s_test_timer, 5000 * 1000);
-    }
-
 #if CONFIG_COMPANION_OTA_TEST_NO_VALIDATE
     ESP_LOGW(TAG, "test build: never marks itself valid");
 #endif
+    int st = part_state(running);
+    /* fix C1: a bootloader with rollback turns a NEW image into PENDING_VERIFY. NEW at boot means this bootloader
+       has none (a partial wired flash): it can't go back, so updates stay off. */
+    if (st == ESP_OTA_IMG_NEW) {
+        s_rollback_ok = false;
+        ESP_LOGE(TAG, "rollback off: the bootloader booted %s without checking it. Updates are off until a wired "
+                      "idf.py flash of this build (README > Update over Wi-Fi)", running->label);
+        esp_ota_mark_app_valid_cancel_rollback();
+        attempt_clear();
+        return;
+    }
 
-    /* 3. a new image waiting for its check */
-    if (part_state(running) == ESP_OTA_IMG_PENDING_VERIFY) {
-        s_pending = true;
-        power_hold(POWER_HOLD_UPDATE, true);   /* stays Active: no sleep may reset the check */
+    /* a new image waiting for its check (a trusted switch was marked valid in fwu_boot_early) */
+    if (st == ESP_OTA_IMG_PENDING_VERIFY) {
+        put_pending();
+        power_hold(POWER_HOLD_FW_PENDING, true);   /* stays Active: no sleep may reset the check */
         make_timer(valid_timer_cb, "fw_valid", &s_valid_timer);
         int64_t at = FW_VALIDATE_MS - NOTICE_MS - now_ms();
         if (s_valid_timer) esp_timer_start_once(s_valid_timer, (uint64_t)(at > 0 ? at : 1) * 1000);
@@ -623,12 +769,17 @@ void fwu_boot_init(void)
         return;
     }
 
-    /* 4. the old image after a rollback */
+    /* the old image after a rollback: only when the invalid slot holds the attempted version (core M5) */
     char *att = NULL;
     if (nvs_get_str_alloc(NVS_NS, NVS_ATTEMPT, &att) && att) {
-        if (esp_ota_get_last_invalid_partition()) {
+        const esp_partition_t *inv = esp_ota_get_last_invalid_partition();
+        esp_app_desc_t d;
+        bool have = inv && esp_ota_get_partition_description(inv, &d) == ESP_OK;
+        if (fw_attempt_rolled_back(att, have, have ? d.version : NULL)) {
             ESP_LOGW(TAG, "the update to %s didn't start properly: back on %s", att, fwu_running_version());
             post_note(FWU_NOTE_ROLLED_BACK, FW_OUT_OK, att, fwu_running_version());
+        } else {
+            ESP_LOGI(TAG, "fw/attempt %s with no matching rollback (a cut before the switch): cleared", att);
         }
         free(att);
         attempt_clear();
@@ -637,9 +788,9 @@ void fwu_boot_init(void)
 
 void fwu_link_started(void)
 {
-    if (s_pending && !s_subscribed) {
-        cc_poll_subscribe(on_host_result, NULL);
-        s_subscribed = true;
+    if (fwu_pending() && !s_subscribed) {
+        s_subscribed = cc_poll_subscribe(on_host_result, NULL);
+        if (!s_subscribed) ESP_LOGE(TAG, "no poll subscriber slot: this image can't mark itself valid");
     }
 }
 

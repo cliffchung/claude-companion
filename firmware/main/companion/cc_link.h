@@ -137,7 +137,10 @@ void cc_link_watch_test_fallback(void);
 const char *cc_watch_status_text(char *buf, size_t cap);
 typedef void (*cc_sessions_cb_t)(const cc_session_t *s, int n, void *ctx);
 /* Called on the poll task after each successful refresh (up to 4 subscribers). */
-void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx);
+/* False (and one warning in the log) when the table is full (Plan 6 core M11). */
+bool cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx);
+int cc_poll_subscribers(void);   /* slots in use, of CC_POLL_MAX_SUBS */
+#define CC_POLL_MAX_SUBS 6
 /* Copies the last successful poll; returns the count, or -1 if there hasn't been one. */
 int cc_poll_snapshot(cc_session_t *out, int cap);
 /* The esp_timer time (ms) of the last successful result from the Host (a poll, a watch block or a

@@ -207,7 +207,9 @@ void fw_mb_text(uint64_t done, uint64_t total, char *out, size_t cap)
 
 fw_gate_t fw_gate(const fw_gate_in_t *in)
 {
+    if (!in->rollback_ok) return FW_GATE_NO_ROLLBACK;
     if (in->updating) return FW_GATE_BUSY;
+    if (in->pending) return FW_GATE_PENDING;
     if (!in->link_up) return FW_GATE_NO_LINK;
     if (in->session_open) return FW_GATE_SESSION;
     if (in->voice_active) return FW_GATE_VOICE;
@@ -232,6 +234,31 @@ int fw_bootloop_next(int count, bool crash_reset, bool was_early)
 
 bool fw_bootloop_trip(int count, bool other_runnable) { return count >= FW_BOOTLOOP_N && other_runnable; }
 
+fw_boot_t fw_boot_state(bool pending, bool trusted_switch)
+{
+    if (!pending) return FW_BOOT_NONE;
+    return trusted_switch ? FW_BOOT_TRUSTED : FW_BOOT_PROBATION;
+}
+
+fw_loop_t fw_bootloop_action(int count, bool other_runnable, int fallbacks)
+{
+    if (count < FW_BOOTLOOP_N) return FW_LOOP_NONE;
+    if (fallbacks >= FW_BOOTLOOP_MAX_FALLBACKS || !other_runnable) return FW_LOOP_GIVE_UP;
+    return FW_LOOP_SWITCH;
+}
+
+bool fw_confirm_matches(const char *shown_sha, const char *now_sha)
+{
+    if (!shown_sha || !now_sha || strlen(shown_sha) != 64) return false;
+    return strcmp(shown_sha, now_sha) == 0;
+}
+
+bool fw_attempt_rolled_back(const char *attempt, bool have_invalid, const char *invalid_version)
+{
+    if (!attempt || !attempt[0] || !have_invalid || !invalid_version) return false;
+    return strcmp(attempt, invalid_version) == 0;
+}
+
 /* ---- outcomes ---- */
 
 fw_out_t fw_host_rc(int rc)
@@ -255,7 +282,9 @@ fw_out_t fw_gate_out(fw_gate_t g)
 {
     switch (g) {
     case FW_GATE_OK:              return FW_OUT_OK;
+    case FW_GATE_NO_ROLLBACK:     return FW_OUT_NO_ROLLBACK;
     case FW_GATE_BUSY:            return FW_OUT_BUSY;
+    case FW_GATE_PENDING:         return FW_OUT_PENDING;
     case FW_GATE_NO_LINK:         return FW_OUT_NO_LINK;
     case FW_GATE_SESSION:         return FW_OUT_SESSION;
     case FW_GATE_VOICE:           return FW_OUT_VOICE;
@@ -287,6 +316,8 @@ str_id_t fw_out_text(fw_out_t o)
     case FW_OUT_VOICE:           return STR_FW_ERR_BUSY_VOICE;
     case FW_OUT_BUSY:            return STR_FW_ERR_BUSY;
     case FW_OUT_NO_MEMORY:       return STR_FW_ERR_NO_MEMORY;
+    case FW_OUT_PENDING:         return STR_FW_ERR_PENDING;
+    case FW_OUT_NO_ROLLBACK:     return STR_FW_ERR_NO_ROLLBACK;
     }
     return STR_COUNT;
 }

@@ -239,6 +239,7 @@ static bool holds_active(void)
     if (h & (1u << POWER_HOLD_TAKEOVER)) return true;
     if (h & (1u << POWER_HOLD_VOICE)) return true;
     if (h & (1u << POWER_HOLD_UPDATE)) return true;
+    if (h & (1u << POWER_HOLD_FW_PENDING)) return true;
     if ((h & (1u << POWER_HOLD_SSH)) && g_settings.ss_disable_in_ssh) return true;
     if (h & (1u << POWER_HOLD_BENCH)) return true;
     return cc_link_busy();
@@ -252,6 +253,7 @@ void power_holds_text(char *buf, size_t cap)
     if ((h & (1u << POWER_HOLD_SSH)) && g_settings.ss_disable_in_ssh) strlcat(buf, "ssh,", cap);
     if (h & (1u << POWER_HOLD_VOICE)) strlcat(buf, "voice,", cap);
     if (h & (1u << POWER_HOLD_UPDATE)) strlcat(buf, "update,", cap);
+    if (h & (1u << POWER_HOLD_FW_PENDING)) strlcat(buf, "pending,", cap);
     if (cc_link_busy()) strlcat(buf, "busy,", cap);
     if (h & (1u << POWER_HOLD_BENCH)) strlcat(buf, "bench,", cap);
     size_t n = strlen(buf);
