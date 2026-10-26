@@ -78,6 +78,31 @@ static void test_cmd_exact(void)
     TEST_ASSERT_EQUAL_STRING(CL " attach aaaaaaa2", o);
     TEST_ASSERT_TRUE(cc_cmd_logs(CL, "aaaaaaa2", o, sizeof(o)));
     TEST_ASSERT_EQUAL_STRING(CL " logs aaaaaaa2 | tail -c 524288", o);
+    TEST_ASSERT_TRUE(cc_cmd_stop(CL, "aaaaaaa2", o, sizeof(o)));
+    TEST_ASSERT_EQUAL_STRING(CL " stop aaaaaaa2", o);
+}
+
+static void test_cmd_stop_rejects(void)
+{
+    char o[256] = "junk", small[16];
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "AAAAAAA2", o, sizeof(o)));      /* ids are lowercase hex */
+    TEST_ASSERT_EQUAL_STRING("", o);
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa", o, sizeof(o)));       /* 7 digits */
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa22", o, sizeof(o)));     /* 9 digits */
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaa;rm ", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, NULL, o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop("~/bin/claude;rm", "aaaaaaa2", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop("my claude", "aaaaaaa2", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop(NULL, "aaaaaaa2", o, sizeof(o)));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa2", NULL, sizeof(o)));
+    /* exact fit: strlen + 1 bytes; one less fails */
+    char want[256], buf[256];
+    TEST_ASSERT_TRUE(cc_cmd_stop(CL, "aaaaaaa2", want, sizeof(want)));
+    size_t need = strlen(want) + 1;
+    TEST_ASSERT_TRUE(cc_cmd_stop(CL, "aaaaaaa2", buf, need));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa2", buf, need - 1));
+    TEST_ASSERT_FALSE(cc_cmd_stop(CL, "aaaaaaa2", small, sizeof(small)));
 }
 
 static void test_cmd_rejects(void)
@@ -189,6 +214,20 @@ static void test_log_tail_keeps_short_words(void)
     char s[] = "OK\r\nNo\r\n\xe2\x9c\xbb 57\r\nD c\r\nHi there\r\n";
     TEST_ASSERT_EQUAL_INT(3, cc_log_tail(s, 6));
     TEST_ASSERT_EQUAL_STRING("OK\nNo\nHi there", s);
+}
+
+/* The terminal's error line (ui_terminal's cmd_error_line) keeps a real error that mentions tokens, a limit or
+   the version: cc_log_tail itself drops no chrome (the Sessions pane's cc_logview_fallback does). */
+static void test_log_tail_keeps_error_lines(void)
+{
+    static const char *errs[] = { "Error: prompt is too long: 210000 tokens > 200000 maximum",
+                                  "API Error: usage limit reached", "error: Claude Code v2.1 requires a newer Node" };
+    for (size_t i = 0; i < sizeof(errs) / sizeof(errs[0]); i++) {
+        char s[160];
+        snprintf(s, sizeof(s), "$ claude -p hi\r\n%s\r\n", errs[i]);
+        TEST_ASSERT_EQUAL_INT(1, cc_log_tail(s, 1));
+        TEST_ASSERT_EQUAL_STRING(errs[i], s);
+    }
 }
 
 static void test_log_tail_keeps_last(void)
@@ -664,6 +703,7 @@ int main(void)
     RUN_TEST(test_quote_clears_out_on_failure);
     RUN_TEST(test_cmd_exact);
     RUN_TEST(test_cmd_rejects);
+    RUN_TEST(test_cmd_stop_rejects);
     RUN_TEST(test_cmd_watch_exact);
     RUN_TEST(test_cmd_watch_rejects);
     RUN_TEST(test_strip_ansi);
@@ -671,6 +711,7 @@ int main(void)
     RUN_TEST(test_log_tail_drops_rules_and_blanks);
     RUN_TEST(test_log_tail_drops_spinner_fragments);
     RUN_TEST(test_log_tail_keeps_short_words);
+    RUN_TEST(test_log_tail_keeps_error_lines);
     RUN_TEST(test_log_tail_keeps_last);
     RUN_TEST(test_paste_build_exact);
     RUN_TEST(test_paste_build_strips_esc);

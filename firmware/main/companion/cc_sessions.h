@@ -20,7 +20,8 @@ typedef struct {
    status "waiting" or a non-empty "waitingFor" (a question on screen) -> NEEDS_YOU, whatever "state" says.
    Then the live process's status wins over a stale state: busy -> WORKING; idle -> DONE if state is "done",
    else IDLE. Otherwise (no status: no live process) state comes from "state" if present, else idle:
-     waiting -> NEEDS_YOU;  blocked (the turn ended, waiting for your next message) -> IDLE;
+     waiting -> NEEDS_YOU;  blocked -> IDLE with a pid (the turn ended, waiting for your next message),
+     ENDED without one (it stopped while it waited);
      working / busy -> WORKING;  idle -> IDLE;
      done -> DONE;  failed / stopped -> ENDED;  anything else -> IDLE.
    Background entries whose id or sessionId fails validation are skipped; other kinds

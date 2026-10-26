@@ -138,6 +138,90 @@ int sm_hide_finished_tests(cc_session_t *s, int n)
     return k;
 }
 
+/* ------------------------------------------------------------ pinned (stopped here) */
+void sm_pin_add(sm_pins_t *p, const char *key)
+{
+    if (!p || !key || !key[0]) return;
+    int slot = -1;
+    for (int i = 0; i < SM_PINS && slot < 0; i++) if (p->key[i][0] && !strcmp(p->key[i], key)) slot = i;
+    for (int i = 0; i < SM_PINS && slot < 0; i++) if (!p->key[i][0]) slot = i;
+    if (slot < 0) {   /* full: the oldest goes */
+        slot = 0;
+        for (int i = 1; i < SM_PINS; i++) if (p->used[i] < p->used[slot]) slot = i;
+    }
+    if (strcmp(p->key[slot], key)) p->seen_stopped[slot] = false;
+    snprintf(p->key[slot], sizeof(p->key[slot]), "%s", key);
+    p->used[slot] = ++p->clock;
+}
+
+bool sm_pinned(const sm_pins_t *p, const char *key)
+{
+    if (!p || !key || !key[0]) return false;
+    for (int i = 0; i < SM_PINS; i++) if (p->key[i][0] && !strcmp(p->key[i], key)) return true;
+    return false;
+}
+
+void sm_pins_prune(sm_pins_t *p, const cc_session_t *items, int n)
+{
+    if (!p) return;
+    char k[SM_KEY_MAX];
+    for (int i = 0; i < SM_PINS; i++) {
+        if (!p->key[i][0]) continue;
+        bool keep = false;
+        for (int j = 0; j < n; j++) {
+            sm_key(&items[j], k, sizeof(k));
+            if (strcmp(k, p->key[i])) continue;
+            if (!items[j].live) p->seen_stopped[i] = true;
+            keep = !(items[j].live && p->seen_stopped[i]);
+            break;
+        }
+        if (!keep) { p->key[i][0] = 0; p->used[i] = 0; p->seen_stopped[i] = false; }
+    }
+}
+
+int sm_visible(cc_session_t *s, int n, int max_finished, sm_pins_t *pins)
+{
+    if (!s || n <= 0) return 0;
+    sm_pins_prune(pins, s, n);
+    char k[SM_KEY_MAX];
+    /* pass 1: what sm_hide_finished_tests drops, a pinned one excepted */
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        bool finished = s[i].state == CC_DONE || s[i].state == CC_ENDED;
+        sm_key(&s[i], k, sizeof(k));
+        bool pinned = s[i].background && sm_pinned(pins, k);
+        if (!s[i].background) continue;
+        if (!pinned && finished && !strncmp(s[i].name, SM_TEST_PREFIX, strlen(SM_TEST_PREFIX))) continue;
+        if (w != i) s[w] = s[i];
+        w++;
+    }
+    n = w;
+    /* pass 2: the finished limit over the unpinned finished ones (cc_sessions_visible's ranking) */
+    bool *drop = calloc((size_t)n, sizeof(bool));
+    if (!drop) return cc_sessions_visible(s, n, max_finished);
+    for (int i = 0; i < n; i++) {
+        bool fi = s[i].state == CC_DONE || s[i].state == CC_ENDED;
+        sm_key(&s[i], k, sizeof(k));
+        if (!fi || sm_pinned(pins, k)) continue;
+        int newer = 0;
+        for (int j = 0; j < n; j++) {
+            if (j == i || !(s[j].state == CC_DONE || s[j].state == CC_ENDED)) continue;
+            sm_key(&s[j], k, sizeof(k));
+            if (sm_pinned(pins, k)) continue;
+            if (s[j].started_ms > s[i].started_ms || (s[j].started_ms == s[i].started_ms && j < i)) newer++;
+        }
+        drop[i] = newer >= max_finished;
+    }
+    w = 0;
+    for (int i = 0; i < n; i++) {
+        if (drop[i]) continue;
+        if (w != i) s[w] = s[i];
+        w++;
+    }
+    free(drop);
+    return w;
+}
+
 sm_banner_t sm_banner(const sm_in_t *in)
 {
     /* §5.1 order. While Wi-Fi is still associating (a wake) it is not "No Wi-Fi": the link counts as down. */

@@ -346,7 +346,7 @@ X(SES_LIST_TOO_BIG, "Session list too large to load") \
 X(SES_CANT_LOAD, "Can't load sessions from the Host\xe2\x80\xa6") \
 X(SES_LOADING_OUTPUT, "Loading recent output\xe2\x80\xa6") \
 X(SES_NO_OUTPUT, "No output to show") \
-X(SES_NO_OUTPUT_YET, "No output yet") \
+X(SES_NO_OUTPUT_YET, "Nothing to show yet") \
 X(SES_INTERACTIVE, "Running in a terminal on the Host. Start sessions with claude --bg to open them here.") \
 X(SES_ON_HOST, "on Host") \
 X(SES_STOPPED_OPEN, "This session has stopped. Open it to start it again.") \
@@ -368,6 +368,17 @@ X(SES_TRUST_WAITING, "Waiting for the Host to connect with that key\xe2\x80\xa6"
 X(SES_TRUST_REFUSED, "Not trusted: a key is already pinned for the Host. Check Settings \xe2\x80\xba Host.") \
 X(SES_TRUST_ENDED, "Not trusted: time ran out, or the Host or its keys changed first. Check Settings \xe2\x80\xba Host again.") \
 X(SES_FORGET_ENDED, "Forget cancelled: the Host changed") \
+X(SES_STOP, "\xe2\x8c\x83X Stop") \
+X(SES_STOP_ACTION, "Stop") \
+X(SES_STOP_Q, "Stop %s?") \
+X(SES_STOP_BODY, "It stops running. Its conversation stays on the Host, and Open starts it again while it is listed here.") \
+X(SES_STOPPING, "Stopping\xe2\x80\xa6") \
+X(SES_STOPPED, "Stopped") \
+X(SES_STOP_NOT_RUNNING, "This session isn't running, so there is nothing to stop") \
+X(SES_STOP_GONE, "Not stopped: that session changed before you confirmed") \
+X(SES_STOP_FAILED, "Stop failed (exit %d)") \
+X(SES_STOP_TIMEOUT, "Stop failed: the Host didn't answer in time") \
+X(SES_STOP_ERROR, "Stop failed: the command didn't run on the Host") \
 X(SES_KEYS_TITLE, "Keyboard shortcuts") \
 X(SES_KEYS_CLOSE, "Any key or a touch closes this") \
 X(HK_K_UPDOWN, "Up / Down") \
@@ -380,6 +391,8 @@ X(HK_K_CTRL_T, "Ctrl+T") \
 X(HK_W_CTRL_T, "terminal (Ctrl+M also)") \
 X(HK_K_CTRL_P, "Ctrl+P") \
 X(HK_W_CTRL_P, "settings") \
+X(HK_K_CTRL_X, "Ctrl+X") \
+X(HK_W_CTRL_X, "stop the selected session") \
 X(HK_K_CTRL_K, "Ctrl+K") \
 X(HK_W_CTRL_K, "this list") \
 X(HK_K_CTRL_SPACE, "Ctrl+Space") \

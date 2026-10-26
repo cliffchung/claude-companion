@@ -57,6 +57,8 @@ static const struct { str_id_t id; const char *conv; } k_formats[] = {
     { STR_TERM_SESSION_ENDED, "d" },
     { STR_HF_DELETE_Q, "s" },
     { STR_SET_TRUST_BODY, "s" },
+    { STR_SES_STOP_Q, "s" },
+    { STR_SES_STOP_FAILED, "d" },
     /* Plan 6 */
     { STR_SET_FW_AVAILABLE, "s" },
     { STR_SET_FW_AVAILABLE_OLDER, "s" },

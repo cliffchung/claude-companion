@@ -88,6 +88,11 @@ esp_err_t cc_link_exec(const char *cmd, char *out, size_t cap, int *exit_status,
 /* Same, but when stdout doesn't fit, out keeps its newest bytes (ESP_ERR_INVALID_SIZE). */
 esp_err_t cc_link_exec_tail(const char *cmd, char *out, size_t cap, int *exit_status,
                             char *err, size_t err_cap, int timeout_ms);
+/* cc_link_exec for a command that may take long (`claude stop`): the watch's keepalives go on while it runs, and a
+   timeout (ESP_ERR_TIMEOUT) closes only its channel, not the link (unless the session is gone too). The link task
+   still serves nothing else meanwhile, so the list doesn't update until it ends. */
+esp_err_t cc_link_exec_slow(const char *cmd, char *out, size_t cap, int *exit_status,
+                            char *err, size_t err_cap, int timeout_ms);
 /* The same, but out keeps the bytes from the stream's latest full clear (ESC[2J) on: a clear empties it, so it then
    starts with that clear. ESP_ERR_INVALID_SIZE: bytes since the latest clear (or since the start, if none) didn't
    fit and the oldest were dropped. For `claude logs`, whose screen cc_logview renders (output-pane fix). */
