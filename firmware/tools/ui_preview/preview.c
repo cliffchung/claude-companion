@@ -2767,13 +2767,16 @@ static int fw_notes_case(lv_display_t *d) {
         { FWU_NOTE_UPDATED, "1.6.1+3f2a9c1", NULL, "Updated to 1.6.1+3f2a9c1" },
         { FWU_NOTE_ROLLED_BACK, "1.6.1+3f2a9c1", "1.6.0+80ab00e", "The update to 1.6.1+3f2a9c1 didn't start properly, so the Tab5 went back to 1.6.0+80ab00e." },
         { FWU_NOTE_BOOTLOOP, "1.6.0+80ab00e", NULL, "The Tab5 kept restarting, so it went back to 1.6.0+80ab00e." },
-        { FWU_NOTE_ROLLING_BACK, "1.6.0+80ab00e", NULL, "The new version can't reach the Host. Going back to 1.6.0+80ab00e\xe2\x80\xa6" } };
+        { FWU_NOTE_ROLLING_BACK, "1.6.0+80ab00e", NULL, "The new version can't reach the Host. Going back to 1.6.0+80ab00e\xe2\x80\xa6" },
+        { FWU_NOTE_BOOTLOOP_BOTH, NULL, NULL, "Both versions keep restarting. Flash a good build over USB (README \xe2\x80\xba Update over Wi-Fi)." },
+        { FWU_NOTE_BOOTLOOP_ALONE, NULL, NULL, "Restarting repeatedly; no earlier version to go back to. Flash a good build over USB." },
+        { FWU_NOTE_ROLLBACK_FAILED, NULL, NULL, "The new version can't reach the Host and the Tab5 couldn't go back; it keeps this version." } };
     int r = 0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 7; i++) {
         lv_obj_clean(top);
         pv_fw_post(n[i].k, FW_OUT_OK, n[i].a, n[i].b);
         step(d, 400);
-        if (!find_label(top, n[i].want, false)) { printf("check fw-notes: FAIL no toast \"%s\"\n", n[i].want); return 1; }
+        if (!toast_whole(top, n[i].want)) { printf("check fw-notes: FAIL no whole toast \"%s\"\n", n[i].want); return 1; }
         if (s_pv_fw_note_ready) { printf("check fw-notes: FAIL the note wasn't taken\n"); return 1; }
         char nm[32]; snprintf(nm, sizeof(nm), "fw-notes-%d", i);
         r |= pv_run_checks(d, s, nm, false, 0);
