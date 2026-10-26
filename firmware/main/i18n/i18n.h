@@ -331,9 +331,22 @@ X(SES_TITLE, "Sessions") \
 X(SES_SELECT, "\xe2\x86\x91\xe2\x86\x93 Select") \
 X(SES_SEND, "\xe2\x86\xb5 Send") \
 X(SES_OPEN, "\xe2\x8c\x83O Open") \
-X(SES_TERMINAL, "\xe2\x8c\x83T/\xe2\x8c\x83M Terminal") \
+X(SES_TERMINAL, "\xe2\x8c\x83T Terminal") \
 X(SES_SETTINGS, "\xe2\x8c\x83P Settings") \
 X(SES_KEYS, "\xe2\x8c\x83K Keys") \
+X(SES_F_STOP, "\xe2\x8c\x83X Stop") \
+X(SES_F_VOICE, "\xe2\x8c\x83Space Voice") \
+X(SES_F_VOICE_STOP, "\xe2\x8c\x83Space Stop") \
+X(SES_F_CANCEL, "Esc Cancel") \
+X(SES_T_SELECT, "Select") \
+X(SES_T_SEND, "Send") \
+X(SES_T_OPEN, "Open") \
+X(SES_T_STOP, "Stop") \
+X(SES_T_VOICE, "Voice") \
+X(SES_T_VOICE_STOP, "Stop recording") \
+X(SES_T_CANCEL, "Cancel") \
+X(SES_T_TERMINAL, "Terminal") \
+X(SES_T_SETTINGS, "Settings") \
 X(SES_NO_HOST_BODY, "Set up your Host to see its Claude sessions.") \
 X(SES_SET_UP_HOST, "Set up Host") \
 X(SES_EMPTY, "No sessions on this Host. Start one with `claude --bg`.") \

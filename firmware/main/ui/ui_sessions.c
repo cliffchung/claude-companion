@@ -145,6 +145,7 @@ static lv_obj_t *s_vcancel;                /* the strip's Cancel button: shown w
 static lv_obj_t *s_vhint_keys, *s_vhint_touch;   /* the strip's hint, both wordings built once (no realloc mid-recording) */
 static bool s_kbd_up;                      /* the soft keyboard is up: the pane ends above it (touch alone) */
 static lv_obj_t *s_footer;                 /* hidden under the soft keyboard: its chips would sit under the keys */
+static lv_obj_t *s_fchip[SM_F_N];          /* the footer's chips, all made with the screen: footer_sync flips them */
 static lv_timer_t *s_meter_timer;          /* P5-4: exists only while recording */
 static vr_keys_t s_vkeys;                  /* Ctrl+Space and the mic tap: the repeat and toggle guard */
 static bool s_voice_mine;                  /* a recording Sessions started may still post a result */
@@ -1744,9 +1745,25 @@ static void update_state(void)
     }
 }
 
+/* The footer follows the keyboard, the voice input and the selected session (sm_footer). Only a change writes. */
+static void footer_sync(void)
+{
+    if (!s_fchip[0]) return;
+    voice_status_t v;
+    voice_get(&v);
+    sm_voice_t vs = v.phase == VOICE_TRANSCRIBING ? SM_VOICE_TRANSCRIBING : v.phase == VOICE_IDLE ? SM_VOICE_IDLE : SM_VOICE_RECORDING;
+    sm_footer_t f;
+    sm_footer(keyboard_any_present(), vs, s_inert != 1 && stoppable(selected()), &f);
+    for (int i = 0; i < SM_F_N; i++) {
+        set_text(lv_obj_get_child(s_fchip[i], 0), tr(f.label[i]));
+        set_shown(s_fchip[i], f.shown[i]);
+    }
+}
+
 static void render(void)
 {
     if (!s_scr) return;
+    footer_sync();
     if (s_dirty_rows) { s_dirty_rows = false; rows_update(); }
     if (s_scroll_sel) {
         s_scroll_sel = false;
@@ -2068,6 +2085,7 @@ static void scr_delete_cb(lv_event_t *e)
     s_pane = s_title = s_pill = s_meta = s_logbox = s_log = s_info = NULL;
     s_answer_row = s_ta = s_action_row = s_send = s_open = s_stop = s_note = NULL;
     s_keys_ov = s_footer = NULL;
+    memset(s_fchip, 0, sizeof(s_fchip));
     memset(s_rows, 0, sizeof(s_rows));
     /* PT11: the rate stays 3 s on every other screen (Active/Dim); Off sets its floor */
 }
@@ -2141,12 +2159,14 @@ lv_obj_t *ui_sessions_create(void *arg)
     lv_obj_t *f = ui_footer(scr);
     s_footer = f;
     lv_obj_t *l = ui_footer_group(f, false), *r = ui_footer_group(f, true);
-    ui_chip(l, tr(STR_SES_SELECT), chip_select_cb, NULL);
-    ui_chip(l, tr(STR_SES_SEND), chip_send_cb, NULL);
-    ui_chip(l, tr(STR_SES_OPEN), chip_open_cb, NULL);
-    ui_chip(r, tr(STR_SES_TERMINAL), chip_terminal_cb, NULL);   /* Ctrl+M: the two-thumb alias */
-    ui_chip(r, tr(STR_SES_SETTINGS), chip_settings_cb, NULL);
-    ui_chip(r, tr(STR_SES_KEYS), chip_keys_cb, NULL);
+    /* in this order on screen; footer_sync gives each its words and shows what works now */
+    static const struct { sm_fchip_t id; bool right; lv_event_cb_t cb; } fc[] = {
+        { SM_F_SELECT, false, chip_select_cb }, { SM_F_SEND, false, chip_send_cb }, { SM_F_OPEN, false, chip_open_cb },
+        { SM_F_STOP, false, chip_stop_cb }, { SM_F_CANCEL, false, vcancel_cb }, { SM_F_VOICE, false, mic_cb },
+        { SM_F_TERMINAL, true, chip_terminal_cb }, { SM_F_SETTINGS, true, chip_settings_cb }, { SM_F_KEYS, true, chip_keys_cb },
+    };
+    for (size_t i = 0; i < sizeof(fc) / sizeof(fc[0]); i++) s_fchip[fc[i].id] = ui_chip(fc[i].right ? r : l, "", fc[i].cb, NULL);
+    footer_sync();
 
     key_sink_t sink = { .key = sessions_key, .user = scr };   /* per screen */
     keyboard_set_sink(&sink);

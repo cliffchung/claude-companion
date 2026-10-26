@@ -1460,7 +1460,7 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         lv_obj_t *ta = find_shown(s, &lv_textarea_class), *send = find_clickable_shown(s, tr(STR_SES_SEND));
         while (send && lv_obj_get_parent(send) && lv_obj_get_height(lv_obj_get_parent(send)) != UI_TK_TARGET) send = lv_obj_get_parent(send);
         lv_obj_t *row = send ? lv_obj_get_parent(send) : NULL;   /* the action row: Send's 64 px parent */
-        lv_obj_t *foot = lv_obj_get_parent(lv_obj_get_parent(find_clickable(s, tr(STR_SES_SELECT))));
+        lv_obj_t *foot = lv_obj_get_parent(lv_obj_get_parent(find_clickable(s, tr(STR_SES_T_SELECT))));   /* touch alone: "Select" */
         if (!ta || !row || !foot || !find_label(s, bat, false) || !obj_shown(find_label(s, bat, false))) { printf("check %s: FAIL setup (banner, field, action row)\n", name); return 1; }
         lv_area_t fo; lv_obj_get_coords(foot, &fo);
         for (int round = 0; round < 3; round++) {
@@ -1516,7 +1516,7 @@ static int voice_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *
         r |= pv_run_checks(d, s, "sessions-voice-touch-kbd", true, 0);
         softkbd_hide_all(); step(d, 400);
         lv_obj_get_coords(ta, &fa);
-        lv_obj_t *selchip = find_clickable(s, tr(STR_SES_SELECT));
+        lv_obj_t *selchip = find_clickable(s, tr(STR_SES_T_SELECT));   /* touch alone: the footer says "Select" */
         if (fa.y2 != fa0.y2 || !selchip || !obj_shown(selchip)) { printf("check %s: FAIL the pane or the footer didn't come back after the keyboard (field y2 %d, was %d)\n", name, (int)fa.y2, (int)fa0.y2); return 1; }
         /* the mic starts a recording */
         int starts = s_voice_start_calls;
@@ -1792,6 +1792,50 @@ static int stop_case(lv_display_t *d, lv_obj_t *s, lv_obj_t *list, const char *n
     return 2;
 }
 
+/* The Sessions footer (follow-up 2026-10-25): the shown chips' words in order, "|" between the groups; every chip a
+   bar chip; the groups inside the screen and apart. */
+static void pv_voice_reset(void);
+static lv_obj_t *pv_footer_of(lv_obj_t *s) {
+    lv_obj_t *l = find_label(s, "\xe2\x8c\x83P Settings", false);
+    if (!l) l = find_label(s, "Settings", false);
+    return l ? lv_obj_get_parent(lv_obj_get_parent(lv_obj_get_parent(l))) : NULL;
+}
+static int pv_footer_is(lv_obj_t *s, const char *name, const char *want) {
+    lv_obj_t *f = pv_footer_of(s);
+    if (!f) { printf("check %s: FAIL no footer\n", name); return 1; }
+    lv_obj_update_layout(f);
+    char got[256] = "";
+    int32_t W = lv_display_get_horizontal_resolution(NULL);
+    lv_area_t ga[2] = { 0 };
+    for (int g = 0; g < 2; g++) {
+        lv_obj_t *grp = lv_obj_get_child(f, g);
+        bool any = false;
+        for (uint32_t i = 0; i < lv_obj_get_child_count(grp); i++) {
+            lv_obj_t *c = lv_obj_get_child(grp, i);
+            if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+            lv_area_t a; lv_obj_get_coords(c, &a);
+            if (!any) ga[g] = a; else { if (a.x1 < ga[g].x1) ga[g].x1 = a.x1; if (a.x2 > ga[g].x2) ga[g].x2 = a.x2; }
+            any = true;
+            if (lv_obj_get_height(c) != UI_TK_BAR_CTRL || lv_obj_get_width(c) < UI_TK_BAR_CTRL || !lv_obj_has_flag(c, UI_BAR_CONTROL)) {
+                printf("check %s: FAIL the footer chip \"%s\" isn't a bar chip (%d x %d)\n", name, lv_label_get_text(lv_obj_get_child(c, 0)), (int)lv_obj_get_width(c), (int)lv_obj_get_height(c)); return 1;
+            }
+            if (got[0] && got[strlen(got) - 1] != '|') strlcat(got, ",", sizeof(got));
+            strlcat(got, lv_label_get_text(lv_obj_get_child(c, 0)), sizeof(got));
+        }
+        if (!g) strlcat(got, "|", sizeof(got));
+        if (any && (ga[g].x1 < 0 || ga[g].x2 >= W)) { printf("check %s: FAIL the footer runs off the screen\n", name); return 1; }
+    }
+    if (strcmp(got, want)) { printf("check %s: FAIL the footer reads \"%s\", not \"%s\"\n", name, got, want); return 1; }
+    if (ga[0].x2 > 0 && ga[1].x2 > 0 && ga[0].x2 + 2 * ((UI_TK_HIT - UI_TK_BAR_CTRL) / 2) >= ga[1].x1) {
+        printf("check %s: FAIL the footer's groups meet (%d, %d)\n", name, (int)ga[0].x2, (int)ga[1].x1); return 1;
+    }
+    printf("%s: footer \"%s\", left group ends at %d px, right begins at %d px\n", name, got, (int)ga[0].x2, (int)ga[1].x1);
+    return 0;
+}
+static lv_obj_t *pv_footer_chip(lv_obj_t *s, const char *t) {
+    lv_obj_t *f = pv_footer_of(s);
+    return f ? find_clickable_shown(f, t) : NULL;
+}
 static int sessions_case(lv_display_t *d, const char *v) {
     char name[64];
     snprintf(name, sizeof(name), !strcmp(v, "ctrlk") ? "ctrlk" : "sessions-%s", v);
@@ -2070,6 +2114,50 @@ static int sessions_case(lv_display_t *d, const char *v) {
         pointer_move(in, px, py, false); lv_timer_handler(); step(d, 400);
         assert(selected_index(list) == 1);
         lv_indev_delete(in);
+        return r;
+    } else if (!strcmp(v, "footer")) {
+#define FK_IDLE "\xe2\x86\x91\xe2\x86\x93 Select,\xe2\x86\xb5 Send,\xe2\x8c\x83O Open,%s\xe2\x8c\x83Space Voice|\xe2\x8c\x83T Terminal,\xe2\x8c\x83P Settings,\xe2\x8c\x83K Keys"
+        char want[256];
+        int r = 0;
+        /* a keyboard, a running session: every chip, and all of them fit at 1280 px */
+        snprintf(want, sizeof(want), FK_IDLE, "\xe2\x8c\x83X Stop,");
+        if (pv_footer_is(s, name, want)) return 1;
+        r |= pv_run_checks(d, s, name, true, 0);
+        /* the Stop chip asks first, as Ctrl+X does */
+        lv_obj_send_event(pv_footer_chip(s, "\xe2\x8c\x83X Stop"), LV_EVENT_CLICKED, NULL); step(d, 100);
+        if (!stop_dialog_up()) { printf("check %s: FAIL the Stop chip didn't ask\n", name); return 1; }
+        stop_answer(d, "Cancel");
+        /* a session that isn't running: no Stop */
+        int k = -1;
+        for (int i = 0; i < s_preview_n; i++) if (!s_preview_sessions[i].live) { k = i; break; }
+        assert(k > 0);
+        lv_obj_send_event(row_named(s, s_preview_sessions[k].name), LV_EVENT_CLICKED, NULL); step(d, 400);
+        snprintf(want, sizeof(want), FK_IDLE, "");
+        if (pv_footer_is(s, name, want)) return 1;
+        lv_obj_send_event(row0, LV_EVENT_CLICKED, NULL); step(d, 400);
+        assert(selected_index(list) == 0);
+        /* recording: only Esc Cancel and the voice chip's stop; the chip stops it; transcribing: only Esc Cancel */
+        lv_obj_send_event(pv_footer_chip(s, "\xe2\x8c\x83Space Voice"), LV_EVENT_CLICKED, NULL); step(d, 400);
+        if (s_pv_voice.phase == VOICE_STARTING) s_pv_voice.phase = VOICE_RECORDING;
+        step(d, 400);
+        if (s_pv_voice.phase != VOICE_RECORDING) { printf("check %s: FAIL the Voice chip didn't start a recording\n", name); return 1; }
+        if (pv_footer_is(s, name, "Esc Cancel,\xe2\x8c\x83Space Stop|")) return 1;
+        r |= pv_run_checks(d, s, "sessions-footer-rec", true, 0);
+        step(d, 1100);   /* past the toggle guard */
+        lv_obj_send_event(pv_footer_chip(s, "\xe2\x8c\x83Space Stop"), LV_EVENT_CLICKED, NULL); step(d, 400);
+        if (s_pv_voice.phase != VOICE_TRANSCRIBING) { printf("check %s: FAIL the voice chip didn't stop the recording\n", name); return 1; }
+        if (pv_footer_is(s, name, "Esc Cancel|")) return 1;
+        lv_obj_send_event(pv_footer_chip(s, "Esc Cancel"), LV_EVENT_CLICKED, NULL); step(d, 400);
+        if (!s_pv_voice.cancelled) { printf("check %s: FAIL the Cancel chip didn't cancel\n", name); return 1; }
+        snprintf(want, sizeof(want), FK_IDLE, "\xe2\x8c\x83X Stop,");
+        if (pv_footer_is(s, name, want)) return 1;
+        pv_voice_reset(); step(d, 400);
+        /* touch alone: words, no key names and no Keys chip */
+        setenv("PREVIEW_KBD", "0", 1); step(d, 400);
+        if (pv_footer_is(s, name, "Select,Send,Open,Stop,Voice|Terminal,Settings")) return 1;
+        r |= pv_run_checks(d, s, "sessions-footer-touch", true, 0);
+        setenv("PREVIEW_KBD", "1", 1); step(d, 400);
+#undef FK_IDLE
         return r;
     } else if (!strcmp(v, "idle")) {
         unsigned px = pv_idle_pixels(d, 2000);

@@ -376,6 +376,51 @@ static void test_wrap_crlf(void)
 
 /* The picks hint is for a session that can take an answer: NEEDS YOU or IDLE, never WORKING (a numbered paragraph
    list in a busy session's output is not a question), DONE or ENDED. */
+/* The footer: key reminders only with a keyboard, plain words without; Stop only for a running session; while
+   recording only Esc Cancel and the voice chip's stop; while transcribing only Esc Cancel. */
+static int shown_n(const sm_footer_t *f) { int n = 0; for (int i = 0; i < SM_F_N; i++) n += f->shown[i]; return n; }
+static void test_footer(void)
+{
+    sm_footer_t f;
+    sm_footer(true, SM_VOICE_IDLE, true, &f);
+    TEST_ASSERT_EQUAL(8, shown_n(&f));
+    TEST_ASSERT_FALSE(f.shown[SM_F_CANCEL]);
+    TEST_ASSERT_EQUAL_STRING("\xe2\x8c\x83X Stop", tr(f.label[SM_F_STOP]));
+    TEST_ASSERT_EQUAL_STRING("\xe2\x8c\x83Space Voice", tr(f.label[SM_F_VOICE]));
+    TEST_ASSERT_EQUAL_STRING("\xe2\x8c\x83T Terminal", tr(f.label[SM_F_TERMINAL]));
+    TEST_ASSERT_EQUAL_STRING("\xe2\x8c\x83K Keys", tr(f.label[SM_F_KEYS]));
+    sm_footer(true, SM_VOICE_IDLE, false, &f);
+    TEST_ASSERT_FALSE(f.shown[SM_F_STOP]);
+    TEST_ASSERT_EQUAL(7, shown_n(&f));
+    /* no keyboard: words, no key names, no Keys chip */
+    sm_footer(false, SM_VOICE_IDLE, true, &f);
+    TEST_ASSERT_FALSE(f.shown[SM_F_KEYS]);
+    TEST_ASSERT_EQUAL(7, shown_n(&f));
+    for (int i = 0; i < SM_F_N; i++) {
+        if (!f.shown[i]) continue;
+        const char *t = tr(f.label[i]);
+        TEST_ASSERT_NULL_MESSAGE(strstr(t, "\xe2\x8c\x83"), t);
+        TEST_ASSERT_NULL_MESSAGE(strstr(t, "Esc"), t);
+        TEST_ASSERT_NULL_MESSAGE(strstr(t, "Ctrl"), t);
+        TEST_ASSERT_NULL_MESSAGE(strstr(t, "\xe2\x86\x91"), t);
+        TEST_ASSERT_NULL_MESSAGE(strstr(t, "\xe2\x86\xb5"), t);
+    }
+    TEST_ASSERT_EQUAL_STRING("Stop", tr(f.label[SM_F_STOP]));
+    TEST_ASSERT_EQUAL_STRING("Voice", tr(f.label[SM_F_VOICE]));
+    TEST_ASSERT_EQUAL_STRING("Settings", tr(f.label[SM_F_SETTINGS]));
+    /* recording: only what works */
+    for (int k = 0; k < 2; k++) {
+        sm_footer(k, SM_VOICE_RECORDING, true, &f);
+        TEST_ASSERT_EQUAL(2, shown_n(&f));
+        TEST_ASSERT_TRUE(f.shown[SM_F_CANCEL] && f.shown[SM_F_VOICE]);
+        TEST_ASSERT_EQUAL_STRING(k ? "Esc Cancel" : "Cancel", tr(f.label[SM_F_CANCEL]));
+        TEST_ASSERT_EQUAL_STRING(k ? "\xe2\x8c\x83Space Stop" : "Stop recording", tr(f.label[SM_F_VOICE]));
+        sm_footer(k, SM_VOICE_TRANSCRIBING, true, &f);
+        TEST_ASSERT_EQUAL(1, shown_n(&f));
+        TEST_ASSERT_TRUE(f.shown[SM_F_CANCEL]);
+    }
+}
+
 static void test_picks_hint_state(void)
 {
     TEST_ASSERT_TRUE(sm_picks_hint(CC_NEEDS_YOU, 3));
@@ -557,6 +602,7 @@ int main(void)
     RUN_TEST(test_wrap_crlf);
     RUN_TEST(test_tail_options);
     RUN_TEST(test_picks_hint_state);
+    RUN_TEST(test_footer);
     RUN_TEST(test_hide_finished_tests);
     RUN_TEST(test_hide_interactive);
     RUN_TEST(test_meta_marks_interactive);
