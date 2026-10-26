@@ -198,7 +198,7 @@ path above; any path of letters, digits and `_ . / ~ -` up to 63 characters work
 **Install it.** Settings › About › **Update firmware** shows the build on the Host ("1.6.1+3f2a9c1
 available", "Up to date", or why not). Tap it, then tap **Install** (with a keyboard: focus it, Enter, then Tab to **Install** and Enter; Cancel has the first key). A
 progress screen shows the download, the checks, the write and the check of what was written, in
-about a minute; Esc or Cancel stops it, and nothing changes until the restart. After the restart the
+a minute or two (the Tab5 measured 70–80 s on a home network); Esc or Cancel stops it, and nothing changes until the restart. After the restart the
 Tab5 says "Updated to …" once it has reached the Host. It refuses an update on battery below 30 %,
 while a session is open full-screen, or while voice input is busy.
 

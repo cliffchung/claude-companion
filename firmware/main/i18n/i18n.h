@@ -544,7 +544,7 @@ X(SET_FW_PATH, "Firmware file on Host") \
 X(SET_FW_PATH_BAD, "Use only letters, digits and _ . / ~ - (1 to 63 characters), not starting with -") \
 X(SET_FW_PATH_PH, "~/.local/share/claude-companion/claude_companion.bin") \
 X(FW_CONFIRM_Q, "Install %s?") \
-X(FW_CONFIRM_BODY, "The Tab5 downloads it from the Host, checks it and restarts. It takes about a minute. If the new version doesn't start, the Tab5 goes back to %s by itself.") \
+X(FW_CONFIRM_BODY, "The Tab5 downloads it from the Host, checks it and restarts. It takes a minute or two. If the new version doesn't start, the Tab5 goes back to %s by itself.") \
 X(FW_CONFIRM_OLDER, "This is older than the running version.") \
 X(FW_INSTALL, "Install") \
 X(FW_TITLE, "Updating firmware") \
