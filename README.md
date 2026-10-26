@@ -547,23 +547,36 @@ Dictate an answer instead of typing it. This needs the one-time
 
 ### Keyboard shortcuts
 
-On the Sessions screen (**Ctrl+K** shows this list on the device):
+**Ctrl+K** shows this list on the device, in the same two parts.
 
-| Key | Action |
-|---|---|
-| ↑ / ↓ | Move between sessions |
-| Enter | Send the answer; on an empty field, open the session |
-| Ctrl+O | Open the selected session |
-| Ctrl+X | Stop the selected session (asks first; Open starts it again). By touch: ⌃X Stop |
-| Ctrl+T (or Ctrl+M) | Terminal (other SSH hosts) |
-| Ctrl+P | Settings |
-| Ctrl+K | The shortcuts list |
-| Esc | Clear the answer; cancels a recording (Sessions is the home screen: Esc never leaves it) |
-| Ctrl+Space | Voice input: press to start, again to stop (Esc cancels). By touch: the mic, and Cancel |
-| Ctrl+Space (inside a session) | Dictate into the session's prompt; the text is typed, not sent (Ctrl+@ sends NUL). By touch: the bar's Mic chip, and its Esc chip to cancel |
-| Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
-| Ctrl+↑ / ↓ | Scroll back: in a take-over sends Claude Code PgUp / PgDn; in an SSH session scrolls the Tab5's scrollback (by touch: drag; in an SSH session then the bar's ⇑ ⇓) |
-| Shift+↑ / ↓ | Scroll back in a take-over (USB keyboard; Shift+PgUp / PgDn in an SSH session too) |
+On the Sessions screen:
+
+| Key | Action | By touch (footer) |
+|---|---|---|
+| ↑ / ↓ | Move between sessions | ↑↓ Select: the next session that needs you |
+| Enter | Send the answer; on an empty field, open the session | ↵ Send |
+| Ctrl+O | Open the selected session | ⌃O Open, or tap the selected row |
+| Ctrl+X | Stop the selected session (asks first; Open starts it again) | ⌃X Stop, shown only for a running session |
+| Ctrl+T (or Ctrl+M) | Terminal (other SSH hosts) | ⌃T Terminal |
+| Ctrl+P | Settings | ⌃P Settings |
+| Ctrl+K | The shortcuts list | ⌃K Keys (shown only with a keyboard) |
+| Ctrl+Space | Voice input: press to start, again to stop | ⌃Space Voice, or the mic |
+| Esc | Clear the answer; cancels a recording (Sessions is the home screen: Esc never leaves it) | Esc Cancel, while recording or transcribing |
+
+In a session (a take-over or an SSH session):
+
+| Key | Action | By touch |
+|---|---|---|
+| Ctrl+← | Leave; the session keeps running (Ctrl+Q too; Ctrl+] on a USB keyboard) | the bar's ← Leave |
+| Ctrl+↑ / ↓ | Scroll: in a take-over sends Claude Code PgUp / PgDn; in an SSH session scrolls the Tab5's scrollback | drag (in an SSH session, then the bar's ⇑ ⇓) |
+| Shift+↑ / ↓ | The same from a USB keyboard (take-over only; Shift+PgUp / PgDn in both) | |
+| Ctrl+Space | Dictate into the session's prompt; the text is typed, not sent (Ctrl+@ sends NUL) | the bar's Mic chip, and its Esc chip to cancel |
+
+The footer follows what works. With a keyboard attached each chip starts with its key (⌃X Stop); with
+none it shows plain words (Stop, Voice, Settings) and no Keys chip. While recording it shows only Esc
+Cancel and ⌃Space Stop, and while transcribing only Esc Cancel. When a session opens, its first lines
+list the keys that matter: "Ctrl+← leave · Ctrl+↑↓ scroll · Ctrl+Space dictate" (by touch: tap the
+top of the screen for the bar, drag to scroll, Mic dictates).
 
 In Settings and Terminal, the arrow keys move the focus, Enter chooses and Esc goes back. On a
 question such as Forget, Delete, Disconnect or Stop, Cancel comes first and the arrow keys never move
@@ -690,7 +703,7 @@ can't use `autogroup:member` or a user as `dst` when the source is a tag.)
 
 ## 8. Terminal: other SSH hosts
 
-**Ctrl+T** (or the footer's **⌃T/⌃M Terminal**) opens a list of other machines you can open a
+**Ctrl+T** (or the footer's **⌃T Terminal**) opens a list of other machines you can open a
 plain SSH shell on, over your LAN or tailnet.
 
 - **+ Add host** › **Enter manually**, or **From your tailnet** (online peers, while Tailscale is
