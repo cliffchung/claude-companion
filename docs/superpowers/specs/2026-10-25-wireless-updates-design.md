@@ -937,3 +937,25 @@ New copy: `FW_ERR_PENDING` "The new version is still checking in with the Host. 
   and Install refuses with `FW_ERR_LAYOUT` ("Updates are off: the partition table is old. Flash this build once over
   USB."), not "Rollback off".
 - **N9.** See §17 C1: the runtime Rollback off check is one update late.
+
+## 19. Fix round 3 (re-review, 2026-10-25)
+
+- **R1, the rollback task wins the claim.** The 180 s rollback clears the in-memory pending flag at 180.0 s, then
+  waits up to 2 s in `lg_close`; the entry is still PENDING_VERIFY in otadata. Round 2 decided Go back's mode from
+  the flag, so a Go back in that window switched, and the rollback then invalidated the switch's target. Now Go back
+  decides from otadata (`fw_go_back_decide(otadata_pending, claim_won)`: pending and won is the rollback, pending and
+  lost is "Already going back to the previous version.", never a switch), and `switch_to_other` refuses while the
+  running entry is pending. No caller ignores a lost claim. The pending-path rollback needs only
+  `esp_ota_check_rollback_is_possible`, not the Previous-version marker.
+- **R2.** A failed pending Go back puts the claim back and re-arms the 180 s timer for the remaining time (at once
+  if past 180 s), so the rollback still runs and, if it also fails, ends the hold with its note.
+- **R3.** `ota status` says "updates off (old partition table)", "off (rollback off)" or "on"
+  (`fw_updates_state_text`).
+- **R4.** A failed `fw/ok_<slot>` write is logged once per boot.
+- **R5.** The guard has two give-up notices: after a fallback, "Both versions keep restarting…"; with nothing to go
+  back to (no runnable other slot, as on the first boots after the migration), "Restarting repeatedly; no earlier
+  version to go back to. Flash a good build over USB."
+- **R6.** A Tab5 coming from a Plan 6 build before round 2 has no marker for its old slot until that slot is
+  overwritten: no Previous version and no guard target meanwhile (README).
+- **R7.** The rule tests are decision tables: the whole Previous-version table, the Go back table with the race
+  replayed step by step (the row that round 2 got wrong), and the status words.

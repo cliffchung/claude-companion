@@ -211,7 +211,10 @@ while a session is open full-screen, or while voice input is busy.
   into the version it ran before, which is kept at once (no 180 s check: it was good before). Previous version is
   offered only for a build that has run and reached the Host in that slot; a build that was written but never
   started (a power cut before the restart) isn't offered. Go back while the new build is still in its 180 s check
-  is the same as its rollback. A build from before
+  is the same as its rollback.
+- A Tab5 updated from an early Plan 6 build (before fix round 2) has no record yet for the slot it came from, so it
+  shows no Previous version (and the boot-loop guard has no target) until that slot is overwritten by the next
+  update. The 180 s check and Go back during it still work. A build from before
   Plan 6's settings (CFG 25) forgets **Firmware file on Host** if it saves its settings; set it again after the
   next update.
 - The first boot of a new build has 180 s to reach the Host, with the screen kept on. A reset in that time (a

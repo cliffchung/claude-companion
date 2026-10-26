@@ -311,3 +311,20 @@ well at arm's length; whether 30 % is the right battery floor; whether the defau
 - A cut (power off) during the read-back of an update: the old build boots and About shows no Previous version.
 - `ota status` after the migration and after each update: the `fw/ok_<slot>` marker for the running slot is written
   (Previous version appears for the other slot only once its build has run valid).
+
+## Fix round 3
+
+- Spec §19 lists R1–R7. `fw_go_back_decide`'s table includes the R1 row ((pending, claim lost) is BUSY), which
+  round 2's rule (`fw_go_back_mode(s_pending)`) got wrong; `test_go_back_decide_table` replays the race.
+
+### More device steps for Task 9
+
+- **R1:** on the *second* update (the new image in `app0`, the previous build in `app1`), Host unreachable: wait for
+  the 177 s notice, then Go back at about 180.5 s (while the rollback task waits in `lg_close`). Expected: the toast
+  "Already going back to the previous version." (or the restart if Go back claimed first), the Tab5 boots the
+  previous build in `app1`, and `ota status` shows `app0` invalid or aborted and `app1` valid.
+- **R2:** hard to force on a device (it needs a failing otadata write); note only.
+- **R3:** no device step: forcing an old partition table needs an `app-flash`, which the plan forbids. The host test
+  `test_updates_state_text` covers the printed words, and `fw_console.c` prints `fw_updates_state_text`.
+- **R6:** a Tab5 that runs a round-0/1 Plan 6 build and updates over Wi-Fi to this one: no Previous version and no
+  guard target until the next update overwrites the old slot. This is expected, not a bug.
