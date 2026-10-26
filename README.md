@@ -465,7 +465,13 @@ YOU, and doesn't light anything.
   keeps running on the Host. The session bar shows for 3 seconds when a session opens; tap the top
   of the screen to bring it back. Its chips send Esc, Tab, ^C, ↑ and ↓, **Mic** dictates (as
   Ctrl+Space), and ⌨ opens the on-screen keyboard when no physical keyboard is attached.
-- **Scroll back in a take-over:** Shift+↑ / Shift+↓ (or Shift+PgUp / Shift+PgDn), or drag.
+- **Scroll back in a take-over or SSH session:** **Ctrl+↑ / Ctrl+↓** scroll half a screen back and
+  forward (the Tab5 keyboard has no Shift+arrow or PgUp/PgDn; these never reach the Host, so Claude
+  Code's own Ctrl+↑/↓, which moves through its diff file list and agent groups, is Alt+↑/↓ there).
+  Shift+↑ / Shift+↓ (take-over only) and Shift+PgUp / Shift+PgDn also work from a USB keyboard. By
+  touch, drag. While the view is scrolled back the session bar stays up, its ↑ ↓ chips become ⇑ ⇓
+  (half a screen back or forward), and **Scrolled back · Live ↓** shows: tap it, or type any key, to
+  return to the live view.
 - **Stop a session:** **Ctrl+X** (or tap **⌃X Stop** next to Open) asks "Stop <name>?" first.
   Cancel has the focus, and only Tab, Shift+Tab or a tap reaches **Stop**: Enter, Space, Esc and the
   arrow keys on the question all cancel, so a stray Ctrl+X followed by ↑ and Enter does nothing. To
@@ -548,12 +554,13 @@ On the Sessions screen (**Ctrl+K** shows this list on the device):
 | Ctrl+Space | Voice input: press to start, again to stop (Esc cancels). By touch: the mic, and Cancel |
 | Ctrl+Space (inside a session) | Dictate into the session's prompt; the text is typed, not sent (Ctrl+@ sends NUL). By touch: the bar's Mic chip, and its Esc chip to cancel |
 | Ctrl+← | Leave a take-over or SSH session (Ctrl+Q too; Ctrl+] on a USB keyboard) |
-| Shift+↑ / ↓ | Scroll back in a take-over |
+| Ctrl+↑ / ↓ | Scroll back in a take-over or SSH session (by touch: drag, then the bar's ⇑ ⇓) |
+| Shift+↑ / ↓ | Scroll back in a take-over (USB keyboard; Shift+PgUp / PgDn in an SSH session too) |
 
 In Settings and Terminal, the arrow keys move the focus, Enter chooses and Esc goes back. On a
 question such as Forget, Delete, Disconnect or Stop, Cancel comes first and the arrow keys never move
 onto the action: press Tab, then Enter, to confirm (Tab twice when the question was opened by touch). Inside a
-take-over or SSH session the Tab5 keeps only Ctrl+← / Ctrl+Q / Ctrl+], the Shift scroll keys and
+take-over or SSH session the Tab5 keeps only Ctrl+← / Ctrl+Q / Ctrl+], the scroll keys (Ctrl+↑/↓ and the Shift ones) and
 Ctrl+Space (voice input); every other key goes to the Host, and Ctrl+@ still sends NUL.
 
 Everything also works by touch. The footer and bar chips do what their keys do (the key shown on
