@@ -151,9 +151,16 @@ over USB. With the Tab5 plugged in:
 
 ```sh
 cd firmware
+rm -f sdkconfig                  # a stale one keeps rollback off (it is git-ignored; this build makes a new one)
+idf.py reconfigure
 idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash
 ```
+
+**Delete `firmware/sdkconfig` first.** ESP-IDF applies `sdkconfig.defaults` only to options an existing
+`sdkconfig` doesn't have yet, and an older checkout's `sdkconfig` says `# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is
+not set`: kept, that builds a bootloader that can't go back. The build refuses such a configuration with an
+`#error` that says so (`ota/fw_update.c`), and About shows "Rollback off" if a Tab5 ever runs without it.
 
 - It must write the bootloader (0x2000, where rollback lives), the partition table (0x8000), a
   blank `otadata` (0xF000, so the bootloader boots `app0`) and the app (0x20000). That is exactly
@@ -189,7 +196,7 @@ path above; any path of letters, digits and `_ . / ~ -` up to 63 characters work
 `firmware/build/claude_companion.bin` if it fits).
 
 **Install it.** Settings › About › **Update firmware** shows the build on the Host ("1.6.1+3f2a9c1
-available", "Up to date", or why not). Tap it (or focus it and press Enter), then **Install**. A
+available", "Up to date", or why not). Tap it, then tap **Install** (with a keyboard: focus it, Enter, then Tab to **Install** and Enter; Cancel has the first key). A
 progress screen shows the download, the checks, the write and the check of what was written, in
 about a minute; Esc or Cancel stops it, and nothing changes until the restart. After the restart the
 Tab5 says "Updated to …" once it has reached the Host. It refuses an update on battery below 30 %,
@@ -201,7 +208,11 @@ while a session is open full-screen, or while voice input is busy.
 - If it reached the Host but then keeps crashing early (three times in a row), it goes back and says
   "The Tab5 kept restarting…".
 - If it works but you don't like it, Settings › About › **Previous version** › **Go back** restarts
-  into the version it ran before.
+  into the version it ran before, which is kept at once (no 180 s check: it was good before). A build from before
+  Plan 6's settings (CFG 25) forgets **Firmware file on Host** if it saves its settings; set it again after the
+  next update.
+- If both versions keep crashing early, the Tab5 stops switching after one fallback and says "Both versions keep
+  restarting. Flash a good build over USB…".
 
 **When USB is still needed:** a change to the bootloader or the partition table, the ESP32-C6, or a
 Tab5 whose two slots are both broken. Then `idf.py -p /dev/cu.usbmodemXXXX flash` (keeps NVS).
@@ -713,7 +724,7 @@ Type `help` for the full list. The useful commands:
 | `ui home`, `ui settings [network]` | Shows Sessions, or Settings. |
 | `ota`, `ota status` | The firmware slots: the running version and slot, the other slot's version, whether a rollback is possible, whether the running build still waits to be marked valid, and the boot-loop count. |
 | `ota check` | Checks the build at the firmware path on the Host (read-only there): its version, size, SHA-256 prefix, and newer, older, other build or up to date. |
-| `ota path [<path>]` | Prints or sets the Firmware file on Host. |
+| `ota path [<path>]` | Prints or sets the Firmware file on Host (it can't start with `-`). |
 | `screenshot` | Dumps the screen as a JPEG frame. `python3 firmware/tools/screenshot.py --port /dev/cu.usbmodemXXXX --out shot.jpg` saves it (needs `pyserial`; close the monitor first). |
 | `reboot` | Restarts the Tab5, closing its SSH sessions first. |
 

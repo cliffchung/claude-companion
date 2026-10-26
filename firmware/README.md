@@ -69,7 +69,14 @@ idf.py -p PORT flash monitor
 `idf.py flash` writes the bootloader (`0x2000`), the partition table (`0x8000`), a blank `otadata`
 (`0xF000`) and the app (`0x20000`, `app0`), and keeps NVS. That is all a working device needs, and
 the one wired flash a device on the old layout needs before updates over Wi-Fi work (README ›
-Update over Wi-Fi). Never `app-flash` for that migration, `erase-flash`, or the merged full image.
+Update over Wi-Fi). Delete `firmware/sdkconfig` and run `idf.py reconfigure` first: a stale one keeps
+`# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is not set` (defaults never override an option an existing `sdkconfig` has),
+and `ota/fw_update.c` refuses to build that (`#error`), or the dynamic FATFS code page. Never `app-flash` for that
+migration, `erase-flash`, or the merged full image.
+
+The bootloader with rollback is 22,816 B of the 24,576 B between 0x2000 and 0x8000 (1,760 B spare). A bootloader
+option that grows it past that fails the build; moving the partition table to make room would need another wired
+flash.
 
 The app version is `<version.txt>+<git short hash>[.dirty]` (worked out at configure time; a
 `-D PROJECT_VER=…` wins, for test builds). After each build `tools/check_image_size.py` prints the

@@ -260,3 +260,37 @@ applies (a good build of this branch flashed over USB in the same session, the c
 Questions for the user's visit (no device needed to list them): whether the About rows and the progress screen read
 well at arm's length; whether 30 % is the right battery floor; whether the default staging path and the
 `tab5-build` alias suit the workflow.
+
+## Fix round 1 (core and UI reviews)
+
+- Merged `main` (stop-hotkey, busy-pane) first: conflicts only in the `ui_sessions.c` job enum (both sets kept:
+  `JOB_STOP, JOB_FW_CHECK, JOB_FW_START`, now also `JOB_FW_GO_BACK`) and `test_i18n.c`'s format list (both blocks).
+- Every finding and its fix is listed in spec §17. Points for the builder:
+  - **C1.** The `#error`s were checked with a scratch build whose defaults turned rollback off and the code page
+    back to dynamic: both fired, with the "delete firmware/sdkconfig" message. The runtime "Rollback off" detection
+    is the NEW-state heuristic: it catches a bootloader without rollback the first time it boots an updated image,
+    not before (a wired flash leaves no otadata entry to read). The slot-size check already turns updates off on the
+    old layout.
+  - **Core I1 / M7.** The trusted mark-valid runs in `fwu_boot_early`, the first call in `app_main`, so a target that
+    crashes in early init before being marked valid still goes back by the bootloader (a narrow case). Tests:
+    `test_boot_state`, `test_bootloop_action` (12 simulated boots: one switch, then give-up; a stable boot resets).
+  - **M4.** Watchdog choice: count `ESP_RST_WDT` and `ESP_RST_CPU_LOCKUP` too; `CONFIG_ESP_TASK_WDT_PANIC` stays off
+    because the idle-task checks are off and no task subscribes, so it would change nothing.
+  - **M13.** The bootloader with rollback is 22,816 B: 1,760 B spare below the partition table (firmware/README).
+  - **M11.** `MAX_SUBS` is now 6 (`CC_POLL_MAX_SUBS`), 4 used; `ota status` prints the count.
+  - Two new toasts were shortened to fit the one-line toast (it cuts with dots): `FW_ERR_NO_ROLLBACK` and
+    `FW_ROLLBACK_FAILED` (spec §17 has the final copy).
+
+### New device steps for Task 9 (in addition to the list above)
+
+- `ota status` prints `updates on` after the migration flash (with `rm -f firmware/sdkconfig` first).
+- The guard with the Host unreachable: on a validated B with A in the other slot, Wi-Fi off (`wifi leave`), then
+  `ota test-bootloop 3`: the fourth boot is A, marked valid at once (log: "switched to by the boot-loop guard or Go
+  back, marked valid"), and it stays A after 180 s with no Host.
+- The ping-pong cap: `ota test-bootloop 3` right after a guard switch (within 60 s of the boot): the guard gives up
+  ("Both versions keep restarting…") instead of switching back.
+- Go back with the Host unreachable: the old build is kept (no 180 s rollback, no "Updated to" toast).
+- `ota update` then, during the read-back, `ota cancel`: refused with "Too late to cancel…" only from RESTARTING; a
+  cancel during the write erases `app1`'s header (log: "header erased after a failed update"), and About shows no
+  Previous version.
+- Install while a new image is still pending: "The new version is still checking in with the Host…".

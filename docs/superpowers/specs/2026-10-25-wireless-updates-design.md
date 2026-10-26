@@ -352,7 +352,7 @@ What happens on each cut-off, by phase:
 | Cut-off | Downloading | Checking (RAM) | Writing / read-back | After the switch, before valid |
 |---|---|---|---|---|
 | Wi-Fi drops, the Host sleeps, a link park | the read fails or times out: abort, buffer freed, `FW_ERR_LINK`; nothing on flash | no effect | **no effect**: the write needs no link and completes | the 180 s timer rolls back unless the link returns |
-| Esc or Cancel | abort; `FW_CANCELLED` | abort | `esp_ota_abort`; otadata untouched; `FW_CANCELLED` | n/a (the screen is gone) |
+| Esc or Cancel | abort; `FW_CANCELLED` | abort | `esp_ota_abort`, the slot's first sector erased; the running otadata entry untouched (`esp_ota_begin` erases the inactive one); `FW_CANCELLED`. After the read-back passes: refused, "Too late to cancel" | n/a (the screen is gone) |
 | Power loss, a brownout, a crash | the old version boots: nothing was written | same | the old version boots: the running slot and otadata were never touched; the other slot holds a partial image that nothing points to | the bootloader rolls back |
 | Battery hits 10 % with the off timeout passed (Plan 2 I1) | as power loss | as power loss | as power loss | as power loss |
 
@@ -432,7 +432,10 @@ for 60 s.
 - body "The Tab5 downloads it from the Host, checks it and restarts. It takes about a minute. If the
   new version doesn't start, the Tab5 goes back to 1.6.0+80ab00e by itself."; for an older build the
   body starts with "This is older than the running version." on its own line;
-- buttons Cancel and **Install** (Install is the default focus: Enter installs, Esc cancels).
+- buttons Cancel and **Install**, with the shared confirm rule (main's stop-hotkey): opened by a key, Cancel has the
+  focus and the arrows never reach Install; Tab (or a tap) reaches it, then Enter installs. Esc cancels. When Install
+  is pressed the staged build must still be the one the confirm named (its SHA-256); if another build was staged
+  meanwhile, a new confirm names it (with the older line where it applies) and nothing starts (fix round 1, I3).
 
 The gates (§7.4) run when Install is pressed; a refusal toasts its copy and nothing starts.
 
@@ -462,9 +465,9 @@ After the restart, the new image toasts "Updated to 1.6.1+3f2a9c1" when it marks
 |---|---|---|
 | Reach About | Ctrl+P, then the section list (arrows, Enter) | tap Settings, tap About |
 | Check / install | focus **Update firmware**, Enter | tap the row |
-| Confirm | Enter (Install) / Esc | tap Install / Cancel |
+| Confirm | Tab to Install, Enter / Esc | tap Install / Cancel |
 | Cancel the update | Esc | tap Cancel |
-| Go back | focus **Previous version**, Enter, then Enter on the confirm | tap the row, tap Go back |
+| Go back | focus **Previous version**, Enter, then Tab to Go back, Enter | tap the row, tap Go back |
 
 ### 8.6 Copy (exact; all in `i18n.h`)
 
@@ -625,9 +628,16 @@ can only arrive over USB. Once, with the Tab5 plugged in:
 
 ```sh
 cd firmware
+rm -f sdkconfig                  # a stale one keeps rollback off (it is git-ignored; this build makes a new one)
+idf.py reconfigure
 idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash
 ```
+
+**Delete `firmware/sdkconfig` first.** ESP-IDF applies `sdkconfig.defaults` only to options an existing
+`sdkconfig` doesn't have yet, and an older checkout's `sdkconfig` says `# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is
+not set`: kept, that builds a bootloader that can't go back. The build refuses such a configuration with an
+`#error` that says so (`ota/fw_update.c`), and About shows "Rollback off" if a Tab5 ever runs without it.
 
 **It must write:** the bootloader (0x2000: rollback lives there), the partition table (0x8000),
 `ota_data_initial.bin` (0xF000: a blank otadata, so the bootloader boots `app0`), and the app
@@ -645,7 +655,8 @@ settings, Tailscale identity), the ESP32-C6, or any eFuse.
 
 **Why it is safe:** the first three partitions keep their offsets and sizes, so NVS is read in place.
 The old updater's bytes at 0xF80000 now sit inside `app1` and mean nothing: otadata doesn't point to
-`app1`, and the first update erases it as it writes.
+`app1`. An update erases only as far as the image it writes (to about 0xE20000), so the updater's bytes past it stay;
+nothing points to them (fix round 1, M12).
 
 **Before it** (recommended): read NVS out to a private file, which is read-only for the device:
 `python -m esptool --chip esp32p4 -p PORT read-flash 0x9000 0x6000 nvs-backup.bin`. It holds the
@@ -686,7 +697,7 @@ change, the C6, or a Tab5 with both slots broken.
 6. Phase READBACK. `esp_partition_read` in 16 KB chunks into one reused 16 KB PSRAM block, SHA-256,
    compare (check 10).
 7. Write NVS `fw/attempt` = the new version. `esp_ota_set_boot_partition(next)` (check 11). Phase
-   RESTARTING. Zero and free the buffer. Wait 1 s for the screen, then `link_down_restart("firmware
+   RESTARTING. Free the buffer (nothing is zeroed: the image isn't secret, P6-15). Wait 1 s for the screen, then `link_down_restart("firmware
    update")`.
 8. On every failure: `esp_ota_abort` if begun, free the buffer (one `release()` helper, as voice's
    `wipe_buffer()`), hold off, post the outcome, phase IDLE, the task deletes itself.
@@ -836,3 +847,60 @@ rollback and Go back; nothing left on the Host.
 13. P6-13: per-phase progress (§8.4).
 14. P6-14: one mechanism; the SD updater is deleted (§10).
 15. CFG 25 (§3).
+
+## 17. Fix round 1 (two reviews, 2026-10-25)
+
+What changed in the design, in the order of the review findings:
+
+- **C1, a stale `sdkconfig`.** The migration steps (§11, README) delete `firmware/sdkconfig` and run
+  `idf.py reconfigure` first. `ota/fw_update.c` has an `#error` when `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` is off
+  or `CONFIG_FATFS_CODEPAGE_DYNAMIC` is on. At boot, a running image in state NEW means the bootloader has no
+  rollback (one with rollback turns NEW into PENDING_VERIFY): the Tab5 logs it, marks the image valid, and turns
+  updates off. About's Version row then says "· Rollback off", the Update firmware row reads "Rollback off" (red)
+  and runs no check, and Install refuses with `FW_ERR_NO_ROLLBACK`.
+- **I1/I2 (UI), the confirm.** The Install and Go back confirms use main's shared rule: opened by a key, Cancel has
+  the focus and the arrows never reach the action; Tab or a tap does (§8.3, §8.5).
+- **I3 (UI), a stale confirm.** The confirm keeps the SHA-256 of the build it names. Install starts only if the
+  cached check still holds that SHA-256 (`fwu_start_expect`, `fw_confirm_matches`). A stale check is re-run; if the
+  staged build changed, a new confirm names it and nothing starts.
+- **I1 (core), the guard's and Go back's target.** `esp_ota_set_boot_partition` puts any target on probation. A
+  switch by the guard or Go back sets an `RTC_NOINIT` flag first; the next boot marks that image valid at once
+  (`fw_boot_state`: TRUSTED), with no 180 s check and no "Updated" toast. **M7:** after one guard switch with no
+  stable boot (60 s) in between, the guard gives up instead of switching back (`fw_bootloop_action`: GIVE_UP) and
+  shows `FW_BOOTLOOP_BOTH`.
+- **I2 (core), the holds.** The update task holds `POWER_HOLD_UPDATE`; a pending image holds
+  `POWER_HOLD_FW_PENDING`; neither clears the other's. Install refuses while the running image is pending
+  (`FW_GATE_PENDING`, `FW_ERR_PENDING`).
+- **M1.** The 180 s rollback runs on a task of its own: it closes SSH (`lg_close`), then calls
+  `esp_ota_mark_app_invalid_rollback_and_reboot`; if that returns, the hold ends, the image stays pending (a later
+  Host result can still mark it valid; the next reset still goes back) and `FW_ROLLBACK_FAILED` toasts.
+- **M2.** `s_pending` is tested and cleared under the lock by both mark-valid and the rollback.
+- **M3.** A failed or cancelled write erases the other slot's first sector, so it is never offered as Previous
+  version. (A power cut mid-write can still leave a partial image there; Go back's `esp_image_verify` refuses it.)
+- **M4.** `fwu_boot_early` (the guard and the trusted mark-valid) is the first call in `app_main`. The guard also
+  counts `ESP_RST_WDT` and `ESP_RST_CPU_LOCKUP`. The task watchdog is not set to panic: the idle-task checks are off
+  (`sdkconfig.defaults`) and no task subscribes, so a panic option would change nothing; a hang that never resets
+  is left to the user (Reboot) and the 180 s check for a pending image.
+- **M5.** "Didn't start properly" shows only when the invalid slot's version equals `fw/attempt`
+  (`fw_attempt_rolled_back`).
+- **M6.** The phase becomes RESTARTING once the read-back passes, before `fw/attempt` and the switch; a cancel from
+  then on is refused with "Too late to cancel…" (`fwu_cancel` returns false).
+- **M8.** The firmware path may not start with `-` (`cc_fw_path_valid`): `cat` and `head` would take it as an option.
+- **M9.** The flash-write lint also covers `esp_flash_write*`, `esp_flash_erase*`, `spi_flash_write*`,
+  `spi_flash_erase*`, `bootloader_flash_write*` and `bootloader_flash_erase*`, and scans `firmware/components`
+  (no vendored component writes flash; none is excluded).
+- **M1/M10 (UI).** Go back runs on the Sessions worker with Install's gates (busy, a session, voice, the battery).
+  **M2:** never two Install confirms. **M3:** the progress screen takes only RESULT notes. **M4:** a console
+  `ota update` opens the progress screen too; the console printer only peeks at the note.
+- **M11.** `cc_poll_subscribe` returns false and logs a warning when the table is full; `cc_poll_subscribers()`
+  reports the count (`ota status`); the table has 6 slots (4 used).
+- **Accepted:** UI M7 (a Go back to a pre-CFG-25 build that saves its settings forgets `fw_path`: noted in the
+  README) and UI M8 (the `ota_url` wipe is logical: NVS may keep the old page until its garbage collection, which
+  matters only to someone who can already read NVS over USB).
+
+New copy: `FW_ERR_PENDING` "The new version is still checking in with the Host. Try again in a few minutes.";
+`FW_ERR_NO_ROLLBACK` "Updates are off: this Tab5's bootloader can't go back. Flash it once over USB.";
+`SET_FW_ROLLBACK_OFF` "Rollback off"; `FW_TOO_LATE` "Too late to cancel: the Tab5 is switching to the new version.";
+`FW_BOOTLOOP_BOTH` "Both versions keep restarting. Flash a good build over USB (README › Update over Wi-Fi).";
+`FW_ROLLBACK_FAILED` "The new version can't reach the Host and the Tab5 couldn't go back; it keeps this version.";
+`SET_FW_PATH_BAD` "Use only letters, digits and _ . / ~ - (1 to 63 characters), not starting with -".
