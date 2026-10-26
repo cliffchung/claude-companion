@@ -34,7 +34,7 @@ lv_font_t g_term_font;
 
 void fonts_init(void)
 {
-    s_px20 = font_px20; s_px24 = font_px24; s_px36b = font_px36b;
+    s_px20 = font_px24; s_px24 = font_px24;   /* the label role shares the 24 px face's glyphs */ s_px36b = font_px36b;
     s_cjk = font_cjk; s_icons = font_icons16;
     /* MaruMinya covers Japanese, so the simplified and traditional Chinese
      * of the zh translations falls through to Noto, and the LVGL icon glyphs

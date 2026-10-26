@@ -77,6 +77,9 @@ void ui_prompt(const char *title, const char *placeholder, const char *initial, 
 typedef void (*ui_menu_cb_t)(int index, void *user_data);
 void ui_menu(const char *title, const char *const *items, int count, ui_menu_cb_t cb, void *user_data);   /* ui_picker, current -1 */
 lv_obj_t *ui_busy(const char *text);      /* returns overlay; delete to dismiss */
+/* A dialog layer on lv_layer_top (the scrim, clickable): while it is up it owns every key (Esc sends it
+   LV_EVENT_CANCEL) and no swipe navigates. Delete it to close. Plan 6's progress screen builds on it. */
+lv_obj_t *ui_modal_layer(void);
 void ui_busy_close(lv_obj_t *busy);
 
 /* The Tailscale mark is a 3x3 grid of dots and no font shipped here has it, so

@@ -10,7 +10,8 @@ console commands are in the [top-level README](../README.md).
 > (upstream Clientre 5 was tested on v3): display, touch, keyboard, Wi-Fi, the Host link over the
 > LAN, take-over, Tailscale on and off, and Hibernate check-ins on USB power. Not yet verified on
 > this build: a Terminal SSH session to a real machine, the microSD paths, a USB keyboard, battery
-> measurements on the pack, and the OTA path (dormant, see below).
+> measurements on the pack, and firmware updates over Wi-Fi (Plan 6: built and host-tested, device gates
+> pending).
 
 ## Layout
 
@@ -27,7 +28,8 @@ firmware/
 │   ├── input/            Tab5 I2C keyboard (0x6D) + USB HID keyboard, key routing, the `key`/`ui` console verbs
 │   ├── net/              Wi-Fi manager over esp_wifi_remote (ESP32-C6 via SDIO), the Tailscale switch and
 │   │                     MicroLink wrapper (tailscale.c), tailnet host rules, fast check-in rules
-│   ├── ota/              manifest check, download to SD, install via the updater (no callers today)
+│   ├── ota/              firmware updates: fw_rules.c (pure checks, host-tested), fw_update.c (the service; the
+│   │                     only file that calls esp_ota_* or writes an app partition), fw_console.c (`ota`)
 │   ├── servers/          the saved SSH hosts (NVS) and the host form's rules
 │   ├── settings/         the settings blob, its migrations, keyboard light colours
 │   ├── ssh/              libssh client task for the Terminal (device key, password, keyboard-interactive),
@@ -43,11 +45,12 @@ firmware/
 ├── components/libssh/    libssh 0.11 (LGPL-2.1) from ewpa/LibSSH-ESP32, no Arduino dependency
 ├── components/microlink/ MicroLink (MIT), an unofficial Tailscale client
 ├── components/wireguard_lwip/  WireGuard for lwIP (BSD-3-Clause), used by MicroLink
-├── updater/              tab5_factory_updater: flashes main_app from /sdcard/update (for the dormant OTA path)
 ├── test/host/            Unity host tests for the pure modules (CMake/CTest)
 ├── tools/                font and icon generators, ui_lint.py, screenshot.py, power_report.py,
-│                         authorize_device_key.sh, merge_flash.sh, the host UI preview (ui_preview/)
-├── partitions.csv        Launcher-compatible layout (main_app @0x20000, factory @0xF80000)
+│                         authorize_device_key.sh, merge_flash.sh, stage_update.sh, check_image_size.py,
+│                         the host UI preview (ui_preview/)
+├── partitions.csv        two OTA app slots: app0 @0x20000 and app1 @0x810000, 0x7F0000 each
+├── version.txt           the version's first part (the build adds +<git hash>[.dirty])
 └── sdkconfig.defaults
 ```
 
@@ -63,8 +66,21 @@ idf.py build
 idf.py -p PORT flash monitor
 ```
 
-`idf.py flash` writes the bootloader (`0x2000`), the partition table (`0x8000`), the OTA data and
-the app (`0x20000`). That is all a working device needs.
+`idf.py flash` writes the bootloader (`0x2000`), the partition table (`0x8000`), a blank `otadata`
+(`0xF000`) and the app (`0x20000`, `app0`), and keeps NVS. That is all a working device needs, and
+the one wired flash a device on the old layout needs before updates over Wi-Fi work (README ›
+Update over Wi-Fi). Delete `firmware/sdkconfig` and run `idf.py reconfigure` first: a stale one keeps
+`# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is not set` (defaults never override an option an existing `sdkconfig` has),
+and `ota/fw_update.c` refuses to build that (`#error`), or the dynamic FATFS code page. Never `app-flash` for that
+migration, `erase-flash`, or the merged full image.
+
+The bootloader with rollback is 22,816 B of the 24,576 B between 0x2000 and 0x8000 (1,760 B spare). A bootloader
+option that grows it past that fails the build; moving the partition table to make room would need another wired
+flash.
+
+The app version is `<version.txt>+<git short hash>[.dirty]` (worked out at configure time; a
+`-D PROJECT_VER=…` wins, for test builds). After each build `tools/check_image_size.py` prints the
+app slot's headroom and warns under 1 MB.
 
 Board-specific settings in `sdkconfig.defaults` that matter:
 
@@ -76,27 +92,30 @@ Board-specific settings in `sdkconfig.defaults` that matter:
   name resolves without the full mDNS component.
 - `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`: the debug console on the USB-C port.
 - `CONFIG_FATFS_LFN_HEAP=y`: long file names on the microSD card (key files such as `id_ed25519`).
+  `CONFIG_FATFS_CODEPAGE_437=y`: one OEM code page (the dynamic one linked every code page, ~470 KB);
+  long names stay UTF-8.
+- `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`: a new image boots pending and the bootloader goes back
+  unless it marks itself valid (Firmware updates, below).
 - `espressif/esp_lvgl_port` is pinned to `==2.8.0~1`, because `sys/display_ctl.c` mirrors its
   private driver-data layout.
 
 ### Release images
 
-To build the full image set, build the updater too and merge:
-
 ```sh
 cd firmware
 idf.py build
-cd updater && idf.py set-target esp32p4 && idf.py build && cd ..
-sh tools/merge_flash.sh            # -> firmware/release/{partitions,full,update.json}
+sh tools/merge_flash.sh            # -> firmware/release/{partitions,full}
 ```
 
-Flash the merged image at `0x0`:
+**The merged full image is for a blank Tab5 only:** it fills every gap with `0xFF`, so it
+overwrites NVS (Wi-Fi, the device key, the host-key pins, the saved hosts, the settings).
+`merge_flash.sh` prints that warning first. On a blank device, flash it at `0x0`:
 
 ```sh
 python -m esptool --chip esp32p4 -p PORT --baud 1500000 write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 release/full/claude_companion_full_flash.bin
 ```
 
-Or flash the parts individually:
+Or flash the parts individually (what `idf.py flash` does, keeping NVS):
 
 | Offset | File |
 |---|---|
@@ -104,7 +123,6 @@ Or flash the parts individually:
 | `0x8000` | `partitions/partition_table.bin` |
 | `0xF000` | `partitions/ota_data_initial.bin` |
 | `0x20000` | `partitions/claude_companion.bin` |
-| `0xF80000` | `partitions/tab5_factory_updater.bin` |
 
 ## Product identity
 
@@ -148,6 +166,13 @@ go into one: the Claude path and session ids. The link never opens a shell.
 - **Voice check.** `cc_cmd_voice_check` runs the same two tests and exits 0, 120 or 121, with no
   audio. Voice input starts it when a recording starts and Settings › Host › Voice input › Check
   runs it on demand.
+- **Firmware.** Two plain (non-pty) exec channels read the file at the firmware path (Settings ›
+  Host › Firmware file on Host, `cc_path_valid`). `cc_cmd_fw_info`:
+  `exec /bin/sh -c 'F=<path>; [ -f "$F" ] && [ -r "$F" ] || exit 120; S=$(wc -c < "$F") || exit 121; H=$(shasum -a 256 < "$F" 2>/dev/null || sha256sum < "$F") || exit 122; echo $S ${H%% *}; exec head -c 288 "$F"'`
+  prints the size, the SHA-256 and the first 288 bytes; `cc_cmd_fw_read`:
+  `exec /bin/sh -c 'F=<path>; [ -f "$F" ] && [ -r "$F" ] || exit 120; exec cat "$F"'` sends the file,
+  read straight into PSRAM 16 KB at a time (`cc_link_fw_read`, with progress and cancel). Nothing is
+  written or left running on the Host.
 - **Take-over.** A pty exec channel runs `claude attach <id>` and the terminal view draws it.
 - **Resolving the Host.** A literal IPv4 address as is; MagicDNS while Tailscale is connected;
   `getaddrinfo` (lwIP sends an mDNS query for `*.local`, DNS for the rest); and only if all of
@@ -252,16 +277,36 @@ unmounts after the last user. It is used for:
 - Terminal hosts whose key file is under `/sdcard/`;
 - a one-time import of the host list an older build kept on the card (`/sdcard/.tab5/servers.enc`,
   encrypted with this device's key), on devices that had that option on. The import adds entries,
-  skips duplicates and invalid ones, and leaves the card file unchanged;
-- the dormant OTA path.
+  skips duplicates and invalid ones, and leaves the card file unchanged.
 
-## OTA (dormant)
+## Firmware updates
 
-The OTA code (`ota/`, `updater/`) is still in the tree, but no screen calls it; "Check for
-update" is planned for the release plan. `ota url [<url>|none]` on the console still sets the
-manifest URL. `tools/merge_flash.sh` writes a matching `update.json` whose binary URLs start with
-`REPO_RAW`. Installation writes `/sdcard/update/request.json`, switches the boot partition to the
-factory updater and reboots; the updater verifies the SHA-256 and flashes `main_app`.
+`ota/fw_update.c` (Plan 6) installs a build from the Host into the app slot that isn't running.
+About › Update firmware runs the check on the Sessions worker; Install starts the update task:
+
+1. `POWER_HOLD_UPDATE` on (no dim, no Radio off, no Hibernate); the whole image is downloaded into one
+   PSRAM buffer (`cc_link_fw_read`).
+2. Before any flash write: the byte count, the SHA-256 against the Host's, the header again (magic,
+   segments, chip `0x0012` and its revision range, the descriptor magic, the project
+   `claude_companion`, a version), and the layout walk (`fw_rules.c`: segments, the XOR checksum, the
+   appended SHA-256, the file ending exactly there). A failure is refused with its copy; nothing is
+   written.
+3. `esp_ota_begin` on the other slot, 16 KB writes, `esp_ota_end` (ESP-IDF's verify), then a read-back
+   of the written bytes hashed against the Host's SHA-256.
+4. NVS `fw/attempt` = the new version, `esp_ota_set_boot_partition`, restart.
+
+At boot (`fwu_boot_init`, before Wi-Fi): a new image is PENDING_VERIFY; it marks itself valid on the
+first result from the Host (`cc_poll_subscribe`), else a 180 s timer shows a notice and rolls back
+(`esp_ota_mark_app_invalid_rollback_and_reboot`). The old image toasts the rollback from `fw/attempt`.
+A boot-loop guard (an `RTC_NOINIT` count of early panic and watchdog resets) switches to the other
+slot after three in a row. About › Previous version › Go back verifies the other slot and switches to
+it. Bootloader, partition table and C6 updates stay USB-only.
+
+`tools/ui_lint.py` keeps every `esp_ota_*`, `esp_partition_erase_range` and `esp_partition_write*`
+call in `fw_update.c` (`ota-outside-fw_update`) and the firmware command literals in `cc_cmd`
+(`fwcmd-outside-cc_cmd`). `CONFIG_COMPANION_OTA_TEST_NO_VALIDATE` (debug builds only) builds an image
+that never marks itself valid, for the rollback test. On the Host, `tools/stage_update.sh` copies a
+build to the staging path atomically.
 
 ## Regenerating fonts
 
@@ -280,7 +325,8 @@ python3 tools/gen_ui_icons.py            # the 16 px pictogram font (font_icons1
 
 The UI and the terminal use **x12y12pxMaruMinya** by hicc, rendered on its 12 px grid at exact
 integer scales: 24 px for body, label text and the terminal (12 px cells), and 36 px for titles,
-at 1 bpp. The C names `font_px20`, `font_px24` and `font_px36b` are kept from the fork. Missing
+at 1 bpp. The label role (`FONT_SMALL`) is a RAM copy of `font_px24` (Plan 6: `font_px20.c` was a
+byte-for-byte duplicate); the C names `font_px24` and `font_px36b` are kept from the fork. Missing
 glyphs fall back to `font_cjk`, then to the icons.
 
 `cjk_ranges.py` intersects the wanted blocks with the font's cmap and routes whatever Noto Sans
@@ -320,7 +366,7 @@ checks them (amber, touch targets, fit, idle redraws, timers).
 | Clientre5 (upstream fork base, see [LICENSE.clientre5](LICENSE.clientre5)) | MIT |
 
 Fonts: MaruMinya (source TTF copyright © 2023 hicc), Noto Sans CJK (OFL-1.1), DejaVu Sans Mono
-(Bitstream Vera / Arev, permissive). Application code in `main/` and `updater/`: MIT. The full
+(Bitstream Vera / Arev, permissive). Application code in `main/`: MIT. The full
 list, including the components the build downloads, is in
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
@@ -332,5 +378,5 @@ user's back: `companion hostkey corrupt` (and `ssh_known_host_set_debug`, which 
 pin), `companion takeover|kick|hostcache set|watch test-fallback|voice-upload-test`,
 `wifi test drop`, `power bench|sim|go|light test|light raw|checkin hibernate`,
 `power hib test|test-wake|probe|backstop <s> <n>`, `power rail <n> on|off`, `power imu suspend`
-and `voice rec|test|test-bg|test-short|test-cancel`. Set it to `y` in a development device's local
+`voice rec|test|test-bg|test-short|test-cancel`, and `ota read-test|update [corrupt-ram]|cancel|go-back|test-bootloop <1-3>`. Set it to `y` in a development device's local
 `sdkconfig` (`idf.py menuconfig`); `sdkconfig` is git-ignored, so the default stays off.

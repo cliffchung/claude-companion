@@ -6,7 +6,8 @@
 /* Prints a command line, for firmware/tools/test_watch_loop.py and test_transcribe_cmd.py.
    usage: cc_cmd_print <claude> <interval> <heartbeat> <quiet> <life>      (cc_cmd_watch)
           cc_cmd_print transcribe <whisper> <model>                        (cc_cmd_transcribe)
-          cc_cmd_print voicecheck <whisper> <model>                        (cc_cmd_voice_check) */
+          cc_cmd_print voicecheck <whisper> <model>                        (cc_cmd_voice_check)
+          cc_cmd_print fwinfo|fwread <path>                                (cc_cmd_fw_info, cc_cmd_fw_read) */
 int main(int argc, char **argv)
 {
     char out[2048];
@@ -20,9 +21,20 @@ int main(int argc, char **argv)
         printf("%s\n", out);
         return 0;
     }
+    if (argc == 3 && (!strcmp(argv[1], "fwinfo") || !strcmp(argv[1], "fwread"))) {
+        bool ok = !strcmp(argv[1], "fwinfo") ? cc_cmd_fw_info(argv[2], out, sizeof(out))
+                                             : cc_cmd_fw_read(argv[2], out, sizeof(out));
+        if (!ok) {
+            fprintf(stderr, "%s refused the arguments\n", argv[1]);
+            return 1;
+        }
+        printf("%s\n", out);
+        return 0;
+    }
     if (argc != 6) {
         fprintf(stderr, "usage: %s <claude> <interval> <heartbeat> <quiet> <life>\n"
-                        "       %s transcribe|voicecheck <whisper> <model>\n", argv[0], argv[0]);
+                        "       %s transcribe|voicecheck <whisper> <model>\n"
+                        "       %s fwinfo|fwread <path>\n", argv[0], argv[0], argv[0]);
         return 2;
     }
     cc_watch_params_t p = { atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atoi(argv[5]) };

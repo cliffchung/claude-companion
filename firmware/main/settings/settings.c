@@ -77,7 +77,7 @@ void settings_defaults(app_settings_t *out)
     memcpy(out->term_ansi, ui_tk_term_ansi, sizeof(out->term_ansi));
     out->term_font = 0;
     out->volume = 60;
-    out->ota_url[0] = 0;           /* no update manifest yet */
+    memset(out->ota_url, 0, sizeof(out->ota_url));   /* reserved (Plan 6) */
     out->ssh_bell = 1;
     out->ts_enable = 0;
     out->ts_direct = 0;
@@ -86,6 +86,7 @@ void settings_defaults(app_settings_t *out)
     strcpy(out->claude_path, "~/.local/bin/claude");
     strcpy(out->whisper_path, CC_WHISPER_DEFAULT);         /* v24, Plan 5 */
     strcpy(out->whisper_model, CC_WHISPER_MODEL_DEFAULT);
+    strcpy(out->fw_path, CC_FW_PATH_DEFAULT);              /* v25, Plan 6 */
     plan2_defaults(out);
 }
 
@@ -143,8 +144,6 @@ void settings_init(void)
         g_settings.kbd_led_rgb[0] = 0x00; g_settings.kbd_led_rgb[1] = 0x80; g_settings.kbd_led_rgb[2] = 0xFF;
         settings_save();
     }
-    /* Builds from the upstream fork stored its manifest URL as the default; drop it. */
-    if (strstr(g_settings.ota_url, "github") && strstr(g_settings.ota_url, "Mozgi512/")) g_settings.ota_url[0] = 0;
     if (g_settings.brightness < 5) g_settings.brightness = 5;
     if (g_settings.ss_idle_min == 0) g_settings.ss_idle_min = 5;
     g_settings.companion_server[sizeof(g_settings.companion_server) - 1] = 0;
@@ -162,6 +161,7 @@ void settings_init(void)
     if (g_settings.pw_checkin_min > 60) g_settings.pw_checkin_min = 60;
     if (!cc_path_valid(g_settings.claude_path)) strcpy(g_settings.claude_path, "~/.local/bin/claude");
     settings_voice_paths_check(&g_settings);   /* NUL-terminated, else the default unless cc_path_valid */
+    settings_fw_path_check(&g_settings);       /* the same for the firmware path (v25) */
 }
 
 void settings_post_load_migrate(bool checkin_boot)

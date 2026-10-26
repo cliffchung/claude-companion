@@ -25,6 +25,11 @@ bool ui_sessions_trust_host_key(const char *fp);
    "Voice input is ready on the Host" or the matching error through ui_async. LVGL task; false when a check is
    already pending or the worker can't take it now. */
 bool ui_sessions_voice_check(void);
+/* Plan 6 (P6-16): Settings › About's firmware check and Install, as jobs on the worker (ui_settings_fw.c's bodies).
+   False when the job couldn't be queued. */
+bool ui_sessions_fw_check(void);
+bool ui_sessions_fw_start(void);
+bool ui_sessions_fw_go_back(void);   /* Previous version › Go back (fix M1) */
 /* The voice meter's 100 ms timer (P5-4): non-NULL only while recording with Sessions shown (the preview's timer check). */
 lv_timer_t *ui_sessions_voice_meter(void);
 /* Why the Host link is down, in Host words with no "(retry in Ns)": "No Host set up", "Can't reach <name>. Is it

@@ -31,7 +31,7 @@ typedef struct {
     uint8_t  volume;            /* 0..100; live with no UI (Plan 4: kept for voice) */
     uint8_t  reserved_autostart;        /* reserved: formerly a web service autostart */
     uint8_t  reserved_dict_sd;          /* reserved: formerly a dictionary option */
-    char     ota_url[160];      /* the OTA manifest URL: live, console only (`ota url`), no Settings row (Plan 4) */
+    char     ota_url[160];      /* reserved (Plan 6): zeroed by CFG 25 (it was the SD updater's manifest URL and could hold a token) */
     uint8_t  ssh_bell;          /* reserved (Plan 4, U8) */
     uint8_t  ts_enable;          /* the Tailscale switch: sticky (tailscale_set_enabled saves it); v21 turned it off once */
     char     ts_auth_key[160];
@@ -82,6 +82,8 @@ typedef struct {
     /* v24, Plan 5: must pass cc_path_valid (settings_voice_paths_check); defaults in cc_cmd.h */
     char     whisper_path[64];   /* whisper-cli on the Host, default CC_WHISPER_DEFAULT */
     char     whisper_model[64];  /* its model file on the Host, default CC_WHISPER_MODEL_DEFAULT */
+    /* v25, Plan 6: must pass cc_path_valid (settings_fw_path_check); default CC_FW_PATH_DEFAULT in cc_cmd.h */
+    char     fw_path[64];        /* the staged firmware image on the Host (Settings › Host › Firmware file on Host) */
 } app_settings_t;
 
 #define TZ_DEFAULT "PST8PDT,M3.2.0,M11.1.0"

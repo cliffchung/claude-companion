@@ -2,6 +2,7 @@
 #include "ui/ui.h"
 #include "ui/ui_comp.h"
 #include "ui/ui_sessions.h"
+#include "ui/ui_fwupdate.h"
 #include "src/core/lv_obj_private.h"     /* ext_click_pad: LVGL has no public getter */
 #include "src/misc/lv_timer_private.h"   /* period: LVGL has no public getter */
 #include "src/misc/lv_event_private.h"   /* the event filter */
@@ -328,6 +329,7 @@ int pv_timers(bool sessions_shown, char *why, size_t cap)
             if (t == lv_indev_get_read_timer(in)) indev = true;
         if (indev) continue;
         if (t == ui_sessions_voice_meter() && t->period == 100) continue;   /* P5-4: the voice meter, only while recording */
+        if (t == ui_fwupdate_timer() && t->period == 300) continue;          /* Plan 6: the progress screen's own, while it shows */
         if (t->period < 300 && !(t->period == 16 && ui_terminal_is_top())) {   /* the pty pump */
             say(why, cap, "a %u ms timer", (unsigned)t->period);
             return 1;

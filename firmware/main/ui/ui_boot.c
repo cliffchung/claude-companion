@@ -75,7 +75,7 @@ void ui_boot_show(void)
     lv_obj_add_event_cb(mark, mark_draw, LV_EVENT_DRAW_MAIN, NULL);
     /* Const fonts can be used before their runtime fallback copies exist. */
     boot_label(group, tr(STR_APP_TITLE), &font_px36b, BOOT_FG);
-    boot_label(group, tr(STR_BOOT_STARTING), &font_px20, BOOT_MUTED);
+    boot_label(group, tr(STR_BOOT_STARTING), &font_px24, BOOT_MUTED);
     lv_obj_center(group);
 
     lv_obj_t *previous = lv_screen_active();

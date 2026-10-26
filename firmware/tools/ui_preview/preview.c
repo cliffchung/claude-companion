@@ -26,6 +26,8 @@
 #include "sys/power.h"
 #include "sys/checkin.h"
 #include "voice/voice.h"
+#include "ota/fw_update.h"
+#include "ui/ui_fwupdate.h"
 #include "ui/sessions_model.h"
 #include <assert.h>
 #include <stdio.h>
@@ -388,7 +390,7 @@ int cc_poll_snapshot(cc_session_t *out, int cap) {
     if (n > 0) memcpy(out, s_preview_sessions, sizeof(cc_session_t) * n);
     return n;
 }
-void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { s_poll_cb = cb; s_poll_ctx = ctx; }
+bool cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { s_poll_cb = cb; s_poll_ctx = ctx; return true; }
 void cc_poll_set_rate(int s) { (void)s; }
 void cc_poll_set_floor(int s) { (void)s; }
 uint32_t cc_poll_generation(void) { return s_poll_gen; }
@@ -476,6 +478,75 @@ esp_err_t cc_link_voice_check(int *rc) {
     *rc = v;
     return ESP_OK;
 }
+
+/* Plan 6 Task 7: a scriptable update service. PREVIEW_FW_CHECK=none|checking|uptodate|newer|older|nofile|notapp is the
+   check's result (none: no check cached; checking: the check stays pending), PREVIEW_FW_PREV=1 a runnable other slot,
+   PREVIEW_FW_PHASE=download|check|write|readback|restart with PREVIEW_FW_PCT the update's progress. */
+static char s_pv_fw_path[64] = CC_FW_PATH_DEFAULT;
+const char *cc_settings_fw_path(char *o, size_t cap) { snprintf(o, cap, "%s", s_pv_fw_path); return o; }
+bool cc_link_set_fw_path(const char *p) { if (!cc_fw_path_valid(p)) return false; snprintf(s_pv_fw_path, sizeof(s_pv_fw_path), "%s", p); return true; }
+static const char *pv_fw_mode(void) { return env_str("PREVIEW_FW_CHECK", "none"); }
+bool pv_fw_check_hold(void) { return !strcmp(pv_fw_mode(), "checking"); }
+static int s_fw_check_calls, s_fw_start_calls, s_fw_cancel_calls, s_fw_goback_calls;
+static fwu_phase_t s_pv_fw_phase = FWU_IDLE;
+static fwu_note_t s_pv_fw_note; static bool s_pv_fw_note_ready;
+static bool s_pv_fw_restaged;   /* fix I3: another build was staged after the confirm opened */
+static bool pv_fw_fill(fwu_check_t *c) {
+    const char *m = pv_fw_mode();
+    memset(c, 0, sizeof(*c));
+    c->size = 6374957;
+    snprintf(c->sha, sizeof(c->sha), "3f2a9c1e0123456789abcdef0123456789abcdef0123456789abcdef01234567");
+    snprintf(c->desc.project, sizeof(c->desc.project), "claude_companion");
+    snprintf(c->desc.version, sizeof(c->desc.version), "1.6.1+3f2a9c1");
+    if (!strcmp(m, "uptodate")) { c->offer = FW_OFFER_UP_TO_DATE; snprintf(c->desc.version, sizeof(c->desc.version), "1.6.0+80ab00e"); }
+    else if (!strcmp(m, "newer")) c->offer = FW_OFFER_NEWER;
+    else if (!strcmp(m, "older")) c->offer = FW_OFFER_OLDER;
+    else if (!strcmp(m, "nofile")) { c->out = FW_OUT_NO_FILE; c->rc = 120; }
+    else if (!strcmp(m, "notapp")) c->out = FW_OUT_NOT_APP;
+    else return false;
+    if (s_pv_fw_restaged) {
+        c->out = FW_OUT_OK; c->offer = FW_OFFER_OLDER;
+        snprintf(c->desc.version, sizeof(c->desc.version), "1.5.0+0ffee00");
+        snprintf(c->sha, sizeof(c->sha), "0ffee0000123456789abcdef0123456789abcdef0123456789abcdef01234567");
+    }
+    return true;
+}
+void fwu_check(fwu_check_t *o) { s_fw_check_calls++; fwu_check_t c; pv_fw_fill(&c); if (o) *o = c; }
+bool fwu_last_check(fwu_check_t *o) { fwu_check_t c; if (!pv_fw_fill(&c)) return false; if (o) *o = c; return true; }
+fw_out_t fwu_start_expect(const char *sha) {
+    fwu_check_t c;
+    if (!pv_fw_fill(&c) || (sha && !fw_confirm_matches(sha, c.sha))) return FW_OUT_CHANGED;
+    s_fw_start_calls++; s_pv_fw_phase = FWU_DOWNLOADING; return FW_OUT_OK;
+}
+fw_out_t fwu_start(void) { return fwu_start_expect(NULL); }
+bool fwu_cancel(void) { s_fw_cancel_calls++; return s_pv_fw_phase != FWU_RESTARTING; }
+bool fwu_pending(void) { return false; }
+bool fwu_rollback_ok(void) { return env_int("PREVIEW_FW_ROLLBACK", 1) != 0; }
+bool fwu_layout_ok(void) { return env_int("PREVIEW_FW_LAYOUT", 1) != 0; }
+bool fwu_busy(void) { return s_pv_fw_phase != FWU_IDLE; }
+void fwu_status(fwu_status_t *o) {
+    o->phase = s_pv_fw_phase;
+    o->total = 6374957;
+    o->done = (o->total * (uint64_t)env_int("PREVIEW_FW_PCT", 50) + 99) / 100;   /* fw_pct gives back PREVIEW_FW_PCT */
+}
+static void pv_fw_post(fwu_note_kind_t kind, fw_out_t out, const char *a, const char *b) {
+    memset(&s_pv_fw_note, 0, sizeof(s_pv_fw_note));
+    s_pv_fw_note.gen++; s_pv_fw_note.kind = kind; s_pv_fw_note.out = out;
+    snprintf(s_pv_fw_note.ver_a, sizeof(s_pv_fw_note.ver_a), "%s", a ? a : "");
+    snprintf(s_pv_fw_note.ver_b, sizeof(s_pv_fw_note.ver_b), "%s", b ? b : "");
+    s_pv_fw_note_ready = true;
+}
+bool fwu_take_note(fwu_note_t *o) { if (!s_pv_fw_note_ready) return false; *o = s_pv_fw_note; s_pv_fw_note_ready = false; return true; }
+bool fwu_take_boot_note(fwu_note_t *o) { if (!s_pv_fw_note_ready || s_pv_fw_note.kind == FWU_NOTE_RESULT) return false; return fwu_take_note(o); }
+bool fwu_take_result(fwu_note_t *o) { if (!s_pv_fw_note_ready || s_pv_fw_note.kind != FWU_NOTE_RESULT) return false; return fwu_take_note(o); }
+bool fwu_peek_note(fwu_note_t *o) { *o = s_pv_fw_note; return s_pv_fw_note.gen != 0; }
+const char *fwu_running_version(void) { return "1.6.0+80ab00e"; }
+bool fwu_previous(fw_desc_t *o) {
+    if (!env_int("PREVIEW_FW_PREV", 0)) return false;
+    if (o) { memset(o, 0, sizeof(*o)); snprintf(o->version, sizeof(o->version), "1.5.9+0c1d2e3"); }
+    return true;
+}
+fw_out_t fwu_go_back(void) { s_fw_goback_calls++; return FW_OUT_WRITE; }
 /* PREVIEW_LOG=long: a 300-character line with no spaces, CJK and a numbered list (Review Focus 3).
    PREVIEW_LOG=screen:<fixture>: a captured `claude logs` stream from the host-test fixtures (output-pane fix). */
 static int s_paste_calls;
@@ -2484,6 +2555,239 @@ static int settings_sub_case(lv_display_t *d, const char *sub, const char *varia
     return r;
 }
 
+/* ------------------------------------------------------------ Plan 6: firmware updates */
+/* settings 5 (About): the Update firmware row for each PREVIEW_FW_CHECK, the Previous version row, and the two
+   confirms (PREVIEW_CLICK). True when it ran its own checks (r set). */
+static int timer_count_300(void);
+/* A label under o that shows want, whole or cut with LVGL's dots (a long value in a 64 px row). */
+static lv_obj_t *label_shows(lv_obj_t *o, const char *want) {
+    if (lv_obj_check_type(o, &lv_label_class)) {
+        const char *g = lv_label_get_text(o);
+        size_t gl = strlen(g);
+        if (!strcmp(g, want) || (gl > 3 && !strcmp(g + gl - 3, "...") && !strncmp(g, want, gl - 3))) return o;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) { lv_obj_t *r = label_shows(lv_obj_get_child(o, i), want); if (r) return r; }
+    return NULL;
+}
+static void pv_key(key_event_t ev);
+static void tap(lv_display_t *d, lv_indev_t *in, int x, int y);
+static bool pv_fw_about(lv_display_t *d, lv_obj_t *s, const char *click, const char *name, int *r) {
+    lv_obj_t *panel = settings_panel(s), *top = lv_layer_top();
+    const char *m = pv_fw_mode();
+    if (!click[0] && !env_int("PREVIEW_FW_LAYOUT", 1)) {
+        /* round 2, N8: an old partition table has its own diagnosis, not "Rollback off" */
+        lv_obj_t *row = row_labeled(panel, "Update firmware");
+        lv_obj_t *v = row ? ui_srow_value(row) : NULL;
+        if (!v || strcmp(lv_label_get_text(v), "Old partition table") || !label_red(v) || s_fw_check_calls ||
+            find_label_has(panel, "Rollback off", 0)) {
+            printf("check %s: FAIL Old partition table not shown, or a check ran\n", name); *r = 1; return true;
+        }
+        lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (!toast_whole(top, tr(STR_FW_ERR_LAYOUT)) || s_fw_check_calls) {
+            printf("check %s: FAIL a tap didn't refuse with the layout copy\n", name); *r = 1; return true;
+        }
+        lv_obj_clean(top);
+        return false;
+    }
+    if (!click[0] && !env_int("PREVIEW_FW_ROLLBACK", 1)) {
+        /* fix C1: Rollback off on the row (red) and the Version note; no check; a tap refuses */
+        lv_obj_t *row = row_labeled(panel, "Update firmware");
+        lv_obj_t *v = row ? ui_srow_value(row) : NULL;
+        if (!v || strcmp(lv_label_get_text(v), "Rollback off") || !label_red(v) || s_fw_check_calls ||
+            !find_label_has(row_labeled(panel, "Version"), "Rollback off", 0)) {
+            printf("check %s: FAIL Rollback off not shown, or a check ran\n", name); *r = 1; return true;
+        }
+        lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (!toast_whole(top, tr(STR_FW_ERR_NO_ROLLBACK)) || s_fw_check_calls) {
+            printf("check %s: FAIL a tap didn't refuse (%d checks)\n", name, s_fw_check_calls); *r = 1; return true;
+        }
+        lv_obj_clean(top);
+        return false;
+    }
+    if (!click[0]) {
+        lv_obj_t *row = row_labeled(panel, "Update firmware");
+        if (!row) { printf("check %s: FAIL no Update firmware row\n", name); *r = 1; return true; }
+        lv_obj_t *v = ui_srow_value(row);
+        const char *want = !strcmp(m, "checking") ? "Checking\xe2\x80\xa6" : !strcmp(m, "uptodate") ? "Up to date"
+                         : !strcmp(m, "newer") ? "1.6.1+3f2a9c1 available" : !strcmp(m, "older") ? "1.6.1+3f2a9c1 (older) available"
+                         : !strcmp(m, "nofile") ? "No firmware file on the Host at the firmware path (Settings \xe2\x80\xba Host)."
+                         : !strcmp(m, "notapp") ? "That file isn't Claude Companion firmware for the Tab5." : "Check";
+        /* an error longer than the row is cut with dots inside it (LVGL writes the dots into the text) */
+        const char *got = v ? lv_label_get_text(v) : "";
+        size_t gl = strlen(got);
+        bool cut = gl > 3 && !strcmp(got + gl - 3, "...") && !strncmp(got, want, gl - 3);
+        if (!v || (strcmp(got, want) && !cut)) {
+            printf("check %s: FAIL the row reads \"%s\", not \"%s\"\n", name, v ? lv_label_get_text(v) : "(none)", want); *r = 1; return true;
+        }
+        bool err = !strcmp(m, "nofile") || !strcmp(m, "notapp");
+        if (err != label_red(v)) { printf("check %s: FAIL the row's tone (red %d)\n", name, label_red(v)); *r = 1; return true; }
+        if (!err && (!strcmp(m, "newer") || !strcmp(m, "older")) != lv_color_eq(lv_obj_get_style_text_color(v, 0), lv_color_hex(UI_TK_FG))) {
+            printf("check %s: FAIL an available build reads fg, the rest muted\n", name); *r = 1; return true;
+        }
+        /* shown with no cached check, About runs one (every fill, while none is cached); a fresh one is reused */
+        if (strcmp(m, "checking") && (!strcmp(m, "none") ? s_fw_check_calls < 1 : s_fw_check_calls != 0)) {
+            printf("check %s: FAIL %d background checks\n", name, s_fw_check_calls); *r = 1; return true;
+        }
+        lv_obj_t *prev = row_labeled(panel, "Previous version");
+        if (env_int("PREVIEW_FW_PREV", 0) != (prev != NULL)) { printf("check %s: FAIL Previous version row %s\n", name, prev ? "shown" : "missing"); *r = 1; return true; }
+        if (prev && !find_label(prev, "1.5.9+0c1d2e3 \xc2\xb7 Go back", false)) { printf("check %s: FAIL Previous version's value\n", name); *r = 1; return true; }
+        assert(find_label(panel, tr(STR_SET_FW_NOTE), false));
+        int32_t yv = label_y(panel, "Version"), yu = label_y(panel, "Update firmware");
+        assert(yv >= 0 && yu > yv);
+        if (timer_count_300() != 0) { printf("check %s: FAIL a 300 ms timer on About\n", name); *r = 1; return true; }
+        return false;   /* the generic checks: fit (the long error cut inside the row), amber, targets */
+    }
+    if (!strcmp(click, "Update firmware")) {
+        bool older = !strcmp(m, "older");
+        if (!find_label(top, "Install 1.6.1+3f2a9c1?", false)) { printf("check %s: FAIL no Install confirm\n", name); *r = 1; return true; }
+        lv_obj_t *body = find_label_has(top, "1.6.0+80ab00e by itself", 0);
+        assert(body);
+        if (older != !strncmp(lv_label_get_text(body), "This is older than the running version.\n", 40)) {
+            printf("check %s: FAIL the older line\n", name); *r = 1; return true;
+        }
+        *r |= pv_run_checks(d, s, name, false, 0);
+        /* Esc cancels: nothing starts */
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ESC }); step(d, 200);
+        assert(!find_label(top, "Install 1.6.1+3f2a9c1?", false) && s_fw_start_calls == 0);
+        /* again: opened by a key Cancel has the focus, so Enter alone cancels; the arrows never reach Install */
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Update firmware"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_RIGHT }); step(d, 20);
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 200);
+        if (s_fw_start_calls != 0 || find_label(top, "Install 1.6.1+3f2a9c1?", false)) {
+            printf("check %s: FAIL an arrow then Enter installed or left the confirm open\n", name); *r = 1; return true;
+        }
+        /* Tab reaches Install; Enter starts it once and the progress screen opens */
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Update firmware"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (getenv("PREVIEW_FW_RESTAGE")) s_pv_fw_restaged = true;   /* fix I3: a different build staged meanwhile */
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); step(d, 20);
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 200);
+        if (s_pv_fw_restaged) {
+            /* nothing starts; a new confirm names the new build, with the older line */
+            lv_obj_t *nb = find_label_has(top, "1.6.0+80ab00e by itself", 0);
+            if (s_fw_start_calls != 0 || !find_label(top, "Install 1.5.0+0ffee00?", false) || !nb ||
+                strncmp(lv_label_get_text(nb), "This is older than the running version.\n", 40)) {
+                printf("check %s: FAIL a restaged build: %d starts, no new confirm\n", name, s_fw_start_calls); *r = 1; return true;
+            }
+            *r |= pv_run_checks(d, s, name, false, 0);
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); step(d, 20);
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 200);
+        }
+        if (s_fw_start_calls != 1 || !ui_fwupdate_shown()) {
+            printf("check %s: FAIL Enter: %d starts, progress %s\n", name, s_fw_start_calls, ui_fwupdate_shown() ? "shown" : "not shown"); *r = 1; return true;
+        }
+        s_pv_fw_phase = FWU_IDLE; pv_fw_post(FWU_NOTE_RESULT, FW_OUT_CANCELLED, NULL, NULL); step(d, 400);
+        assert(!ui_fwupdate_shown());
+        return true;
+    }
+    /* Previous version: the Go back confirm; Enter goes back (the stub fails, so it toasts) */
+    if (!find_label(top, "Go back to 1.5.9+0c1d2e3?", false) || !find_label(top, tr(STR_FW_GO_BACK_BODY), false)) {
+        printf("check %s: FAIL no Go back confirm\n", name); *r = 1; return true;
+    }
+    *r |= pv_run_checks(d, s, name, false, 0);
+    /* opened by touch: no focus until a key; Tab goes Cancel, then Go back; it runs on the worker and the stub's
+       failure toasts */
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 200);
+    if (s_fw_goback_calls != 1 || !find_label(top, tr(STR_FW_ERR_WRITE), false)) {
+        printf("check %s: FAIL go back called %d times, or no failure toast\n", name, s_fw_goback_calls); *r = 1;
+    }
+    return true;
+}
+
+static int timer_count_300(void) { return timers_with_period(300); }
+
+/* fwupdate <phase>: the progress screen over Settings › About, PREVIEW_FW_PCT percent into the phase. */
+static int fwupdate_case(lv_display_t *d, const char *phase) {
+    static const struct { const char *n; fwu_phase_t p; const char *line; } k[] = {
+        { "download", FWU_DOWNLOADING, "Downloading from the Host" }, { "check", FWU_CHECKING, "Checking the download" },
+        { "write", FWU_WRITING, "Writing" }, { "readback", FWU_READBACK, "Checking what was written" },
+        { "restart", FWU_RESTARTING, "Restarting\xe2\x80\xa6" } };
+    int i = 0;
+    while (i < 5 && strcmp(k[i].n, phase)) i++;
+    assert(i < 5);
+    char name[48];
+    snprintf(name, sizeof(name), "fwupdate-%s", phase);
+    lv_indev_t *in = lv_indev_create(); lv_indev_set_type(in, LV_INDEV_TYPE_POINTER); lv_indev_set_read_cb(in, pointer_read);
+    preview_sessions_load();
+    ui_nav_home(); step(d, 200);
+    ui_settings_open(UI_SET_ABOUT); step(d, 200);
+    lv_obj_t *s = lv_screen_active();
+    s_pv_fw_phase = k[i].p;
+    ui_fwupdate_show(NULL); step(d, 400);
+    lv_obj_t *top = lv_layer_top();
+    int r = 0;
+    bool restart = k[i].p == FWU_RESTARTING;
+    int pct = restart ? 100 : env_int("PREVIEW_FW_PCT", 50);
+    char bytes[64], mb[32];
+    fw_mb_text(restart ? 6374957 : (6374957ull * env_int("PREVIEW_FW_PCT", 50) + 99) / 100, 6374957, mb, sizeof(mb));
+    snprintf(bytes, sizeof(bytes), "%s \xc2\xb7 %d %%", mb, pct);
+    lv_obj_t *bar = find_shown(top, &lv_bar_class);
+    if (!find_label(top, "Updating firmware", false) || !find_label(top, k[i].line, false) || !bar || lv_bar_get_value(bar) != pct ||
+        !find_label(top, bytes, false)) {
+        printf("check %s: FAIL title, phase, bar (%d) or bytes (\"%s\")\n", name, bar ? (int)lv_bar_get_value(bar) : -1, bytes); return 1;
+    }
+    if (!restart && env_int("PREVIEW_FW_PCT", 50) == 50 && strcmp(bytes, "3.2 of 6.4 MB \xc2\xb7 50 %")) { printf("check %s: FAIL bytes \"%s\"\n", name, bytes); return 1; }
+    lv_obj_t *hint = find_label(top, tr(STR_FW_HINT), false), *cancel = find_clickable(top, "Cancel");
+    if (restart == (obj_shown(hint) || obj_shown(cancel))) { printf("check %s: FAIL hint and Cancel %s\n", name, restart ? "shown at restart" : "hidden"); return 1; }
+    lv_obj_t *fill = lv_obj_get_child(lv_obj_get_child(top, lv_obj_get_child_count(top) - 1), 0);
+    assert(lv_color_eq(lv_obj_get_style_bg_color(bar, LV_PART_INDICATOR), lv_color_hex(UI_TK_FG)) && fill);
+    r |= pv_run_checks(d, s, name, false, 0);   /* fit, no amber, targets, timers (the screen's own 300 ms) */
+    if (timer_count_300() != 1 || !ui_fwupdate_timer()) { printf("check %s: FAIL %d 300 ms timers\n", name, timer_count_300()); return 1; }
+    /* keys: everything but Esc is eaten; a tap outside Cancel does nothing */
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'x' }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_CHAR, .cp = 'p', .mods = MOD_CTRL }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 20);
+    tap(d, in, 100, 100);
+    if (s_fw_cancel_calls || !ui_fwupdate_shown() || !ui_nav_is_top(ui_settings_create)) {
+        printf("check %s: FAIL a key or a tap did something (%d cancels)\n", name, s_fw_cancel_calls); return 1;
+    }
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ESC }); step(d, 20);
+    if (s_fw_cancel_calls != 1) { printf("check %s: FAIL Esc: %d cancels\n", name, s_fw_cancel_calls); return 1; }
+    if (!restart) {
+        lv_area_t a; lv_obj_get_coords(cancel, &a);
+        tap(d, in, (a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+        if (s_fw_cancel_calls != 2) { printf("check %s: FAIL a tap on Cancel: %d cancels\n", name, s_fw_cancel_calls); return 1; }
+    }
+    /* the update ends cancelled: the screen goes, its timer with it, and the outcome toasts */
+    s_pv_fw_phase = FWU_IDLE; pv_fw_post(FWU_NOTE_RESULT, FW_OUT_CANCELLED, NULL, NULL);
+    step(d, 400);
+    if (ui_fwupdate_shown() || ui_fwupdate_timer() || timer_count_300() != 0) { printf("check %s: FAIL the screen or its timer stayed\n", name); return 1; }
+    if (!find_label(top, "Update cancelled. Nothing was changed.", false)) { printf("check %s: FAIL no cancelled toast\n", name); return 1; }
+    printf("check %s: closed ok\n", name);
+    return r;
+}
+
+/* fw-notes: a boot note toasts once on Sessions (Updated, rolled back, boot loop, rolling back). */
+static int fw_notes_case(lv_display_t *d) {
+    preview_sessions_load();
+    ui_nav_home(); step(d, 400);
+    lv_obj_t *s = lv_screen_active(), *top = lv_layer_top();
+    static const struct { fwu_note_kind_t k; const char *a, *b, *want; } n[] = {
+        { FWU_NOTE_UPDATED, "1.6.1+3f2a9c1", NULL, "Updated to 1.6.1+3f2a9c1" },
+        { FWU_NOTE_ROLLED_BACK, "1.6.1+3f2a9c1", "1.6.0+80ab00e", "The update to 1.6.1+3f2a9c1 didn't start properly, so the Tab5 went back to 1.6.0+80ab00e." },
+        { FWU_NOTE_BOOTLOOP, "1.6.0+80ab00e", NULL, "The Tab5 kept restarting, so it went back to 1.6.0+80ab00e." },
+        { FWU_NOTE_ROLLING_BACK, "1.6.0+80ab00e", NULL, "The new version can't reach the Host. Going back to 1.6.0+80ab00e\xe2\x80\xa6" },
+        { FWU_NOTE_BOOTLOOP_BOTH, NULL, NULL, "Both versions keep restarting. Flash a good build over USB (README \xe2\x80\xba Update over Wi-Fi)." },
+        { FWU_NOTE_BOOTLOOP_ALONE, NULL, NULL, "Restarting repeatedly; no earlier version to go back to. Flash a good build over USB." },
+        { FWU_NOTE_ROLLBACK_FAILED, NULL, NULL, "The new version can't reach the Host and the Tab5 couldn't go back; it keeps this version." } };
+    int r = 0;
+    for (int i = 0; i < 7; i++) {
+        lv_obj_clean(top);
+        pv_fw_post(n[i].k, FW_OUT_OK, n[i].a, n[i].b);
+        step(d, 400);
+        if (!toast_whole(top, n[i].want)) { printf("check fw-notes: FAIL no whole toast \"%s\"\n", n[i].want); return 1; }
+        if (s_pv_fw_note_ready) { printf("check fw-notes: FAIL the note wasn't taken\n"); return 1; }
+        char nm[32]; snprintf(nm, sizeof(nm), "fw-notes-%d", i);
+        r |= pv_run_checks(d, s, nm, false, 0);
+    }
+    /* a RESULT belongs to the progress screen: Sessions leaves it */
+    lv_obj_clean(top);
+    pv_fw_post(FWU_NOTE_RESULT, FW_OUT_CANCELLED, NULL, NULL); step(d, 400);
+    if (!s_pv_fw_note_ready || find_label(top, "Update cancelled. Nothing was changed.", false)) { printf("check fw-notes: FAIL Sessions took a result\n"); return 1; }
+    return r;
+}
+
 static int settings_case(lv_display_t *d, int section) {
     assert(section >= 0 && section < UI_SET_COUNT);
     const char *click = env_str("PREVIEW_CLICK", "");
@@ -2499,6 +2803,11 @@ static int settings_case(lv_display_t *d, int section) {
     if (env_int("PREVIEW_TS", 2) != 2) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-ts%d", env_int("PREVIEW_TS", 2));
     if (!env_int("PREVIEW_KEY", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-nokey");
     if (env_int("PREVIEW_VOICE_RC", 0)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-rc%d", env_int("PREVIEW_VOICE_RC", 0));
+    if (getenv("PREVIEW_FW_CHECK")) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-fw%s", pv_fw_mode());
+    if (env_int("PREVIEW_FW_PREV", 0)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-prev");
+    if (getenv("PREVIEW_FW_RESTAGE")) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-restaged");
+    if (!env_int("PREVIEW_FW_ROLLBACK", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-norollback");
+    if (!env_int("PREVIEW_FW_LAYOUT", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-oldlayout");
     preview_sessions_load();
     ui_nav_home(); step(d,200);
     ui_nav_push(ui_settings_create, NULL); step(d,200);
@@ -2738,9 +3047,10 @@ static int settings_case(lv_display_t *d, int section) {
     } else if (section == UI_SET_HOST && !click[0]) {
         assert(!find_label(s, "(macOS)", true));
         /* Plan 5 (spec 6.5): Whisper path, Whisper model and Voice input follow Claude path, with the defaults */
-        static const char *const order[] = { "Claude path on Host", "Whisper path on Host", "Whisper model on Host", "Voice input" };
+        static const char *const order[] = { "Claude path on Host", "Whisper path on Host", "Whisper model on Host", "Voice input",
+                                             "Firmware file on Host" };   /* Plan 6 */
         int32_t prev = -1;
-        for (unsigned i = 0; i < 4; i++) {
+        for (unsigned i = 0; i < 5; i++) {
             int32_t y = label_y(panel, order[i]);
             if (y <= prev) { printf("check %s: FAIL \"%s\" at y %d, not below the row before it\n", name, order[i], (int)y); return 1; }
             prev = y;
@@ -2749,12 +3059,30 @@ static int settings_case(lv_display_t *d, int section) {
         assert(wp && wm && row_labeled(panel, "Voice input"));
         assert(find_label(wp, CC_WHISPER_DEFAULT, false) && find_label(wm, CC_WHISPER_MODEL_DEFAULT, false));
         assert(find_label(row_labeled(panel, "Voice input"), "Check", false));
+        assert(row_labeled(panel, "Firmware file on Host") && label_shows(row_labeled(panel, "Firmware file on Host"), CC_FW_PATH_DEFAULT));
         assert(find_label(panel, tr(STR_SET_HOST_NOTE), false));
         assert(find_label(panel, "\xe2\x97\x8f connected over home Wi-Fi", false));
         assert(find_label(panel, "ssh-ed25519 \xe2\x80\xa6 claude-companion \xc2\xb7 Show", false));
         for (lv_obj_t *o = rail_row(s, 0); o; o = NULL) assert(lv_obj_get_height(o) == UI_TK_RAIL_ROW_H);
         lv_obj_t *rail = lv_obj_get_child(lv_obj_get_child(s, 1), 0);
         assert(lv_obj_get_width(rail) == UI_TK_RAIL_W);
+    } else if (section == UI_SET_HOST && !strcmp(click, "Firmware file on Host")) {
+        /* Plan 6: the prompt shows the path; one with a space is refused with the path copy and not saved */
+        lv_obj_t *ta = find_shown(top, &lv_textarea_class);
+        assert(ta && !strcmp(lv_textarea_get_text(ta), CC_FW_PATH_DEFAULT));
+        prompt_answer(d, "/a b");
+        assert(find_label(top, tr(STR_SET_FW_PATH_BAD), false));
+        assert(!strcmp(s_pv_fw_path, CC_FW_PATH_DEFAULT));
+        lv_obj_clean(top); step(d, 200);
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Firmware file on Host"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        prompt_answer(d, "/tmp/cc6.ab12/stage/claude_companion.bin");
+        assert(!strcmp(s_pv_fw_path, "/tmp/cc6.ab12/stage/claude_companion.bin"));
+        assert(label_shows(settings_panel(s), "/tmp/cc6.ab12/stage/claude_companion.bin"));
+        snprintf(s_pv_fw_path, sizeof(s_pv_fw_path), "%s", CC_FW_PATH_DEFAULT);
+        panel = settings_panel(s);
+    } else if (section == UI_SET_ABOUT && (!click[0] || !strcmp(click, "Update firmware") || !strcmp(click, "Previous version"))) {
+        if (pv_fw_about(d, s, click, name, &r)) { lv_obj_clean(top); return r; }
+        panel = settings_panel(s);
     } else if (section == UI_SET_NETWORK) {
         if (network_case(d, s, panel, click, scroll, name, &r)) { lv_obj_clean(top); return r; }
     } else if (click[0] || scroll) {
@@ -4040,7 +4368,7 @@ int main(int argc,char **argv) {
     /* Exercise splash before font runtime copies or the application UI exist. */
     if (!strcmp(name,"boot")) {
         lv_font_glyph_dsc_t g;
-        assert(lv_font_get_glyph_dsc(&font_px20,&g,0x2026,0) && !g.is_placeholder);   /* "Starting…" */
+        assert(lv_font_get_glyph_dsc(&font_px24,&g,0x2026,0) && !g.is_placeholder);   /* "Starting…" */
         ui_boot_show();
         lv_obj_t *boot=lv_screen_active();
         assert(lv_obj_get_child_count(boot)==1);
@@ -4095,6 +4423,8 @@ int main(int argc,char **argv) {
     if (!strcmp(name,"sessions")) return sessions_case(d, argc>2 ? argv[2] : "live");
     if (!strcmp(name,"ctrlk")) return sessions_case(d, "ctrlk");
     if (!strcmp(name,"settings")) return settings_case(d, argc>2 ? atoi(argv[2]) : 0);
+    if (!strcmp(name,"fwupdate")) return fwupdate_case(d, argc>2 ? argv[2] : "download");
+    if (!strcmp(name,"fw-notes")) return fw_notes_case(d);
     if (!strcmp(name,"keyboard-settings")) return keyboard_settings_case(d);
     if (!strcmp(name,"network-live")) return network_live_case(d);
     if (!strcmp(name,"network-focus")) return network_focus_case(d);

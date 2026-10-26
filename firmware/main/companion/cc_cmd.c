@@ -564,3 +564,30 @@ bool cc_is_companion_server(int idx, const char *host, int comp_idx, const char 
     if (comp_idx >= 0 && idx == comp_idx) return true;
     return cc_same_host(host, comp_host);
 }
+
+/* Firmware updates (spec §9.1). The path passes cc_path_valid, so the unquoted F= assignment is safe (and gets the
+   tilde expansion) and "$F" is quoted at each use; %%%% is the shell's %% in ${H%% *}. */
+bool cc_fw_path_valid(const char *p) { return cc_path_valid(p) && p[0] != '-'; }
+
+bool cc_cmd_fw_info(const char *path, char *out, size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = 0;
+    if (!cc_fw_path_valid(path)) return false;
+    int r = snprintf(out, cap,
+        "exec /bin/sh -c 'F=%s; [ -f \"$F\" ] && [ -r \"$F\" ] || exit 120; S=$(wc -c < \"$F\") || exit 121; "
+        "H=$(shasum -a 256 < \"$F\" 2>/dev/null || sha256sum < \"$F\") || exit 122; echo $S ${H%%%% *}; "
+        "exec head -c 288 \"$F\"'", path);
+    if (r < 0 || (size_t)r >= cap) { out[0] = 0; return false; }
+    return true;
+}
+
+bool cc_cmd_fw_read(const char *path, char *out, size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = 0;
+    if (!cc_fw_path_valid(path)) return false;
+    int r = snprintf(out, cap, "exec /bin/sh -c 'F=%s; [ -f \"$F\" ] && [ -r \"$F\" ] || exit 120; exec cat \"$F\"'", path);
+    if (r < 0 || (size_t)r >= cap) { out[0] = 0; return false; }
+    return true;
+}

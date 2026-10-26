@@ -5,16 +5,16 @@
 extern "C" {
 #endif
 /* MaruMinya from the repository TTF, rasterized on exact 12px multiples.
- * Legacy C names are retained: font_px20 now uses the same 24px/2x grid
- * for readable secondary text. Missing CJK glyphs fall back to Noto. */
-LV_FONT_DECLARE(font_px20);
+ * The label role (FONT_SMALL) uses the same 24px/2x face as the body: one copy of the glyph data,
+ * font_px24 (Plan 6 image diet; font_px20.c was a byte-for-byte duplicate). Missing CJK glyphs fall
+ * back to Noto. */
 LV_FONT_DECLARE(font_px24);
 LV_FONT_DECLARE(font_px36b);
 LV_FONT_DECLARE(font_cjk);
 LV_FONT_DECLARE(font_icons16);
 
 /* Fixed roles (spec §8.3). Font selection lives here and in ui_comp only. */
-extern const lv_font_t *FONT_SMALL;   /* label role: font_px20 */
+extern const lv_font_t *FONT_SMALL;   /* label role: a RAM copy of font_px24 */
 extern const lv_font_t *FONT_BODY;    /* font_px24 */
 extern const lv_font_t *FONT_TITLE;   /* font_px36b, bold */
 extern const lv_font_t *FONT_MONO;    /* g_term_font: 24 px, 12 px cells (terminal) */

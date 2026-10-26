@@ -17,6 +17,7 @@
 #include "ui_comp.h"
 #include "ui_softkbd.h"
 #include "ui/sessions_model.h"
+#include "ui/ui_settings_fw.h"
 #include "ui/hotkeys.h"
 #include "voice/voice_rules.h"
 #include "voice/voice.h"
@@ -89,7 +90,7 @@ typedef struct {
     int64_t at_ms;
 } note_t;
 
-typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY, JOB_VOICE_CHECK, JOB_STOP } job_type_t;
+typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY, JOB_VOICE_CHECK, JOB_STOP, JOB_FW_CHECK, JOB_FW_START, JOB_FW_GO_BACK } job_type_t;
 typedef struct {
     job_type_t type;
     unsigned token;        /* which request this is (actions only) */
@@ -412,6 +413,9 @@ static void run_job(const job_t *j)
     if (j->type == JOB_FORGET_KEY) { run_forget(); return; }
     if (j->type == JOB_TRUST_KEY) { run_trust(j->text); return; }
     if (j->type == JOB_VOICE_CHECK) { run_voice_check(); return; }
+    if (j->type == JOB_FW_CHECK) { ui_fw_job_check(); return; }   /* Plan 6 (P6-16) */
+    if (j->type == JOB_FW_START) { ui_fw_job_start(); return; }
+    if (j->type == JOB_FW_GO_BACK) { ui_fw_job_go_back(); return; }
     cc_settings_claude_path(claude, sizeof(claude));
     if (j->type == JOB_STOP) { run_stop(j, claude); return; }
     if (j->type == JOB_LOGS) {
@@ -583,6 +587,20 @@ bool ui_sessions_trust_host_key(const char *fp)
     heap_caps_free(j);
     return ok;
 }
+
+/* Plan 6 (P6-16): the firmware check and Install jobs; ui_settings_fw.c keeps their pending flags */
+static bool post_fw_job(job_type_t type)
+{
+    init_once();
+    job_t *j = job_new(type);
+    if (!j) return false;
+    bool ok = job_post(j);
+    heap_caps_free(j);
+    return ok;
+}
+bool ui_sessions_fw_check(void) { return post_fw_job(JOB_FW_CHECK); }
+bool ui_sessions_fw_start(void) { return post_fw_job(JOB_FW_START); }
+bool ui_sessions_fw_go_back(void) { return post_fw_job(JOB_FW_GO_BACK); }
 
 bool ui_sessions_voice_check(void)
 {
@@ -1757,6 +1775,7 @@ static void tick_cb(lv_timer_t *t)
     load_snapshot();
     apply_action_result();
     if (!s_scr) return;   /* opening a session replaced the screen */
+    ui_fw_note_tick();    /* Plan 6: Updated / rolled back / boot loop, once */
     forget_check();       /* P4-3: a forget finished by a later connect */
     voice_tick();
     pane_fit_kbd();

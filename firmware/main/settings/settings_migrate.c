@@ -50,6 +50,13 @@ uint32_t settings_blob_load(app_settings_t *s, const void *blob, size_t len)
             strcpy(s->whisper_path, CC_WHISPER_DEFAULT);
             strcpy(s->whisper_model, CC_WHISPER_MODEL_DEFAULT);
         }
+        if (version < 25) {
+            /* v25 (Plan 6): the firmware path appended at the end; the old OTA manifest URL (the removed SD updater's,
+               which could hold a token) wiped, its bytes kept as reserved */
+            memset(s->fw_path, 0, sizeof(s->fw_path));
+            strcpy(s->fw_path, CC_FW_PATH_DEFAULT);
+            memset(s->ota_url, 0, sizeof(s->ota_url));
+        }
     }
     s->mac_lan_ip[sizeof(s->mac_lan_ip) - 1] = 0;
     s->mac_ts_ip[sizeof(s->mac_ts_ip) - 1] = 0;
@@ -75,6 +82,16 @@ void settings_voice_paths_check(app_settings_t *s)
     if (!cc_path_valid(s->whisper_model)) {
         memset(s->whisper_model, 0, sizeof(s->whisper_model));
         strcpy(s->whisper_model, CC_WHISPER_MODEL_DEFAULT);
+    }
+}
+
+void settings_fw_path_check(app_settings_t *s)
+{
+    if (!s) return;
+    s->fw_path[sizeof(s->fw_path) - 1] = 0;
+    if (!cc_fw_path_valid(s->fw_path)) {
+        memset(s->fw_path, 0, sizeof(s->fw_path));
+        strcpy(s->fw_path, CC_FW_PATH_DEFAULT);
     }
 }
 
@@ -110,5 +127,5 @@ void settings_reset_scope(app_settings_t *s, const app_settings_t *d)
     s->kbd_dark_light = d->kbd_dark_light;
     /* display */
     s->brightness = d->brightness;
-    /* whisper_path and whisper_model (v24) are kept: they describe the Host, like claude_path */
+    /* whisper_path and whisper_model (v24) and fw_path (v25) are kept: they describe the Host, like claude_path */
 }

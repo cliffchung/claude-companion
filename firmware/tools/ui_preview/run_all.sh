@@ -40,6 +40,22 @@ runv "PREVIEW_CLICK=Whisper model on Host" settings 0
 runv "PREVIEW_CLICK=Reset settings" settings 5
 runv "PREVIEW_CLICK=Diagnostics" settings 5
 runv "PREVIEW_CLICK=Reboot" settings 5
+# Plan 6: About's Update firmware row in every check state, Previous version, the two confirms, the Host path row,
+# the progress screen in every phase, and the boot notes on Sessions
+for m in none checking uptodate newer older nofile notapp; do runv "PREVIEW_FW_CHECK=$m" settings 5; done
+PV_ENV="PREVIEW_FW_CHECK=newer"; PV_ENV2="PREVIEW_FW_PREV=1"; run settings 5; PV_ENV=; PV_ENV2=
+for m in newer older; do PV_ENV="PREVIEW_FW_CHECK=$m"; PV_ENV2="PREVIEW_CLICK=Update firmware"; run settings 5; done; PV_ENV=; PV_ENV2=
+PV_ENV="PREVIEW_FW_PREV=1"; PV_ENV2="PREVIEW_CLICK=Previous version"; run settings 5; PV_ENV=; PV_ENV2=
+PV_ENV="PREVIEW_FW_CHECK=newer"; PV_ENV2="PREVIEW_FW_ROLLBACK=0"; run settings 5; PV_ENV=; PV_ENV2=
+PV_ENV="PREVIEW_FW_CHECK=newer"; PV_ENV2="PREVIEW_FW_LAYOUT=0"; run settings 5; PV_ENV=; PV_ENV2=
+# fix I3: a different (older) build staged while the confirm was open: a new confirm, nothing starts on the old one
+PREVIEW_FW_RESTAGE=1 PREVIEW_FW_CHECK=newer PREVIEW_CLICK="Update firmware" ./preview settings 5 >case.log 2>&1 \
+    && grep -E '^check ' case.log || { echo "FAIL: preview restaged confirm"; tail -5 case.log; fail=1; }
+runv "PREVIEW_CLICK=Firmware file on Host" settings 0
+for p in download check write readback restart; do run fwupdate "$p"; done
+runv "PREVIEW_FW_PCT=0" fwupdate download
+runv "PREVIEW_FW_PCT=100" fwupdate write
+run fw-notes
 runv "PREVIEW_CLICK=Colour" settings 3
 runv "PREVIEW_SCROLL=400" settings 2
 runv "PREVIEW_HOST=0" settings 0

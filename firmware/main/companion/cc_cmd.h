@@ -81,3 +81,15 @@ bool cc_is_companion_server(int idx, const char *host, int comp_idx, const char 
 bool cc_cmd_transcribe(const char *whisper, const char *model, char *out, size_t cap);
 /* spec §7.2: exit 0, 120 or 121; no output. */
 bool cc_cmd_voice_check(const char *whisper, const char *model, char *out, size_t cap);
+
+/* Firmware updates (Plan 6, spec §9.1). Both run on a plain exec channel, never a pty (binary stdout). */
+#define CC_FW_PATH_DEFAULT  "~/.local/share/claude-companion/claude_companion.bin"
+#define CC_FW_RC_NO_FILE    120   /* not a readable regular file */
+#define CC_FW_RC_SIZE       121   /* wc failed */
+#define CC_FW_RC_HASH       122   /* no hash tool worked */
+/* cc_path_valid and not starting with '-' (core M8: cat and head would read it as an option). */
+bool cc_fw_path_valid(const char *p);
+/* spec §9.1: prints "<size> <sha256>\n" then the first 288 bytes. false for an invalid path or a small cap (out cleared). */
+bool cc_cmd_fw_info(const char *path, char *out, size_t cap);
+/* spec §9.1: prints the file. */
+bool cc_cmd_fw_read(const char *path, char *out, size_t cap);

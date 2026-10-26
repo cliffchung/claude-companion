@@ -15,7 +15,8 @@ print(','.join('0x%X'%cp for cp in sorted(TTFont(sys.argv[1]).getBestCmap()) if 
 PY
 )
 SYMS=$(python3 "$HERE/i18n_chars.py" "$HERE/../main" --font "$FONT")
-for NAME in font_px24 font_px20; do
+# One 24 px face: FONT_SMALL is a RAM copy of font_px24 (fonts.c), so no font_px20.c (Plan 6).
+for NAME in font_px24; do
     $LVFC --font "$FONT" -r "$FULL" --size 24 --bpp 1 --format lvgl \
       --lv-font-name "$NAME" --lv-include lvgl.h --no-kerning --no-prefilter -o "$OUT/$NAME.c"
 done

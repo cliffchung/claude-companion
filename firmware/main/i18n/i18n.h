@@ -87,7 +87,7 @@ X(SET_SHOW, "Show") \
 X(SET_HIDE, "Hide") \
 X(SET_KEY_UNREADABLE, "The device key can't be read") \
 X(SET_DEVICE_KEY_NOTE, "Add this line to ~/.ssh/authorized_keys on each host this Tab5 signs in to.") \
-X(SET_HOST_NOTE, "The Host is one of your SSH hosts. The Tab5 lists its Claude Code sessions, runs claude from this path, and runs whisper-cli for voice input.") \
+X(SET_HOST_NOTE, "The Host is one of your SSH hosts. The Tab5 lists its Claude Code sessions, runs claude from this path, runs whisper-cli for voice input and reads firmware updates from it.") \
 X(SET_PW_SCREEN, "Screen") \
 X(SET_PW_DIM, "Dim after") \
 X(SET_PW_OFF, "Screen off after") \
@@ -483,7 +483,63 @@ X(VOICE_FAILED, "Transcription failed on the Host. Try again.") \
 X(VOICE_TIMEOUT, "The Host took too long to transcribe. Try again.") \
 X(VOICE_LINK_LOST, "Lost the connection to the Host. Try again.") \
 X(VOICE_MIC_FAILED, "The microphone didn't start. Restart the Tab5 and try again.") \
-X(VOICE_NO_MEMORY, "Not enough memory to record. Restart the Tab5 and try again.")
+X(VOICE_NO_MEMORY, "Not enough memory to record. Restart the Tab5 and try again.") \
+X(FW_CANCELLED, "Update cancelled. Nothing was changed.") \
+X(FW_ERR_LINK, "Lost the connection to the Host. Nothing was changed. Try again.") \
+X(FW_ERR_TIMEOUT, "The Host took too long to send the firmware. Nothing was changed. Try again.") \
+X(FW_ERR_NO_FILE, "No firmware file on the Host at the firmware path (Settings \xe2\x80\xba Host).") \
+X(FW_ERR_HOST_READ, "The Host couldn't read the firmware file.") \
+X(FW_ERR_NOT_APP, "That file isn't Claude Companion firmware for the Tab5.") \
+X(FW_ERR_TOO_BIG, "That firmware is too large for the Tab5's update slot.") \
+X(FW_ERR_CORRUPT, "The firmware file is damaged. Build it again on the Host.") \
+X(FW_ERR_CHANGED, "The file on the Host changed during the download. Try again.") \
+X(FW_ERR_WRITE, "Writing the update failed. The current version stays installed.") \
+X(FW_ERR_BATTERY, "Charge the Tab5 to 30 % or plug it in, then update.") \
+X(FW_ERR_BATTERY_UNKNOWN, "Checking the battery. Try again in a few seconds.") \
+X(FW_ERR_BUSY_SESSION, "Close the session first, then update.") \
+X(FW_ERR_BUSY_VOICE, "Wait for voice input to finish, then update.") \
+X(FW_ERR_BUSY, "An update is already running.") \
+X(FW_ERR_NO_MEMORY, "Not enough memory for the update. Restart the Tab5 and try again.") \
+X(FW_ERR_PENDING, "The new version is still checking in with the Host. Try again in a few minutes.") \
+X(FW_ERR_NO_ROLLBACK, "Updates are off: this Tab5's bootloader can't go back. Flash it once over USB.") \
+X(SET_FW_ROLLBACK_OFF, "Rollback off") \
+X(SET_FW_LAYOUT_OLD, "Old partition table") \
+X(FW_ERR_LAYOUT, "Updates are off: the partition table is old. Flash this build once over USB.") \
+X(FW_TOO_LATE, "Too late to cancel: the Tab5 is switching to the new version.") \
+X(FW_BOOTLOOP_ALONE, "Restarting repeatedly; no earlier version to go back to. Flash a good build over USB.") \
+X(FW_ERR_GOING_BACK, "Already going back to the previous version.") \
+X(FW_BOOTLOOP_BOTH, "Both versions keep restarting. Flash a good build over USB (README \xe2\x80\xba Update over Wi-Fi).") \
+X(FW_ROLLBACK_FAILED, "The new version can't reach the Host and the Tab5 couldn't go back; it keeps this version.") \
+X(SET_FW_UPDATE, "Update firmware") \
+X(SET_FW_CHECK, "Check") \
+X(SET_FW_CHECKING, "Checking\xe2\x80\xa6") \
+X(SET_FW_UP_TO_DATE, "Up to date") \
+X(SET_FW_AVAILABLE, "%s available") \
+X(SET_FW_AVAILABLE_OLDER, "%s (older) available") \
+X(SET_FW_PREVIOUS, "Previous version") \
+X(SET_FW_GO_BACK, "Go back") \
+X(SET_FW_NOTE, "Builds come from the Host over SSH (Settings \xe2\x80\xba Host \xe2\x80\xba Firmware file on Host). See README \xe2\x80\xba Update over Wi-Fi.") \
+X(SET_FW_PATH, "Firmware file on Host") \
+X(SET_FW_PATH_BAD, "Use only letters, digits and _ . / ~ - (1 to 63 characters), not starting with -") \
+X(SET_FW_PATH_PH, "~/.local/share/claude-companion/claude_companion.bin") \
+X(FW_CONFIRM_Q, "Install %s?") \
+X(FW_CONFIRM_BODY, "The Tab5 downloads it from the Host, checks it and restarts. It takes about a minute. If the new version doesn't start, the Tab5 goes back to %s by itself.") \
+X(FW_CONFIRM_OLDER, "This is older than the running version.") \
+X(FW_INSTALL, "Install") \
+X(FW_TITLE, "Updating firmware") \
+X(FW_PHASE_DOWNLOAD, "Downloading from the Host") \
+X(FW_PHASE_CHECK, "Checking the download") \
+X(FW_PHASE_WRITE, "Writing") \
+X(FW_PHASE_VERIFY, "Checking what was written") \
+X(FW_PHASE_RESTART, "Restarting\xe2\x80\xa6") \
+X(FW_BYTES, "%s \xc2\xb7 %d %%") \
+X(FW_HINT, "Keep the Tab5 on. Esc cancels; nothing changes until the restart.") \
+X(FW_UPDATED, "Updated to %s") \
+X(FW_ROLLED_BACK, "The update to %s didn't start properly, so the Tab5 went back to %s.") \
+X(FW_ROLLING_BACK, "The new version can't reach the Host. Going back to %s\xe2\x80\xa6") \
+X(FW_BOOTLOOP, "The Tab5 kept restarting, so it went back to %s.") \
+X(FW_GO_BACK_Q, "Go back to %s?") \
+X(FW_GO_BACK_BODY, "The Tab5 restarts into the version it ran before the last update.")
 
 typedef enum {
 #define X(id, en) STR_##id,
