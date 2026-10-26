@@ -522,6 +522,7 @@ fw_out_t fwu_start(void) { return fwu_start_expect(NULL); }
 bool fwu_cancel(void) { s_fw_cancel_calls++; return s_pv_fw_phase != FWU_RESTARTING; }
 bool fwu_pending(void) { return false; }
 bool fwu_rollback_ok(void) { return env_int("PREVIEW_FW_ROLLBACK", 1) != 0; }
+bool fwu_layout_ok(void) { return env_int("PREVIEW_FW_LAYOUT", 1) != 0; }
 bool fwu_busy(void) { return s_pv_fw_phase != FWU_IDLE; }
 void fwu_status(fwu_status_t *o) {
     o->phase = s_pv_fw_phase;
@@ -2573,6 +2574,21 @@ static void tap(lv_display_t *d, lv_indev_t *in, int x, int y);
 static bool pv_fw_about(lv_display_t *d, lv_obj_t *s, const char *click, const char *name, int *r) {
     lv_obj_t *panel = settings_panel(s), *top = lv_layer_top();
     const char *m = pv_fw_mode();
+    if (!click[0] && !env_int("PREVIEW_FW_LAYOUT", 1)) {
+        /* round 2, N8: an old partition table has its own diagnosis, not "Rollback off" */
+        lv_obj_t *row = row_labeled(panel, "Update firmware");
+        lv_obj_t *v = row ? ui_srow_value(row) : NULL;
+        if (!v || strcmp(lv_label_get_text(v), "Old partition table") || !label_red(v) || s_fw_check_calls ||
+            find_label_has(panel, "Rollback off", 0)) {
+            printf("check %s: FAIL Old partition table not shown, or a check ran\n", name); *r = 1; return true;
+        }
+        lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (!toast_whole(top, tr(STR_FW_ERR_LAYOUT)) || s_fw_check_calls) {
+            printf("check %s: FAIL a tap didn't refuse with the layout copy\n", name); *r = 1; return true;
+        }
+        lv_obj_clean(top);
+        return false;
+    }
     if (!click[0] && !env_int("PREVIEW_FW_ROLLBACK", 1)) {
         /* fix C1: Rollback off on the row (red) and the Version note; no check; a tap refuses */
         lv_obj_t *row = row_labeled(panel, "Update firmware");
@@ -2788,6 +2804,7 @@ static int settings_case(lv_display_t *d, int section) {
     if (env_int("PREVIEW_FW_PREV", 0)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-prev");
     if (getenv("PREVIEW_FW_RESTAGE")) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-restaged");
     if (!env_int("PREVIEW_FW_ROLLBACK", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-norollback");
+    if (!env_int("PREVIEW_FW_LAYOUT", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-oldlayout");
     preview_sessions_load();
     ui_nav_home(); step(d,200);
     ui_nav_push(ui_settings_create, NULL); step(d,200);

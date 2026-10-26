@@ -47,6 +47,7 @@ PV_ENV="PREVIEW_FW_CHECK=newer"; PV_ENV2="PREVIEW_FW_PREV=1"; run settings 5; PV
 for m in newer older; do PV_ENV="PREVIEW_FW_CHECK=$m"; PV_ENV2="PREVIEW_CLICK=Update firmware"; run settings 5; done; PV_ENV=; PV_ENV2=
 PV_ENV="PREVIEW_FW_PREV=1"; PV_ENV2="PREVIEW_CLICK=Previous version"; run settings 5; PV_ENV=; PV_ENV2=
 PV_ENV="PREVIEW_FW_CHECK=newer"; PV_ENV2="PREVIEW_FW_ROLLBACK=0"; run settings 5; PV_ENV=; PV_ENV2=
+PV_ENV="PREVIEW_FW_CHECK=newer"; PV_ENV2="PREVIEW_FW_LAYOUT=0"; run settings 5; PV_ENV=; PV_ENV2=
 # fix I3: a different (older) build staged while the confirm was open: a new confirm, nothing starts on the old one
 PREVIEW_FW_RESTAGE=1 PREVIEW_FW_CHECK=newer PREVIEW_CLICK="Update firmware" ./preview settings 5 >case.log 2>&1 \
     && grep -E '^check ' case.log || { echo "FAIL: preview restaged confirm"; tail -5 case.log; fail=1; }
