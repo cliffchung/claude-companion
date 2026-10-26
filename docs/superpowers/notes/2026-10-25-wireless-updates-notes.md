@@ -328,3 +328,77 @@ well at arm's length; whether 30 % is the right battery floor; whether the defau
   `test_updates_state_text` covers the printed words, and `fw_console.c` prints `fw_updates_state_text`.
 - **R6:** a Tab5 that runs a round-0/1 Plan 6 build and updates over Wi-Fi to this one: no Previous version and no
   guard target until the next update overwrites the old slot. This is expected, not a bug.
+
+## Device pass 1 (2026-10-25): the migration flash and the earlier features' smoke checks
+
+Main at e02ec1a, built in a fresh worktree (`idf.py set-target esp32p4`, then `CONFIG_COMPANION_DEBUG_COMMANDS=y` added
+to the git-ignored `firmware/sdkconfig` and `idf.py reconfigure`). Tab5 on USB, LAN Host link (`my-host.local`),
+Tailscale off. Mid-pass the user cut the pass down to the migration, one smoke check per earlier feature and a
+reduced update set, and asked to stop and report if a smoke check failed. The scroll-key check failed, so **the
+wireless-update gates were not started** (see the table).
+
+### The migration flash (Task 3 Step 5, Task 4 Step 3)
+
+- Before: the old layout (`main_app` 0x20000/15744K, `factory` 0xF80000/512K) and a pre-Plan-6 build without debug
+  verbs. Snapshot S saved to scratch; NVS (0x9000, 0x6000) read to a mode-600 scratch file, MAC checked.
+- Build: image **6,360,736 B** (`1.6.0+e02ec1a`), headroom **1,962,336 B (24 %)** in the 8,323,072 B slot;
+  bootloader 22,816 B; `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`, CP437. `idf.py partition-table`: the five rows of
+  spec §6.4. `flash_args` writes 0x2000, 0x8000, 0xF000 and 0x20000 only.
+- `idf.py -p PORT flash`: the bootloader (22,816 B), the partition table, `ota_data_initial.bin` and the app
+  (6,360,736 B in 27.9 s). Nothing at 0x9000.
+- First boot: `No factory image, trying OTA 0`, app0 loaded, `App version: 1.6.0+e02ec1a`, **`settings v24 -> v25`**,
+  `boot complete in 2886 ms`. Wi-Fi associated with no prompt; the link connected. The second boot (esptool reset)
+  and the third (`reboot`) logged no migration.
+- The partition table read back with esptool equals the build's `partition-table.bin` byte for byte (five rows).
+- `ota status`: `running 1.6.0+e02ec1a (app0, valid), other none (app1, undefined), rollback possible: no,
+  pending: no, bootloop 0` / `updates on, poll subscribers 3 of 6`. `help` has no `ota url`. No `fw/ok_` warning.
+- Snapshot S after the flash and again at the end of the pass: every line equal to the before snapshot (the device
+  pubkey line, the host-key pin fingerprint, the link path and fallback, Tailscale off with its auth key set, the
+  Wi-Fi network, static address off, the whisper paths, the power settings, brightness, time zone, the host cache,
+  the key layout). The only new line is `ota path` at its default. The NVS backup was deleted at the end.
+
+### The earlier features' smoke checks (on this build, test sessions only)
+
+A test row was selected with the debug `companion takeover <id>`, then Ctrl+← to leave, so no real row was ever
+selected by a key; each key followed a screenshot showing a test row.
+
+| Check | Result |
+|---|---|
+| Ctrl+X: the confirm opens ("Stop companion-test-…?", Cancel focused) | pass |
+| Ctrl+X: Right, Down, Up, Left never reach Stop; Enter then cancels, the session keeps running | pass |
+| Ctrl+X: Tab, Enter stops it (`stop <id>: ESP_OK, exit 0`, "Stopped"); the row turns ENDED and stays listed (pinned past the test filter) | pass |
+| Touch: the ⌃X Stop button and the dialog's Stop | pass (a tap 0.8 s after a wake tap did nothing; the next tap worked) |
+| Pane, idle session: the prompt and the reply, no chrome | pass |
+| Pane, busy session: conversation text, no spinner, footer, "Checking for updates" or counters | pass, with findings 2 and 3 |
+| Pane, question session: numbered options, no picks line | pass |
+| Pane, long conversation: text, no chrome | pass (cosmetic: words split at the 62-column edge, a lone final "." row) |
+| **Ctrl+↑ / Ctrl+↓ in a take-over** | **FAIL**: see finding 1 |
+| Mic chip in a take-over (by `power sim touch`): Recording 0:00 / 0:30, red Mic; the Esc chip cancels, nothing typed | pass |
+| `voice test 6` with the Host's `say` voice | pass: TEXT, 48 chars (the phrase's length). Needed the Host's output volume raised for the test (set back after) |
+
+Findings:
+1. **Ctrl+↑ in a take-over does nothing on the device.** The key decodes (`key log`: `type=special key=up
+   mods=ctrl`), is never sent (the input box stays empty), but the view doesn't scroll and the bar, the ⇑ ⇓ chips and
+   "Scrolled back · Live" never show. Tried in two take-overs (a streaming session after about 30 s of output, and a
+   fresh attach of a long finished one). `vt_scroll_view` has nothing to scroll: `scroll_up` pushes a row to
+   scrollback only on a scroll whose top is row 0 and never on the alternate screen, and this Claude Code version
+   draws its take-over with a fixed footer and repaints rows in place, so the vt's scrollback seems to stay empty.
+   Not dug into (the user's rule for this pass). The preview cases pass because they feed a scrolling stream.
+2. Busy pane, transient: "1–9 picks an option" showed beside a busy session whose tail ended in a numbered paragraph
+   list (`sm_tail_options` counts options in any tail, whatever the state).
+3. Busy pane after a long streamed turn: rows with dropped letters ("r flect", "b idge") and the last lines missing.
+   The busy-pane commit documents this (a cell-diff redraw misses cells until a repaint).
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| Migration flash, NVS kept, `settings v24 -> v25` once, `updates on`, table read back | pass |
+| Earlier features (above) | pass except Ctrl+↑/↓ (FAIL) |
+| Touch-only and keyboard-detached checks (soft keyboard layout, Sessions Cancel by touch, no-keyboard hints) | SKIPPED (by the user's choice); PENDING for the user |
+| `ota check`, `ota read-test` rate, the UI update and validation, Previous version, Go back and update again, a corrupt image, a Wi-Fi drop mid-download, the no-validate rollback by reset and by the 180 s timer, `ui heapmin` over one update | not run: the pass stopped at the failed smoke check (the user's rule). PENDING |
+| Battery floor, the 175 s / 180.5 s race steps, repeated runs, power-hold timing, heap sweeps, the boot-loop guard | SKIPPED (by the user's choice) |
+
+End state: `1.6.0+e02ec1a` in app0 (valid, debug verbs on), the five-row table, settings and key unchanged, the link
+connected, Tailscale off, `ota path` and the whisper paths unchanged (default firmware path), no test session left,
+the real staging directory never created, nothing left running on the Host.
