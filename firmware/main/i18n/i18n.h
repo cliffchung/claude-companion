@@ -500,6 +500,12 @@ X(FW_ERR_BUSY_SESSION, "Close the session first, then update.") \
 X(FW_ERR_BUSY_VOICE, "Wait for voice input to finish, then update.") \
 X(FW_ERR_BUSY, "An update is already running.") \
 X(FW_ERR_NO_MEMORY, "Not enough memory for the update. Restart the Tab5 and try again.") \
+X(FW_ERR_PENDING, "The new version is still checking in with the Host. Try again in a few minutes.") \
+X(FW_ERR_NO_ROLLBACK, "Updates are off: this Tab5's bootloader can't go back. Flash it once over USB.") \
+X(SET_FW_ROLLBACK_OFF, "Rollback off") \
+X(FW_TOO_LATE, "Too late to cancel: the Tab5 is switching to the new version.") \
+X(FW_BOOTLOOP_BOTH, "Both versions keep restarting. Flash a good build over USB (README \xe2\x80\xba Update over Wi-Fi).") \
+X(FW_ROLLBACK_FAILED, "The new version can't reach the Host and the Tab5 couldn't go back; it keeps this version.") \
 X(SET_FW_UPDATE, "Update firmware") \
 X(SET_FW_CHECK, "Check") \
 X(SET_FW_CHECKING, "Checking\xe2\x80\xa6") \
@@ -510,6 +516,7 @@ X(SET_FW_PREVIOUS, "Previous version") \
 X(SET_FW_GO_BACK, "Go back") \
 X(SET_FW_NOTE, "Builds come from the Host over SSH (Settings \xe2\x80\xba Host \xe2\x80\xba Firmware file on Host). See README \xe2\x80\xba Update over Wi-Fi.") \
 X(SET_FW_PATH, "Firmware file on Host") \
+X(SET_FW_PATH_BAD, "Use only letters, digits and _ . / ~ - (1 to 63 characters), not starting with -") \
 X(SET_FW_PATH_PH, "~/.local/share/claude-companion/claude_companion.bin") \
 X(FW_CONFIRM_Q, "Install %s?") \
 X(FW_CONFIRM_BODY, "The Tab5 downloads it from the Host, checks it and restarts. It takes about a minute. If the new version doesn't start, the Tab5 goes back to %s by itself.") \

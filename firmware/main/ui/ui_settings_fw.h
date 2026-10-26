@@ -13,6 +13,7 @@ void ui_settings_fw_about(lv_obj_t *panel);
 /* The Sessions worker's job bodies (P6-16: never on the LVGL task). */
 void ui_fw_job_check(void);
 void ui_fw_job_start(void);
+void ui_fw_job_go_back(void);
 /* Sessions' 300 ms tick: a boot note (Updated, rolled back, boot loop, rolling back) toasts once, 6 s. */
 void ui_fw_note_tick(void);
 #ifdef __cplusplus

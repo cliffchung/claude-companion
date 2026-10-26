@@ -50,7 +50,7 @@ static void refresh(void)
     if (st.phase == FWU_IDLE) {
         /* the update ended: close, then the outcome (P6-17) */
         fwu_note_t n;
-        bool got = fwu_take_note(&n);
+        bool got = fwu_take_result(&n);   /* fix M3: a boot note waiting for Sessions stays */
         close_screen();
         if (got && n.kind == FWU_NOTE_RESULT && fw_out_text(n.out) != STR_COUNT) ui_toast_ms(tr(fw_out_text(n.out)), 6000);
         ui_settings_refill();   /* About's row shows the new state (nothing when Settings isn't on top) */
@@ -72,7 +72,7 @@ static void refresh(void)
 
 static void tick_cb(lv_timer_t *t) { (void)t; if (s_ov) refresh(); }
 
-static void cancel_cb(lv_event_t *e) { (void)e; fwu_cancel(); }
+static void cancel_cb(lv_event_t *e) { (void)e; if (!fwu_cancel()) ui_toast(tr(STR_FW_TOO_LATE)); }   /* core M6 */
 
 static void deleted_cb(lv_event_t *e)
 {

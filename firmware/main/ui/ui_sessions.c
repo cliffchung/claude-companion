@@ -90,7 +90,7 @@ typedef struct {
     int64_t at_ms;
 } note_t;
 
-typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY, JOB_VOICE_CHECK, JOB_STOP, JOB_FW_CHECK, JOB_FW_START } job_type_t;
+typedef enum { JOB_LOGS, JOB_PASTE, JOB_CHECK, JOB_FORGET_KEY, JOB_TRUST_KEY, JOB_VOICE_CHECK, JOB_STOP, JOB_FW_CHECK, JOB_FW_START, JOB_FW_GO_BACK } job_type_t;
 typedef struct {
     job_type_t type;
     unsigned token;        /* which request this is (actions only) */
@@ -415,6 +415,7 @@ static void run_job(const job_t *j)
     if (j->type == JOB_VOICE_CHECK) { run_voice_check(); return; }
     if (j->type == JOB_FW_CHECK) { ui_fw_job_check(); return; }   /* Plan 6 (P6-16) */
     if (j->type == JOB_FW_START) { ui_fw_job_start(); return; }
+    if (j->type == JOB_FW_GO_BACK) { ui_fw_job_go_back(); return; }
     cc_settings_claude_path(claude, sizeof(claude));
     if (j->type == JOB_STOP) { run_stop(j, claude); return; }
     if (j->type == JOB_LOGS) {
@@ -599,6 +600,7 @@ static bool post_fw_job(job_type_t type)
 }
 bool ui_sessions_fw_check(void) { return post_fw_job(JOB_FW_CHECK); }
 bool ui_sessions_fw_start(void) { return post_fw_job(JOB_FW_START); }
+bool ui_sessions_fw_go_back(void) { return post_fw_job(JOB_FW_GO_BACK); }
 
 bool ui_sessions_voice_check(void)
 {

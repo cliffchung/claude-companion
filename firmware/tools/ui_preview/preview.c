@@ -390,7 +390,7 @@ int cc_poll_snapshot(cc_session_t *out, int cap) {
     if (n > 0) memcpy(out, s_preview_sessions, sizeof(cc_session_t) * n);
     return n;
 }
-void cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { s_poll_cb = cb; s_poll_ctx = ctx; }
+bool cc_poll_subscribe(cc_sessions_cb_t cb, void *ctx) { s_poll_cb = cb; s_poll_ctx = ctx; return true; }
 void cc_poll_set_rate(int s) { (void)s; }
 void cc_poll_set_floor(int s) { (void)s; }
 uint32_t cc_poll_generation(void) { return s_poll_gen; }
@@ -484,12 +484,13 @@ esp_err_t cc_link_voice_check(int *rc) {
    PREVIEW_FW_PHASE=download|check|write|readback|restart with PREVIEW_FW_PCT the update's progress. */
 static char s_pv_fw_path[64] = CC_FW_PATH_DEFAULT;
 const char *cc_settings_fw_path(char *o, size_t cap) { snprintf(o, cap, "%s", s_pv_fw_path); return o; }
-bool cc_link_set_fw_path(const char *p) { if (!cc_path_valid(p)) return false; snprintf(s_pv_fw_path, sizeof(s_pv_fw_path), "%s", p); return true; }
+bool cc_link_set_fw_path(const char *p) { if (!cc_fw_path_valid(p)) return false; snprintf(s_pv_fw_path, sizeof(s_pv_fw_path), "%s", p); return true; }
 static const char *pv_fw_mode(void) { return env_str("PREVIEW_FW_CHECK", "none"); }
 bool pv_fw_check_hold(void) { return !strcmp(pv_fw_mode(), "checking"); }
 static int s_fw_check_calls, s_fw_start_calls, s_fw_cancel_calls, s_fw_goback_calls;
 static fwu_phase_t s_pv_fw_phase = FWU_IDLE;
 static fwu_note_t s_pv_fw_note; static bool s_pv_fw_note_ready;
+static bool s_pv_fw_restaged;   /* fix I3: another build was staged after the confirm opened */
 static bool pv_fw_fill(fwu_check_t *c) {
     const char *m = pv_fw_mode();
     memset(c, 0, sizeof(*c));
@@ -503,12 +504,24 @@ static bool pv_fw_fill(fwu_check_t *c) {
     else if (!strcmp(m, "nofile")) { c->out = FW_OUT_NO_FILE; c->rc = 120; }
     else if (!strcmp(m, "notapp")) c->out = FW_OUT_NOT_APP;
     else return false;
+    if (s_pv_fw_restaged) {
+        c->out = FW_OUT_OK; c->offer = FW_OFFER_OLDER;
+        snprintf(c->desc.version, sizeof(c->desc.version), "1.5.0+0ffee00");
+        snprintf(c->sha, sizeof(c->sha), "0ffee0000123456789abcdef0123456789abcdef0123456789abcdef01234567");
+    }
     return true;
 }
 void fwu_check(fwu_check_t *o) { s_fw_check_calls++; fwu_check_t c; pv_fw_fill(&c); if (o) *o = c; }
 bool fwu_last_check(fwu_check_t *o) { fwu_check_t c; if (!pv_fw_fill(&c)) return false; if (o) *o = c; return true; }
-fw_out_t fwu_start(void) { s_fw_start_calls++; s_pv_fw_phase = FWU_DOWNLOADING; return FW_OUT_OK; }
-void fwu_cancel(void) { s_fw_cancel_calls++; }
+fw_out_t fwu_start_expect(const char *sha) {
+    fwu_check_t c;
+    if (!pv_fw_fill(&c) || (sha && !fw_confirm_matches(sha, c.sha))) return FW_OUT_CHANGED;
+    s_fw_start_calls++; s_pv_fw_phase = FWU_DOWNLOADING; return FW_OUT_OK;
+}
+fw_out_t fwu_start(void) { return fwu_start_expect(NULL); }
+bool fwu_cancel(void) { s_fw_cancel_calls++; return s_pv_fw_phase != FWU_RESTARTING; }
+bool fwu_pending(void) { return false; }
+bool fwu_rollback_ok(void) { return env_int("PREVIEW_FW_ROLLBACK", 1) != 0; }
 bool fwu_busy(void) { return s_pv_fw_phase != FWU_IDLE; }
 void fwu_status(fwu_status_t *o) {
     o->phase = s_pv_fw_phase;
@@ -524,13 +537,15 @@ static void pv_fw_post(fwu_note_kind_t kind, fw_out_t out, const char *a, const 
 }
 bool fwu_take_note(fwu_note_t *o) { if (!s_pv_fw_note_ready) return false; *o = s_pv_fw_note; s_pv_fw_note_ready = false; return true; }
 bool fwu_take_boot_note(fwu_note_t *o) { if (!s_pv_fw_note_ready || s_pv_fw_note.kind == FWU_NOTE_RESULT) return false; return fwu_take_note(o); }
+bool fwu_take_result(fwu_note_t *o) { if (!s_pv_fw_note_ready || s_pv_fw_note.kind != FWU_NOTE_RESULT) return false; return fwu_take_note(o); }
+bool fwu_peek_note(fwu_note_t *o) { *o = s_pv_fw_note; return s_pv_fw_note.gen != 0; }
 const char *fwu_running_version(void) { return "1.6.0+80ab00e"; }
 bool fwu_previous(fw_desc_t *o) {
     if (!env_int("PREVIEW_FW_PREV", 0)) return false;
     if (o) { memset(o, 0, sizeof(*o)); snprintf(o->version, sizeof(o->version), "1.5.9+0c1d2e3"); }
     return true;
 }
-esp_err_t fwu_go_back(void) { s_fw_goback_calls++; return ESP_ERR_NOT_FOUND; }
+fw_out_t fwu_go_back(void) { s_fw_goback_calls++; return FW_OUT_WRITE; }
 /* PREVIEW_LOG=long: a 300-character line with no spaces, CJK and a numbered list (Review Focus 3).
    PREVIEW_LOG=screen:<fixture>: a captured `claude logs` stream from the host-test fixtures (output-pane fix). */
 static int s_paste_calls;
@@ -2558,6 +2573,21 @@ static void tap(lv_display_t *d, lv_indev_t *in, int x, int y);
 static bool pv_fw_about(lv_display_t *d, lv_obj_t *s, const char *click, const char *name, int *r) {
     lv_obj_t *panel = settings_panel(s), *top = lv_layer_top();
     const char *m = pv_fw_mode();
+    if (!click[0] && !env_int("PREVIEW_FW_ROLLBACK", 1)) {
+        /* fix C1: Rollback off on the row (red) and the Version note; no check; a tap refuses */
+        lv_obj_t *row = row_labeled(panel, "Update firmware");
+        lv_obj_t *v = row ? ui_srow_value(row) : NULL;
+        if (!v || strcmp(lv_label_get_text(v), "Rollback off") || !label_red(v) || s_fw_check_calls ||
+            !find_label_has(row_labeled(panel, "Version"), "Rollback off", 0)) {
+            printf("check %s: FAIL Rollback off not shown, or a check ran\n", name); *r = 1; return true;
+        }
+        lv_obj_send_event(row, LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (!toast_whole(top, tr(STR_FW_ERR_NO_ROLLBACK)) || s_fw_check_calls) {
+            printf("check %s: FAIL a tap didn't refuse (%d checks)\n", name, s_fw_check_calls); *r = 1; return true;
+        }
+        lv_obj_clean(top);
+        return false;
+    }
     if (!click[0]) {
         lv_obj_t *row = row_labeled(panel, "Update firmware");
         if (!row) { printf("check %s: FAIL no Update firmware row\n", name); *r = 1; return true; }
@@ -2603,9 +2633,29 @@ static bool pv_fw_about(lv_display_t *d, lv_obj_t *s, const char *click, const c
         /* Esc cancels: nothing starts */
         pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ESC }); step(d, 200);
         assert(!find_label(top, "Install 1.6.1+3f2a9c1?", false) && s_fw_start_calls == 0);
-        /* again, Enter: Install has the first key, the update starts once and the progress screen opens */
+        /* again: opened by a key Cancel has the focus, so Enter alone cancels; the arrows never reach Install */
         lv_obj_send_event(find_clickable_shown(settings_panel(s), "Update firmware"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_RIGHT }); step(d, 20);
         pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 200);
+        if (s_fw_start_calls != 0 || find_label(top, "Install 1.6.1+3f2a9c1?", false)) {
+            printf("check %s: FAIL an arrow then Enter installed or left the confirm open\n", name); *r = 1; return true;
+        }
+        /* Tab reaches Install; Enter starts it once and the progress screen opens */
+        lv_obj_send_event(find_clickable_shown(settings_panel(s), "Update firmware"), LV_EVENT_CLICKED, NULL); step(d, 200);
+        if (getenv("PREVIEW_FW_RESTAGE")) s_pv_fw_restaged = true;   /* fix I3: a different build staged meanwhile */
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); step(d, 20);
+        pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 200);
+        if (s_pv_fw_restaged) {
+            /* nothing starts; a new confirm names the new build, with the older line */
+            lv_obj_t *nb = find_label_has(top, "1.6.0+80ab00e by itself", 0);
+            if (s_fw_start_calls != 0 || !find_label(top, "Install 1.5.0+0ffee00?", false) || !nb ||
+                strncmp(lv_label_get_text(nb), "This is older than the running version.\n", 40)) {
+                printf("check %s: FAIL a restaged build: %d starts, no new confirm\n", name, s_fw_start_calls); *r = 1; return true;
+            }
+            *r |= pv_run_checks(d, s, name, false, 0);
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); step(d, 20);
+            pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 200);
+        }
         if (s_fw_start_calls != 1 || !ui_fwupdate_shown()) {
             printf("check %s: FAIL Enter: %d starts, progress %s\n", name, s_fw_start_calls, ui_fwupdate_shown() ? "shown" : "not shown"); *r = 1; return true;
         }
@@ -2618,8 +2668,14 @@ static bool pv_fw_about(lv_display_t *d, lv_obj_t *s, const char *click, const c
         printf("check %s: FAIL no Go back confirm\n", name); *r = 1; return true;
     }
     *r |= pv_run_checks(d, s, name, false, 0);
+    /* opened by touch: no focus until a key; Tab goes Cancel, then Go back; it runs on the worker and the stub's
+       failure toasts */
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); step(d, 20);
+    pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_TAB }); step(d, 20);
     pv_key((key_event_t){ .type = KEY_EV_SPECIAL, .key = SK_ENTER }); step(d, 200);
-    if (s_fw_goback_calls != 1) { printf("check %s: FAIL go back called %d times\n", name, s_fw_goback_calls); *r = 1; }
+    if (s_fw_goback_calls != 1 || !find_label(top, tr(STR_FW_ERR_WRITE), false)) {
+        printf("check %s: FAIL go back called %d times, or no failure toast\n", name, s_fw_goback_calls); *r = 1;
+    }
     return true;
 }
 
@@ -2730,6 +2786,8 @@ static int settings_case(lv_display_t *d, int section) {
     if (env_int("PREVIEW_VOICE_RC", 0)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-rc%d", env_int("PREVIEW_VOICE_RC", 0));
     if (getenv("PREVIEW_FW_CHECK")) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-fw%s", pv_fw_mode());
     if (env_int("PREVIEW_FW_PREV", 0)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-prev");
+    if (getenv("PREVIEW_FW_RESTAGE")) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-restaged");
+    if (!env_int("PREVIEW_FW_ROLLBACK", 1)) snprintf(name + strlen(name), sizeof(name) - strlen(name), "-norollback");
     preview_sessions_load();
     ui_nav_home(); step(d,200);
     ui_nav_push(ui_settings_create, NULL); step(d,200);
@@ -2993,7 +3051,7 @@ static int settings_case(lv_display_t *d, int section) {
         lv_obj_t *ta = find_shown(top, &lv_textarea_class);
         assert(ta && !strcmp(lv_textarea_get_text(ta), CC_FW_PATH_DEFAULT));
         prompt_answer(d, "/a b");
-        assert(find_label(top, tr(STR_SET_CLAUDE_PATH_BAD), false));
+        assert(find_label(top, tr(STR_SET_FW_PATH_BAD), false));
         assert(!strcmp(s_pv_fw_path, CC_FW_PATH_DEFAULT));
         lv_obj_clean(top); step(d, 200);
         lv_obj_send_event(find_clickable_shown(settings_panel(s), "Firmware file on Host"), LV_EVENT_CLICKED, NULL); step(d, 200);

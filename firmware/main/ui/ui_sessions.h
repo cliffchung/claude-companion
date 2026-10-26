@@ -29,6 +29,7 @@ bool ui_sessions_voice_check(void);
    False when the job couldn't be queued. */
 bool ui_sessions_fw_check(void);
 bool ui_sessions_fw_start(void);
+bool ui_sessions_fw_go_back(void);   /* Previous version › Go back (fix M1) */
 /* The voice meter's 100 ms timer (P5-4): non-NULL only while recording with Sessions shown (the preview's timer check). */
 lv_timer_t *ui_sessions_voice_meter(void);
 /* Why the Host link is down, in Host words with no "(retry in Ns)": "No Host set up", "Can't reach <name>. Is it

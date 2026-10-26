@@ -10,6 +10,7 @@
 #include "ui_sessions.h"
 #include "ui_host_form.h"
 #include "ui_settings_fw.h"
+#include "ota/fw_update.h"
 #include "settings/settings.h"
 #include "settings/kbd_colour.h"
 #include "sys/sysinfo.h"
@@ -649,6 +650,7 @@ static void fill_about(lv_obj_t *p)
 {
     char v[96];
     snprintf(v, sizeof(v), "%s \xc2\xb7 %s", sysinfo_app_version(), esp_app_get_description()->date);
+    if (!fwu_rollback_ok()) snprintf(v + strlen(v), sizeof(v) - strlen(v), " \xc2\xb7 %s", tr(STR_SET_FW_ROLLBACK_OFF));   /* fix C1 */
     ui_srow(p, UI_ROW_INFO, tr(STR_SET_VERSION), v, NULL, NULL);
     ui_settings_fw_about(p);   /* Plan 6: Update firmware, Previous version */
     ui_section_header(p, tr(STR_SET_CREDITS));
