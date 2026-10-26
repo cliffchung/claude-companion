@@ -77,3 +77,6 @@ typedef int (*sm_cells_fn)(uint32_t cp, void *ctx);
 int sm_wrap_tail_fn(const char *in, int cols, int rows, char *out, size_t cap, sm_cells_fn fn, void *ctx);
 /* The highest number of a trailing numbered list of at least 2 items (^\s*(❯\s*)?\d+\.), else 0. */
 int sm_tail_options(const char *tail);
+/* The action row's "1–N picks an option" hint: only for a session that can take an answer (NEEDS YOU or IDLE), never
+   one that is working, whose numbered output is just output; and only for a list of at least 2 options. */
+bool sm_picks_hint(cc_state_t state, int options);

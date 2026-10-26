@@ -362,6 +362,11 @@ static int line_number(const char *s, const char *end)
     return (d && s < end && *s == '.') ? v : 0;
 }
 
+bool sm_picks_hint(cc_state_t state, int options)
+{
+    return options >= 2 && (state == CC_NEEDS_YOU || state == CC_IDLE);
+}
+
 int sm_tail_options(const char *tail)
 {
     if (!tail) return 0;

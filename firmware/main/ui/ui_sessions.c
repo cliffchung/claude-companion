@@ -887,7 +887,7 @@ static void pane_update(void)
         case NOTE_VOICE:          nt = n->text; break;
         default: break;
         }
-    } else if (act && s_options >= 2) {
+    } else if (act && sm_picks_hint(s->state, s_options)) {   /* not while it works: its numbered output isn't a question */
         snprintf(b, sizeof(b), "1\xe2\x80\x93%d %s", s_options, tr(STR_SES_PICKS_OPTION));
         nt = b;
     }

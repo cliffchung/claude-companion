@@ -455,7 +455,8 @@ YOU, and doesn't light anything.
   detaches. It types only when the session's input box is empty and ready. If the session shows a
   permission dialog or anything else, it doesn't type, and says "Open it to approve" or "Open the
   session to answer" instead. A digit is typed like any other text and needs Enter, so a stray key
-  never picks an option.
+  never picks an option. "1–N picks an option" shows under a session that can take an answer (it
+  needs you, or it is idle) whose output ends in a numbered list; never under a working one.
 - **Open (take over):** **Ctrl+O**, **Enter** on an empty field, or a tap on the already selected
   row opens the session full screen. This is Claude Code's own screen over an exec'd `claude
   attach <id>`: never a login shell, and no tmux. Every key goes to Claude Code, Esc and Ctrl+C

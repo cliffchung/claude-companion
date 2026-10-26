@@ -374,6 +374,20 @@ static void test_wrap_crlf(void)
     TEST_ASSERT_EQUAL_STRING("ab\ncd", o);
 }
 
+/* The picks hint is for a session that can take an answer: NEEDS YOU or IDLE, never WORKING (a numbered paragraph
+   list in a busy session's output is not a question), DONE or ENDED. */
+static void test_picks_hint_state(void)
+{
+    TEST_ASSERT_TRUE(sm_picks_hint(CC_NEEDS_YOU, 3));
+    TEST_ASSERT_TRUE(sm_picks_hint(CC_IDLE, 2));
+    TEST_ASSERT_FALSE(sm_picks_hint(CC_WORKING, 3));
+    TEST_ASSERT_FALSE(sm_picks_hint(CC_WORKING, sm_tail_options("Plan\n1. Read the code\n2. Fix it\n3. Test it\n")));
+    TEST_ASSERT_FALSE(sm_picks_hint(CC_DONE, 3));
+    TEST_ASSERT_FALSE(sm_picks_hint(CC_ENDED, 3));
+    TEST_ASSERT_FALSE(sm_picks_hint(CC_NEEDS_YOU, 1));
+    TEST_ASSERT_FALSE(sm_picks_hint(CC_IDLE, 0));
+}
+
 static void test_tail_options(void)
 {
     TEST_ASSERT_EQUAL(3, sm_tail_options("Pick\n1. A\n2. B\n3. C\n"));
@@ -542,6 +556,7 @@ int main(void)
     RUN_TEST(test_wrap_short_buffer_drops_oldest);
     RUN_TEST(test_wrap_crlf);
     RUN_TEST(test_tail_options);
+    RUN_TEST(test_picks_hint_state);
     RUN_TEST(test_hide_finished_tests);
     RUN_TEST(test_hide_interactive);
     RUN_TEST(test_meta_marks_interactive);
