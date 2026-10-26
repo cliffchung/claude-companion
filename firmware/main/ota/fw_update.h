@@ -40,9 +40,11 @@ const char *fwu_phase_name(fwu_phase_t p);      /* "idle", "downloading", ... (c
 
 /* One outcome slot (P6-17): the update's end (CANCELLED, errors) or a boot note, with the version strings it needs.
    True once per outcome. ROLLING_BACK is the 3 s notice before the 180 s rollback; ROLLBACK_FAILED its failure;
-   BOOTLOOP_BOTH: the guard gave up (both slots crash early, or no other slot). */
+   BOOTLOOP_BOTH: the guard gave up after a fallback (both slots crash early); BOOTLOOP_ALONE: it gave up with nothing to
+   go back to (no runnable other slot, round 3 R5). */
 typedef enum { FWU_NOTE_RESULT, FWU_NOTE_UPDATED, FWU_NOTE_ROLLED_BACK, FWU_NOTE_BOOTLOOP,
-               FWU_NOTE_ROLLING_BACK, FWU_NOTE_ROLLBACK_FAILED, FWU_NOTE_BOOTLOOP_BOTH } fwu_note_kind_t;
+               FWU_NOTE_ROLLING_BACK, FWU_NOTE_ROLLBACK_FAILED, FWU_NOTE_BOOTLOOP_BOTH,
+               FWU_NOTE_BOOTLOOP_ALONE } fwu_note_kind_t;
 typedef struct { uint32_t gen; fwu_note_kind_t kind; fw_out_t out; char ver_a[33], ver_b[33]; } fwu_note_t;
 bool fwu_take_note(fwu_note_t *out);
 /* Every kind but RESULT (Sessions' tick: a RESULT belongs to the progress screen or the console). */
@@ -64,8 +66,8 @@ void fwu_link_started(void);
    for its ELF SHA-256 (the build was valid and running there; round 2, N2). */
 bool fwu_previous(fw_desc_t *out);
 /* Go back (blocking: a worker or the console, never the LVGL task): the gates (busy, session, voice, battery). On a
-   pending image: the claim on it (FW_OUT_BUSY if the 180 s rollback has it), then the rollback itself (round 2,
-   N1). Otherwise esp_image_verify on the other slot, a trusted switch and link_down_restart. Never returns on success; otherwise
+   pending image (PENDING_VERIFY in otadata): the claim on it (FW_OUT_GOING_BACK if the 180 s rollback or a
+   mark-valid has it, round 3 R1), then the rollback itself (round 2, N1); a failure re-arms the 180 s timer. Otherwise esp_image_verify on the other slot, a trusted switch and link_down_restart. Never returns on success; otherwise
    the gate's outcome, or FW_OUT_WRITE when the slot isn't runnable or doesn't verify. */
 fw_out_t fwu_go_back(void);
 

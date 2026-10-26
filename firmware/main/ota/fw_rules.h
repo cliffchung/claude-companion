@@ -119,17 +119,23 @@ bool fw_switch_trusted(bool entry_valid);
    claude_companion descriptor, and the fw/ok_<slot> marker (written when that build was valid and running) naming
    its ELF SHA-256. */
 bool fw_previous_ok(bool entry_valid, bool project_ok, bool marker_matches);
-/* round 2, N1: Go back on a pending image is the rollback itself (mark it invalid: the previous slot keeps its
-   VALID entry); otherwise a switch. */
-typedef enum { FW_GB_SWITCH, FW_GB_ROLLBACK } fw_go_back_t;
-fw_go_back_t fw_go_back_mode(bool pending);
+/* Go back (round 2 N1, round 3 R1). otadata_pending: the running entry is PENDING_VERIFY in otadata (the truth, not
+   the in-memory flag, which the 180 s rollback clears while it still waits to act); claim_won: this caller took the
+   pending claim. Pending and won: ROLLBACK (Go back is the rollback); pending and lost: BUSY (the rollback or a
+   mark-valid already acts; never a switch, which would let the rollback invalidate the switch's target); not
+   pending: SWITCH. */
+typedef enum { FW_GB_SWITCH, FW_GB_ROLLBACK, FW_GB_BUSY } fw_go_back_t;
+fw_go_back_t fw_go_back_decide(bool otadata_pending, bool claim_won);
+/* `ota status`'s updates word (round 3 R3): "on", "off (old partition table)" or "off (rollback off)". */
+const char *fw_updates_state_text(bool layout_ok, bool rollback_ok);
 /* round 2, N1: the claim on a pending image (the rollback task, Go back, mark-valid): test-and-clear, so exactly one
    claimant wins. The firmware calls it under its lock. */
 bool fw_pending_claim(bool *pending);
-/* The boot-loop guard's step (core M7): under FW_BOOTLOOP_N early crashes NONE; else, after FW_BOOTLOOP_MAX_FALLBACKS
-   switches without a stable boot in between, or with no runnable other slot, GIVE_UP (stop, show a notice); else
-   SWITCH. fallbacks resets when a boot lasts FW_BOOTLOOP_EARLY_MS. */
-typedef enum { FW_LOOP_NONE, FW_LOOP_SWITCH, FW_LOOP_GIVE_UP } fw_loop_t;
+/* The boot-loop guard's step (core M7): under FW_BOOTLOOP_N early crashes NONE; after FW_BOOTLOOP_MAX_FALLBACKS
+   switches without a stable boot in between GIVE_UP_BOTH (both versions crash: stop); with no runnable other slot
+   GIVE_UP_ALONE (nothing to go back to, round 3 R5: a different notice); else SWITCH. fallbacks resets when a boot
+   lasts FW_BOOTLOOP_EARLY_MS. */
+typedef enum { FW_LOOP_NONE, FW_LOOP_SWITCH, FW_LOOP_GIVE_UP_BOTH, FW_LOOP_GIVE_UP_ALONE } fw_loop_t;
 fw_loop_t fw_bootloop_action(int count, bool other_runnable, int fallbacks);
 /* fix I3: the staged image is still the one the confirm showed (same 64-hex SHA-256; false for NULL or empty). */
 bool fw_confirm_matches(const char *shown_sha, const char *now_sha);
@@ -143,7 +149,8 @@ bool fw_bootloop_trip(int count, bool other_runnable);   /* count >= FW_BOOTLOOP
 typedef enum { FW_OUT_OK, FW_OUT_CANCELLED, FW_OUT_NO_LINK, FW_OUT_LINK_LOST, FW_OUT_TIMEOUT, FW_OUT_NO_FILE,
                FW_OUT_HOST_READ, FW_OUT_NOT_APP, FW_OUT_TOO_BIG, FW_OUT_CORRUPT, FW_OUT_CHANGED, FW_OUT_WRITE,
                FW_OUT_BATTERY, FW_OUT_BATTERY_UNKNOWN, FW_OUT_SESSION, FW_OUT_VOICE, FW_OUT_BUSY,
-               FW_OUT_NO_MEMORY, FW_OUT_PENDING, FW_OUT_NO_ROLLBACK, FW_OUT_LAYOUT } fw_out_t;
+               FW_OUT_NO_MEMORY, FW_OUT_PENDING, FW_OUT_NO_ROLLBACK, FW_OUT_LAYOUT,
+               FW_OUT_GOING_BACK } fw_out_t;
 fw_out_t fw_host_rc(int rc);                     /* 0 OK; 120 NO_FILE; 121, 122, 126, 127 and others HOST_READ */
 fw_out_t fw_hdr_out(fw_hdr_t h);                 /* TOO_BIG -> TOO_BIG; SHORT -> CHANGED; the rest -> NOT_APP */
 fw_out_t fw_gate_out(fw_gate_t g);

@@ -399,36 +399,66 @@ static void test_boot_state(void)
     TEST_ASSERT_EQUAL(FW_BOOT_PROBATION, fw_boot_state(true, true, false));  /* N2: the flag names another slot */
 }
 
-/* round 2, N2: an entry-less complete slot (a build that never ran) is never trusted and never offered */
-static void test_trust_and_previous(void)
+/* round 2 N2 / round 3 R7: the whole Previous-version table, and its tie to trust. Every combination: offered only
+   with a VALID entry, our project and a marker for this build; a switch to anything else is never trusted. */
+static void test_previous_and_trust_table(void)
 {
-    TEST_ASSERT_TRUE(fw_switch_trusted(true));
+    for (int i = 0; i < 8; i++) {
+        bool entry = i & 1, project = i & 2, marker = i & 4;
+        bool offered = fw_previous_ok(entry, project, marker);
+        TEST_ASSERT_EQUAL_MESSAGE(entry && project && marker, offered, "fw_previous_ok table");
+        /* the guard and Go back only switch to an offered slot; the switch is trusted only for a VALID entry */
+        if (offered) TEST_ASSERT_TRUE(fw_switch_trusted(entry));
+    }
+    /* the scenarios behind the rows */
+    TEST_ASSERT_FALSE(fw_previous_ok(false, true, true));   /* a complete build cut before the switch: entry erased */
+    TEST_ASSERT_FALSE(fw_previous_ok(true, true, false));   /* app-flashed over a VALID slot: the marker names another ELF */
+    TEST_ASSERT_FALSE(fw_previous_ok(true, false, false));  /* the old updater's bytes after the migration */
     TEST_ASSERT_FALSE(fw_switch_trusted(false));
-    TEST_ASSERT_TRUE(fw_previous_ok(true, true, true));
-    TEST_ASSERT_FALSE(fw_previous_ok(false, true, true));   /* no VALID entry: a cut before the switch */
-    TEST_ASSERT_FALSE(fw_previous_ok(true, false, true));   /* another project */
-    TEST_ASSERT_FALSE(fw_previous_ok(true, true, false));   /* no marker for this build: it never ran valid */
-    /* so the guard's target is never an entry-less slot either, and a switch to one would not be trusted */
-    bool entry_valid = false;
-    TEST_ASSERT_FALSE(fw_previous_ok(entry_valid, true, true) && fw_switch_trusted(entry_valid));
 }
 
-/* round 2, N1: Go back on a pending image rolls back; one claim on the pending flag wins */
-static void test_go_back_and_claim(void)
+/* round 3 R1: the Go back decision table. (pending in otadata, claim lost) must be BUSY: with round 2's rule (the mode
+   from the in-memory flag, which the 180 s rollback had already cleared) it was a SWITCH, and the rollback then
+   invalidated the switch's target. */
+static void test_go_back_decide_table(void)
 {
-    TEST_ASSERT_EQUAL(FW_GB_ROLLBACK, fw_go_back_mode(true));
-    TEST_ASSERT_EQUAL(FW_GB_SWITCH, fw_go_back_mode(false));
-    bool pending = true;
-    bool go_back = fw_pending_claim(&pending);    /* Go back first */
-    bool rollback = fw_pending_claim(&pending);   /* then the 180 s task */
-    TEST_ASSERT_TRUE(go_back);
-    TEST_ASSERT_FALSE(rollback);
-    pending = true;
-    rollback = fw_pending_claim(&pending);        /* the other order */
-    go_back = fw_pending_claim(&pending);
-    TEST_ASSERT_TRUE(rollback ^ go_back);
-    TEST_ASSERT_FALSE(pending);
+    TEST_ASSERT_EQUAL(FW_GB_SWITCH, fw_go_back_decide(false, false));
+    TEST_ASSERT_EQUAL(FW_GB_SWITCH, fw_go_back_decide(false, true));
+    TEST_ASSERT_EQUAL(FW_GB_ROLLBACK, fw_go_back_decide(true, true));
+    TEST_ASSERT_EQUAL(FW_GB_BUSY, fw_go_back_decide(true, false));
+
+    /* the race, step by step: the image is PENDING in otadata the whole time; the 180 s rollback task claims at
+       180.0 s and waits in lg_close; Go back runs at 180.5 s */
+    bool s_pending = true;                    /* the in-memory flag */
+    const bool otadata_pending = true;        /* the truth until the rollback reboots */
+    bool rollback_won = fw_pending_claim(&s_pending);
+    TEST_ASSERT_TRUE(rollback_won);
+    bool go_back_won = otadata_pending ? fw_pending_claim(&s_pending) : false;
+    fw_go_back_t d = fw_go_back_decide(otadata_pending, go_back_won);
+    TEST_ASSERT_EQUAL(FW_GB_BUSY, d);         /* round 2 decided from s_pending (now false): SWITCH */
+    TEST_ASSERT_NOT_EQUAL(FW_GB_SWITCH, d);
+
+    /* the other order: Go back wins, so it is the rollback and the task finds nothing to claim */
+    s_pending = true;
+    go_back_won = fw_pending_claim(&s_pending);
+    TEST_ASSERT_EQUAL(FW_GB_ROLLBACK, fw_go_back_decide(otadata_pending, go_back_won));
+    TEST_ASSERT_FALSE(fw_pending_claim(&s_pending));   /* the rollback task loses: it does nothing */
+
+    /* exactly one of any number of claimants acts */
+    s_pending = true;
+    int winners = 0;
+    for (int i = 0; i < 5; i++) winners += fw_pending_claim(&s_pending);
+    TEST_ASSERT_EQUAL(1, winners);
     TEST_ASSERT_FALSE(fw_pending_claim(NULL));
+}
+
+/* round 3 R3: `ota status` says why updates are off */
+static void test_updates_state_text(void)
+{
+    TEST_ASSERT_EQUAL_STRING("on", fw_updates_state_text(true, true));
+    TEST_ASSERT_EQUAL_STRING("off (old partition table)", fw_updates_state_text(false, true));
+    TEST_ASSERT_EQUAL_STRING("off (old partition table)", fw_updates_state_text(false, false));   /* layout first */
+    TEST_ASSERT_EQUAL_STRING("off (rollback off)", fw_updates_state_text(true, false));
 }
 
 /* core I1 and M7: the guard's state machine over boots */
@@ -436,8 +466,9 @@ static void test_bootloop_action(void)
 {
     TEST_ASSERT_EQUAL(FW_LOOP_NONE, fw_bootloop_action(2, true, 0));
     TEST_ASSERT_EQUAL(FW_LOOP_SWITCH, fw_bootloop_action(3, true, 0));
-    TEST_ASSERT_EQUAL(FW_LOOP_GIVE_UP, fw_bootloop_action(3, false, 0));   /* nothing to go to */
-    TEST_ASSERT_EQUAL(FW_LOOP_GIVE_UP, fw_bootloop_action(3, true, 1));    /* already fell back once */
+    TEST_ASSERT_EQUAL(FW_LOOP_GIVE_UP_ALONE, fw_bootloop_action(3, false, 0));   /* nothing to go to (R5) */
+    TEST_ASSERT_EQUAL(FW_LOOP_GIVE_UP_BOTH, fw_bootloop_action(3, true, 1));     /* already fell back once */
+    TEST_ASSERT_EQUAL(FW_LOOP_GIVE_UP_BOTH, fw_bootloop_action(3, false, 1));    /* both crashed: say so */
     TEST_ASSERT_EQUAL(FW_LOOP_NONE, fw_bootloop_action(0, true, 1));
 
     /* Simulated boots. A crash-loops; the guard switches to B; B (trusted) is marked valid at once. Ping-pong: B
@@ -448,7 +479,8 @@ static void test_bootloop_action(void)
         count = fw_bootloop_next(count, boot > 0, true);   /* every boot after the first follows an early panic */
         fw_loop_t a = fw_bootloop_action(count, true, fallbacks);
         if (a == FW_LOOP_SWITCH) { switches++; fallbacks++; count = 0; trusted = true; continue; }
-        if (a == FW_LOOP_GIVE_UP) gave_up++;
+        if (a == FW_LOOP_GIVE_UP_BOTH) gave_up++;
+        TEST_ASSERT_NOT_EQUAL(FW_LOOP_GIVE_UP_ALONE, a);
         if (trusted) { TEST_ASSERT_EQUAL(FW_BOOT_TRUSTED, fw_boot_state(true, trusted, true)); trusted = false; }
     }
     TEST_ASSERT_EQUAL(1, switches);
@@ -532,8 +564,9 @@ static void test_out_text_ids(void)
         { FW_OUT_VOICE, STR_FW_ERR_BUSY_VOICE }, { FW_OUT_BUSY, STR_FW_ERR_BUSY },
         { FW_OUT_NO_MEMORY, STR_FW_ERR_NO_MEMORY }, { FW_OUT_PENDING, STR_FW_ERR_PENDING },
         { FW_OUT_NO_ROLLBACK, STR_FW_ERR_NO_ROLLBACK }, { FW_OUT_LAYOUT, STR_FW_ERR_LAYOUT },
+        { FW_OUT_GOING_BACK, STR_FW_ERR_GOING_BACK },
     };
-    TEST_ASSERT_EQUAL(FW_OUT_LAYOUT, sizeof m / sizeof m[0]);   /* every value but OK */
+    TEST_ASSERT_EQUAL(FW_OUT_GOING_BACK, sizeof m / sizeof m[0]);   /* every value but OK */
     for (size_t i = 0; i < sizeof m / sizeof m[0]; i++) {
         TEST_ASSERT_EQUAL(m[i].s, fw_out_text(m[i].o));
         const char *t = tr(fw_out_text(m[i].o));
@@ -567,8 +600,9 @@ int main(void)
     RUN_TEST(test_validity);
     RUN_TEST(test_bootloop);
     RUN_TEST(test_boot_state);
-    RUN_TEST(test_trust_and_previous);
-    RUN_TEST(test_go_back_and_claim);
+    RUN_TEST(test_previous_and_trust_table);
+    RUN_TEST(test_go_back_decide_table);
+    RUN_TEST(test_updates_state_text);
     RUN_TEST(test_bootloop_action);
     RUN_TEST(test_confirm_matches);
     RUN_TEST(test_attempt_rolled_back);

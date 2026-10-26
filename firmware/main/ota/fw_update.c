@@ -115,6 +115,7 @@ static bool s_subscribed;
 static esp_timer_handle_t s_early_timer, s_valid_timer, s_test_timer;
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+static void arm_valid_timer(void);
 
 static void post_note(fwu_note_kind_t kind, fw_out_t out, const char *a, const char *b)
 {
@@ -254,7 +255,11 @@ static void marker_write_running(void)
     elf_hex(esp_app_get_description()->app_elf_sha256, hex);
     bool same = nvs_get_str_alloc(NVS_NS, key, &old) && old && !strcmp(old, hex);
     free(old);
-    if (!same) nvs_set_str_ns(NVS_NS, key, hex);
+    if (!same && !nvs_set_str_ns(NVS_NS, key, hex)) {
+        static bool said;   /* round 3, R4: once per boot */
+        if (!said) ESP_LOGW(TAG, "marker %s/%s not written: this slot won't be offered as Previous version", NVS_NS, key);
+        said = true;
+    }
 }
 
 static bool marker_matches(const esp_partition_t *p, const uint8_t elf_sha[32])
@@ -595,18 +600,17 @@ bool fwu_previous(fw_desc_t *out)
 
 /* A switch to a slot whose entry is VALID: the trusted flag, bound to that slot's address, makes the next boot mark
    it valid at once instead of putting it on probation (core I1; round 2, N2: only a VALID target). Set before
-   esp_ota_set_boot_partition, cleared on a failure. Only for a running image that isn't pending (Go back on a
-   pending one is the rollback, round 2, N1); any leftover pending claim is taken first, so nothing else calls
-   esp_ota_mark_* after the switch. */
+   esp_ota_set_boot_partition, cleared on a failure. Refused while the running entry is PENDING_VERIFY in otadata
+   (round 3, R1): then only the rollback may act, and a switch would hand it the switch's target to invalidate. */
 static esp_err_t switch_to_other(void)
 {
     const esp_partition_t *o = other_slot();
+    if (part_state(esp_ota_get_running_partition()) == ESP_OTA_IMG_PENDING_VERIFY) return ESP_ERR_INVALID_STATE;
     if (!o || !fwu_previous(NULL)) return ESP_ERR_NOT_FOUND;
     esp_partition_pos_t pos = { .offset = o->address, .size = o->size };
     esp_image_metadata_t md;
     esp_err_t e = esp_image_verify(ESP_IMAGE_VERIFY, &pos, &md);
     if (e != ESP_OK) { ESP_LOGW(TAG, "switch: %s doesn't verify (%s)", o->label, esp_err_to_name(e)); return e; }
-    (void)take_pending();
     bool trusted = fw_switch_trusted(part_state(o) == ESP_OTA_IMG_VALID);
     s_rtc.trusted_switch = trusted;
     s_rtc.trusted_addr = trusted ? o->address : 0;
@@ -627,11 +631,16 @@ fw_out_t fwu_go_back(void)
     g.layout_ok = true;
     fw_out_t o = fw_gate_out(fw_gate(&g));
     if (o != FW_OUT_OK) return o;
-    if (fw_go_back_mode(fwu_pending()) == FW_GB_ROLLBACK) {
+    /* round 3, R1: the mode comes from otadata, not s_pending (the 180 s rollback clears that while it still waits
+       in lg_close to act). Pending in otadata: claim it; a lost claim is BUSY, never a switch. */
+    bool otadata_pending = part_state(esp_ota_get_running_partition()) == ESP_OTA_IMG_PENDING_VERIFY;
+    bool won = otadata_pending && take_pending();
+    fw_go_back_t mode = fw_go_back_decide(otadata_pending, won);
+    if (mode == FW_GB_BUSY) return FW_OUT_GOING_BACK;
+    if (mode == FW_GB_ROLLBACK) {
         /* round 2, N1: a pending image goes back by the rollback itself. The previous slot keeps its VALID entry;
-           no switch, so the 180 s rollback can't then invalidate the target. The claim decides who acts. */
-        if (!fwu_previous(NULL)) return FW_OUT_WRITE;
-        if (!take_pending()) return FW_OUT_BUSY;   /* the rollback (or a mark-valid) already has it */
+           no switch, so nothing can invalidate it. It needs no marker (R6): the bootloader's check is the test. */
+        if (!esp_ota_check_rollback_is_possible()) { put_pending(); return FW_OUT_WRITE; }
         if (s_valid_timer) esp_timer_stop(s_valid_timer);
         ESP_LOGI(TAG, "go back while pending: rolling back");
         lg_token_t t = lg_close(false, LG_CLOSE_MS);
@@ -639,6 +648,7 @@ fw_out_t fwu_go_back(void)
         ESP_LOGE(TAG, "go back: rollback failed (%s)", esp_err_to_name(e));
         lg_reopen(t);
         put_pending();
+        arm_valid_timer();   /* round 3, R2: the 180 s path still runs (and ends the hold if it fails too) */
         return FW_OUT_WRITE;
     }
     if (switch_to_other() != ESP_OK) return FW_OUT_WRITE;
@@ -681,6 +691,21 @@ static void make_timer(esp_timer_cb_t cb, const char *name, esp_timer_handle_t *
 {
     const esp_timer_create_args_t a = { .callback = cb, .name = name };
     if (esp_timer_create(&a, out) != ESP_OK) *out = NULL;
+}
+
+static void valid_timer_cb(void *arg);
+
+/* The pending check's timer: at the notice (FW_VALIDATE_MS - NOTICE_MS of uptime) or, past it, at FW_VALIDATE_MS, or
+   at once past that. */
+static void arm_valid_timer(void)
+{
+    if (!s_valid_timer) make_timer(valid_timer_cb, "fw_valid", &s_valid_timer);
+    if (!s_valid_timer) return;
+    int64_t up = now_ms();
+    int64_t at = up < FW_VALIDATE_MS - NOTICE_MS ? FW_VALIDATE_MS - NOTICE_MS : FW_VALIDATE_MS;
+    int64_t in = at - up;
+    esp_timer_stop(s_valid_timer);
+    esp_timer_start_once(s_valid_timer, (uint64_t)(in > 0 ? in : 1) * 1000);
 }
 
 /* A crash that the guard counts: a panic, a watchdog, a CPU lockup (core M4). A brownout or a power-on isn't. */
@@ -734,12 +759,13 @@ void fwu_boot_early(void)
             s_rtc.bootloop_note = 1;
             esp_restart();   /* the first thing in app_main: no SSH session exists yet */
         }
-        a = FW_LOOP_GIVE_UP;
+        a = FW_LOOP_GIVE_UP_ALONE;
     }
-    if (a == FW_LOOP_GIVE_UP) {
-        ESP_LOGE(TAG, "boot-loop guard: %d early crashes and no slot to go to (fallbacks %d): flash a good build over USB",
-                 (int)s_rtc.count, (int)s_rtc.fallbacks);
-        post_note(FWU_NOTE_BOOTLOOP_BOTH, FW_OUT_OK, NULL, NULL);
+    if (a == FW_LOOP_GIVE_UP_BOTH || a == FW_LOOP_GIVE_UP_ALONE) {
+        ESP_LOGE(TAG, "boot-loop guard: %d early crashes, %s (fallbacks %d): flash a good build over USB",
+                 (int)s_rtc.count, a == FW_LOOP_GIVE_UP_BOTH ? "both versions" : "no earlier version",
+                 (int)s_rtc.fallbacks);
+        post_note(a == FW_LOOP_GIVE_UP_BOTH ? FWU_NOTE_BOOTLOOP_BOTH : FWU_NOTE_BOOTLOOP_ALONE, FW_OUT_OK, NULL, NULL);
     }
     make_timer(early_cb, "fw_early", &s_early_timer);
     if (s_early_timer) esp_timer_start_once(s_early_timer, (uint64_t)FW_BOOTLOOP_EARLY_MS * 1000);
@@ -845,9 +871,7 @@ void fwu_boot_init(void)
     if (st == ESP_OTA_IMG_PENDING_VERIFY) {
         put_pending();
         power_hold(POWER_HOLD_FW_PENDING, true);   /* stays Active: no sleep may reset the check */
-        make_timer(valid_timer_cb, "fw_valid", &s_valid_timer);
-        int64_t at = FW_VALIDATE_MS - NOTICE_MS - now_ms();
-        if (s_valid_timer) esp_timer_start_once(s_valid_timer, (uint64_t)(at > 0 ? at : 1) * 1000);
+        arm_valid_timer();
         ESP_LOGI(TAG, "%s (%s) pending verify: valid after the first result from the Host, else back in %d s",
                  fwu_running_version(), running->label, FW_VALIDATE_MS / 1000);
         return;

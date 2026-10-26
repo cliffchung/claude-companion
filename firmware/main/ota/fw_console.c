@@ -56,7 +56,7 @@ static int cmd_status(void)
            fwu_running_version(), i.running_label, fwu_state_name(i.running_state), has_prev ? prev.version : "none",
            i.other_label, fwu_state_name(i.other_state), i.rollback_possible ? "yes" : "no", i.pending ? "yes" : "no",
            i.bootloop);
-    printf("ota: updates %s, poll subscribers %d of %d\n", fwu_rollback_ok() ? "on" : "off (rollback off)",
+    printf("ota: updates %s, poll subscribers %d of %d\n", fw_updates_state_text(fwu_layout_ok(), fwu_rollback_ok()),
            cc_poll_subscribers(), CC_POLL_MAX_SUBS);
     return 0;
 }

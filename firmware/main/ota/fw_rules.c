@@ -248,7 +248,18 @@ bool fw_previous_ok(bool entry_valid, bool project_ok, bool marker_matches)
     return entry_valid && project_ok && marker_matches;
 }
 
-fw_go_back_t fw_go_back_mode(bool pending) { return pending ? FW_GB_ROLLBACK : FW_GB_SWITCH; }
+fw_go_back_t fw_go_back_decide(bool otadata_pending, bool claim_won)
+{
+    if (!otadata_pending) return FW_GB_SWITCH;
+    return claim_won ? FW_GB_ROLLBACK : FW_GB_BUSY;
+}
+
+const char *fw_updates_state_text(bool layout_ok, bool rollback_ok)
+{
+    if (!layout_ok) return "off (old partition table)";
+    if (!rollback_ok) return "off (rollback off)";
+    return "on";
+}
 
 bool fw_pending_claim(bool *pending)
 {
@@ -260,7 +271,8 @@ bool fw_pending_claim(bool *pending)
 fw_loop_t fw_bootloop_action(int count, bool other_runnable, int fallbacks)
 {
     if (count < FW_BOOTLOOP_N) return FW_LOOP_NONE;
-    if (fallbacks >= FW_BOOTLOOP_MAX_FALLBACKS || !other_runnable) return FW_LOOP_GIVE_UP;
+    if (fallbacks >= FW_BOOTLOOP_MAX_FALLBACKS) return FW_LOOP_GIVE_UP_BOTH;
+    if (!other_runnable) return FW_LOOP_GIVE_UP_ALONE;
     return FW_LOOP_SWITCH;
 }
 
@@ -337,6 +349,7 @@ str_id_t fw_out_text(fw_out_t o)
     case FW_OUT_PENDING:         return STR_FW_ERR_PENDING;
     case FW_OUT_NO_ROLLBACK:     return STR_FW_ERR_NO_ROLLBACK;
     case FW_OUT_LAYOUT:          return STR_FW_ERR_LAYOUT;
+    case FW_OUT_GOING_BACK:      return STR_FW_ERR_GOING_BACK;
     }
     return STR_COUNT;
 }

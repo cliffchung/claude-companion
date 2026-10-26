@@ -264,6 +264,7 @@ void ui_fw_note_tick(void)
     case FWU_NOTE_ROLLING_BACK: snprintf(b, sizeof b, tr(STR_FW_ROLLING_BACK), n.ver_a); break;
     case FWU_NOTE_ROLLBACK_FAILED: snprintf(b, sizeof b, "%s", tr(STR_FW_ROLLBACK_FAILED)); break;
     case FWU_NOTE_BOOTLOOP_BOTH: snprintf(b, sizeof b, "%s", tr(STR_FW_BOOTLOOP_BOTH)); break;
+    case FWU_NOTE_BOOTLOOP_ALONE: snprintf(b, sizeof b, "%s", tr(STR_FW_BOOTLOOP_ALONE)); break;
     default: return;
     }
     ui_toast_ms(b, 6000);

@@ -506,6 +506,8 @@ X(SET_FW_ROLLBACK_OFF, "Rollback off") \
 X(SET_FW_LAYOUT_OLD, "Old partition table") \
 X(FW_ERR_LAYOUT, "Updates are off: the partition table is old. Flash this build once over USB.") \
 X(FW_TOO_LATE, "Too late to cancel: the Tab5 is switching to the new version.") \
+X(FW_BOOTLOOP_ALONE, "Restarting repeatedly; no earlier version to go back to. Flash a good build over USB.") \
+X(FW_ERR_GOING_BACK, "Already going back to the previous version.") \
 X(FW_BOOTLOOP_BOTH, "Both versions keep restarting. Flash a good build over USB (README \xe2\x80\xba Update over Wi-Fi).") \
 X(FW_ROLLBACK_FAILED, "The new version can't reach the Host and the Tab5 couldn't go back; it keeps this version.") \
 X(SET_FW_UPDATE, "Update firmware") \
